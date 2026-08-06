@@ -449,6 +449,86 @@ async function buscarItensPorSku(
   return (j.results ?? []).filter(Boolean);
 }
 
+/**
+ * Varre a conta INTEIRA de uma vez e agrupa os anúncios por SKU localmente.
+ *
+ * Por que existe: a varredura por produto faz uma busca no ML para CADA
+ * produto. Numa conta de 25.553 produtos isso é ~51 mil requisições e mais de
+ * uma hora — inviável para auditar a base de clientes.
+ *
+ * Aqui o custo passa a ser proporcional ao número de ANÚNCIOS, não de produtos:
+ * uma passada de `scan` (50 ids por página) + os detalhes em lotes de 20. Para
+ * a mesma conta: ~1.800 requisições. É a diferença entre rodar e não rodar.
+ *
+ * `getSellerItemIds` já pagina com `search_type=scan`/`scroll_id` e NÃO filtra
+ * status — traz encerrado também, que é justamente o que procuramos.
+ */
+async function varrerConta(
+  token: string,
+  sellerId: string,
+  flags: Flags,
+): Promise<Map<string, ItemMl>> {
+  // Scan SEM filtro de status, de propósito.
+  //
+  // Medido na Mesquita: sem filtro o ML devolve 679 anúncios — o total real.
+  // Filtrando por status e somando dá 671 (576 ativos + 45 pausados + 50
+  // encerrados), porque `status=under_review` devolve ZERO mesmo havendo itens
+  // em moderação. Os 8 que faltavam eram exatamente esses, e sem eles um par
+  // duplicado fica incompleto e some do relatório.
+  const ids = await MLApiService.getSellerItemIds(
+    token,
+    sellerId,
+    "active", // ignorado pelo método; o scan não filtra status
+    flags.limit > 0 ? flags.limit : undefined,
+  );
+  console.log(`    varredura: ${ids.length} anuncios na conta`);
+
+  const porId = new Map<string, ItemMl>();
+  const lotes: string[][] = [];
+  for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+
+  for (let i = 0; i < lotes.length; i += flags.concurrency) {
+    const grupo = lotes.slice(i, i + flags.concurrency);
+    const resultados = await Promise.all(
+      grupo.map((lote) => detalharItens(token, lote)),
+    );
+    for (const mapa of resultados) {
+      for (const item of mapa.values()) porId.set(item.id, item);
+    }
+    if (flags.delayMs > 0) await sleep(flags.delayMs);
+  }
+  console.log(`    varredura: ${porId.size} anuncios detalhados`);
+  return porId;
+}
+
+/**
+ * Resolve o SKU de um anúncio que o Dexo NÃO conhece.
+ *
+ * Por que não dá para usar o mapa da varredura: os anúncios encerrados vêm com
+ * `seller_custom_field: null` (medido — MLB3430008407 e MLB4604718185). O SKU
+ * mora no atributo `SELLER_SKU`, e o multiget não deixa pedir UM atributo — ou
+ * traz todos (payload enorme em autopeças, por causa das compatibilidades) ou
+ * nenhum.
+ *
+ * Por isso resolvemos item a item, e SÓ para os órfãos, que são poucos: numa
+ * conta de centenas de anúncios são dezenas de chamadas, não milhares.
+ */
+async function skuDoOrfao(token: string, itemId: string): Promise<string | null> {
+  const r = await fetch(`${ML}/items/${itemId}?attributes=seller_custom_field,attributes`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) return null;
+  const j = (await r.json()) as {
+    seller_custom_field?: string | null;
+    attributes?: Array<{ id?: string; value_name?: string | null }>;
+  };
+  const direto = String(j.seller_custom_field ?? "").trim();
+  if (direto) return direto;
+  const attr = (j.attributes ?? []).find((a) => a.id === "SELLER_SKU");
+  const doAttr = String(attr?.value_name ?? "").trim();
+  return doAttr || null;
+}
+
 async function detalharItens(
   token: string,
   ids: string[],
@@ -904,19 +984,81 @@ async function main(): Promise<void> {
         );
       }
 
+      // Uma varredura da conta inteira quando o alvo são muitos produtos; a
+      // busca por SKU só quando o operador pediu UM produto (`--sku`), onde
+      // ela é ordens de grandeza mais barata que varrer tudo.
+      let mapaConta: Map<string, ItemMl[]> | null = null;
+      if (!flags.sku) {
+        const porId = await varrerConta(
+          token,
+          conta.externalUserId as string,
+          flags,
+        );
+
+        // Quem o Dexo JÁ conhece — uma consulta só, para a conta inteira.
+        const linhasConta = await prisma.productListing.findMany({
+          where: { marketplaceAccountId: conta.id },
+          select: { externalListingId: true, product: { select: { sku: true } } },
+        });
+        const skuPorItem = new Map<string, string>();
+        for (const l of linhasConta) {
+          if (l.product?.sku) skuPorItem.set(l.externalListingId, l.product.sku);
+        }
+
+        // Os órfãos são os poucos que sobram. Só neles vale gastar uma chamada
+        // extra para descobrir o SKU.
+        const orfaos = [...porId.values()].filter((it) => !skuPorItem.has(it.id));
+        console.log(
+          `    varredura: ${orfaos.length} anuncio(s) sem linha no Dexo — resolvendo o SKU de cada`,
+        );
+        let semVinculo = 0;
+        for (let i = 0; i < orfaos.length; i += flags.concurrency) {
+          const lote = orfaos.slice(i, i + flags.concurrency);
+          const skus = await Promise.all(
+            lote.map((it) => skuDoOrfao(token, it.id)),
+          );
+          lote.forEach((it, k) => {
+            if (skus[k]) skuPorItem.set(it.id, skus[k] as string);
+            else semVinculo++;
+          });
+          if (flags.delayMs > 0) await sleep(flags.delayMs);
+        }
+        if (semVinculo > 0) {
+          console.warn(
+            `    varredura: ${semVinculo} anuncio(s) sem SKU no ML — nao da para ligar a um produto; fora do relatorio`,
+          );
+        }
+
+        mapaConta = new Map();
+        for (const it of porId.values()) {
+          const sku = skuPorItem.get(it.id);
+          if (!sku) continue;
+          const atual = mapaConta.get(sku);
+          if (atual) atual.push(it);
+          else mapaConta.set(sku, [it]);
+        }
+      }
+
       for (let i = 0; i < produtos.length; i += flags.concurrency) {
         const lote = produtos.slice(i, i + flags.concurrency);
         await Promise.all(
           lote.map(async (prod) => {
-            const ids = await buscarItensPorSku(
-              token,
-              conta.externalUserId as string,
-              prod.sku,
-            );
-            if (ids.length < 2) return; // só há um anúncio: nada a reconciliar
+            let itens: ItemMl[];
+            let ids: string[];
 
-            const detalhes = await detalharItens(token, ids);
-            const itens = [...detalhes.values()];
+            if (mapaConta) {
+              itens = mapaConta.get(String(prod.sku).trim()) ?? [];
+              ids = itens.map((it) => it.id);
+            } else {
+              ids = await buscarItensPorSku(
+                token,
+                conta.externalUserId as string,
+                prod.sku,
+              );
+              if (ids.length < 2) return; // só há um anúncio: nada a reconciliar
+              itens = [...(await detalharItens(token, ids)).values()];
+            }
+            if (ids.length < 2) return; // só há um anúncio: nada a reconciliar
 
             const linhas = await prisma.productListing.findMany({
               where: {
