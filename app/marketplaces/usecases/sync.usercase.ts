@@ -4217,7 +4217,49 @@ export class SyncUseCase {
         const MAX_ML_ATTEMPTS = 4;
         let succeeded = false;
 
-        for (let attempt = 0; attempt < MAX_ML_ATTEMPTS; attempt++) {
+        // Corte do PUT redundante: `updateData.price` é setado
+        // incondicionalmente lá em cima, então TODO save de produto disparava
+        // um PUT por anúncio mesmo sem nada ter mudado — em ~220 mil anúncios
+        // ativos isso é egress e rate limit do ML puro.
+        //
+        // Compara contra o `currentItem` que já lemos no GET desta mesma
+        // execução, e só corta quando o payload inteiro se resume a price e/ou
+        // available_quantity e os DOIS já batem. Qualquer outra chave (status,
+        // title, attributes, pictures, dimensões) manda como antes: fail-open,
+        // na dúvida envia.
+        const noOpCandidate =
+          process.env.ML_SYNC_SKIP_NOOP_PUT_DISABLED !== "1" &&
+          Object.keys(currentPayload).every(
+            (k) => k === "price" || k === "available_quantity",
+          );
+        const priceMatches =
+          currentPayload.price === undefined ||
+          Number(currentPayload.price) === Number(currentItem.price);
+        const stockMatches =
+          currentPayload.available_quantity === undefined ||
+          Number(currentPayload.available_quantity) ===
+            Number(currentItem.available_quantity);
+
+        if (noOpCandidate && priceMatches && stockMatches) {
+          succeeded = true;
+          updatedItem = currentItem;
+          console.log(
+            JSON.stringify({
+              event: "ml.sync.put_skipped",
+              reason: "no_change",
+              productId: product.id,
+              externalListingId,
+              price: Number(currentItem.price),
+              availableQuantity: Number(currentItem.available_quantity),
+            }),
+          );
+        }
+
+        for (
+          let attempt = 0;
+          !succeeded && attempt < MAX_ML_ATTEMPTS;
+          attempt++
+        ) {
           try {
             updatedItem = await MLApiService.updateItem(
               account.accessToken,
