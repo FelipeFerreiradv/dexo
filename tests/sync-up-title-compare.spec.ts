@@ -46,10 +46,12 @@ const produto = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("SyncUseCase.syncMLProductData → comparação de título em item UP", () => {
-  let republishSpy: ReturnType<typeof vi.spyOn>;
-  let updateSpy: ReturnType<typeof vi.spyOn>;
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  // `any` de propósito: os spies têm assinaturas diferentes entre si e o
+  // `ReturnType<typeof vi.spyOn>` do vitest 1.6 não unifica.
+  let republishSpy: any;
+  let updateSpy: any;
+  let logSpy: any;
+  let warnSpy: any;
 
   beforeEach(() => {
     vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
@@ -83,11 +85,14 @@ describe("SyncUseCase.syncMLProductData → comparação de título em item UP",
   };
 
   /** Lê as linhas de log estruturado de um evento específico. */
-  const eventos = (spy: ReturnType<typeof vi.spyOn>, nome: string) =>
+  const eventos = (spy: any, nome: string) =>
     spy.mock.calls
-      .map((c) => c[0])
-      .filter((l): l is string => typeof l === "string" && l.includes(nome))
-      .map((l) => JSON.parse(l));
+      .map((c: unknown[]) => c[0])
+      .filter(
+        (l: unknown): l is string =>
+          typeof l === "string" && l.includes(nome),
+      )
+      .map((l: string) => JSON.parse(l));
 
   it("CASO DO VÍDEO: edição só de preço NÃO republica e manda um único PUT sem title", async () => {
     await rodar(itemUp(), produto());
