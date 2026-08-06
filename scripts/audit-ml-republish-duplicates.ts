@@ -635,10 +635,14 @@ async function zerarEstoqueOrfao(
     // no header. A primeira tentativa (PUT em /stock, sem tipo e sem versão)
     // deu 404 em produção — não era o endpoint.
     const tipos = [...new Set((antes.locations ?? []).map((l) => l.type))];
-    if (tipos.length !== 1) {
+    if (tipos.length !== 1 || (antes.locations ?? []).length !== 1) {
+      // Uma única localização é o caso do vendedor sem multi-origem, o único
+      // com contrato conhecido. Com mais de uma, o corpo passa a ser a lista
+      // `locations` com store_id/network_node_id por depósito — não vou
+      // adivinhar o shape escrevendo em conta de cliente.
       return {
         ok: false,
-        detalhe: `ABORTADO: ${tipos.length} tipos de localizacao (${tipos.join("/")}) — caso nao previsto, conferir a mao`,
+        detalhe: `ABORTADO: ${(antes.locations ?? []).length} localizacao(oes) (${tipos.join("/")}) — caso multi-origem, conferir a mao`,
       };
     }
     if (!antes.version) {
@@ -655,11 +659,13 @@ async function zerarEstoqueOrfao(
         "Content-Type": "application/json",
         "x-version": antes.version,
       },
-      // Devolve as localizações como vieram, só zerando a quantidade: não
-      // inventa shape nem descarta campo que o ML tenha mandado.
-      body: JSON.stringify({
-        locations: (antes.locations ?? []).map((l) => ({ ...l, quantity: 0 })),
-      }),
+      // `quantity` no TOPO do corpo, não dentro de `locations`. Medido: com
+      // `{locations:[...]}` o ML responde 400 `quantity is required`
+      // (department user-products-stock). A forma com lista é do tipo
+      // `seller_warehouse`, que carrega store_id/network_node_id por depósito;
+      // em `selling_address` há uma localização só e o corpo é plano, como no
+      // exemplo da doc (`-d '{ "quantity": 15 }'`).
+      body: JSON.stringify({ quantity: 0 }),
     });
     const corpo = (await r.text()).slice(0, 300);
     if (!r.ok) {
