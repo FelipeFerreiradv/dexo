@@ -45,6 +45,34 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  * Antes de escrever, cada ação RE-LÊ o item no ML: se o estado mudou desde o
  * relatório (ex.: o anúncio voltou a ficar vivo), ela aborta sem alterar nada.
  *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️ LEIA ANTES DE TENTAR CONSERTAR O `--close-orphans` (06/08/2026)
+ *
+ * No site MLB, o `--close-orphans` NÃO consegue zerar o estoque. Não é bug
+ * deste script: é bloqueio da plataforma. O contrato foi perseguido até o fim,
+ * uma resposta do ML de cada vez:
+ *
+ *   PUT /items/{id} {available_quantity:0}    -> 400 field_not_updatable
+ *                                                (item encerrado não aceita)
+ *   PUT /user-products/{id}/stock             -> 404 (falta /type/{tipo})
+ *   ... /stock/type/selling_address           -> 400 "quantity is required"
+ *                                                (corpo era {locations:[…]})
+ *   ... + body {"quantity":0} + x-version     -> 400 "the site is blocked for
+ *                                                modifications to the selling
+ *                                                address"
+ *
+ * Ou seja: path certo, header certo, corpo certo — e o ML recusa mesmo assim.
+ * O estoque de `selling_address` é imutável por API neste site.
+ *
+ * O passivo é COSMÉTICO: o anúncio encerrado não vende, então não há risco de
+ * oversell. O que sobra é o agrupamento do painel exibindo a soma. A doc de
+ * sincronização do ML diz que item encerrado é descartado automaticamente
+ * depois de um tempo — a expectativa é que se resolva sozinho.
+ *
+ * NÃO tente resolver apagando o anúncio (`deleted: true`): é irreversível, e a
+ * própria doc do ML diz que não é necessário.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
  * Uso (SEMPRE via tsx direto — ver aviso abaixo):
  *
  *   # relatório de um tenant, só os placeholders presos
@@ -669,6 +697,20 @@ async function zerarEstoqueOrfao(
     });
     const corpo = (await r.text()).slice(0, 300);
     if (!r.ok) {
+      // Bloqueio de PLATAFORMA, não erro nosso. Medido no site MLB em
+      // 06/08/2026: o path, o x-version e o corpo estavam todos corretos (a
+      // tentativa anterior já tinha passado do "quantity is required") e ainda
+      // assim o ML recusa. Reportar como falha genérica faria o próximo
+      // operador repetir a investigação inteira.
+      if (/blocked for modifications/i.test(corpo)) {
+        return {
+          ok: false,
+          detalhe:
+            "TERMINAL: o Mercado Livre bloqueia alterar estoque de selling_address neste site " +
+            "(\"the site is blocked for modifications to the selling address\"). NAO ha caminho por " +
+            "API para este passivo — ver o cabecalho deste arquivo.",
+        };
+      }
       return {
         ok: false,
         detalhe: `HTTP ${r.status} em /stock/type/${tipos[0]} (x-version=${antes.version}) — ${corpo}`,
