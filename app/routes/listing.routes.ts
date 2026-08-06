@@ -99,6 +99,8 @@ export async function enrichCrossAccountIncrease(
   const staggerOthers = !crossMarketplaceStaggerDisabled();
   const shopeeMap = staggerOthers ? mapFor("SHOPEE") : null;
   const magaluMap = staggerOthers ? mapFor("MAGALU") : null;
+  const olxMap = staggerOthers ? mapFor("OLX") : null;
+  const fbMap = staggerOthers ? mapFor("FACEBOOK") : null;
 
   return {
     ...template,
@@ -108,6 +110,10 @@ export async function enrichCrossAccountIncrease(
       indexByAccountId,
       ...(shopeeMap ? { shopeeIndexByAccountId: shopeeMap } : {}),
       ...(magaluMap ? { magaluIndexByAccountId: magaluMap } : {}),
+      // OLX/FB: sem estes mapas a prévia mostrava a escada de preço mas o job
+      // publicava tudo no preço base (o dispatcher só escalona quem tem mapa).
+      ...(olxMap ? { olxIndexByAccountId: olxMap } : {}),
+      ...(fbMap ? { fbIndexByAccountId: fbMap } : {}),
     },
   };
 }

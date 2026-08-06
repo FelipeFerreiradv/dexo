@@ -43,6 +43,9 @@ function productWith(stock: number) {
           id: "acc-fb",
           platform: Platform.FACEBOOK,
           accessToken: "fb-token",
+          // Catálogo por conta é obrigatório: sem ele o sync bloqueia (não cai
+          // no catálogo global do .env, que colidiria entre tenants).
+          fbCatalogId: "cat-fb",
         },
       },
     ],
@@ -69,7 +72,7 @@ describe("SyncUseCase.syncProductStock — plataforma FACEBOOK", () => {
       "fb-token",
       "SKU1",
       "out of stock",
-      { quantity: 0 },
+      { quantity: 0, catalogId: "cat-fb" },
     );
     expect(ListingRepository.updateStatus).toHaveBeenCalledWith(
       "listing-1",
@@ -87,7 +90,7 @@ describe("SyncUseCase.syncProductStock — plataforma FACEBOOK", () => {
       "fb-token",
       "SKU1",
       "in stock",
-      { quantity: 5 },
+      { quantity: 5, catalogId: "cat-fb" },
     );
     expect(ListingRepository.updateStatus).toHaveBeenCalledWith(
       "listing-1",

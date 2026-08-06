@@ -5951,7 +5951,16 @@ export class ListingUseCase {
             error: "Conta Facebook sem credenciais válidas",
           };
         }
-        const catalogId = account.fbCatalogId ?? FACEBOOK_CONSTANTS.CATALOG_ID;
+        // Catálogo por conta: sem ele o retailer_id=SKU cairia no catálogo
+        // global do .env e dois tenants se sobrescreveriam. Bloqueia, sem fallback.
+        if (!account.fbCatalogId) {
+          return {
+            success: false,
+            error:
+              "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).",
+          };
+        }
+        const catalogId = account.fbCatalogId;
         const availability = status === "paused" ? "out of stock" : "in stock";
         const quantity =
           status === "paused"
@@ -6493,7 +6502,7 @@ export class ListingUseCase {
 
   /**
    * Monta o objeto passado à resolução de categoria Facebook: preserva a
-   * categoria explícita do produto (fbCategory) e enriquece o `name` com os
+   * categoria explícita presente no input e enriquece o `name` com os
    * campos veiculares estruturados (brand/model/year/version/sourceVehicle),
    * para a heurística de veículo casar mesmo quando o nome não traz o termo.
    * Espelha a leitura desses campos em OLX/ML.
@@ -6591,12 +6600,20 @@ export class ListingUseCase {
       }
 
       // Catálogo por conta: retailer_id == SKU, então dois tenants com o mesmo
-      // SKU colidiriam no mesmo catálogo Meta.
-      const catalogId = account.fbCatalogId ?? FACEBOOK_CONSTANTS.CATALOG_ID;
+      // SKU colidiriam no mesmo catálogo Meta. Bloqueia quando ausente (sem
+      // fallback p/ o global do .env) em vez de publicar no catálogo errado.
+      if (!account.fbCatalogId) {
+        return {
+          success: false,
+          error:
+            "Catálogo Meta não configurado nesta conta (fbCatalogId ausente). Configure o catálogo do Facebook antes de publicar.",
+        };
+      }
+      const catalogId = account.fbCatalogId;
       const productUrlBase =
         account.fbProductUrlBase ?? FACEBOOK_CONSTANTS.PRODUCT_URL_BASE;
 
-      // Categoria: explícita (rota) > Product.fbCategory > heurística de veículo.
+      // Categoria: explícita (rota/override) > heurística de veículo.
       // A heurística lê os campos estruturados (brand/model/year/version/
       // sourceVehicle) além do nome, espelhando a resolução OLX/ML.
       const explicitCategory =
@@ -6735,6 +6752,18 @@ export class ListingUseCase {
             "Conta do Facebook sem token de acesso. Reconecte a conta e tente novamente.",
         };
       }
+      // Catálogo por conta: o DELETE é endereçado por retailer_id = SKU. Sem o
+      // catálogo da conta, o DELETE sairia contra o catálogo global do .env e,
+      // com SKUs colidindo entre tenants, apagaria o item de OUTRO cliente.
+      if (!account.fbCatalogId) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Catálogo Meta não configurado nesta conta (fbCatalogId ausente). Configure o catálogo antes de desvincular.",
+        };
+      }
 
       try {
         await withRetry(
@@ -6742,6 +6771,7 @@ export class ListingUseCase {
             FacebookApiService.deleteItem(
               account.accessToken!,
               listing.externalListingId,
+              { catalogId: account.fbCatalogId! },
             ),
           { classify: classifyFacebookRemoveError },
         );
@@ -6869,7 +6899,16 @@ export class ListingUseCase {
       listingForOverrides,
     ) as any;
 
-    const catalogId = account.fbCatalogId ?? FACEBOOK_CONSTANTS.CATALOG_ID;
+    // Catálogo por conta: sem ele o UPDATE (retailer_id=SKU) cairia no catálogo
+    // global do .env e editaria o item de outro tenant. Bloqueia, sem fallback.
+    if (!account.fbCatalogId) {
+      return {
+        success: false,
+        error:
+          "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).",
+      };
+    }
+    const catalogId = account.fbCatalogId;
     const productUrlBase =
       account.fbProductUrlBase ?? FACEBOOK_CONSTANTS.PRODUCT_URL_BASE;
 

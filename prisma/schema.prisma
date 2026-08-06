@@ -134,10 +134,6 @@ model Product {
   magaluCategoryId       String?
   magaluCategorySource   String?
   magaluCategoryChosenAt DateTime?
-  // Categoria OLX (id da árvore de categorias autoupload) e Facebook/Meta
-  // (google_product_category ou string da taxonomia do catálogo).
-  olxCategoryId          String?
-  fbCategory             String?
   locationId             String?
   scrapId                String?
   attributes             Json?

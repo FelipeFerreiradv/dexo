@@ -24,6 +24,7 @@ import { OLX_CONSTANTS } from "../olx/olx-constants";
 import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
 import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
+import { FACEBOOK_CONSTANTS } from "../facebook/facebook-constants";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -3732,14 +3733,16 @@ export class SyncUseCase {
           throw this.olxRespError(resp);
         }
         await ListingRepository.updateStatus(listing.id, "paused");
-      } else if (listing.status === "active") {
+      } else if (listing.status === "active" || listing.status === "pending") {
         // No-op: a OLX não tem API de estoque per-SKU e republicar reenviaria o
         // anúncio inteiro (podendo zerar preço/foto). Só republica se saiu do ar.
+        // "pending" é o estado normal logo após publicar (fila de revisão da
+        // OLX) — sem isto, todo "Sincronizar estoque" republicaria o pendente.
         await this.logSync(
           account.id,
           SyncType.STOCK_UPDATE,
           SyncStatus.SUCCESS,
-          `Estoque do produto ${product.name} já disponível na OLX (anúncio ativo, sem republicar)`,
+          `Estoque do produto ${product.name} já disponível na OLX (anúncio ${listing.status}, sem republicar)`,
           {
             productId: product.id,
             externalListingId: listing.externalListingId,
@@ -3848,6 +3851,8 @@ export class SyncUseCase {
         }
         // A OLX processa o import de forma assíncrona (200 + token): só marca
         // "active" quando o poll confirma.
+        let olxListId: string | null = null;
+        let permalink: string | null = null;
         if (resp.token) {
           const status = await OlxApiService.pollImportUntilDone(
             account.accessToken,
@@ -3861,8 +3866,17 @@ export class SyncUseCase {
               statusMessage: `OLX recusou o anúncio ao republicar: ${msg}`,
             });
           }
+          // Repopula o list_id/url REAIS: a OLX só os devolve quando aceita, e o
+          // republish antes descartava esse `entry`. Grava só quando presente
+          // (poll inconclusivo devolve null e não deve zerar o já capturado).
+          olxListId = entry?.list_id ?? null;
+          permalink = entry?.url ?? null;
         }
-        await ListingRepository.updateStatus(listing.id, "active");
+        await ListingRepository.updateListing(listing.id, {
+          status: "active",
+          ...(olxListId ? { olxListId } : {}),
+          ...(permalink ? { permalink } : {}),
+        });
       }
 
       await this.logSync(
@@ -3976,6 +3990,22 @@ export class SyncUseCase {
           ad,
         ]);
         if (resp.statusCode !== 0) throw this.olxRespError(resp);
+        // Import assíncrono (200 + token): confirma no poll antes de gravar
+        // SUCCESS — senão marca sucesso p/ um anúncio que a OLX vai recusar.
+        if (resp.token) {
+          const status = await OlxApiService.pollImportUntilDone(
+            account.accessToken,
+            resp.token,
+          );
+          const entry = status?.ads?.[ad.id];
+          if (entry?.status === "refused") {
+            const msg = (entry.message || []).join("; ") || "REFUSED_GENERIC";
+            throw this.olxRespError({
+              statusCode: -1,
+              statusMessage: `OLX recusou o anúncio ao sincronizar: ${msg}`,
+            });
+          }
+        }
       }
       result.success = true;
       result.newStock = targetStock;
@@ -4057,9 +4087,18 @@ export class SyncUseCase {
     }
 
     const targetStock = Number(product.stock) || 0;
-    // Catálogo por conta (env só fallback via FacebookApiService) p/ não escrever
-    // no catálogo global do .env de outro tenant.
-    const catalogId = account.fbCatalogId ?? undefined;
+    // Catálogo por conta: bloqueia quando ausente (sem fallback p/ o global do
+    // .env) — dois tenants sem fbCatalogId se sobrescreveriam no mesmo catálogo.
+    if (!account.fbCatalogId) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).",
+      };
+    }
+    const catalogId = account.fbCatalogId;
 
     try {
       if (targetStock <= 0) {
@@ -4153,6 +4192,15 @@ export class SyncUseCase {
       return result;
     }
 
+    // Catálogo por conta: sem ele o retailer_id=SKU cairia no catálogo global do
+    // .env e dois tenants se sobrescreveriam. Bloqueia em vez de usar fallback.
+    if (!account.fbCatalogId) {
+      result.error =
+        "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).";
+      return result;
+    }
+    const catalogId = account.fbCatalogId;
+
     try {
       const targetStock = Number(product.stock) || 0;
       const data = FacebookPayloadBuilderService.build(product, {
@@ -4160,12 +4208,23 @@ export class SyncUseCase {
           FacebookCategoryResolutionService.resolveCategory(product),
         availability: targetStock > 0 ? "in stock" : "out of stock",
         quantity: targetStock,
+        // URL da página do vendedor por conta (env só fallback): sem isto o
+        // `link` do item seria reescrito com a URL global de outro tenant.
+        productUrlBase:
+          account.fbProductUrlBase ?? FACEBOOK_CONSTANTS.PRODUCT_URL_BASE,
       });
-      await FacebookApiService.upsertItem(
+      const resp = await FacebookApiService.upsertItem(
         account.accessToken,
         externalListingId,
         data,
-        { catalogId: account.fbCatalogId ?? undefined },
+        { catalogId },
+      );
+      // A Meta devolve 200 + handles mesmo rejeitando o item (async): confirma
+      // no poll antes de gravar SUCCESS (senão marca sucesso p/ item recusado).
+      await this.confirmFacebookBatchOrThrow(
+        account.accessToken,
+        resp,
+        catalogId,
       );
       result.success = true;
       result.newStock = targetStock;
@@ -4537,10 +4596,6 @@ export class SyncUseCase {
                     imageUrl: true,
                     imageUrls: true,
                     quality: true,
-                    // Sem isto a republicação resolvia a categoria default
-                    // (2101 carros) ignorando a categoria explícita do produto
-                    // (ex.: 2103 motos), trocando parts_name_motos por _cars.
-                    olxCategoryId: true,
                   }
                 : { id: true, sku: true, stock: true, name: true },
           },

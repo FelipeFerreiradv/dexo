@@ -94,6 +94,53 @@ describe("Facebook multi-tenant — mesmo SKU, catálogos distintos", () => {
   });
 });
 
+describe("Facebook remove — DELETE endereçado ao catálogo da conta", () => {
+  const listing = {
+    id: "listing-fb-1",
+    externalListingId: SKU,
+    marketplaceAccountId: "acc-fb-a",
+  } as any;
+
+  it("desvincular usa o catálogo da CONTA (não o global do .env)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    vi.spyOn(ListingRepository, "deleteListing").mockResolvedValue({} as any);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-fb-a",
+      accessToken: "tok-a",
+      fbCatalogId: "catalog-a",
+    } as any);
+    const deleteItem = vi
+      .spyOn(FacebookApiService, "deleteItem")
+      .mockResolvedValue({ handles: [] } as any);
+
+    const res = await ListingUseCase.removeFacebookListing("listing-fb-1");
+
+    expect(res.success).toBe(true);
+    // Crítico: sem o catalogId da conta, o DELETE (retailer_id=SKU) apagaria o
+    // item de OUTRO tenant que tivesse o mesmo SKU no catálogo global.
+    expect(deleteItem).toHaveBeenCalledWith("tok-a", SKU, {
+      catalogId: "catalog-a",
+    });
+  });
+
+  it("conta sem fbCatalogId ⇒ bloqueia (não chama deleteItem)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-fb-a",
+      accessToken: "tok-a",
+      fbCatalogId: null,
+    } as any);
+    const deleteItem = vi
+      .spyOn(FacebookApiService, "deleteItem")
+      .mockResolvedValue({ handles: [] } as any);
+
+    const res = await ListingUseCase.removeFacebookListing("listing-fb-1");
+
+    expect(res.success).toBe(false);
+    expect(deleteItem).not.toHaveBeenCalled();
+  });
+});
+
 describe("Facebook pause — falha em item rejeitado no batch", () => {
   it("pause com item rejeitado no poll ⇒ falha e NÃO grava 'paused'", async () => {
     const listing = {

@@ -6,6 +6,12 @@ const BACKOFF_SECONDS = [30, 60, 120, 300, 900, 1800];
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
 const BATCH_LIMIT = 100;
 
+// Kill-switch ligado (OLX/FACEBOOK_INTEGRATION_DISABLED=1): reagenda o job p/
+// mais tarde SEM consumir tentativa. Não é sucesso (não pode apagar o job, senão
+// a baixa some e vira oversell) nem falha (não pode queimar as 6 tentativas e
+// marcar FAILED enquanto o operador só desligou temporariamente).
+const DISABLED_DEFER_SECONDS = 1800;
+
 const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
@@ -127,6 +133,13 @@ export class StockSyncRetryService {
           await this.handleFailure(job, "Sem resultado da sincronização");
           continue;
         }
+        // Integração desligada: o sync devolve success:true + skipped (nenhuma
+        // chamada saiu). NÃO apagar o job — a baixa precisa reprocessar quando o
+        // operador religar. Reagenda sem consumir tentativa (evita oversell).
+        if (r.skipped && r.skipReason === "integration_disabled") {
+          await this.deferJob(job);
+          continue;
+        }
         if (r.success) {
           // deleteMany é idempotente: não lança P2025 se outro tick já removeu o job.
           await (prisma as any).stockSyncJob.deleteMany({
@@ -137,6 +150,25 @@ export class StockSyncRetryService {
         }
       }
     }
+  }
+
+  /**
+   * Reagenda um job cuja plataforma está com o kill-switch ligado: empurra o
+   * nextRunAt e mantém `attempts` intacto (o adiamento não é uma tentativa
+   * falha). O job sobrevive até o operador religar a integração.
+   */
+  private static async deferJob(job: {
+    id: string;
+    listingId: string;
+  }): Promise<void> {
+    const nextRunAt = new Date(Date.now() + DISABLED_DEFER_SECONDS * 1000);
+    await (prisma as any).stockSyncJob.updateMany({
+      where: { id: job.id },
+      data: {
+        nextRunAt,
+        lastError: "integration_disabled: reagendado (kill-switch ligado)",
+      },
+    });
   }
 
   private static async handleFailure(

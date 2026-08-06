@@ -388,6 +388,13 @@ export class MarketplaceUseCase {
         throw new Error(`Conta ${platform} nÃ£o encontrada`);
       }
 
+      // Confere a plataforma: sem isto, DELETE /marketplace/olx?accountId=<id de
+      // conta ML> encontraria a conta ML (mesmo usuário) e a apagaria, devolvendo
+      // "OLX desconectada". O accountId da query precisa ser da plataforma da rota.
+      if (account.platform !== platform) {
+        throw new Error(`Conta ${platform} nÃ£o encontrada`);
+      }
+
       await MarketplaceRepository.deleteAccount(account.id);
 
       // Se restarem outras contas ativas do mesmo usuário/plataforma, manter estado conectado

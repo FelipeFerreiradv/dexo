@@ -5,6 +5,7 @@ vi.mock("@/app/lib/prisma", () => ({
     stockSyncJob: {
       findMany: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       delete: vi.fn(),
       deleteMany: vi.fn(),
     },
@@ -175,6 +176,34 @@ describe("StockSyncRetryService.runOnce", () => {
     expect(SyncUseCase.syncProductStock).toHaveBeenCalledTimes(2);
     expect(SyncUseCase.syncProductStock).toHaveBeenCalledWith("prod-1");
     expect(SyncUseCase.syncProductStock).toHaveBeenCalledWith("prod-2");
+  });
+
+  it("kill-switch (integration_disabled): reagenda sem apagar nem consumir tentativa", async () => {
+    (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
+    (prisma as any).productListing.findMany.mockResolvedValue([
+      { id: "lst-1", externalListingId: "ext-lst-1" },
+    ]);
+    (SyncUseCase.syncProductStock as any).mockResolvedValue([
+      {
+        success: true,
+        productId: "prod-1",
+        externalListingId: "ext-lst-1",
+        platform: "OLX",
+        skipped: true,
+        skipReason: "integration_disabled",
+      },
+    ]);
+
+    await StockSyncRetryService.runOnce();
+
+    // Não apaga o job (senão a baixa da peça vendida some e vira oversell ao
+    // religar) nem consome tentativa: só empurra o nextRunAt via updateMany.
+    expect((prisma as any).stockSyncJob.deleteMany).not.toHaveBeenCalled();
+    expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
+    const call = (prisma as any).stockSyncJob.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ id: "job-1" });
+    expect(call.data.attempts).toBeUndefined();
+    expect(call.data.nextRunAt).toBeInstanceOf(Date);
   });
 
   it("retorna cedo quando não há jobs pendentes", async () => {

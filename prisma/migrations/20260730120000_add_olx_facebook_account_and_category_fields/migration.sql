@@ -8,11 +8,6 @@ ALTER TABLE "ProductListing"
   ADD COLUMN IF NOT EXISTS "olxCategoryOverride" TEXT,
   ADD COLUMN IF NOT EXISTS "fbCategoryOverride" TEXT;
 
--- Categoria por produto — Product
-ALTER TABLE "Product"
-  ADD COLUMN IF NOT EXISTS "olxCategoryId" TEXT,
-  ADD COLUMN IF NOT EXISTS "fbCategory" TEXT;
-
 -- Dados de vendedor POR CONTA (antes eram env global — furo de multi-tenant).
 -- NULL = usa o .env como fallback, então não muda nada para contas existentes.
 ALTER TABLE "MarketplaceAccount"

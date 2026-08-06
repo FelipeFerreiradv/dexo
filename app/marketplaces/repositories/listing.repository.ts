@@ -126,7 +126,9 @@ export class ListingRepository {
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
         retryAttempts: data.retryAttempts ?? undefined,
-        olxListId: data.olxListId === undefined ? undefined : data.olxListId,
+        // Não sobrescreve o list_id já capturado quando o novo valor é null
+        // (poll inconclusivo devolve null): só grava quando há valor real.
+        olxListId: data.olxListId == null ? undefined : data.olxListId,
       },
     });
   }
@@ -670,6 +672,8 @@ export class ListingRepository {
       externalSku?: string;
       permalink?: string | null;
       status?: string;
+      // OLX: id REAL do anúncio (list_id), repopulado na republicação.
+      olxListId?: string | null;
       // retry metadata updates
       retryAttempts?: number;
       nextRetryAt?: Date | null;
@@ -722,6 +726,8 @@ export class ListingRepository {
         externalSku: data.externalSku || undefined,
         permalink: data.permalink === undefined ? undefined : data.permalink,
         status: data.status || undefined,
+        // Não zera o list_id já gravado quando o novo valor é null.
+        olxListId: data.olxListId == null ? undefined : data.olxListId,
         retryAttempts: data.retryAttempts ?? undefined,
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,

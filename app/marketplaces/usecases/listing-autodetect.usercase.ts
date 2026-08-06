@@ -520,7 +520,29 @@ export class ListingAutodetectUseCase {
   }
 
   private static coercePrice(value: unknown): number {
-    const n = typeof value === "number" ? value : Number(value);
+    if (typeof value === "number") {
+      return Number.isFinite(value) && value >= 0 ? value : 0;
+    }
+    // A Meta devolve o preço como string "199.90 BRL" (valor + código de moeda):
+    // Number("199.90 BRL") = NaN, o que zerava TODO produto importado do catálogo.
+    // Extrai o número e normaliza o separador decimal (pt-BR "1.199,90" ou en).
+    if (typeof value === "string") {
+      const match = value.match(/-?\d[\d.,]*/);
+      if (!match) return 0;
+      let s = match[0];
+      if (s.includes(",") && s.includes(".")) {
+        // O separador decimal é o último a aparecer; o outro é de milhar.
+        s =
+          s.lastIndexOf(",") > s.lastIndexOf(".")
+            ? s.replace(/\./g, "").replace(",", ".")
+            : s.replace(/,/g, "");
+      } else if (s.includes(",")) {
+        s = s.replace(",", ".");
+      }
+      const n = Number(s);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+    const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? n : 0;
   }
 

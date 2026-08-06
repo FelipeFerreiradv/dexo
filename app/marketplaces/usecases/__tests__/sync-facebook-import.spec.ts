@@ -123,6 +123,32 @@ describe("SyncUseCase.importFacebookItems — vínculo por SKU", () => {
     expect(result.linkedItems).toBe(1);
   });
 
+  it("preço '199.90 BRL' do catálogo Meta é parseado (não vira R$ 0)", async () => {
+    // A Meta devolve price como "valor MOEDA": Number("199.90 BRL") = NaN, o que
+    // fazia todo produto importado nascer com preço R$ 0.
+    (FacebookApiService.listCatalogItems as any).mockResolvedValue([
+      {
+        id: "9003",
+        retailer_id: "SKU3",
+        name: "Farol",
+        availability: "in stock",
+        price: "199.90 BRL",
+      },
+    ]);
+    (prisma as any).productListing.findMany.mockResolvedValue([]);
+    (prisma as any).product.findMany.mockResolvedValue([]);
+    (
+      ListingAutodetectUseCase.upsertProductFromMarketplaceItem as any
+    ).mockResolvedValue({ action: "created_product", productId: "prod-new" });
+
+    await SyncUseCase.importFacebookItems("user-1", "acc-fb");
+
+    const arg = (
+      ListingAutodetectUseCase.upsertProductFromMarketplaceItem as any
+    ).mock.calls[0][0];
+    expect(arg.price).toBe(199.9);
+  });
+
   it("catálogo vazio → resultado zerado, sem tocar o núcleo", async () => {
     (FacebookApiService.listCatalogItems as any).mockResolvedValue([]);
 

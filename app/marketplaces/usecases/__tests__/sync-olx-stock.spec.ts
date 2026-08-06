@@ -24,7 +24,10 @@ vi.mock("../../services/olx-api.service", () => ({
 }));
 
 vi.mock("../../repositories/listing.repository", () => ({
-  ListingRepository: { updateStatus: vi.fn().mockResolvedValue({}) },
+  ListingRepository: {
+    updateStatus: vi.fn().mockResolvedValue({}),
+    updateListing: vi.fn().mockResolvedValue({}),
+  },
 }));
 
 import prisma from "@/app/lib/prisma";
@@ -73,6 +76,7 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
     });
     (OlxApiService.pollImportUntilDone as any).mockResolvedValue(null);
     (ListingRepository.updateStatus as any).mockResolvedValue({});
+    (ListingRepository.updateListing as any).mockResolvedValue({});
     (prisma as any).syncLog.create.mockResolvedValue({});
   });
 
@@ -102,10 +106,31 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
     expect(adList[0].operation).toBe("insert");
     expect(adList[0].id).toBe("SKU1"); // mesmo id (idempotência da edição)
     expect(OlxApiService.deleteAd).not.toHaveBeenCalled();
-    expect(ListingRepository.updateStatus).toHaveBeenCalledWith(
-      "listing-1",
-      "active",
-    );
+    // Poll null (nada aceito ainda) ⇒ persiste só o status, sem tocar
+    // olxListId/permalink (o spread os omite p/ não zerar o já capturado).
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith("listing-1", {
+      status: "active",
+    });
+    expect(results[0].success).toBe(true);
+  });
+
+  it("estoque > 0 FORA do ar + poll aceito → repopula olxListId/permalink REAIS", async () => {
+    (prisma as any).product.findUnique.mockResolvedValue(productWith(5));
+    // Poll devolve o anúncio aceito com o list_id/url reais.
+    (OlxApiService.pollImportUntilDone as any).mockResolvedValue({
+      autoupload_status: "done",
+      ads: {
+        SKU1: { status: "accepted", operation: "insert", list_id: "999", url: "https://olx/999" },
+      },
+    });
+
+    const results = await SyncUseCase.syncProductStock("prod-1");
+
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith("listing-1", {
+      status: "active",
+      olxListId: "999",
+      permalink: "https://olx/999",
+    });
     expect(results[0].success).toBe(true);
   });
 
@@ -114,6 +139,21 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
     // preço/foto/qualidade. Agora estoque>0 + ativo = nada a fazer.
     (prisma as any).product.findUnique.mockResolvedValue(
       productWith(5, "active"),
+    );
+
+    const results = await SyncUseCase.syncProductStock("prod-1");
+
+    expect(OlxApiService.submitImport).not.toHaveBeenCalled();
+    expect(OlxApiService.deleteAd).not.toHaveBeenCalled();
+    expect(results[0].success).toBe(true);
+    expect((results[0] as any).skipped).toBe(true);
+  });
+
+  it("estoque > 0 e anúncio PENDING → NO-OP (recém-publicado, não republica)", async () => {
+    // Anúncio nasce "pending" (fila de revisão da OLX). Sem tratar pending como
+    // no-op, todo "Sincronizar estoque" republicaria o anúncio inteiro.
+    (prisma as any).product.findUnique.mockResolvedValue(
+      productWith(5, "pending"),
     );
 
     const results = await SyncUseCase.syncProductStock("prod-1");
