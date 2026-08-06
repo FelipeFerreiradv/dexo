@@ -87,12 +87,59 @@ interface Flags {
   fixPlaceholders: boolean;
   allowTokenRefresh: boolean;
   maxWrites: number;
+  /** Teto de produtos varridos no --deep-scan. 0 = sem teto. */
+  limit: number;
   concurrency: number;
   delayMs: number;
   csv: string | null;
 }
 
+/** Toda flag que o script entende. Qualquer outra ABORTA a execução. */
+const FLAGS_CONHECIDAS = [
+  "user-id",
+  "email",
+  "sku",
+  "deep-scan",
+  "apply",
+  "dry-run",
+  "close-orphans",
+  "close-live-orphans",
+  "fix-placeholders",
+  "allow-token-refresh",
+  "max-writes",
+  "limit",
+  "concurrency",
+  "delay-ms",
+  "csv",
+] as const;
+
 function parseFlags(argv: string[]): Flags {
+  // Caracteres de controle colados no argumento: acontece de verdade ao copiar
+  // comando do chat/navegador para o PowerShell. Um `--deep-scan\x02` não casa
+  // com `--deep-scan` e a varredura era PULADA EM SILÊNCIO — o relatório saía
+  // "limpo" sem ter olhado o Mercado Livre, que é onde mora o caso mais comum.
+  // Aconteceu em produção, em três contas seguidas.
+  const CONTROLE = new RegExp("[\u0000-\u001F\u007F]", "g");
+  argv = argv.map((a) => a.replace(CONTROLE, ""));
+
+  // Flag desconhecida ABORTA. Ignorar em silêncio é pior do que parecer
+  // chato: uma `--apply` com typo falha para o lado seguro, mas uma
+  // `--deep-scan` com typo dá falsa confiança de que a conta está limpa.
+  const desconhecidas = argv.filter(
+    (a) =>
+      a.startsWith("--") &&
+      !FLAGS_CONHECIDAS.some(
+        (f) => a === `--${f}` || a.startsWith(`--${f}=`),
+      ),
+  );
+  if (desconhecidas.length > 0) {
+    console.error(
+      `[abortado] flag(s) que eu nao conheco: ${desconhecidas.join(", ")}\n` +
+        `           Flags validas: ${FLAGS_CONHECIDAS.map((f) => `--${f}`).join(", ")}`,
+    );
+    process.exit(1);
+  }
+
   const valor = (nome: string): string | null => {
     const prefixo = `--${nome}=`;
     const achado = argv.find((a) => a.startsWith(prefixo));
@@ -124,6 +171,7 @@ function parseFlags(argv: string[]): Flags {
     fixPlaceholders: tem("fix-placeholders"),
     allowTokenRefresh: tem("allow-token-refresh"),
     maxWrites: num("max-writes", 50),
+    limit: num("limit", 0),
     concurrency: num("concurrency", 4),
     delayMs: num("delay-ms", 150),
     csv: valor("csv"),
@@ -495,27 +543,106 @@ async function fecharOrfao(
  * e o apply, ABORTA. Zerar o estoque de um anúncio vivo tiraria uma peça real
  * de venda.
  */
+const ML = "https://api.mercadolibre.com";
+
+async function upStock(
+  token: string,
+  upId: string,
+): Promise<{ locations?: Array<{ type: string; quantity: number }> } | null> {
+  const r = await fetch(`${ML}/user-products/${upId}/stock`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return r.ok ? ((await r.json()) as never) : null;
+}
+
+const somaUp = (s: { locations?: Array<{ quantity: number }> } | null): number =>
+  (s?.locations ?? []).reduce((a, l) => a + Number(l.quantity ?? 0), 0);
+
+/**
+ * Zera o estoque fantasma de um anúncio ENCERRADO.
+ *
+ * O `PUT /items/{id} {available_quantity}` NÃO serve aqui: em item encerrado o
+ * ML responde 400 `field_not_updatable` — "Cannot update item MLB… [status:
+ * closed]". Medido em produção nos três casos da Mesquita.
+ *
+ * O estoque de item User Product mora no `user_product`, não no anúncio: o
+ * `available_quantity` do item é reflexo. É o `user_product` do anúncio antigo,
+ * ainda com quantidade, que faz o painel somar no agrupamento da família.
+ *
+ * GUARDA ESSENCIAL: só zera quando o `user_product` do encerrado NÃO é
+ * compartilhado por nenhum outro item vivo do grupo. Se fosse, zerar tiraria a
+ * peça real da vitrine. Na republicação eles são distintos (medido:
+ * MLBU4546798761 vs MLBU4546804381), mas a guarda não pode depender disso.
+ */
 async function zerarEstoqueOrfao(
   token: string,
-  itemId: string,
+  item: ItemMl,
+  grupo: ItemMl[],
 ): Promise<{ ok: boolean; detalhe: string }> {
   try {
-    const antes = await MLApiService.getItemDetails(token, itemId);
-    const st = String(antes?.status ?? "");
-    if (st !== "closed" && st !== "inactive") {
+    const atual = await MLApiService.getItemDetails(token, item.id);
+    const st = String(atual?.status ?? "");
+    if (st !== "closed") {
       return {
         ok: false,
         detalhe: `ABORTADO: o anuncio esta ${st}, nao encerrado — nada foi alterado`,
       };
     }
-    if (Number(antes?.available_quantity ?? 0) === 0) {
-      return { ok: true, detalhe: "ja estava com estoque 0" };
+
+    const up = String(
+      (atual as { user_product_id?: string }).user_product_id ??
+        item.user_product_id ??
+        "",
+    );
+    if (!up) {
+      return { ok: false, detalhe: "item sem user_product_id — nada a fazer" };
     }
 
-    await MLApiService.updateItem(token, itemId, { available_quantity: 0 });
-    const depois = await MLApiService.getItemDetails(token, itemId);
-    const qty = Number(depois?.available_quantity ?? -1);
-    return { ok: qty === 0, detalhe: `qty=${qty}` };
+    const compartilhado = grupo.some(
+      (o) =>
+        o.id !== item.id &&
+        o.user_product_id === up &&
+        (o.status === "active" || o.status === "paused"),
+    );
+    if (compartilhado) {
+      return {
+        ok: false,
+        detalhe: `ABORTADO: o user_product ${up} e compartilhado com um anuncio VIVO do grupo — zerar tiraria a peca da vitrine`,
+      };
+    }
+
+    const antes = await upStock(token, up);
+    if (antes === null) {
+      return { ok: false, detalhe: `nao consegui ler /user-products/${up}/stock` };
+    }
+    if (somaUp(antes) === 0) {
+      return { ok: true, detalhe: "user_product ja estava com estoque 0" };
+    }
+
+    const r = await fetch(`${ML}/user-products/${up}/stock`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        locations: (antes.locations ?? []).map((l) => ({
+          type: l.type,
+          quantity: 0,
+        })),
+      }),
+    });
+    const corpo = (await r.text()).slice(0, 300);
+    if (!r.ok) {
+      return { ok: false, detalhe: `HTTP ${r.status} — ${corpo}` };
+    }
+
+    const depois = await upStock(token, up);
+    const soma = somaUp(depois);
+    return {
+      ok: soma === 0,
+      detalhe: `user_product ${up}: ${somaUp(antes)} -> ${soma}`,
+    };
   } catch (err) {
     return {
       ok: false,
@@ -680,13 +807,22 @@ async function main(): Promise<void> {
          FROM "ProductListing" pl JOIN "Product" p ON p.id = pl."productId"
          WHERE pl."marketplaceAccountId" = $1
            AND ($2::text IS NULL OR p.sku = $2::text)
-         ORDER BY p.sku`,
+         ORDER BY p.sku
+         ${flags.limit > 0 ? `LIMIT ${flags.limit}` : ""}`,
         conta.id,
         flags.sku,
       );
       console.log(
-        `  [${conta.accountName}] ${produtos.length} produtos com anuncio nesta conta`,
+        `  [${conta.accountName}] ${produtos.length} produtos com anuncio nesta conta` +
+          (flags.limit > 0 ? ` (teto de --limit=${flags.limit})` : ""),
       );
+      // Uma busca no ML por produto. Numa conta grande isso é caro: avisa antes
+      // em vez de o operador descobrir pelo relógio.
+      if (flags.limit === 0 && produtos.length > 2000) {
+        console.warn(
+          `    [aviso] ${produtos.length} buscas no ML nesta conta, ~${Math.ceil((produtos.length / Math.max(1, flags.concurrency)) * 0.6)}s. Use --limit para uma amostra.`,
+        );
+      }
 
       for (let i = 0; i < produtos.length; i += flags.concurrency) {
         const lote = produtos.slice(i, i + flags.concurrency);
@@ -799,14 +935,43 @@ async function main(): Promise<void> {
               return false;
             };
 
-            if (flags.apply && flags.closeOrphans) {
+            if (flags.apply && flags.closeOrphans && aZerar.length > 0) {
+              // Estado do anúncio que deve sobreviver, ANTES de qualquer
+              // escrita — para provar que ele não foi afetado.
+              const vivo = itens.find(
+                (it) => vereditos.get(it.id) === "VIVO_RECOMENDADO",
+              );
+              const vivoAntes = vivo
+                ? await MLApiService.getItemDetails(token, vivo.id)
+                : null;
+
               for (const o of aZerar) {
                 if (!semTeto()) return;
                 escritas++;
-                const r = await zerarEstoqueOrfao(token, o.id);
+                const r = await zerarEstoqueOrfao(token, o, itens);
                 console.log(
                   `    [apply] ${o.id} -> ${r.ok ? `estoque zerado (${r.detalhe})` : `NAO APLICADO (${r.detalhe})`}`,
                 );
+              }
+
+              if (vivo && vivoAntes) {
+                const vivoDepois = await MLApiService.getItemDetails(
+                  token,
+                  vivo.id,
+                );
+                const intacto =
+                  vivoDepois?.status === vivoAntes.status &&
+                  Number(vivoDepois?.available_quantity) ===
+                    Number(vivoAntes.available_quantity);
+                console.log(
+                  `    [apply] anuncio vivo ${vivo.id}: ${intacto ? "INTACTO" : "MUDOU — VERIFIQUE"} (${vivoDepois?.status}, qtd=${vivoDepois?.available_quantity})`,
+                );
+                if (!intacto) {
+                  console.error(
+                    `    [PARE] o anuncio vivo mudou depois da limpeza. Interrompendo esta conta.`,
+                  );
+                  return;
+                }
               }
             }
 
