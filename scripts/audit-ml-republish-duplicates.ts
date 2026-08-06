@@ -87,12 +87,59 @@ interface Flags {
   fixPlaceholders: boolean;
   allowTokenRefresh: boolean;
   maxWrites: number;
+  /** Teto de produtos varridos no --deep-scan. 0 = sem teto. */
+  limit: number;
   concurrency: number;
   delayMs: number;
   csv: string | null;
 }
 
+/** Toda flag que o script entende. Qualquer outra ABORTA a execução. */
+const FLAGS_CONHECIDAS = [
+  "user-id",
+  "email",
+  "sku",
+  "deep-scan",
+  "apply",
+  "dry-run",
+  "close-orphans",
+  "close-live-orphans",
+  "fix-placeholders",
+  "allow-token-refresh",
+  "max-writes",
+  "limit",
+  "concurrency",
+  "delay-ms",
+  "csv",
+] as const;
+
 function parseFlags(argv: string[]): Flags {
+  // Caracteres de controle colados no argumento: acontece de verdade ao copiar
+  // comando do chat/navegador para o PowerShell. Um `--deep-scan\x02` não casa
+  // com `--deep-scan` e a varredura era PULADA EM SILÊNCIO — o relatório saía
+  // "limpo" sem ter olhado o Mercado Livre, que é onde mora o caso mais comum.
+  // Aconteceu em produção, em três contas seguidas.
+  const CONTROLE = new RegExp("[\u0000-\u001F\u007F]", "g");
+  argv = argv.map((a) => a.replace(CONTROLE, ""));
+
+  // Flag desconhecida ABORTA. Ignorar em silêncio é pior do que parecer
+  // chato: uma `--apply` com typo falha para o lado seguro, mas uma
+  // `--deep-scan` com typo dá falsa confiança de que a conta está limpa.
+  const desconhecidas = argv.filter(
+    (a) =>
+      a.startsWith("--") &&
+      !FLAGS_CONHECIDAS.some(
+        (f) => a === `--${f}` || a.startsWith(`--${f}=`),
+      ),
+  );
+  if (desconhecidas.length > 0) {
+    console.error(
+      `[abortado] flag(s) que eu nao conheco: ${desconhecidas.join(", ")}\n` +
+        `           Flags validas: ${FLAGS_CONHECIDAS.map((f) => `--${f}`).join(", ")}`,
+    );
+    process.exit(1);
+  }
+
   const valor = (nome: string): string | null => {
     const prefixo = `--${nome}=`;
     const achado = argv.find((a) => a.startsWith(prefixo));
@@ -124,6 +171,7 @@ function parseFlags(argv: string[]): Flags {
     fixPlaceholders: tem("fix-placeholders"),
     allowTokenRefresh: tem("allow-token-refresh"),
     maxWrites: num("max-writes", 50),
+    limit: num("limit", 0),
     concurrency: num("concurrency", 4),
     delayMs: num("delay-ms", 150),
     csv: valor("csv"),
@@ -680,13 +728,22 @@ async function main(): Promise<void> {
          FROM "ProductListing" pl JOIN "Product" p ON p.id = pl."productId"
          WHERE pl."marketplaceAccountId" = $1
            AND ($2::text IS NULL OR p.sku = $2::text)
-         ORDER BY p.sku`,
+         ORDER BY p.sku
+         ${flags.limit > 0 ? `LIMIT ${flags.limit}` : ""}`,
         conta.id,
         flags.sku,
       );
       console.log(
-        `  [${conta.accountName}] ${produtos.length} produtos com anuncio nesta conta`,
+        `  [${conta.accountName}] ${produtos.length} produtos com anuncio nesta conta` +
+          (flags.limit > 0 ? ` (teto de --limit=${flags.limit})` : ""),
       );
+      // Uma busca no ML por produto. Numa conta grande isso é caro: avisa antes
+      // em vez de o operador descobrir pelo relógio.
+      if (flags.limit === 0 && produtos.length > 2000) {
+        console.warn(
+          `    [aviso] ${produtos.length} buscas no ML nesta conta, ~${Math.ceil((produtos.length / Math.max(1, flags.concurrency)) * 0.6)}s. Use --limit para uma amostra.`,
+        );
+      }
 
       for (let i = 0; i < produtos.length; i += flags.concurrency) {
         const lote = produtos.slice(i, i + flags.concurrency);
