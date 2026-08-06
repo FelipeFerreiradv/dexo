@@ -195,3 +195,49 @@ describe("pickActionableMLError — prioridade dentro da mesma tentativa", () =>
     ).toBeNull();
   });
 });
+
+/**
+ * Causa 402, medida no SKU 2791 em 06/08/2026.
+ *
+ * A raiz foi corrigida em `ml-oem-tags.logic.ts` (o payload deixou de enviar o
+ * valor repetido). Esta tradução cobre o resíduo: o dedup do OEM é EXATO, então
+ * "Teste, teste" sobrevive como duas tags e o Mercado Livre pode considerá-las
+ * iguais. Se acontecer, o operador precisa enxergar.
+ */
+const VALOR_DUPLICADO = {
+  department: "items",
+  cause_id: 402,
+  code: "item.attribute.values.name.duplicated",
+  message: "Attribute OEM has values with names: [original, usado] duplicated",
+};
+
+describe("describeMLCause — valor repetido na ficha técnica", () => {
+  it("diz qual campo repetiu e quais valores", () => {
+    const msg = describeMLCause(VALOR_DUPLICADO) ?? "";
+    expect(msg).toContain("Número da Peça (OEM)");
+    expect(msg).toContain("original, usado");
+    expect(msg).toContain("recrie o anúncio");
+  });
+
+  it("não vaza jargão da API", () => {
+    const msg = describeMLCause(VALOR_DUPLICADO) ?? "";
+    expect(msg).not.toContain("item.attribute.values");
+    expect(msg).not.toContain("duplicated");
+  });
+
+  it("degrada com segurança quando a mensagem tem outra forma", () => {
+    const msg = describeMLCause({
+      ...VALOR_DUPLICADO,
+      message: "values duplicated",
+    });
+    expect(msg).toBeTruthy();
+    expect(msg).toContain("ficha técnica");
+  });
+
+  it("não rouba o lugar de um campo obrigatório em branco", () => {
+    const msg = pickActionableMLError([
+      [VALOR_DUPLICADO, MEDIDAS_AUSENTES],
+    ]);
+    expect(msg).toContain("altura");
+  });
+});
