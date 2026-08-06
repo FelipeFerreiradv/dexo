@@ -21,8 +21,29 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  * antigo virava órfão: vivo no ML, sem nenhuma linha no Dexo.
  *
  * O que faz por padrão: SÓ LÊ. SELECTs no banco e GETs na API do ML.
- * O que só faz com `--apply` + sub-ação: zera o estoque e fecha os órfãos, e
- * reconcilia as linhas presas em placeholder.
+ *
+ * O que NUNCA faz, em nenhum modo:
+ *   - apagar produto do Dexo;
+ *   - apagar linha de ProductListing;
+ *   - tocar no anúncio classificado como VIVO_RECOMENDADO;
+ *   - tocar em grupo AMBIGUO (dois anúncios vivos com linha no banco).
+ *
+ * As ações de escrita são DUAS, separadas de propósito pelo risco:
+ *
+ *   --close-orphans       ORFAO_ZERAR: zera o estoque de anúncio que JÁ ESTÁ
+ *                         encerrado. É o resíduo típico da republicação e a
+ *                         origem do "Estoque: 2 un." no painel. Não encerra
+ *                         nada — o anúncio já estava fora do ar. SEGURO.
+ *
+ *   --close-live-orphans  ORFAO_FECHAR: encerra anúncio VIVO que não tem linha
+ *                         no Dexo. Provável resíduo de republicação que morreu
+ *                         no meio, MAS pode ser um anúncio que o vendedor
+ *                         publicou à mão, fora do Dexo. Encerrar um desses
+ *                         destrói trabalho do cliente. CONFIRA NO PAINEL DELE
+ *                         antes de usar este flag.
+ *
+ * Antes de escrever, cada ação RE-LÊ o item no ML: se o estado mudou desde o
+ * relatório (ex.: o anúncio voltou a ficar vivo), ela aborta sem alterar nada.
  *
  * Uso (SEMPRE via tsx direto — ver aviso abaixo):
  *
@@ -62,6 +83,7 @@ interface Flags {
   deepScan: boolean;
   apply: boolean;
   closeOrphans: boolean;
+  closeLiveOrphans: boolean;
   fixPlaceholders: boolean;
   allowTokenRefresh: boolean;
   maxWrites: number;
@@ -98,6 +120,7 @@ function parseFlags(argv: string[]): Flags {
     // Mesma regra do resto da casa: --dry-run VENCE --apply.
     apply: tem("apply") && !tem("dry-run"),
     closeOrphans: tem("close-orphans"),
+    closeLiveOrphans: tem("close-live-orphans"),
     fixPlaceholders: tem("fix-placeholders"),
     allowTokenRefresh: tem("allow-token-refresh"),
     maxWrites: num("max-writes", 50),
@@ -133,9 +156,9 @@ function assertEscopo(f: Flags): void {
     );
     process.exit(1);
   }
-  if (!f.closeOrphans && !f.fixPlaceholders) {
+  if (!f.closeOrphans && !f.closeLiveOrphans && !f.fixPlaceholders) {
     console.error(
-      "[abortado] --apply exige uma sub-acao: --close-orphans e/ou --fix-placeholders.",
+      "[abortado] --apply exige uma sub-acao: --close-orphans, --close-live-orphans e/ou --fix-placeholders.",
     );
     process.exit(1);
   }
@@ -150,6 +173,20 @@ const sleep = (ms: number): Promise<void> =>
 
 type Veredito =
   | "VIVO_RECOMENDADO"
+  /**
+   * Já encerrado no ML, mas com estoque sobrando — é o resíduo típico da
+   * republicação e a origem do "Estoque: 2 un." no painel. Corrigir é só zerar
+   * a quantidade: não encerra nada, não apaga nada, e o anúncio já estava
+   * fora do ar de qualquer forma. É o caso SEGURO.
+   */
+  | "ORFAO_ZERAR"
+  /**
+   * VIVO no ML e sem nenhuma linha no Dexo. Provavelmente resíduo de uma
+   * republicação que morreu antes de encerrar o antigo — mas pode TAMBÉM ser
+   * um anúncio que o próprio vendedor publicou à mão, fora do Dexo. Encerrar
+   * um desses seria destruir trabalho do cliente, então exige um flag
+   * separado e explícito (`--close-live-orphans`), nunca o `--close-orphans`.
+   */
   | "ORFAO_FECHAR"
   | "PLACEHOLDER_PRESO"
   | "AMBIGUO"
@@ -388,9 +425,15 @@ function classificar(
     }
     const encerrado = i.status === "closed" || i.status === "inactive";
     const semEstoque = Number(i.available_quantity ?? 0) === 0;
+
     if (encerrado && semEstoque) {
       vereditos.set(i.id, "OK");
+    } else if (encerrado) {
+      // Já fora do ar, só sobrou estoque somando no painel. Seguro.
+      vereditos.set(i.id, "ORFAO_ZERAR");
     } else {
+      // VIVO. Pode ser resíduo do bug, mas pode ser um anúncio publicado pelo
+      // próprio vendedor. Nunca encerrar sem o flag dedicado.
       vereditos.set(i.id, "ORFAO_FECHAR");
     }
   }
@@ -418,6 +461,46 @@ async function fecharOrfao(
     const qty = Number(depois?.available_quantity ?? -1);
     const ok = (st === "closed" || st === "inactive") && qty === 0;
     return { ok, detalhe: `status=${st} qty=${qty}` };
+  } catch (err) {
+    return {
+      ok: false,
+      detalhe: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Ação SEGURA: zera o estoque de um anúncio que JÁ ESTÁ encerrado.
+ *
+ * Não encerra nada e não apaga nada — o anúncio já estava fora do ar. O que
+ * some é só a quantidade fantasma que o painel do ML continuava somando no
+ * agrupamento da família.
+ *
+ * Re-lê o item antes de escrever: se ele voltou a ficar vivo entre o relatório
+ * e o apply, ABORTA. Zerar o estoque de um anúncio vivo tiraria uma peça real
+ * de venda.
+ */
+async function zerarEstoqueOrfao(
+  token: string,
+  itemId: string,
+): Promise<{ ok: boolean; detalhe: string }> {
+  try {
+    const antes = await MLApiService.getItemDetails(token, itemId);
+    const st = String(antes?.status ?? "");
+    if (st !== "closed" && st !== "inactive") {
+      return {
+        ok: false,
+        detalhe: `ABORTADO: o anuncio esta ${st}, nao encerrado — nada foi alterado`,
+      };
+    }
+    if (Number(antes?.available_quantity ?? 0) === 0) {
+      return { ok: true, detalhe: "ja estava com estoque 0" };
+    }
+
+    await MLApiService.updateItem(token, itemId, { available_quantity: 0 });
+    const depois = await MLApiService.getItemDetails(token, itemId);
+    const qty = Number(depois?.available_quantity ?? -1);
+    return { ok: qty === 0, detalhe: `qty=${qty}` };
   } catch (err) {
     return {
       ok: false,
@@ -464,7 +547,10 @@ async function main(): Promise<void> {
   if (flags.apply) {
     console.log(
       `[apply] sub-acoes: ${[
-        flags.closeOrphans ? "close-orphans" : null,
+        flags.closeOrphans ? "close-orphans (zera estoque de encerrado)" : null,
+        flags.closeLiveOrphans
+          ? "close-live-orphans (ENCERRA ANUNCIO VIVO)"
+          : null,
         flags.fixPlaceholders ? "fix-placeholders" : null,
       ]
         .filter(Boolean)
@@ -645,35 +731,62 @@ async function main(): Promise<void> {
                   linhas.find((l) => l.externalListingId === it.id)?.id ?? "",
                 veredito: v,
                 acaoSugerida:
-                  v === "ORFAO_FECHAR"
-                    ? "zerar estoque e fechar (--close-orphans)"
-                    : v === "AMBIGUO"
-                      ? "revisar manualmente — nunca tocado por --apply"
-                      : "",
+                  v === "ORFAO_ZERAR"
+                    ? "zerar o estoque do anuncio ja encerrado (--close-orphans)"
+                    : v === "ORFAO_FECHAR"
+                      ? "ANUNCIO VIVO sem linha no Dexo — CONFERIR antes; so encerra com --close-live-orphans"
+                      : v === "AMBIGUO"
+                        ? "revisar manualmente — nunca tocado por --apply"
+                        : "",
               });
             }
 
-            const orfaos = itens.filter(
+            const aZerar = itens.filter(
+              (it) => vereditos.get(it.id) === "ORFAO_ZERAR",
+            );
+            const vivosSemLinha = itens.filter(
               (it) => vereditos.get(it.id) === "ORFAO_FECHAR",
             );
-            if (orfaos.length > 0) {
+
+            const descreve = (l: ItemMl[]) =>
+              l
+                .map((o) => `${o.id}(${o.status}, qtd=${o.available_quantity})`)
+                .join(", ");
+
+            if (aZerar.length > 0) {
               console.log(
-                `    sku=${prod.sku} grupo=${groupKey}: ${orfaos.length} orfao(s) — ${orfaos
-                  .map(
-                    (o) => `${o.id}(${o.status}, qtd=${o.available_quantity})`,
-                  )
-                  .join(", ")}`,
+                `    sku=${prod.sku} grupo=${groupKey}: ${aZerar.length} encerrado(s) com estoque sobrando — ${descreve(aZerar)}`,
+              );
+            }
+            if (vivosSemLinha.length > 0) {
+              console.warn(
+                `    sku=${prod.sku} grupo=${groupKey}: ${vivosSemLinha.length} anuncio(s) VIVO(S) sem linha no Dexo — ${descreve(vivosSemLinha)}\n` +
+                  `      >>> CONFERIR NO PAINEL DO CLIENTE antes de encerrar. Pode ser anuncio publicado por ele, fora do Dexo.`,
               );
             }
 
+            const semTeto = (): boolean => {
+              if (escritas < flags.maxWrites) return true;
+              console.warn(
+                `    [teto] --max-writes=${flags.maxWrites} atingido; parando as escritas.`,
+              );
+              return false;
+            };
+
             if (flags.apply && flags.closeOrphans) {
-              for (const o of orfaos) {
-                if (escritas >= flags.maxWrites) {
-                  console.warn(
-                    `    [teto] --max-writes=${flags.maxWrites} atingido; parando as escritas.`,
-                  );
-                  return;
-                }
+              for (const o of aZerar) {
+                if (!semTeto()) return;
+                escritas++;
+                const r = await zerarEstoqueOrfao(token, o.id);
+                console.log(
+                  `    [apply] ${o.id} -> ${r.ok ? `estoque zerado (${r.detalhe})` : `NAO APLICADO (${r.detalhe})`}`,
+                );
+              }
+            }
+
+            if (flags.apply && flags.closeLiveOrphans) {
+              for (const o of vivosSemLinha) {
+                if (!semTeto()) return;
                 escritas++;
                 const r = await fecharOrfao(token, o.id);
                 console.log(
@@ -709,8 +822,11 @@ async function main(): Promise<void> {
 
   if (!flags.apply) {
     console.log(
-      "\nREAD-ONLY: nada foi alterado. Para aplicar, some --apply e uma sub-acao\n" +
-        "(--close-orphans / --fix-placeholders), sempre com --user-id ou --email.",
+      "\nREAD-ONLY: nada foi alterado.\n" +
+        "  Para zerar o estoque dos anuncios JA ENCERRADOS (seguro):\n" +
+        "    --apply --close-orphans --email=<cliente>\n" +
+        "  Para ENCERRAR anuncio VIVO sem linha no Dexo (confira no painel do cliente antes):\n" +
+        "    --apply --close-live-orphans --email=<cliente>",
     );
   }
 }
