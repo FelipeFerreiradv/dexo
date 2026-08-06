@@ -3101,8 +3101,13 @@ export class ListingUseCase {
       // semântica literal do `===`/`includes()` que estava inline, agora
       // insensível a acento e pontuação também. `desired_contains_remote` e
       // `empty_remote` continuam contando como divergência, como antes.
+      //
+      // Piso de contenção ZERO: o `includes()` que estava aqui inline nunca
+      // teve piso. Herdar o default (que existe para proteger a republicação,
+      // que é destrutiva) mudaria a decisão em 12 dos 220.737 anúncios ativos
+      // — pouco, mas não é zero, e a regra é zero regressão.
       const equivalentToDesired = (remote: string): boolean => {
-        const { reason } = compareMLTitles(desiredFamilyName, remote);
+        const { reason } = compareMLTitles(desiredFamilyName, remote, 0);
         return reason === "exact" || reason === "remote_contains_desired";
       };
 
