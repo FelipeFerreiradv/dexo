@@ -5392,7 +5392,18 @@ export class SyncUseCase {
         await withRetry(
           () =>
             MLApiService.updateItem(accessToken, oldExternalListingId, payload),
-          { classify: classifyMLRemoveError },
+          {
+            // UMA retentativa, não as 3 do default. Esta função roda dentro do
+            // `await` de ProductUseCase.update, ou seja, DENTRO da request HTTP
+            // do vendedor: o backoff padrão (500/2000/8000) somaria até 10,5s
+            // por PUT — 21s nos dois — a um caminho que antes não tinha retry
+            // nenhum. Um blip transitório fica coberto; o resto é problema
+            // persistente, e para esse o diagnóstico abaixo é a resposta certa,
+            // não segurar a request do usuário.
+            classify: classifyMLRemoveError,
+            retries: 1,
+            baseDelayMs: 500,
+          },
         );
         return null;
       } catch (err) {

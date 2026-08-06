@@ -119,6 +119,15 @@ describe("compareMLTitles", () => {
     expect(cmp.reason).toBe("different");
   });
 
+  it("piso 0 reproduz o includes() sem piso do caminho de criacao", () => {
+    // O caminho pós-criação passa 0 porque o `includes()` que ele tinha inline
+    // nunca teve piso — herdar o default mudaria a decisão em 12 dos 220.737
+    // anúncios ativos ("friso c4", "11609", "497 Preto"...).
+    const cmp = compareMLTitles("friso c4", "Friso C4 Preto Dianteiro", 0);
+    expect(cmp.equivalent).toBe(true);
+    expect(cmp.reason).toBe("remote_contains_desired");
+  });
+
   it("renomeação de verdade → different", () => {
     const cmp = compareMLTitles(
       "Farol Dianteiro Gol G5 2010",
