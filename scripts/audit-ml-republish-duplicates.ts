@@ -188,6 +188,13 @@ type Veredito =
    * separado e explícito (`--close-live-orphans`), nunca o `--close-orphans`.
    */
   | "ORFAO_FECHAR"
+  /**
+   * Não é órfão de republicação: anúncio em moderação (`under_review`,
+   * `reviewing`), despublicado (`unlist`), inativo, ou vivo mas COM linha no
+   * Dexo. Sai no relatório para conferência humana e NUNCA é tocado por
+   * `--apply`.
+   */
+  | "REVISAR"
   | "PLACEHOLDER_PRESO"
   | "AMBIGUO"
   | "OK";
@@ -423,18 +430,26 @@ function classificar(
       vereditos.set(i.id, "VIVO_RECOMENDADO");
       continue;
     }
-    const encerrado = i.status === "closed" || i.status === "inactive";
+    const st = String(i.status ?? "");
     const semEstoque = Number(i.available_quantity ?? 0) === 0;
 
-    if (encerrado && semEstoque) {
-      vereditos.set(i.id, "OK");
-    } else if (encerrado) {
-      // Já fora do ar, só sobrou estoque somando no painel. Seguro.
-      vereditos.set(i.id, "ORFAO_ZERAR");
-    } else {
-      // VIVO. Pode ser resíduo do bug, mas pode ser um anúncio publicado pelo
-      // próprio vendedor. Nunca encerrar sem o flag dedicado.
+    if (st === "closed") {
+      // `closed` é o ÚNICO estado terminal de verdade. `inactive`,
+      // `under_review`, `reviewing` e `unlist` são temporários — o item volta
+      // a vender. Zerar o estoque de um desses tiraria uma peça real de venda
+      // quando ele voltasse. Ver o vocabulário de "vivo" em
+      // ListingRepository.findLiveByProductAndAccount, que já decidiu isso.
+      vereditos.set(i.id, semEstoque ? "OK" : "ORFAO_ZERAR");
+    } else if ((st === "active" || st === "paused") && !idsComLinha.has(i.id)) {
+      // Vendendo AGORA e invisível para o Dexo: o único perfil que justifica
+      // encerrar. Ainda assim exige `--close-live-orphans` e conferência.
       vereditos.set(i.id, "ORFAO_FECHAR");
+    } else {
+      // Em moderação (`under_review`/`reviewing`), despublicado (`unlist`),
+      // inativo, ou vivo mas COM linha no Dexo. Nada disso é órfão de
+      // republicação, e mexer aqui destrói anúncio legítimo do cliente.
+      // Aparece no relatório, NUNCA é tocado por --apply.
+      vereditos.set(i.id, "REVISAR");
     }
   }
   return vereditos;
@@ -735,9 +750,11 @@ async function main(): Promise<void> {
                     ? "zerar o estoque do anuncio ja encerrado (--close-orphans)"
                     : v === "ORFAO_FECHAR"
                       ? "ANUNCIO VIVO sem linha no Dexo — CONFERIR antes; so encerra com --close-live-orphans"
-                      : v === "AMBIGUO"
-                        ? "revisar manualmente — nunca tocado por --apply"
-                        : "",
+                      : v === "REVISAR"
+                        ? `estado '${it.status}' — nao e orfao de republicacao; conferir a mao, nunca tocado por --apply`
+                        : v === "AMBIGUO"
+                          ? "revisar manualmente — nunca tocado por --apply"
+                          : "",
               });
             }
 
@@ -762,6 +779,15 @@ async function main(): Promise<void> {
               console.warn(
                 `    sku=${prod.sku} grupo=${groupKey}: ${vivosSemLinha.length} anuncio(s) VIVO(S) sem linha no Dexo — ${descreve(vivosSemLinha)}\n` +
                   `      >>> CONFERIR NO PAINEL DO CLIENTE antes de encerrar. Pode ser anuncio publicado por ele, fora do Dexo.`,
+              );
+            }
+
+            const revisar = itens.filter(
+              (it) => vereditos.get(it.id) === "REVISAR",
+            );
+            if (revisar.length > 0) {
+              console.log(
+                `    sku=${prod.sku} grupo=${groupKey}: ${revisar.length} para CONFERIR a mao (nao e orfao) — ${descreve(revisar)}`,
               );
             }
 
