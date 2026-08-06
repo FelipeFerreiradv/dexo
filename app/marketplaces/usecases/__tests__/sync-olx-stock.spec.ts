@@ -149,6 +149,22 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
     expect((results[0] as any).skipped).toBe(true);
   });
 
+  it("estoque 0 e anúncio JÁ paused → NO-OP (não re-executa deleteAd)", async () => {
+    // A baixa já foi refletida (paused). Sem o no-op, cada rodada de sync
+    // re-chamava deleteAd à toa.
+    (prisma as any).product.findUnique.mockResolvedValue(
+      productWith(0, "paused"),
+    );
+
+    const results = await SyncUseCase.syncProductStock("prod-1");
+
+    expect(OlxApiService.deleteAd).not.toHaveBeenCalled();
+    expect(OlxApiService.submitImport).not.toHaveBeenCalled();
+    expect(results[0].success).toBe(true);
+    expect((results[0] as any).skipped).toBe(true);
+    expect((results[0] as any).skipReason).toBe("olx_listing_already_paused");
+  });
+
   it("estoque > 0 e anúncio PENDING → NO-OP (recém-publicado, não republica)", async () => {
     // Anúncio nasce "pending" (fila de revisão da OLX). Sem tratar pending como
     // no-op, todo "Sincronizar estoque" republicaria o anúncio inteiro.

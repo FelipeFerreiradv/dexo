@@ -20,6 +20,8 @@
 //     no desvínculo real (removeFacebookListing).
 //   - Token vai no header Authorization: Bearer (Graph aceita), não no corpo.
 
+import { createHmac } from "crypto";
+
 export const FACEBOOK_CONSTANTS = {
   // Graph API (troca de token, /me, items_batch). Versão fixada por constante
   // (mesma do WhatsApp: v25.0). Override por env para bump sem redeploy.
@@ -97,6 +99,19 @@ export function facebookGraphBase(): string {
 /** Base do diálogo OAuth já com versão. */
 export function facebookDialogBase(): string {
   return `${FACEBOOK_CONSTANTS.DIALOG_BASE_URL}/${FACEBOOK_CONSTANTS.API_VERSION}`;
+}
+
+/**
+ * `appsecret_proof` = HMAC-SHA256(access_token) chaveado pelo APP_SECRET (hex).
+ * A Meta usa p/ provar que o chamador detém o app secret — sem ele, um token
+ * vazado é usável por qualquer um. Anexar a TODA chamada Graph com token de
+ * usuário. Retorna undefined se o APP_SECRET não estiver configurado (não quebra
+ * o boot; a chamada segue sem o proof, como antes).
+ */
+export function facebookAppSecretProof(accessToken: string): string | undefined {
+  const secret = FACEBOOK_CONSTANTS.APP_SECRET;
+  if (!secret || !accessToken) return undefined;
+  return createHmac("sha256", secret).update(accessToken).digest("hex");
 }
 
 /**

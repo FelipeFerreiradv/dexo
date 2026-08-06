@@ -3120,7 +3120,12 @@ small{color:#666}</style></head><body>
           userId,
           Platform.OLX,
         );
-        return reply.send({ accounts });
+        // Não devolve accessToken/refreshToken crus ao browser (na OLX o token
+        // não expira → vazamento é permanente). A UI só precisa dos metadados.
+        const safe = accounts.map(
+          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        );
+        return reply.send({ accounts: safe });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas",
@@ -3302,6 +3307,20 @@ small{color:#666}</style></head><body>
       try {
         const userId = request.user!.dataOwnerId;
         const { productId } = request.params as { productId: string };
+
+        // Posse: sem isto qualquer usuário autenticado sincronizaria o produto de
+        // outro (chamada outbound + vazamento de resultado). syncProductStock não
+        // escopa por usuário, então a validação é aqui.
+        const owned = await prisma.product.findFirst({
+          where: { id: productId, userId },
+          select: { id: true },
+        });
+        if (!owned) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+            message: "Produto não encontrado ou não pertence a este usuário.",
+          });
+        }
 
         const result = await SyncUseCase.syncProductStock(productId);
         const failed = result.filter((r) => !r.success);
@@ -3538,7 +3557,11 @@ small{color:#666}</style></head><body>
           userId,
           Platform.FACEBOOK,
         );
-        return reply.send({ accounts });
+        // Não devolve accessToken/refreshToken crus ao browser.
+        const safe = accounts.map(
+          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        );
+        return reply.send({ accounts: safe });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas",
@@ -3795,6 +3818,19 @@ small{color:#666}</style></head><body>
       try {
         const userId = request.user!.dataOwnerId;
         const { productId } = request.params as { productId: string };
+
+        // Posse: syncProductStock não escopa por usuário → valida aqui p/ não
+        // sincronizar produto de outro tenant.
+        const owned = await prisma.product.findFirst({
+          where: { id: productId, userId },
+          select: { id: true },
+        });
+        if (!owned) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+            message: "Produto não encontrado ou não pertence a este usuário.",
+          });
+        }
 
         const result = await SyncUseCase.syncProductStock(productId);
         const failed = result.filter((r) => !r.success);

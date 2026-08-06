@@ -15,6 +15,7 @@ import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.
 import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { isPlatformDisabled } from "../lib/integration-flags";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { OLX_CONSTANTS } from "../marketplaces/olx/olx-constants";
 import { ListingStatusRefreshService } from "../marketplaces/services/listing-status-refresh.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
@@ -1012,6 +1013,8 @@ export async function listingRoutes(app: FastifyInstance) {
         const userId = request.user!.dataOwnerId;
         const body = request.body as {
           shopeeAccountId?: string;
+          olxAccountId?: string;
+          facebookAccountId?: string;
           productIds?: string[];
           categoryOverrides?: Record<string, string>;
         };
@@ -1028,7 +1031,11 @@ export async function listingRoutes(app: FastifyInstance) {
 
         const issues: Array<{
           productId: string;
-          code: "shopee_category_missing" | "shopee_category_not_leaf";
+          code:
+            | "shopee_category_missing"
+            | "shopee_category_not_leaf"
+            | "price_invalid"
+            | "image_missing";
           message: string;
         }> = [];
 
@@ -1108,6 +1115,86 @@ export async function listingRoutes(app: FastifyInstance) {
                 productId: id,
                 code: "shopee_category_not_leaf",
                 message: msg,
+              });
+            }
+          }
+        }
+
+        // OLX/Facebook: valida a config da conta (uma falha aqui reprova TODO o
+        // lote) e a prontidão do produto (preço>0 + imagem — o build de ambos
+        // lança sem eles). Config da conta reprova via 400, como o Shopee.
+        if (body.facebookAccountId) {
+          const acc = await MarketplaceRepository.findByIdAndUser(
+            body.facebookAccountId,
+            userId,
+          );
+          if (!acc || !acc.accessToken) {
+            return reply.status(400).send({
+              error: "Conta Facebook inválida",
+              message:
+                "Conta Facebook não encontrada ou sem credenciais para preflight",
+            });
+          }
+          if (!acc.fbCatalogId) {
+            return reply.status(400).send({
+              error: "Conta Facebook sem catálogo",
+              message:
+                "Conta Facebook sem catálogo (fbCatalogId) configurado — a publicação é bloqueada. Configure o catálogo antes de publicar.",
+            });
+          }
+        }
+        if (body.olxAccountId) {
+          const acc = await MarketplaceRepository.findByIdAndUser(
+            body.olxAccountId,
+            userId,
+          );
+          if (!acc || !acc.accessToken) {
+            return reply.status(400).send({
+              error: "Conta OLX inválida",
+              message:
+                "Conta OLX não encontrada ou sem credenciais para preflight",
+            });
+          }
+          const phone = acc.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
+          const zipcode = acc.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+          if (!phone || !zipcode) {
+            return reply.status(400).send({
+              error: "Conta OLX sem dados do vendedor",
+              message:
+                "Conta OLX sem telefone/CEP do vendedor — a publicação é bloqueada. Preencha os dados do vendedor.",
+            });
+          }
+        }
+        if (body.olxAccountId || body.facebookAccountId) {
+          // Prontidão do produto (preço > 0 + ≥1 imagem): comum a OLX e FB.
+          const productRepo = new ProductRepositoryPrisma();
+          const rows = await productRepo.findBulkPublishReadiness(
+            body.productIds,
+            userId,
+          );
+          const byId = new Map(rows.map((r) => [r.id, r]));
+          for (const id of body.productIds) {
+            const p = byId.get(id);
+            if (!p) continue; // produto sumiu — o dispatch reporta
+            const price = Number(p.price);
+            if (!Number.isFinite(price) || price <= 0) {
+              issues.push({
+                productId: id,
+                code: "price_invalid",
+                message:
+                  "Produto sem preço válido (> 0) — OLX/Facebook recusam a publicação.",
+              });
+            }
+            const hasImage =
+              (typeof p.imageUrl === "string" && p.imageUrl.trim().length > 0) ||
+              (Array.isArray(p.imageUrls) &&
+                p.imageUrls.some((u) => typeof u === "string" && u.trim()));
+            if (!hasImage) {
+              issues.push({
+                productId: id,
+                code: "image_missing",
+                message:
+                  "Produto sem imagem — OLX/Facebook exigem ao menos uma.",
               });
             }
           }

@@ -22,6 +22,12 @@ const TERMINAL_PATTERNS = [
   /item_not_found/i,
   /listing not found/i,
   /unauthorized/i,
+  // Vocabulário PERMANENTE da OLX (espelha classifyOlxRemoveError): sem isto
+  // uma recusa definitiva da OLX (preço suspeito, sem slot, imagem pequena)
+  // era tratada como transitória e queimava as 6 tentativas do backoff.
+  /refused_/i,
+  /error_image_too_small/i,
+  /not_enough_ad_slots/i,
 ];
 
 const isTerminalError = (message: string) =>

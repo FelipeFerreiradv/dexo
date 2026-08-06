@@ -67,7 +67,7 @@ npx vitest run
 - [ ] **F0.3** Conferir: `SELECT unnest(enum_range(NULL::"Platform"));` (deve listar 5)
 - [ ] **F0.4** `ProductListing`: add col `olxListId TEXT`, `fbCatalogItemId TEXT`
 - [ ] **F0.5** `ProductListing`: add col `olxCategoryOverride TEXT`, `fbCategoryOverride TEXT`
-- [ ] **F0.6** `Product`: add col `olxCategoryId TEXT`, `fbCategory TEXT`
+- [ ] ~~**F0.6** `Product`: add col `olxCategoryId TEXT`, `fbCategory TEXT`~~ — **REMOVIDO (rodada 3):** eram colunas mortas (lidas, nunca escritas). A categoria explícita OLX/FB vem da rota/override no call-site, não de coluna do Product. **Não criar** estas colunas no SP. A migration `20260730120000` também deixou de adicioná-las.
 - [ ] **F0.7** `MarketplaceAccount`: add col `olxSellerPhone TEXT`, `olxSellerZipcode TEXT`, `fbCatalogId TEXT`, `fbProductUrlBase TEXT` (NULL = usa .env; aditivo, não muda nada p/ Jotabê)
 - [ ] **F0.8** Pós-DDL: `npx prisma generate` → `npm run build` → restart. Flags em `false`.
 

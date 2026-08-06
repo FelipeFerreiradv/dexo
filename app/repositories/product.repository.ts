@@ -1719,6 +1719,29 @@ class ProductRepositoryPrisma implements ProductRepository {
     });
   }
 
+  /**
+   * Projeção EGRESS-LEAN para o preflight OLX/Facebook: (id, price, imagens) do
+   * lote numa única query. O build de OLX e FB lança sem preço > 0 ou imagem, e
+   * o preflight só precisa dessas colunas (não a linha inteira).
+   */
+  async findBulkPublishReadiness(
+    ids: string[],
+    userId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      price: unknown;
+      imageUrl: string | null;
+      imageUrls: string[];
+    }>
+  > {
+    if (ids.length === 0) return [];
+    return prisma.product.findMany({
+      where: { id: { in: ids }, userId },
+      select: { id: true, price: true, imageUrl: true, imageUrls: true },
+    });
+  }
+
   async findByIdDetailed(id: string, userId: string) {
     // Run product + stock-log queries in parallel (independent reads)
     const [item, recentStockChanges] = await Promise.all([

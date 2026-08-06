@@ -5,6 +5,7 @@ import {
   facebookGraphBase,
   facebookDialogBase,
   validateFacebookConfig,
+  facebookAppSecretProof,
 } from "../facebook/facebook-constants";
 import type {
   FacebookTokenResponse,
@@ -117,18 +118,20 @@ export class FacebookOAuthService {
     }
   }
 
-  /** GET /oauth/access_token com os params dados (omite chaves undefined). */
+  /** POST /oauth/access_token com os params no CORPO (omite chaves undefined). */
   private static async requestToken(
     params: Record<string, string | undefined>,
   ): Promise<FacebookTokenResponse> {
-    const url = new URL(
-      `${facebookGraphBase()}${FACEBOOK_CONSTANTS.OAUTH_TOKEN_ENDPOINT}`,
-    );
+    const endpoint = `${facebookGraphBase()}${FACEBOOK_CONSTANTS.OAUTH_TOKEN_ENDPOINT}`;
+    // Corpo x-www-form-urlencoded em vez de query string: mantém client_secret
+    // e code FORA da URL (não vazam em log de acesso/proxy/histórico).
+    const body = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
-      if (value != null) url.searchParams.set(key, value);
+      if (value != null) body.set(key, value);
     }
-    const response = await axios.get<FacebookTokenResponse>(url.toString(), {
+    const response = await axios.post<FacebookTokenResponse>(endpoint, body, {
       timeout: FACEBOOK_CONSTANTS.REQUEST_TIMEOUT,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
     });
     if (!response.data?.access_token) {
       throw new Error("Resposta da Meta sem access_token");
@@ -147,9 +150,13 @@ export class FacebookOAuthService {
       `${facebookGraphBase()}${FACEBOOK_CONSTANTS.ME_ENDPOINT}`,
     );
     url.searchParams.set("fields", "id,name");
-    url.searchParams.set("access_token", accessToken);
+    // Token no header Authorization (não na query) + appsecret_proof: um token
+    // vazado sem o proof não é usável por terceiros.
+    const proof = facebookAppSecretProof(accessToken);
+    if (proof) url.searchParams.set("appsecret_proof", proof);
     const response = await axios.get<FacebookMeResponse>(url.toString(), {
       timeout: FACEBOOK_CONSTANTS.REQUEST_TIMEOUT,
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
     return response.data ?? {};
   }

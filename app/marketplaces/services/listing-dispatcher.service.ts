@@ -356,6 +356,7 @@ export class ListingDispatcher {
           productId,
           req.categoryId,
           req.accountId,
+          actorId,
         );
         this.logDispatchResult({
           userId,
@@ -396,6 +397,7 @@ export class ListingDispatcher {
           productId,
           req.categoryId,
           req.accountId,
+          actorId,
         );
         this.logDispatchResult({
           userId,
@@ -712,6 +714,7 @@ export class ListingDispatcher {
           productId,
           categoryId,
           req.accountId,
+          actorId,
         );
       } else if (req.platform === "FACEBOOK") {
         const categoryId = ov?.facebook?.categoryId ?? req.categoryId;
@@ -720,6 +723,7 @@ export class ListingDispatcher {
           productId,
           categoryId,
           req.accountId,
+          actorId,
         );
       } else {
         return {

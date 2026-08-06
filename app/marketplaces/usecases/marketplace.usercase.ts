@@ -951,9 +951,13 @@ export class MarketplaceUseCase {
         );
       }
       if (!externalUserId) {
-        // Fallback determinístico: sem user_email, ancora no userId do Dexo
-        // (evita colisão de unique [platform, externalUserId] entre sellers).
-        externalUserId = `olx-${userId}`;
+        // NÃO ancorar no userId do Dexo: um externalUserId derivado do userId
+        // anula a checagem cross-user (cada usuário viraria uma chave distinta),
+        // deixando DOIS tenants vincularem a MESMA conta OLX. Sem a identidade
+        // real da conta (user_email/name) a conexão é recusada.
+        throw new Error(
+          "Não foi possível identificar a conta da OLX (basic_user_info indisponível). Tente reconectar em instantes.",
+        );
       }
 
       // Bloqueia vinculação da mesma conta OLX a outro usuário do Dexo.
@@ -1087,8 +1091,10 @@ export class MarketplaceUseCase {
       const { accessToken, expiresAt } =
         await FacebookOAuthService.exchangeCodeForToken(data.code);
 
-      // Identifica a conta via /me (best-effort). O id da conta Meta é o
-      // externalUserId (chave estável). Sem ele, cai num fallback pelo userId.
+      // Identifica a conta via /me. O id da conta Meta é o externalUserId
+      // (chave estável). NÃO ancorar no userId do Dexo: um fallback derivado do
+      // userId anularia a checagem cross-user e deixaria dois tenants vincularem
+      // a MESMA conta Meta.
       let externalUserId = "";
       let accountName = "Facebook";
       try {
@@ -1102,7 +1108,9 @@ export class MarketplaceUseCase {
         );
       }
       if (!externalUserId) {
-        externalUserId = `facebook-${userId}`;
+        throw new Error(
+          "Não foi possível identificar a conta do Facebook (/me indisponível). Tente reconectar em instantes.",
+        );
       }
 
       // Bloqueia vinculação da mesma conta Meta a outro usuário do Dexo.

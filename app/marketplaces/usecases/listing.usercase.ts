@@ -3888,6 +3888,7 @@ export class ListingUseCase {
     productId: string,
     categoryId?: string,
     accountId?: string,
+    actorId?: string,
   ): Promise<CreateListingResult> {
     let account: any = null;
     let product: any = null;
@@ -4049,6 +4050,9 @@ export class ListingUseCase {
         lastError: null,
         retryEnabled: false,
         nextRetryAt: null,
+        // "Criado por": o ator humano que disparou o create (mesmo padrão
+        // ML/Shopee/Magalu). Sem isto o anúncio OLX nascia sem autor.
+        createdByUserId: actorId ?? null,
       });
 
       return {
@@ -6537,6 +6541,7 @@ export class ListingUseCase {
     productId: string,
     categoryId?: string,
     accountId?: string,
+    actorId?: string,
   ): Promise<CreateListingResult> {
     let account: any = null;
     let product: any = null;
@@ -6673,6 +6678,8 @@ export class ListingUseCase {
         lastError: null,
         retryEnabled: false,
         nextRetryAt: null,
+        // "Criado por": ator humano do create (mesmo padrão ML/Shopee/Magalu).
+        createdByUserId: actorId ?? null,
       });
 
       return {

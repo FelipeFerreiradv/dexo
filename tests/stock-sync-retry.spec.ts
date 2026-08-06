@@ -134,6 +134,33 @@ describe("StockSyncRetryService.runOnce", () => {
     );
   });
 
+  it("erro terminal da OLX (REFUSED_*) ⇒ markFailed, NÃO queima as 6 tentativas", async () => {
+    (prisma as any).stockSyncJob.findMany.mockResolvedValue([
+      makeJob({ platform: "OLX" }),
+    ]);
+    (prisma as any).productListing.findMany.mockResolvedValue([
+      { id: "lst-1", externalListingId: "ext-lst-1" },
+    ]);
+    (SyncUseCase.syncProductStock as any).mockResolvedValue([
+      {
+        success: false,
+        productId: "prod-1",
+        externalListingId: "ext-lst-1",
+        platform: "OLX",
+        error: "OLX recusou o import: REFUSED_SUSPECT_PRICE",
+      },
+    ]);
+
+    await StockSyncRetryService.runOnce();
+
+    // Terminal ⇒ apaga o job (deleteMany) + logError; NÃO incrementa attempts.
+    expect((prisma as any).stockSyncJob.deleteMany).toHaveBeenCalledWith({
+      where: { id: "job-1" },
+    });
+    expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
+    expect(SystemLogService.logError).toHaveBeenCalled();
+  });
+
   it("agrupa jobs por productId e chama syncProductStock uma vez por produto", async () => {
     (prisma as any).stockSyncJob.findMany.mockResolvedValue([
       makeJob({ id: "job-a", listingId: "lst-a" }),

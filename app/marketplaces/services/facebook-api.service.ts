@@ -2,6 +2,7 @@ import axios from "axios";
 import {
   FACEBOOK_CONSTANTS,
   facebookGraphBase,
+  facebookAppSecretProof,
 } from "../facebook/facebook-constants";
 import type {
   FacebookAvailability,
@@ -73,7 +74,12 @@ export class FacebookApiService {
           `Lote Facebook excede ${FACEBOOK_CONSTANTS.MAX_REQUESTS_PER_BATCH} requests`,
         );
       }
-      const url = `${facebookGraphBase()}/${this.catalogId(opts?.catalogId)}/items_batch`;
+      // appsecret_proof na query (token vai no header): a Meta exige o proof p/
+      // validar que o chamador detém o app secret — token vazado não basta.
+      const proof = facebookAppSecretProof(accessToken);
+      const url = `${facebookGraphBase()}/${this.catalogId(opts?.catalogId)}/items_batch${
+        proof ? `?appsecret_proof=${proof}` : ""
+      }`;
       const body: FacebookItemsBatchRequest = {
         item_type: "PRODUCT_ITEM",
         requests,
@@ -216,6 +222,9 @@ export class FacebookApiService {
         url.searchParams.set("fields", fields);
         url.searchParams.set("limit", String(limit));
         if (after) url.searchParams.set("after", after);
+        const productsProof = facebookAppSecretProof(accessToken);
+        if (productsProof)
+          url.searchParams.set("appsecret_proof", productsProof);
         const response = await axios.get<FacebookCatalogProductsResponse>(
           url.toString(),
           {
@@ -252,6 +261,8 @@ export class FacebookApiService {
         `${facebookGraphBase()}/${this.catalogId(opts?.catalogId)}/check_batch_request_status`,
       );
       url.searchParams.set("handle", handle);
+      const statusProof = facebookAppSecretProof(accessToken);
+      if (statusProof) url.searchParams.set("appsecret_proof", statusProof);
       const response = await axios.get<FacebookBatchStatusResponse>(
         url.toString(),
         {

@@ -3727,6 +3727,18 @@ export class SyncUseCase {
 
     try {
       if (targetStock <= 0) {
+        // No-op: já despublicado (paused) → não re-executa deleteAd a cada
+        // rodada (a baixa já foi refletida; delete repetido é chamada à toa).
+        if (listing.status === "paused") {
+          return {
+            success: true,
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            newStock: targetStock,
+            skipped: true,
+            skipReason: "olx_listing_already_paused",
+          };
+        }
         // Zerou → despublica.
         const resp = await OlxApiService.deleteAd(account.accessToken, olxId);
         if (resp.statusCode !== 0) {
@@ -4626,8 +4638,16 @@ export class SyncUseCase {
 
         const batchResults = await Promise.allSettled(
           batch.map(async (listing) => {
-            // Timeout de 15s por item para evitar travamento
-            const timeoutMs = 15000;
+            // Timeout por item p/ evitar travamento. OLX/FB fazem poll assíncrono
+            // (OLX até 2s×15=30s; FB 1.5s×8=12s): com 15s fixo o timeout disparava
+            // ANTES do poll da OLX terminar → falso "falhou" + promessa órfã ainda
+            // escrevendo no banco depois. Dá folga acima do poll de cada plataforma.
+            const timeoutMs =
+              platform === Platform.OLX
+                ? 40000
+                : platform === Platform.FACEBOOK
+                  ? 20000
+                  : 15000;
             const syncPromise = (async () => {
               switch (platform) {
                 case Platform.MERCADO_LIVRE:
