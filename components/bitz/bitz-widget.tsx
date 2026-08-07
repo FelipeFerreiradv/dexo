@@ -24,6 +24,17 @@ const BitzPanel = dynamic(
 );
 
 /**
+ * Quanto o painel espera a animação do mascote antes de aparecer.
+ *
+ * O arquivo tem 1,6 s — já recortado no trecho em que o robô se mexe. Abrir em
+ * 1,2 s mostra o essencial e deixa uma folga de 0,4 s: subir esta constante
+ * para 1600 faz a animação terminar antes de o painel entrar, sem reexportar
+ * nada. Passar muito disso cobra a espera em TODA abertura do chat, e o
+ * lojista abre isso dezenas de vezes por dia.
+ */
+const ESPERA_DA_ANIMACAO_MS = 1200;
+
+/**
  * O widget propriamente dito: launcher + painel.
  *
  * Este arquivo NÃO é importado estaticamente por ninguém — `bitz-root.tsx` o
@@ -37,16 +48,6 @@ const BitzPanel = dynamic(
 // `bitz-root.tsx` só renderiza este componente depois de garantir a sessão,
 // então aqui ela não é mais nullable. Tipar como não-nulo evita um `?.`
 // defensivo que esconderia uma quebra futura daquele contrato.
-/**
- * Quanto o painel espera a animação do mascote antes de aparecer.
- *
- * A animação inteira tem 3 s; 1,2 s é o pedaço em que o robô surge e se firma,
- * que é o que dá a sensação de "ele acordou porque eu cliquei". Segurar os 3 s
- * cobraria 3 segundos de TODA abertura do chat, o dia inteiro — e o lojista
- * abre isso dezenas de vezes.
- */
-const ESPERA_DA_ANIMACAO_MS = 1200;
-
 export function BitzWidget({ session }: { session: Session }) {
   const enabled = useBitzEntitlement();
   const isMobile = useIsMobile();
@@ -111,7 +112,7 @@ export function BitzWidget({ session }: { session: Session }) {
           onPointerEnter={() => {
             void import("./bitz-panel").catch(() => {});
             // Pré-busca a animação junto do chunk: sem isso o primeiro clique
-            // gasta o começo dela baixando 237 KB, e o que o usuário vê é o
+            // gasta o começo dela baixando 272 KB, e o que o usuário vê é o
             // robô entrando pela metade.
             new Image().src = MASCOT.animacao;
           }}

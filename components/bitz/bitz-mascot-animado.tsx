@@ -7,6 +7,12 @@ import { MASCOT } from "./bitz-constants";
 import { BitzMascot } from "./bitz-mascot";
 
 /**
+ * Largura ÷ altura do arquivo (224×312). Se o asset for reexportado com outro
+ * enquadramento, este número muda junto — senão o robô estica ou achata.
+ */
+const PROPORCAO = 224 / 312;
+
+/**
  * O mascote ANIMADO da saudação — toca uma vez e para no último quadro.
  *
  * ⭐ REGRA QUE GOVERNA ESTE ARQUIVO: a animação é enfeite, e enfeite nunca
@@ -20,11 +26,18 @@ import { BitzMascot } from "./bitz-mascot";
  * robô, porque MP4/H.264 não tem canal alpha.
  *
  * O que existe aqui é o mesmo material recortado (branco → transparente),
- * cortado nos 3 segundos que interessam e reencodado como WebP animado:
- * 224×305, 45 quadros, **237 KB**. WebP animado tem alpha, é suportado por
- * Chrome, Edge, Firefox e Safari 16+, e como é `<img>` não esbarra em política
- * de autoplay, não precisa de `muted`/`playsInline` e não devolve promise que
- * rejeita.
+ * enquadrado no robô e cortado NO TRECHO EM QUE ELE SE MEXE: 224×312,
+ * 32 quadros, 1,6 s, **272 KB**.
+ *
+ * ⚠️ O RECORTE DO TEMPO É LOAD-BEARING, e errar isso já custou uma rodada. Nos
+ * primeiros 1,5 s do material original o robô só ESPIA da borda: ocupa 12% do
+ * quadro, colado num canto, com movimento medido de 0,00% entre quadros. Quem
+ * assistia via o mascote parado e concluía, com razão, que a animação não
+ * estava funcionando. A ação começa em 1,8 s — é de lá que este arquivo sai.
+ *
+ * WebP animado tem alpha, é suportado por Chrome, Edge, Firefox e Safari 16+,
+ * e como é `<img>` não esbarra em política de autoplay, não precisa de
+ * `muted`/`playsInline` e não devolve promise que rejeita.
  *
  * O "toca uma vez" está DENTRO do arquivo (contador de loop = 1), não no
  * código. Reabrir o painel remonta o `<img>` e a animação recomeça.
@@ -37,7 +50,7 @@ export function BitzMascotAnimado({
   height = 92,
   className,
 }: {
-  /** Altura em px. A largura acompanha a proporção do arquivo (224×305). */
+  /** Altura em px. A largura acompanha a proporção do arquivo. */
   height?: number;
   className?: string;
 }) {
@@ -64,7 +77,7 @@ export function BitzMascotAnimado({
     );
   }
 
-  const width = Math.round((height * 224) / 305);
+  const width = Math.round(height * PROPORCAO);
 
   return (
     <span
