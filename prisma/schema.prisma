@@ -53,6 +53,13 @@ model User {
   // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
   whatsappEnabledAt DateTime?
 
+  // Gate do módulo Bitz (agente de IA, plano pago superior). Mesmo padrão do
+  // whatsappEnabledAt acima, deliberadamente: NULL = sem acesso (estado de
+  // TODOS os usuários existentes — zero regressão); timestamp = habilitado.
+  // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
+  // Migração: ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "aiEnabledAt" TIMESTAMP(3);
+  aiEnabledAt DateTime?
+
   // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
   // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
   // bloqueado. Só afeta colaboradores; admin/superadmin sempre têm acesso total.

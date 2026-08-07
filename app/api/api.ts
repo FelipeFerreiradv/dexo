@@ -41,6 +41,7 @@ import { whatsappRoutes } from "../routes/whatsapp.routes";
 import { superadminRoutes } from "../routes/superadmin.routes";
 import { superadminImportRoutes } from "../routes/superadmin-import.routes";
 import { internalRoutes } from "../routes/internal.routes";
+import { aiRoutes } from "../routes/ai.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 // trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
@@ -250,6 +251,14 @@ api.register(superadminImportRoutes, {
 // Diagnóstico operacional (equipe Dexo) — ex.: GET /internal/rembg/status.
 api.register(internalRoutes, {
   prefix: "/internal",
+});
+
+// Bitz (agente de IA). Namespace novo e isolado: nenhuma rota existente muda.
+// Atrás de NEXT_PUBLIC_AI_MODULE_ENABLED + User.aiEnabledAt — sem os dois
+// gates, todas as rotas daqui respondem 403 (exceto /ai/entitlement, sonda da
+// UI). A API sobe normalmente sem AI_API_KEY: só o Bitz fica indisponível.
+api.register(aiRoutes, {
+  prefix: "/ai",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";

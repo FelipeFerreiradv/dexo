@@ -22,6 +22,26 @@ const optionalUrlIsh = z
     message: "deve começar com http:// ou https://",
   });
 
+/**
+ * Inteiro positivo opcional que permanece STRING no tipo de saída.
+ *
+ * Diferente de RATE_LIMIT_MAX/PORT (que usam `.transform(Number)`), aqui não
+ * transformamos de propósito: quem consome estes valores lê `process.env`
+ * diretamente por função (ai-constants.ts), para que um `.env` editado +
+ * `pm2 restart` valha sem rebuild. O papel do schema é só barrar lixo no boot.
+ */
+const positiveIntString = (name: string) =>
+  z
+    .string()
+    .optional()
+    .refine(
+      (v) =>
+        v === undefined ||
+        v === "" ||
+        (Number.isInteger(Number(v)) && Number(v) > 0),
+      { message: `${name} deve ser inteiro positivo` },
+    );
+
 const envSchema = z.object({
   // Database
   DATABASE_URL: z.string().min(1, "DATABASE_URL é obrigatória"),
@@ -89,6 +109,33 @@ const envSchema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
   // Configuration ID do Embedded Signup (fase futura; MVP é onboarding manual).
   WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: z.string().optional(),
+
+  // Bitz (agente de IA). TODAS opcionais de propósito, mesmo padrão dos blocos
+  // Magalu e WhatsApp acima: o módulo fica atrás da flag
+  // NEXT_PUBLIC_AI_MODULE_ENABLED + gate por usuário (User.aiEnabledAt), e
+  // env.ts é exit-on-error. Sem AI_API_KEY a API sobe NORMALMENTE e todo o
+  // resto do sistema funciona igual — só o Bitz reporta indisponibilidade.
+  // A validação de runtime é describeAiConfigProblem() (ai-constants.ts), que
+  // DEVOLVE o motivo em vez de lançar: quem chama precisa degradar, não quebrar.
+  AI_PROVIDER: z.enum(["gemini", "mock"]).optional(),
+  AI_MODEL: z.string().optional(),
+  // NUNCA em NEXT_PUBLIC_*: a chave só existe no servidor.
+  AI_API_KEY: z.string().optional(),
+  AI_GEMINI_BASE_URL: optionalUrlIsh,
+  AI_TIMEOUT_MS: positiveIntString("AI_TIMEOUT_MS"),
+  AI_MAX_TOKENS: positiveIntString("AI_MAX_TOKENS"),
+  AI_MAX_DAILY_PER_TENANT: positiveIntString("AI_MAX_DAILY_PER_TENANT"),
+  AI_MAX_DAILY_GLOBAL: positiveIntString("AI_MAX_DAILY_GLOBAL"),
+  AI_TEMPERATURE: z
+    .string()
+    .optional()
+    .refine(
+      (v) =>
+        v === undefined ||
+        v === "" ||
+        (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 2),
+      { message: "AI_TEMPERATURE deve ser um número entre 0 e 2" },
+    ),
 
   // URLs
   APP_BACKEND_URL: urlIsh,
