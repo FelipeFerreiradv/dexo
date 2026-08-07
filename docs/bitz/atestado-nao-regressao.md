@@ -166,6 +166,32 @@ Com isso, os **5.226 testes verdes** cobrem sucata, PDV, financeiro, orçamento,
 etiqueta, pedido, NF-e/NFC-e, sync de marketplace, WhatsApp, import e sugestão de
 categoria exatamente como cobriam antes.
 
+### ⚠️ A exceção — 1 spec pré-existente ALTERADO na rodada de 07/08
+
+A frase acima descrevia os 7 commits originais e **deixou de ser verdade** na
+rodada da prévia gratuita. Registrar isso é obrigação, não formalidade: a regra
+número 2 do dono do produto diz que nenhum teste existente pode ser alterado.
+
+**`tests/team-collaborators.routes.spec.ts` foi alterado.** Duas naturezas:
+
+1. **O dublê ganhou um método.** A rota passou a chamar
+   `userRepository.updateAccessControl` (o tipo estreito que fecha o mass
+   assignment). Sem ensinar o dublê, `PATCH .../status` responderia **500** — a
+   alteração é o que mantém o teste refletindo a realidade.
+2. **Três asserções de guarda foram REAPONTADAS.** Elas afirmavam que
+   `updateMock` não era chamado depois de um 403. Como a rota deixou de usar
+   `update()` em qualquer caminho, essas asserções passariam a ser
+   **vacuamente verdadeiras** — verdes sem provar nada. Foram reapontadas para
+   `updateAccessControlMock`, que é o método que a rota de fato usa.
+
+**Nenhuma asserção foi afrouxada; todas ficaram mais específicas.** Duas
+auditorias independentes revisaram este diff linha a linha e classificaram a
+mudança como endurecimento. Reverter significaria devolver o mass assignment de
+`pagePermissions` em `PUT /users/me/settings` — o remédio seria pior.
+
+**É a única exceção da entrega inteira.** Todo o resto de `tests/` alterado
+nesta branch são arquivos novos ou `ai-*.spec.ts` desta mesma entrega.
+
 ### Os 9 arquivos pré-existentes tocados — e nada além deles
 
 | Arquivo                                  | Δ       | Natureza                                                   |
@@ -268,8 +294,17 @@ Honestidade sobre os limites vale mais que a lista de verdes.
 
 Nada disso vale se a ordem for outra.
 
-1. **3 DDLs, aplicadas À MÃO**, nesta ordem:
-   `User.aiEnabledAt` → `AiConversation` + `AiMessage` → `AiKnowledgeChunk`
+1. **4 DDLs, aplicadas À MÃO**, nesta ordem:
+   `User.aiEnabledAt` → `User.aiDailyLimit` → `AiConversation` + `AiMessage` →
+   `AiKnowledgeChunk`
+
+   O caminho curto é colar `docs/bitz/setup-supabase.sql` inteiro — ele tem os
+   quatro, na ordem certa, todos idempotentes.
+
+   ⚠️ **As duas colunas de `User` vêm antes do deploy, sem exceção.** O Prisma
+   expande `SELECT` em lista nominal de colunas: código no ar sem elas quebra
+   toda leitura de `User`, login inclusive. As tabelas novas não têm esse risco
+   (ninguém as lê com a flag desligada), as colunas têm.
 
    O SQL está versionado em `prisma/migrations/20260807*/migration.sql` (os
    arquivos foram adicionados com `-f`, já que `.gitignore:51` ignora a pasta).
