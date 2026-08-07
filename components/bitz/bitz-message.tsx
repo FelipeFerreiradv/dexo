@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import type { BitzChatMessage } from "@/hooks/use-bitz-chat";
 import { BitzMascot } from "./bitz-mascot";
+import { BitzSources } from "./bitz-sources";
 
 /**
  * Renderiza markdown do assistente.
@@ -118,6 +119,7 @@ export function BitzMessage({ message }: { message: BitzChatMessage }) {
         )}
       >
         <Markdown>{message.content}</Markdown>
+        <BitzSources sources={message.sources} />
       </div>
     </div>
   );

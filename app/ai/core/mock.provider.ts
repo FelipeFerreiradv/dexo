@@ -84,9 +84,25 @@ export function __pushMockCompletion(input: MockCompletionInput): void {
   });
 }
 
+/**
+ * Último input que chegou ao provedor.
+ *
+ * Existe para o teste conseguir inspecionar o que foi REALMENTE enviado ao
+ * modelo — se a base de conhecimento entrou envelopada, se a chave da API
+ * vazou para dentro de alguma mensagem, e (na Fase 5) qual subconjunto de
+ * tools foi oferecido. Sem isso, o único jeito de verificar o prompt seria
+ * espionar o `chat` com `vi.spyOn`, que acopla o teste à classe.
+ */
+let lastInput: AiChatInput | null = null;
+
+export function __lastMockChatInput(): AiChatInput | null {
+  return lastInput;
+}
+
 /** Zera a fila entre testes. */
 export function __resetMockProvider(): void {
   queue.length = 0;
+  lastInput = null;
 }
 
 /** Quantas respostas ainda estão na fila (assert de "consumiu tudo"). */
@@ -99,6 +115,7 @@ export class MockAiProvider implements AiProvider {
   readonly model = MOCK_MODEL;
 
   async chat(input: AiChatInput): Promise<AiCompletion> {
+    lastInput = input;
     const queued = queue.shift();
     if (queued) return queued;
 

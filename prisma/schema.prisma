@@ -151,6 +151,42 @@ model AiMessage {
   @@index([conversationId, createdAt])
 }
 
+// Base de conhecimento do Bitz — um pedaço de um documento sobre COMO O DEXO
+// FUNCIONA.
+//
+// É GLOBAL, e isso é a decisão central deste modelo: não existe coluna de
+// tenant aqui, nem `userId`, nem `dataOwnerId`. O conteúdo é sobre o produto
+// (como cadastrar peça, o que significa um anúncio pausado), nunca sobre o
+// cliente. Não ter a coluna é mais forte que filtrar por ela: não há query que
+// possa esquecer o `where`, e o retriever não recebe o tenant nem por
+// engano — `tests/ai-retriever.spec.ts` prova as duas coisas.
+//
+// Conteúdo em app/ai/knowledge/content/*.md; indexado por
+// `npm run ai:index` (scripts/build-ai-knowledge.ts), que reindexa SOMENTE o
+// que mudou comparando `checksum` e poda o que sumiu do documento.
+//
+// `search` é o conteúdo já normalizado em JS (sem acento, minúsculo,
+// heading + corpo). Existe para a busca ser um LIKE puro, sem depender de
+// `immutable_unaccent` no banco; o `similarity()` do pg_trgm entra só como
+// desempate e é tolerado falhar. 84 linhas hoje (13 documentos, medido em
+// 07/08/2026) — volume em que seq scan é mais rápido que qualquer índice,
+// então não há um aqui.
+//
+// Migração: prisma/migrations/20260807120000_add_ai_knowledge_chunk.
+model AiKnowledgeChunk {
+  id        String   @id @default(cuid())
+  docId     String
+  ord       Int
+  heading   String?
+  content   String
+  search    String
+  checksum  String
+  updatedAt DateTime @updatedAt
+
+  @@unique([docId, ord])
+  @@index([docId])
+}
+
 model Product {
   id                     String                 @id @default(cuid())
   sku                    String

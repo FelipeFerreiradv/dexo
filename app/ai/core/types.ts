@@ -38,6 +38,29 @@ export interface AiUsage {
 }
 
 /**
+ * De onde veio o que o Bitz respondeu.
+ *
+ * É CAMPO ESTRUTURADO, preenchido pelo servidor a partir do que de fato foi
+ * consultado — nunca texto que o modelo escreve. O modelo não consegue
+ * "esquecer" de citar, nem inventar uma fonte que não existiu.
+ *
+ * Fase 4 emite só `conhecimento`. As demais variantes entram nas Fases 5 e 6,
+ * declaradas desde já para o contrato da UI não mudar depois.
+ */
+export type AiSource =
+  | { kind: "conhecimento"; docId: string; docTitle: string; heading?: string }
+  | { kind: "proprio"; label: string; count: number }
+  | {
+      kind: "plataforma";
+      sampleSize: number;
+      confidence: "alta" | "media" | "baixa";
+      matchKey: string;
+    }
+  | { kind: "regra"; rule: string }
+  | { kind: "externa"; provider: "mercado-livre"; ref?: string }
+  | { kind: "estimativa"; note: string };
+
+/**
  * Motivos de falha. São o vocabulário que a UI e a auditoria enxergam — nunca
  * a mensagem crua do provedor, que pode conter fragmento de prompt ou chave.
  */

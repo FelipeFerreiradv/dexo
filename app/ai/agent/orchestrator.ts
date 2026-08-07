@@ -21,7 +21,11 @@ import {
 } from "../audit/ai-audit";
 import { resolveAiProvider, userFacingFailureMessage } from "../core/provider";
 import { describeAiConfigProblem } from "../core/ai-constants";
-import type { AiFailureReason, AiMessage } from "../core/types";
+import type { AiFailureReason, AiMessage, AiSource } from "../core/types";
+import {
+  formatKnowledgeForPrompt,
+  retrieveKnowledge,
+} from "../knowledge/retriever";
 import {
   quotaMessage,
   refundAiTurn,
@@ -29,7 +33,8 @@ import {
   type AiQuotaDenial,
 } from "../quota/ai-usage.service";
 import { buildContextWindow, estimateTokens } from "./context-window";
-import { buildSystemPrompt } from "./system-prompt";
+import { classifyIntent } from "./intent";
+import { buildSystemPrompt, wrapSystemData } from "./system-prompt";
 
 /** Teto de caracteres de UMA mensagem do usuário. */
 export const MAX_USER_MESSAGE_CHARS = 4000;
@@ -50,7 +55,7 @@ export interface AiTurnInput {
 export interface AiTurnResult {
   conversationId: string;
   content: string;
-  sources: unknown[];
+  sources: AiSource[];
   /** true quando a resposta NÃO veio do modelo (indisponível, quota, erro). */
   degraded: boolean;
   usage: { inputTokens: number | null; outputTokens: number | null };
@@ -150,9 +155,8 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   }
 
   // -------------------------------------------------------------------------
-  // 4. Contexto: system prompt + resumo + janela do histórico.
-  //    (Fase 4 acrescenta os chunks de RAG ao `extraSystem`;
-  //     Fase 5 acrescenta o subconjunto de tools ao `chat`.)
+  // 4. Contexto: system prompt + resumo + base de conhecimento + janela.
+  //    (Fase 5 acrescenta o subconjunto de tools ao `chat`.)
   // -------------------------------------------------------------------------
   const historyRows = await db.aiMessage.findMany({
     where: { conversationId },
@@ -160,12 +164,10 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     take: HISTORY_FETCH_LIMIT,
     select: { role: true, content: true },
   });
-  const history: AiMessage[] = historyRows
-    .reverse()
-    .map((r: any) => ({
-      role: r.role as AiMessage["role"],
-      content: r.content,
-    }));
+  const history: AiMessage[] = historyRows.reverse().map((r: any) => ({
+    role: r.role as AiMessage["role"],
+    content: r.content,
+  }));
 
   const extraSystem: string[] = [];
   if (conversation.summary) {
@@ -173,6 +175,38 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       `RESUMO DO QUE JÁ FOI CONVERSADO (turnos antigos, fora da janela):\n${conversation.summary}`,
     );
   }
+
+  // Base de conhecimento sobre o Dexo — só quando a intenção é dúvida.
+  // Pergunta de relatório não paga RAG.
+  //
+  // `retrieveKnowledge` NÃO recebe dataOwnerId: a base é global, fala do
+  // produto e não do cliente (ver o cabeçalho do retriever).
+  //
+  // O conteúdo entra pelo `wrapSystemData` — é DADO, nunca instrução. Um
+  // documento não pode reprogramar o agente, e nenhum deles tenta; o envelope
+  // existe para que continue verdade quando alguém editar um .md.
+  const sources: AiSource[] = [];
+  const intent = classifyIntent(message);
+  if (intent.needsRag) {
+    const hits = await retrieveKnowledge(message, { db });
+    if (hits.length > 0) {
+      extraSystem.push(
+        wrapSystemData(
+          "base de conhecimento do Dexo",
+          formatKnowledgeForPrompt(hits),
+        ),
+      );
+      for (const h of hits) {
+        sources.push({
+          kind: "conhecimento",
+          docId: h.docId,
+          docTitle: h.docTitle,
+          ...(h.heading ? { heading: h.heading } : {}),
+        });
+      }
+    }
+  }
+
   const systemPrompt = buildSystemPrompt(extraSystem);
 
   const windowed = buildContextWindow({
@@ -231,6 +265,10 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       conversationId,
       role: "assistant",
       content: completion.content,
+      // Guardado junto da resposta: reabrir a conversa mostra as mesmas fontes
+      // de antes, sem refazer a busca. Vazio vira null para não gravar `[]`
+      // em toda mensagem que não consultou nada.
+      sources: sources.length > 0 ? sources : null,
       provider: completion.provider,
       model: completion.model,
       inputTokens: completion.usage.inputTokens,
@@ -265,7 +303,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   return {
     conversationId,
     content: completion.content,
-    sources: [],
+    sources,
     degraded: false,
     usage: completion.usage,
   };
