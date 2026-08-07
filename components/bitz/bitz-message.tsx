@@ -125,8 +125,88 @@ export function BitzMessage({ message }: { message: BitzChatMessage }) {
   );
 }
 
+/**
+ * A resposta sendo escrita, ao vivo.
+ *
+ * Mesma bolha da mensagem pronta, de propósito: o texto não pode "pular de
+ * lugar" quando o quadro final chega e a bolha definitiva o substitui.
+ *
+ * ⭐ SEM bloco de Fontes aqui. As fontes chegam no quadro `fim` — desenhar um
+ * card vazio durante a escrita e preenchê-lo depois faria o card parecer parte
+ * do texto que o modelo está redigindo, que é exatamente a confusão que a
+ * separação servidor/modelo existe para evitar.
+ */
+export function BitzStreaming({
+  content,
+  consultando,
+}: {
+  content: string;
+  consultando?: string[];
+}) {
+  if (!content) return <BitzThinking consultando={consultando} />;
+
+  return (
+    <div className="flex items-start gap-2.5" aria-live="polite">
+      <BitzMascot size={28} state="thinking" aura />
+      <div
+        className={cn(
+          "bg-card/80 border-border/60 max-w-[85%] rounded-2xl rounded-tl-sm border px-3.5 py-2.5 backdrop-blur",
+          "text-foreground text-sm md:max-w-[80%]",
+        )}
+      >
+        <Markdown>{content}</Markdown>
+      </div>
+    </div>
+  );
+}
+
+/** Como o painel chama cada consulta enquanto ela roda. */
+const RÓTULO_DA_CONSULTA: Record<string, string> = {
+  buscar_produto: "procurando a peça",
+  detalhe_produto: "abrindo a ficha da peça",
+  buscar_pedido: "procurando o pedido",
+  contas_a_receber: "olhando as contas a receber",
+  contas_a_pagar: "olhando as contas a pagar",
+  buscar_orcamento: "procurando o orçamento",
+  relatorio_vendas: "montando o relatório de vendas",
+  relatorio_estoque: "olhando o estoque",
+  buscar_sucata: "procurando a sucata",
+  detalhe_sucata: "abrindo o lote",
+  buscar_cliente: "procurando o cliente",
+  buscar_localizacao: "procurando a localização",
+  diagnostico_operacional: "verificando o que está com erro",
+  sugerir_preco: "comparando preços",
+  sugerir_medidas: "conferindo peso e medidas",
+  sugerir_compatibilidades: "vendo em que carros serve",
+  sugerir_categoria: "escolhendo a categoria",
+  sugerir_titulo: "olhando seus títulos",
+  sugerir_descricao: "olhando suas descrições",
+  consultar_catalogo_ml: "consultando o catálogo do Mercado Livre",
+};
+
 /** Indicador de "pensando" — mascote com aura + três pontinhos. */
-export function BitzThinking() {
+export function BitzThinking({ consultando }: { consultando?: string[] } = {}) {
+  // Nome técnico de tool não é para o lojista ver. Sem rótulo conhecido, o
+  // indicador continua sendo os três pontinhos de sempre.
+  const rotulo = (consultando ?? [])
+    .map((t) => RÓTULO_DA_CONSULTA[t])
+    .filter(Boolean)[0];
+
+  if (rotulo) {
+    return (
+      <div className="flex items-start gap-2.5" aria-live="polite">
+        <BitzMascot size={28} state="thinking" aura />
+        <div className="bg-card/80 border-border/60 text-muted-foreground rounded-2xl rounded-tl-sm border px-3.5 py-2.5 text-xs backdrop-blur">
+          {rotulo}…
+        </div>
+      </div>
+    );
+  }
+
+  return <BitzThinkingPontos />;
+}
+
+function BitzThinkingPontos() {
   return (
     <div className="flex items-start gap-2.5" aria-live="polite">
       <BitzMascot size={28} state="thinking" aura />

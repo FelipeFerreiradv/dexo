@@ -240,3 +240,41 @@ describe("composer — o lugar do áudio e do anexo já está reservado", () => 
     expect(composer).toContain('e.key === "Enter" && !e.shiftKey');
   });
 });
+
+describe("streaming no front — o texto ao vivo é PRÉVIA", () => {
+  const hook = lerCodigo("hooks/use-bitz-chat.ts");
+  const bolha = lerCodigo("components/bitz/bitz-message.tsx");
+
+  it("pede NDJSON e decide pelo content-type da RESPOSTA", () => {
+    // Quem decide se há streaming é o servidor. Sem essa checagem, um proxy
+    // que devolvesse JSON faria o front esperar por quadros que nunca viriam.
+    expect(hook).toContain("NDJSON_ACCEPT");
+    expect(hook).toContain("content-type");
+  });
+
+  it("⭐ a mensagem do assistente nasce do quadro `fim`, nunca do texto ao vivo", () => {
+    // O `streaming` é estado de UI e some no `finally`. Se algum dia ele virar
+    // mensagem, a bolha poderá ficar diferente do que foi gravado no banco.
+    expect(hook).toMatch(/case "fim":/);
+    expect(hook).not.toMatch(/content:\s*streaming/);
+  });
+
+  it("conexão que cai no meio NÃO promove resposta parcial a resposta", () => {
+    expect(hook).toContain("stream_interrompido");
+  });
+
+  it("a bolha em escrita não desenha o bloco de Fontes", () => {
+    // As fontes chegam no `fim`. Um card vazio durante a escrita pareceria
+    // parte do texto que o modelo está redigindo.
+    const streaming = bolha.slice(
+      bolha.indexOf("export function BitzStreaming"),
+      bolha.indexOf("RÓTULO_DA_CONSULTA"),
+    );
+    expect(streaming).not.toContain("BitzSources");
+  });
+
+  it("o indicador de consulta fala a língua do lojista, não o nome da tool", () => {
+    expect(bolha).toContain("RÓTULO_DA_CONSULTA");
+    expect(bolha).not.toMatch(/\{consultando\[0\]\}/);
+  });
+});

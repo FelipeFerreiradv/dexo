@@ -110,9 +110,40 @@ export function __pendingMockCompletions(): number {
   return queue.length;
 }
 
+/**
+ * Em quantos pedaços o mock quebra o texto ao transmitir.
+ *
+ * Quebrar por PALAVRA, e não por caractere: é o que um modelo real faz (token
+ * ≈ pedaço de palavra) e é o que expõe o defeito que importa no consumidor —
+ * concatenar deltas sem preservar o espaço entre eles.
+ */
+export function chunksDeTeste(texto: string): string[] {
+  if (!texto) return [];
+  return texto.match(/\S+\s*/g) ?? [texto];
+}
+
 export class MockAiProvider implements AiProvider {
   readonly name = MOCK_PROVIDER_NAME;
   readonly model = MOCK_MODEL;
+
+  /**
+   * Transmite a MESMA resposta que `chat` devolveria, em pedaços.
+   *
+   * Consome a mesma fila: um teste empilha a resposta uma vez e escolhe se quer
+   * exercitar o caminho com ou sem streaming. Se os dois caminhos lessem filas
+   * diferentes, o teste de streaming poderia passar com um comportamento que o
+   * caminho normal não tem.
+   */
+  async chatStream(
+    input: AiChatInput,
+    onDelta: (texto: string) => void,
+  ): Promise<AiCompletion> {
+    const completion = await this.chat(input);
+    if (completion.ok) {
+      for (const pedaco of chunksDeTeste(completion.content)) onDelta(pedaco);
+    }
+    return completion;
+  }
 
   async chat(input: AiChatInput): Promise<AiCompletion> {
     lastInput = input;

@@ -5,6 +5,7 @@ import { isAiEnabledFor } from "../ai/entitlement/ai-entitlement.service";
 import { requireAiEnabled } from "../ai/entitlement/require-ai-enabled";
 import { MAX_USER_MESSAGE_CHARS, runTurn } from "../ai/agent/orchestrator";
 import { scopeFromRequest } from "../ai/core/scope";
+import { abrirNdjson, querNdjson } from "../ai/stream/ndjson";
 import prisma from "../lib/prisma";
 
 /**
@@ -107,6 +108,69 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
         typeof body.conversationId === "string" && body.conversationId
           ? body.conversationId
           : undefined;
+
+      // -----------------------------------------------------------------
+      // Streaming por NEGOCIAÇÃO DE CONTEÚDO, e não numa rota separada.
+      //
+      // Duas rotas dariam DOIS baldes de rate limit (o @fastify/rate-limit
+      // cria um store por rota), e um cliente alternando entre elas teria o
+      // dobro do teto por minuto. Aqui o gate, o bodyLimit, a validação e o
+      // balde são literalmente os mesmos — só o formato da resposta muda.
+      //
+      // Quem não manda o Accept cai no caminho JSON de antes, byte a byte.
+      // -----------------------------------------------------------------
+      if (querNdjson(request.headers.accept)) {
+        const saida = abrirNdjson(reply);
+        // Primeiro quadro imediato: solta os cabeçalhos e prova ao front (e a
+        // qualquer proxy no caminho) que a conexão está viva antes de o modelo
+        // levar seus segundos para começar a falar.
+        saida.escrever({ type: "inicio" });
+
+        try {
+          const result = await runTurn({
+            dataOwnerId: user.dataOwnerId,
+            actorUserId: user.id,
+            message,
+            conversationId,
+            scope: scopeFromRequest(request) ?? undefined,
+            onEvent: saida.escrever,
+          });
+
+          // ⭐ O quadro `fim` é a RESPOSTA. Os deltas foram prévia; o que o
+          // front guarda, e o que foi gravado no banco, é isto. É a mesma
+          // carga do caminho JSON, o que mantém os dois formatos impossíveis
+          // de divergir.
+          saida.escrever({
+            type: "fim",
+            conversationId: result.conversationId,
+            message: { content: result.content, sources: result.sources },
+            degraded: result.degraded,
+            usage: result.usage,
+          });
+        } catch (error) {
+          // Os cabeçalhos já foram; não existe mais status para mudar. A falha
+          // vira um `fim` degradado — o front trata igual ao 200 degradado do
+          // caminho JSON.
+          request.log.warn(
+            { err: error },
+            "[bitz] turno falhou de forma inesperada (stream)",
+          );
+          saida.escrever({
+            type: "fim",
+            conversationId: conversationId ?? null,
+            message: {
+              content:
+                "Não consegui responder agora. Tenta de novo em instantes.",
+              sources: [],
+            },
+            degraded: true,
+            usage: { inputTokens: null, outputTokens: null },
+          });
+        } finally {
+          saida.encerrar();
+        }
+        return;
+      }
 
       try {
         const result = await runTurn({

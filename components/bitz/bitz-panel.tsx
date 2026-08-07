@@ -9,7 +9,7 @@ import { useBitzChat } from "@/hooks/use-bitz-chat";
 import { BitzComposer } from "./bitz-composer";
 import { BitzEmptyState } from "./bitz-empty-state";
 import { BitzMascot } from "./bitz-mascot";
-import { BitzMessage, BitzThinking } from "./bitz-message";
+import { BitzMessage, BitzStreaming, BitzThinking } from "./bitz-message";
 import type { BitzPanelMode } from "./bitz-constants";
 
 interface BitzPanelProps {
@@ -52,7 +52,7 @@ export function BitzPanel({
   onModeChange,
   userName,
 }: BitzPanelProps) {
-  const { messages, pending, send, reset } = useBitzChat();
+  const { messages, pending, streaming, send, reset } = useBitzChat();
   const [draft, setDraft] = React.useState("");
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -65,7 +65,7 @@ export function BitzPanel({
   React.useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, pending]);
+  }, [messages, pending, streaming?.content]);
 
   const perguntar = (texto: string) => {
     setDraft("");
@@ -178,7 +178,19 @@ export function BitzPanel({
                   {messages.map((m) => (
                     <BitzMessage key={m.id} message={m} />
                   ))}
-                  {pending && <BitzThinking />}
+                  {/* Enquanto o turno corre: o texto ao vivo quando já há
+                      texto, o indicador de consulta quando o Bitz foi ao
+                      banco, e os três pontinhos no resto do tempo. A bolha
+                      definitiva substitui isto quando o quadro `fim` chega. */}
+                  {pending &&
+                    (streaming ? (
+                      <BitzStreaming
+                        content={streaming.content}
+                        consultando={streaming.consultando}
+                      />
+                    ) : (
+                      <BitzThinking />
+                    ))}
                 </div>
               )}
             </div>

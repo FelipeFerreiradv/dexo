@@ -177,20 +177,12 @@ export class GeminiProvider implements AiProvider {
     this.baseUrl = opts?.baseUrl ?? AI_CONSTANTS.GEMINI_BASE_URL;
   }
 
-  async chat(input: AiChatInput): Promise<AiCompletion> {
-    const started = Date.now();
-    const fail = (reason: AiFailureReason, detail?: string): AiCompletion => ({
-      ok: false,
-      reason,
-      detail,
-      provider: this.name,
-      model: this.model,
-      latencyMs: Date.now() - started,
-    });
-
-    if (!this.apiKey) return fail("sem_api_key");
-    if (!this.model) return fail("sem_modelo");
-
+  /**
+   * O corpo da requisição. Extraído para `chat` e `chatStream` mandarem
+   * EXATAMENTE o mesmo payload — só o endpoint muda. Duas montagens paralelas
+   * derivariam, e o modo streaming passaria a responder diferente do normal.
+   */
+  private montarCorpo(input: AiChatInput): Record<string, unknown> {
     const { contents, systemInstruction } = toGeminiContents(input.messages);
 
     const body: Record<string, unknown> = {
@@ -212,6 +204,32 @@ export class GeminiProvider implements AiProvider {
         },
       ];
     }
+    return body;
+  }
+
+  /** Chave em header, NUNCA na query: a URL vaza em log de proxy e em stack. */
+  private get cabecalhos(): Record<string, string> {
+    return {
+      "content-type": "application/json",
+      "x-goog-api-key": this.apiKey,
+    };
+  }
+
+  async chat(input: AiChatInput): Promise<AiCompletion> {
+    const started = Date.now();
+    const fail = (reason: AiFailureReason, detail?: string): AiCompletion => ({
+      ok: false,
+      reason,
+      detail,
+      provider: this.name,
+      model: this.model,
+      latencyMs: Date.now() - started,
+    });
+
+    if (!this.apiKey) return fail("sem_api_key");
+    if (!this.model) return fail("sem_modelo");
+
+    const body = this.montarCorpo(input);
 
     let raw: unknown;
     try {
@@ -219,12 +237,7 @@ export class GeminiProvider implements AiProvider {
         `${this.baseUrl}/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,
         body,
         {
-          // Chave em header, NUNCA na query string: a URL vaza em log de proxy,
-          // em stack trace do axios e no `detail` de erro.
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": this.apiKey,
-          },
+          headers: this.cabecalhos,
           timeout: getAiTimeoutMs(),
         },
       );
@@ -278,5 +291,176 @@ export class GeminiProvider implements AiProvider {
       model: this.model,
       latencyMs: Date.now() - started,
     };
+  }
+
+  /**
+   * A mesma chamada, no endpoint de streaming (`:streamGenerateContent`, SSE).
+   *
+   * O que muda em relação a `chat`: o endpoint, `responseType: "stream"` e o
+   * laço que lê os eventos. O CORPO é o mesmo (`montarCorpo`), então o modelo
+   * recebe exatamente o mesmo prompt, as mesmas tools e a mesma configuração.
+   *
+   * ⚠️ O `timeout` do axios em stream cobre só até a RESPOSTA COMEÇAR. Depois
+   * disso ele não vale mais, e um servidor que abre a conexão e para de falar
+   * seguraria o socket e o turno para sempre. Por isso o teto total abaixo, que
+   * destrói o stream e devolve `timeout` como qualquer outra falha.
+   */
+  async chatStream(
+    input: AiChatInput,
+    onDelta: (texto: string) => void,
+  ): Promise<AiCompletion> {
+    const started = Date.now();
+    const fail = (reason: AiFailureReason, detail?: string): AiCompletion => ({
+      ok: false,
+      reason,
+      detail,
+      provider: this.name,
+      model: this.model,
+      latencyMs: Date.now() - started,
+    });
+
+    if (!this.apiKey) return fail("sem_api_key");
+    if (!this.model) return fail("sem_modelo");
+
+    const limiteMs = getAiTimeoutMs();
+    let stream: any;
+    let estourouOTeto = false;
+
+    try {
+      const res = await axios.post(
+        `${this.baseUrl}/v1beta/models/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`,
+        this.montarCorpo(input),
+        {
+          headers: this.cabecalhos,
+          timeout: limiteMs,
+          responseType: "stream",
+        },
+      );
+      stream = res.data;
+    } catch (err) {
+      const { reason, detail } = classifyAxiosError(err);
+      return fail(reason, detail);
+    }
+
+    // Teto de duração TOTAL, contado a partir daqui.
+    const relogio = setTimeout(() => {
+      estourouOTeto = true;
+      try {
+        stream?.destroy?.();
+      } catch {
+        // destruir um stream já morto não é problema de ninguém.
+      }
+    }, limiteMs);
+
+    let texto = "";
+    const chamadas: AiToolCall[] = [];
+    let entrada: number | null = null;
+    let saida: number | null = null;
+    let bloqueio: string | null = null;
+
+    try {
+      for await (const evento of iterarSse(stream)) {
+        const parsed = geminiResponseSchema.safeParse(evento);
+        // Evento com shape inesperado no meio de um stream é ruído, não o fim
+        // do mundo: o que vale é o acumulado. Descartar um e seguir é melhor
+        // que derrubar um turno que já entregou metade da resposta.
+        if (!parsed.success) continue;
+
+        const data = parsed.data;
+        if (data.promptFeedback?.blockReason) {
+          bloqueio = data.promptFeedback.blockReason;
+          break;
+        }
+
+        for (const parte of data.candidates?.[0]?.content?.parts ?? []) {
+          if (parte.text) {
+            texto += parte.text;
+            onDelta(parte.text);
+          }
+          if (parte.functionCall) {
+            chamadas.push({
+              id: `${parte.functionCall.name}-${chamadas.length}`,
+              name: parte.functionCall.name,
+              args: parte.functionCall.args ?? {},
+            });
+          }
+        }
+
+        // O uso vem no ÚLTIMO evento; sobrescrever a cada um deixa o valor
+        // final correto sem precisar saber qual era o último.
+        if (data.usageMetadata) {
+          entrada = data.usageMetadata.promptTokenCount ?? entrada;
+          saida = data.usageMetadata.candidatesTokenCount ?? saida;
+        }
+      }
+    } catch (err) {
+      if (estourouOTeto) return fail("timeout", `teto de ${limiteMs}ms`);
+      const { reason, detail } = classifyAxiosError(err);
+      return fail(reason, detail);
+    } finally {
+      clearTimeout(relogio);
+    }
+
+    if (estourouOTeto) return fail("timeout", `teto de ${limiteMs}ms`);
+    if (bloqueio) return fail("resposta_invalida", `bloqueado: ${bloqueio}`);
+
+    const content = texto.trim();
+    if (!content && chamadas.length === 0) {
+      return fail("resposta_invalida", "resposta vazia");
+    }
+
+    return {
+      ok: true,
+      content,
+      toolCalls: chamadas,
+      usage: { inputTokens: entrada, outputTokens: saida },
+      provider: this.name,
+      model: this.model,
+      latencyMs: Date.now() - started,
+    };
+  }
+}
+
+/**
+ * Lê um corpo SSE (`data: {json}` separados por linha em branco) e devolve
+ * cada payload já parseado.
+ *
+ * Escrito à mão, e não com uma biblioteca de SSE, pelo mesmo motivo do
+ * conversor de zod→JSON Schema: o caso geral do protocolo tem retry, `event:`,
+ * `id:` e reconexão, e nada disso existe aqui — a resposta do Gemini é uma
+ * sequência de `data:` e acabou.
+ *
+ * ⚠️ O ponto que quebra implementação ingênua: um chunk de rede NÃO é uma
+ * linha. Ele parte no meio de um JSON. O buffer existe para isso, e é por isso
+ * que o `split` guarda sempre o último pedaço para o próximo chunk.
+ */
+export async function* iterarSse(
+  stream: AsyncIterable<unknown>,
+): AsyncGenerator<unknown> {
+  let buffer = "";
+  for await (const chunk of stream) {
+    buffer += typeof chunk === "string" ? chunk : String(chunk);
+    const linhas = buffer.split("\n");
+    // A última pode estar cortada no meio: volta para o buffer.
+    buffer = linhas.pop() ?? "";
+    for (const linha of linhas) {
+      const payload = extrairData(linha);
+      if (payload !== null) yield payload;
+    }
+  }
+  const resto = extrairData(buffer);
+  if (resto !== null) yield resto;
+}
+
+/** `data: {...}` -> objeto. Qualquer outra coisa (comentário, vazio) -> null. */
+function extrairData(linha: string): unknown | null {
+  const limpa = linha.trim();
+  if (!limpa.startsWith("data:")) return null;
+  const corpo = limpa.slice(5).trim();
+  if (!corpo || corpo === "[DONE]") return null;
+  try {
+    return JSON.parse(corpo);
+  } catch {
+    return null;
   }
 }

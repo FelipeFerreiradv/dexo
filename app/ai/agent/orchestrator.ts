@@ -61,11 +61,41 @@ export const MAX_TOOL_ROUNDS = 2;
 /** Quantas mensagens da conversa são lidas do banco por turno. */
 const HISTORY_FETCH_LIMIT = 40;
 
+/**
+ * Progresso de um turno, para quem está transmitindo (a rota NDJSON).
+ *
+ * ⭐ REGRA QUE ATRAVESSA TUDO: isto é PRÉVIA. O que vale é o retorno de
+ * `runTurn` — é ele que é gravado no banco e é ele que o usuário lê no fim.
+ * Nada aqui pode ser a única fonte de nada, e é essa assimetria que torna
+ * impossível a resposta transmitida divergir da resposta final.
+ *
+ * Por isso também: nenhum evento carrega dado que já não vá no resultado.
+ * `consultando` leva só o NOME da tool — nunca os argumentos, que carregam o
+ * termo que o usuário digitou.
+ */
+export type AiTurnEvent =
+  /** O id da conversa, assim que existe. Chega ANTES de qualquer texto: se o
+   *  turno degradar no meio, o front já sabe em qual conversa continuar. */
+  | { type: "conversa"; conversationId: string }
+  /** O agente foi consultar o sistema. */
+  | { type: "consultando"; tools: string[] }
+  /** Pedaço de texto do modelo. */
+  | { type: "texto"; delta: string }
+  /** O texto transmitido até agora era preâmbulo de uma consulta: descarte. */
+  | { type: "reinicio" };
+
 export interface AiTurnInput {
   dataOwnerId: string;
   actorUserId: string;
   message: string;
   conversationId?: string;
+  /**
+   * Recebe o progresso do turno. Ausente ⇒ turno silencioso, byte a byte
+   * idêntico ao de antes do streaming existir.
+   *
+   * Nunca deve lançar; se lançar, o turno não pode cair por causa disso.
+   */
+  onEvent?: (evento: AiTurnEvent) => void;
   /**
    * Escopo de execução das tools (tenant + permissões do ator).
    *
@@ -244,6 +274,22 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
 
   const message = input.message.slice(0, MAX_USER_MESSAGE_CHARS).trim();
 
+  /**
+   * Avisa o progresso, engolindo qualquer erro do ouvinte.
+   *
+   * O ouvinte escreve num socket, e socket que o navegador fechou LANÇA. Sem
+   * este try/catch, fechar o painel no meio de uma resposta derrubaria o turno
+   * — e com ele a gravação da conversa, que já custou a chamada ao modelo.
+   */
+  const avisar = (evento: AiTurnEvent) => {
+    if (!input.onEvent) return;
+    try {
+      input.onEvent(evento);
+    } catch {
+      // Ninguém do outro lado. O turno segue e termina de gravar.
+    }
+  };
+
   // -------------------------------------------------------------------------
   // 1. Conversa: carrega a existente (provando a posse) ou cria uma nova.
   //    O `where` inclui actorUserId — um id de conversa de outro usuário não
@@ -268,6 +314,11 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   }
 
   const conversationId: string = conversation.id;
+
+  // Primeiro evento do stream. Vai ANTES de tudo de propósito: mesmo que o
+  // provedor esteja fora e o turno degrade, o front já guardou em qual conversa
+  // a próxima mensagem continua.
+  avisar({ type: "conversa", conversationId });
 
   // Persiste a pergunta ANTES de chamar o provedor: se o modelo falhar, a
   // conversa continua coerente e o usuário não perde o que digitou.
@@ -418,7 +469,30 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // -------------------------------------------------------------------------
   const chamar = async (tools?: typeof ferramentas) => {
     try {
-      return await provider.chat({ messages, tools });
+      // Sem ouvinte, ou provedor sem streaming: o caminho de sempre. Não é
+      // fallback de emergência — é o modo normal de quem não pediu progresso.
+      if (!input.onEvent || typeof provider.chatStream !== "function") {
+        return await provider.chat({ messages, tools });
+      }
+
+      let transmitiu = false;
+      const completion = await provider.chatStream(
+        { messages, tools },
+        (delta) => {
+          if (!delta) return;
+          transmitiu = true;
+          avisar({ type: "texto", delta });
+        },
+      );
+
+      // O modelo às vezes narra antes de consultar ("Deixa eu verificar o
+      // estoque..."). Esse texto NÃO é a resposta: a resposta vem depois da
+      // consulta. Mandar apagar é o que impede o preâmbulo de ficar grudado na
+      // frente do número que o usuário pediu.
+      if (transmitiu && completion.ok && completion.toolCalls.length > 0) {
+        avisar({ type: "reinicio" });
+      }
+      return completion;
     } catch (err) {
       return {
         ok: false as const,
@@ -453,6 +527,13 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       role: "assistant",
       content: completion.content,
       toolCalls: completion.toolCalls,
+    });
+
+    // Só o NOME. Os argumentos carregam o termo que o usuário digitou e não
+    // acrescentam nada a um indicador de progresso.
+    avisar({
+      type: "consultando",
+      tools: completion.toolCalls.map((c) => c.name),
     });
 
     // Em paralelo: as tools de leitura são independentes entre si, e o modelo

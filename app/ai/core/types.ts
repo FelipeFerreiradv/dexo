@@ -123,6 +123,24 @@ export interface AiProvider {
   readonly name: string;
   readonly model: string;
   chat(input: AiChatInput): Promise<AiCompletion>;
+  /**
+   * A MESMA chamada de `chat`, avisando o texto conforme ele chega.
+   *
+   * OPCIONAL, e a ausência é um caso normal: sem ela o orquestrador usa `chat`
+   * e o turno inteiro chega de uma vez. Streaming é melhoria de percepção, não
+   * requisito de funcionamento — um provedor novo entra sem implementar isto.
+   *
+   * O retorno é o MESMO `AiCompletion` de `chat`, e é ele que vale. Os deltas
+   * são prévia: quem grava no banco e quem o usuário lê no fim é o retorno.
+   * Essa regra é o que torna impossível a resposta final divergir do que foi
+   * transmitido.
+   *
+   * Também NUNCA lança — mesmo contrato de `chat`.
+   */
+  chatStream?(
+    input: AiChatInput,
+    onDelta: (texto: string) => void,
+  ): Promise<AiCompletion>;
   transcribe?(audio: Buffer, mimeType: string): Promise<AiCompletion>;
   embed?(texts: string[]): Promise<number[][] | null>;
 }
