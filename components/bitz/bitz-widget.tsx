@@ -111,10 +111,15 @@ export function BitzWidget({ session }: { session: Session }) {
           // Pré-aquece o chunk do painel enquanto o mouse ainda vem chegando.
           onPointerEnter={() => {
             void import("./bitz-panel").catch(() => {});
-            // Pré-busca a animação junto do chunk: sem isso o primeiro clique
-            // gasta o começo dela baixando 272 KB, e o que o usuário vê é o
-            // robô entrando pela metade.
-            new Image().src = MASCOT.animacao;
+            // ⚠️ `fetch`, NUNCA `new Image()`. Navegador mantém UMA linha do
+            // tempo de animação POR RECURSO, compartilhada por todos os <img>
+            // que apontam para a mesma URL. `new Image().src = ...` já INICIA
+            // essa linha do tempo aqui no hover — e quando o usuário clicava,
+            // segundos depois, o <img> de verdade entrava numa animação já
+            // adiantada (ou encerrada, quando o arquivo tinha loop finito) e
+            // exibia um robô parado. `fetch` aquece o cache HTTP sem criar
+            // imagem nenhuma, então a linha do tempo só nasce no clique.
+            void fetch(MASCOT.animacao).catch(() => {});
           }}
           onAnimationEnd={() => setGreeting(false)}
           // Durante a animação o botão para de responder: um segundo clique não

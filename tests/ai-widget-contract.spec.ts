@@ -382,10 +382,40 @@ describe("⭐ a animação toca no ícone, e o painel espera por ela", () => {
     expect(widget).toContain("clearTimeout");
   });
 
-  it("a animação é pré-buscada no hover, junto do chunk do painel", () => {
-    // Sem isso o primeiro clique gasta o começo da animação baixando 237 KB.
-    expect(widget).toContain("MASCOT.animacao");
+  it("⭐ o pré-carregamento usa fetch, NUNCA `new Image()`", () => {
+    // O navegador mantém UMA linha do tempo de animação por RECURSO,
+    // compartilhada entre todos os <img> da mesma URL. `new Image().src` já
+    // inicia essa linha do tempo no hover: quando o usuário clicava, a
+    // animação já tinha adiantado — e com loop finito, já tinha ACABADO. O
+    // <img> nascia mostrando o último quadro, um robô parado. Foi exatamente
+    // este bug, e ele custou várias rodadas para ser isolado porque o arquivo,
+    // o servidor e o CSS estavam todos corretos.
     expect(widget).toMatch(/onPointerEnter/);
+    expect(widget).toContain("fetch(MASCOT.animacao)");
+    expect(widget).not.toMatch(/new Image\(\)\.src/);
+  });
+
+  it("⭐ o arquivo tem loop INFINITO — em loop finito ele congela", () => {
+    const b = readFileSync(
+      join(raiz, "public/bitz/bitz-mascote-animacao.webp"),
+    );
+    let off = 12;
+    let loop = null;
+    let quadros = 0;
+    while (off + 8 <= b.length) {
+      const id = b.toString("ascii", off, off + 4);
+      const sz = b.readUInt32LE(off + 4);
+      if (id === "ANIM") loop = b.readUInt16LE(off + 12);
+      if (id === "ANMF") quadros++;
+      off += 8 + sz + (sz % 2);
+    }
+    // 0 = infinito. Qualquer outro valor faz a imagem parar no último quadro
+    // depois da última volta — e como a linha do tempo é compartilhada por URL,
+    // ela nasce parada para quem chegar depois.
+    expect(loop, "loop_count do arquivo").toBe(0);
+    // E precisa ter quadros de verdade: um webp "animado" de 1 quadro passaria
+    // em todo o resto e não animaria nada.
+    expect(quadros).toBeGreaterThan(10);
   });
 
   it("⭐ o launcher repete a animação sem precisar de chave — mas o painel vai precisar", () => {

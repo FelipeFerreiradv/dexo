@@ -39,8 +39,15 @@ const PROPORCAO = 224 / 312;
  * e como é `<img>` não esbarra em política de autoplay, não precisa de
  * `muted`/`playsInline` e não devolve promise que rejeita.
  *
- * O "toca uma vez" está DENTRO do arquivo (contador de loop = 1), não no
- * código. Reabrir o painel remonta o `<img>` e a animação recomeça.
+ * ⚠️ O ARQUIVO TEM LOOP INFINITO, E ISSO É DE PROPÓSITO. Com contador de loop
+ * finito, um recurso que já tocou fica congelado no último quadro — e como o
+ * navegador compartilha UMA linha do tempo por URL entre todos os `<img>`,
+ * qualquer coisa que tenha tocado a animação antes (um pré-carregamento, uma
+ * abertura anterior) fazia a próxima exibição nascer parada. Em loop infinito
+ * a imagem está SEMPRE em movimento, venha de onde vier.
+ *
+ * Quem impõe o "toca uma vez" é o consumidor: o launcher desmonta o mascote
+ * quando o painel abre, ~1,2 s depois, antes de a volta completar.
  *
  * ⚠️ CUSTO. Só é buscado quando este componente monta — dentro do chunk
  * dinâmico do painel, ou seja, depois do primeiro clique. Quem nunca abre o
