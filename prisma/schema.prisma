@@ -60,6 +60,14 @@ model User {
   // Migração: ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "aiEnabledAt" TIMESTAMP(3);
   aiEnabledAt DateTime?
 
+  // Teto DIÁRIO de mensagens do Bitz para este tenant. NULL = usa o padrão
+  // global (AI_MAX_DAILY_PER_TENANT), que é o teto da prévia gratuita. Um
+  // número aqui SOBRESCREVE o padrão — é assim que um cliente de plano maior
+  // ganha cota cheia sem mexer em env de servidor.
+  // Configurável pelo Superadmin em /colaboradores.
+  // Migração: ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "aiDailyLimit" INTEGER;
+  aiDailyLimit Int?
+
   // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
   // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
   // bloqueado. Só afeta colaboradores; admin/superadmin sempre têm acesso total.

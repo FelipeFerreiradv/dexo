@@ -7,8 +7,9 @@
 -- Rodar duas vezes não duplica nada e não apaga nada.
 --
 -- O QUE ISTO FAZ COM O SISTEMA ATUAL: nada.
---   • 1 coluna nova em "User", nullable, sem default → NULL em 100% das linhas
---     existentes, e NULL significa "sem acesso ao Bitz".
+--   • 2 colunas novas em "User", nullable, sem default → NULL em 100% das
+--     linhas existentes. NULL em "aiEnabledAt" = sem concessão individual;
+--     NULL em "aiDailyLimit" = usa o teto padrão da plataforma.
 --   • 3 tabelas novas, vazias.
 --   • Nenhuma tabela existente alterada, nenhum índice existente tocado,
 --     nenhum enum existente mudado, NENHUMA extensão nova no Postgres.
@@ -21,13 +22,26 @@
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
--- 1/4 — Gate Premium por tenant (Fase 1)
+-- 1/4 — Gate Premium por tenant + teto diário por tenant
 --
--- Espelha `User.whatsappEnabledAt`: mesmo tipo, mesma semântica. NULL = sem
--- acesso. O acesso é concedido explicitamente, nunca por default.
+-- `aiEnabledAt` espelha `User.whatsappEnabledAt`: mesmo tipo, mesma semântica.
+-- NULL = sem concessão individual. O acesso é concedido explicitamente, nunca
+-- por default.
+--
+-- `aiDailyLimit` é o teto de mensagens por dia daquele cliente, gravado só pela
+-- rota de superadmin. NULL = usa AI_MAX_DAILY_PER_TENANT (padrão da
+-- plataforma). A prévia gratuita dá ACESSO, nunca cota: quem entra por ela fica
+-- com NULL aqui e cai no padrão.
+--
+-- ⚠️ AS DUAS COLUNAS VÊM ANTES DO DEPLOY, SEM EXCEÇÃO. O Prisma não faz
+-- `SELECT *` — ele expande a lista nominal de colunas do schema. Código no ar
+-- sem estas colunas quebra TODA leitura de "User", login inclusive.
 -- ---------------------------------------------------------------------------
 ALTER TABLE "User"
   ADD COLUMN IF NOT EXISTS "aiEnabledAt" TIMESTAMP(3);
+
+ALTER TABLE "User"
+  ADD COLUMN IF NOT EXISTS "aiDailyLimit" INTEGER;
 
 -- ---------------------------------------------------------------------------
 -- 2/4 — Persistência da conversa (Fase 2)
@@ -154,9 +168,13 @@ UPDATE "User"
 -- ===========================================================================
 -- CONFERÊNCIA — rode e veja se está tudo de pé
 -- ===========================================================================
+-- ⚠️ AS DUAS COLUNAS SÃO CONFERIDAS. Uma conferência que só olha `aiEnabledAt`
+-- dá verde com o banco pela metade — e a que faltar derruba o login no deploy.
 SELECT
   (SELECT count(*) FROM information_schema.columns
     WHERE table_name = 'User' AND column_name = 'aiEnabledAt')        AS coluna_aiEnabledAt,
+  (SELECT count(*) FROM information_schema.columns
+    WHERE table_name = 'User' AND column_name = 'aiDailyLimit')       AS coluna_aiDailyLimit,
   (SELECT count(*) FROM information_schema.tables
     WHERE table_name = 'AiConversation')                              AS tabela_conversation,
   (SELECT count(*) FROM information_schema.tables
@@ -166,7 +184,7 @@ SELECT
   (SELECT count(*) FROM "AiKnowledgeChunk")                           AS pedacos_indexados,
   (SELECT count(*) FROM "User" WHERE "aiEnabledAt" IS NOT NULL)       AS usuarios_liberados;
 
--- Esperado depois deste script: 1, 1, 1, 1, 0, 1
+-- Esperado depois deste script: 1, 1, 1, 1, 1, 0, 1
 -- `pedacos_indexados` vira 85 depois do `npm run ai:index -- --apply`.
 
 -- Não achou o seu usuário no passo 4? Veja como o e-mail está gravado:
@@ -182,7 +200,9 @@ SELECT
 --   DROP TABLE IF EXISTS "AiConversation";
 --   DROP TABLE IF EXISTS "AiKnowledgeChunk";
 --   ALTER TABLE "User" DROP COLUMN IF EXISTS "aiEnabledAt";
+--   ALTER TABLE "User" DROP COLUMN IF EXISTS "aiDailyLimit";
 --
--- Nenhuma outra tabela aponta para estas três, e a coluna só guarda a data de
--- concessão do plano. Reversível sem perda para o resto do sistema.
+-- Nenhuma outra tabela aponta para estas três, e as duas colunas só guardam a
+-- data de concessão do plano e o teto diário do cliente. Reversível sem perda
+-- para o resto do sistema.
 -- ===========================================================================

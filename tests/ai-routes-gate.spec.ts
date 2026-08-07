@@ -107,7 +107,10 @@ describe("rotas /ai/* — gate Premium", () => {
 
       expect(findUniqueMock).toHaveBeenCalledWith({
         where: { id: "admin-pai-1" },
-        select: { aiEnabledAt: true },
+        // `aiDailyLimit` entrou junto quando o teto por cliente foi criado: o
+        // serviço lê acesso E cota da mesma linha numa consulta só. O
+        // invariante deste teste continua sendo o `where`, logo acima.
+        select: { aiEnabledAt: true, aiDailyLimit: true },
       });
     });
   });

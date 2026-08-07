@@ -72,9 +72,18 @@ describe("isAiEnabledFor — gate flag + plano", () => {
     // O chamador passa request.user.dataOwnerId (= parentUserId do colaborador).
     await isAiEnabledFor("admin-pai-1");
 
+    // O INVARIANTE deste teste é o `where`: a consulta usa o dataOwnerId
+    // recebido, e não o id do ator. É o que faz o colaborador herdar do pai.
+    //
+    // ⚠️ O `select` ganhou `aiDailyLimit` quando o teto por cliente entrou: o
+    // serviço passou a devolver acesso E cota, e lê as duas colunas da mesma
+    // linha numa consulta só — duas seriam duas idas ao banco por mensagem. A
+    // asserção segue exata (e portanto mais específica que antes), de propósito:
+    // uma coluna a mais aqui é egress novo em caminho quente e merece ser vista
+    // em revisão.
     expect(spy).toHaveBeenCalledWith({
       where: { id: "admin-pai-1" },
-      select: { aiEnabledAt: true },
+      select: { aiEnabledAt: true, aiDailyLimit: true },
     });
   });
 

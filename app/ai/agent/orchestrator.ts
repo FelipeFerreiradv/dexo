@@ -26,6 +26,7 @@ import {
   formatKnowledgeForPrompt,
   retrieveKnowledge,
 } from "../knowledge/retriever";
+import { getAiDailyLimitFor } from "../entitlement/ai-entitlement.service";
 import {
   quotaMessage,
   refundAiTurn,
@@ -273,6 +274,23 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   const db = input.db ?? (prisma as any);
   const { dataOwnerId, actorUserId, scope } = input;
 
+  /**
+   * ⭐ O INSTANTE DO TURNO, CAPTURADO UMA VEZ SÓ.
+   *
+   * A reserva e a devolução de cota gravam num contador por DIA UTC. Produção
+   * nunca passa `input.now` (`ai.routes.ts` monta o input sem ele), então antes
+   * cada uma resolvia `new Date()` por conta própria, em momentos diferentes.
+   *
+   * Um turno que começa às 23:59:50 UTC (20:59 em São Paulo) e falha 20 s
+   * depois reservava no dia velho e devolvia no dia NOVO — decrementando um
+   * contador em que nunca reservou nada e liberando um slot do dia seguinte de
+   * graça. A janela é pequena (a duração de um turno, uma vez por dia), mas o
+   * erro é silencioso e permanente enquanto existir.
+   *
+   * Dentro do mesmo dia o comportamento é byte-idêntico.
+   */
+  const agora = input.now ?? new Date();
+
   const message = input.message.slice(0, MAX_USER_MESSAGE_CHARS).trim();
 
   /**
@@ -370,7 +388,19 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // -------------------------------------------------------------------------
   // 3. Quota diária (tenant + global), reserva pessimista.
   // -------------------------------------------------------------------------
-  const quota = await reserveAiTurn({ dataOwnerId, db, now: input.now });
+  // ⭐ O teto do tenant vem do PRÓPRIO cliente quando ele tem um
+  // (`User.aiDailyLimit`, configurado pelo Superadmin); `null` cai no padrão
+  // global. É isto que separa a prévia gratuita (5/dia) de quem assinou o plano
+  // maior, sem precisar de env por cliente.
+  const limiteDoTenant = await getAiDailyLimitFor(dataOwnerId);
+  const quota = await reserveAiTurn({
+    dataOwnerId,
+    db,
+    // `agora`, não `input.now`: a devolução lá embaixo usa o MESMO instante, e
+    // é isso que impede reserva e refund de caírem em dias UTC diferentes.
+    now: agora,
+    ...(limiteDoTenant !== null ? { maxPerTenant: limiteDoTenant } : {}),
+  });
   if (!quota.ok) {
     const denied: AiQuotaDenial = quota.denied ?? "tenant";
     auditQuotaExceeded({ dataOwnerId, actorUserId, conversationId, denied });
@@ -508,7 +538,43 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     }
   };
 
+  /**
+   * ⭐ TOKENS DO TURNO INTEIRO, somados chamada a chamada.
+   *
+   * `completion` é REATRIBUÍDO a cada rodada de tool, então `completion.usage`
+   * é o consumo da ÚLTIMA chamada, não do turno. Um turno com duas rodadas faz
+   * três ou quatro requisições ao provedor — e todas são cobradas.
+   *
+   * ⚠️ ISTO JÁ ESTEVE ERRADO, E O ERRO ERA CARO: o que ia para `AiMessage` era
+   * só a última chamada, e é dessa tabela que sai o relatório de custo. O custo
+   * medido virava um PISO, não o valor real, e a conta de "quanto custa liberar
+   * para todos" saía subestimada — exatamente a conta que decide se a prévia
+   * gratuita é viável.
+   *
+   * Somar é o único jeito honesto: não existe outro registro por chamada.
+   */
+  const uso = { inputTokens: 0, outputTokens: 0, houve: false };
+  const somarUso = (u: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+  }) => {
+    if (typeof u.inputTokens === "number") {
+      uso.inputTokens += u.inputTokens;
+      uso.houve = true;
+    }
+    if (typeof u.outputTokens === "number") {
+      uso.outputTokens += u.outputTokens;
+      uso.houve = true;
+    }
+  };
+  /** `null` quando o provedor não reporta uso — nunca zero, que seria mentira. */
+  const usoDoTurno = () => ({
+    inputTokens: uso.houve ? uso.inputTokens : null,
+    outputTokens: uso.houve ? uso.outputTokens : null,
+  });
+
   let completion = await chamar(ferramentas);
+  if (completion.ok) somarUso(completion.usage);
 
   // Trilha das consultas do turno. Vai para `AiMessage.toolCalls` (auditoria) e
   // para a contagem do log — SEM os argumentos, que carregam dado do cliente.
@@ -554,6 +620,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     }
 
     completion = await chamar(ferramentas);
+    if (completion.ok) somarUso(completion.usage);
   }
 
   // Estourou o teto de rodadas e o modelo ainda quer consultar. Uma última
@@ -565,11 +632,26 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       content: `Você atingiu o limite de ${MAX_TOOL_ROUNDS} rodadas de consulta neste turno. Responda agora com o que já obteve. Se faltou informação, diga o que faltou e proponha uma pergunta mais específica. NÃO invente número nenhum.`,
     });
     completion = await chamar(undefined);
+    if (completion.ok) somarUso(completion.usage);
   }
 
   if (!completion.ok) {
-    // O turno não virou chamada útil: devolve a cota.
-    await refundAiTurn({ dataOwnerId, db, now: input.now });
+    // ⭐ SÓ DEVOLVE A COTA SE NADA FOI COBRADO.
+    //
+    // ⚠️ Antes devolvia sempre, e isso vazava dinheiro: um turno com duas
+    // rodadas de tool faz três ou quatro requisições, e se a ÚLTIMA falha o
+    // Google já cobrou as anteriores. Devolver o slot ali fazia o contador
+    // voltar enquanto a fatura seguia subindo — e como o usuário reenvia a
+    // mesma pergunta, o ciclo se repete sem nunca consumir cota.
+    //
+    // `uso.houve` é o sinal exato: verdadeiro assim que qualquer chamada
+    // reportou tokens. Falso ⇒ nenhuma chamada útil aconteceu (config errada,
+    // rede caída, timeout no primeiro contato) ⇒ devolver é justo.
+    // `agora` é o mesmo instante da reserva — devolver com um `new Date()`
+    // novo decrementaria o contador do dia seguinte na virada.
+    if (!uso.houve) {
+      await refundAiTurn({ dataOwnerId, db, now: agora });
+    }
     auditProviderError({
       dataOwnerId,
       actorUserId,
@@ -608,8 +690,10 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       toolCalls: trilha.length > 0 ? trilha : null,
       provider: completion.provider,
       model: completion.model,
-      inputTokens: completion.usage.inputTokens,
-      outputTokens: completion.usage.outputTokens,
+      // ⭐ O turno INTEIRO, não a última chamada. É desta coluna que sai o
+      // relatório de custo.
+      inputTokens: usoDoTurno().inputTokens,
+      outputTokens: usoDoTurno().outputTokens,
       latencyMs: completion.latencyMs,
     },
   });
@@ -630,8 +714,8 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     conversationId,
     provider: completion.provider,
     model: completion.model,
-    inputTokens: completion.usage.inputTokens,
-    outputTokens: completion.usage.outputTokens,
+    inputTokens: usoDoTurno().inputTokens,
+    outputTokens: usoDoTurno().outputTokens,
     latencyMs: completion.latencyMs,
     toolCalls: trilha.length,
     degraded: false,
@@ -642,6 +726,6 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     content: completion.content,
     sources: fontes,
     degraded: false,
-    usage: completion.usage,
+    usage: usoDoTurno(),
   };
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
+  Bot,
   UserPlus,
   Users2,
   KeyRound,
@@ -51,6 +52,10 @@ type SuperUser = {
   defaultCostPrice: number | null;
   defaultStock: number | null;
   pagePermissions: Record<string, boolean> | null;
+  /** Bitz: concessão individual. null = sem concessão (pode ter acesso pela prévia). */
+  aiEnabledAt: string | null;
+  /** Bitz: teto diário próprio. null = usa o padrão da plataforma. */
+  aiDailyLimit: number | null;
   createdAt: string;
 };
 
@@ -92,6 +97,71 @@ export function SuperadminTeam() {
   const openPerms = (kid: SuperUser) => {
     setPermsValue(pagePermsFromValue(kid.pagePermissions));
     setPermsTarget(kid);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Bitz (agente de IA) — concessão e teto diário, por ADMINISTRADOR.
+  //
+  // ⭐ POR ADMINISTRADOR, NUNCA POR COLABORADOR. O gate e a quota do Bitz usam
+  // sempre o `dataOwnerId` (parentUserId ?? id): colaborador herda do admin pai
+  // e divide a mesma cota diária com ele. Um controle na linha do colaborador
+  // gravaria uma coluna que NUNCA seria lida — um botão que mente.
+  // ---------------------------------------------------------------------------
+  const [aiTarget, setAiTarget] = useState<SuperUser | null>(null);
+  const [aiEnabled, setAiEnabled] = useState(false);
+  /** String, e não number: o campo vazio precisa ser distinguível de zero. */
+  const [aiLimite, setAiLimite] = useState("");
+  const [aiSaving, setAiSaving] = useState(false);
+  /**
+   * Erro DENTRO do diálogo.
+   *
+   * ⚠️ O `setError` da página não serve aqui: o aviso dele é renderizado atrás
+   * do modal, então uma falha de rede ou um 400 da rota ficavam invisíveis — o
+   * superadmin clicava "Salvar", nada acontecia, e ele só descobria o motivo
+   * depois de desistir e fechar o diálogo.
+   */
+  const [aiErro, setAiErro] = useState<string | null>(null);
+
+  const openAi = (u: SuperUser) => {
+    setAiEnabled(Boolean(u.aiEnabledAt));
+    // Teto sem concessão é ignorado pelo servidor — não mostrar como se valesse.
+    setAiLimite(
+      u.aiEnabledAt && u.aiDailyLimit !== null ? String(u.aiDailyLimit) : "",
+    );
+    setAiErro(null);
+    setAiTarget(u);
+  };
+
+  const handleSaveAi = async () => {
+    if (!session?.user?.email || !aiTarget) return;
+    const bruto = aiLimite.trim();
+    // Vazio = "usa o padrão da plataforma", que é `null` na API.
+    const limite = bruto === "" ? null : Number(bruto);
+    if (limite !== null && (!Number.isInteger(limite) || limite < 0)) {
+      setAiErro("Teto diário inválido: informe um número inteiro, ou deixe vazio.");
+      return;
+    }
+
+    setAiSaving(true);
+    setAiErro(null);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/superadmin/users/${aiTarget.id}`,
+        {
+          method: "PATCH",
+          headers: authHeaders(session, { "content-type": "application/json" }),
+          body: JSON.stringify({ aiEnabled, aiDailyLimit: limite }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Erro ao salvar o Bitz");
+      setAiTarget(null);
+      await loadUsers();
+    } catch (err) {
+      setAiErro(err instanceof Error ? err.message : "Erro ao salvar o Bitz");
+    } finally {
+      setAiSaving(false);
+    }
   };
 
   const handleSavePerms = async () => {
@@ -313,6 +383,18 @@ export function SuperadminTeam() {
                         {!u.isActive && (
                           <Badge variant="destructive">Bloqueado</Badge>
                         )}
+                        {/* Só marca quem tem CONCESSÃO. Quem está usando pela
+                            prévia gratuita não aparece aqui de propósito: no
+                            dia de encerrar a prévia, esta é a lista de quem
+                            continua com acesso. */}
+                        {u.aiEnabledAt && (
+                          <Badge variant="secondary">
+                            Bitz
+                            {u.aiDailyLimit !== null
+                              ? ` · ${u.aiDailyLimit}/dia`
+                              : ""}
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-xs text-muted-foreground">
                         {u.email}
@@ -326,6 +408,18 @@ export function SuperadminTeam() {
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                       {u.role === "ADMIN" && (
                         <>
+                          {/* ⚠️ Só na linha do ADMINISTRADOR. O Bitz é
+                              contratado e cotado por TENANT — colaborador herda
+                              do pai e divide a mesma cota. Um botão na linha do
+                              colaborador gravaria coluna que nunca é lida. */}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openAi(u)}
+                          >
+                            <Bot className="mr-2 h-4 w-4" />
+                            Bitz
+                          </Button>
                           <Button
                             variant="outline"
                             size="sm"
@@ -554,6 +648,96 @@ export function SuperadminTeam() {
                 </>
               ) : (
                 "Salvar permissões"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bitz (agente de IA) — concessão e teto diário deste tenant. */}
+      <Dialog open={!!aiTarget} onOpenChange={(o) => !o && setAiTarget(null)}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Bitz — assistente de IA</DialogTitle>
+            <DialogDescription>
+              {aiTarget ? label(aiTarget) : ""} — vale para o administrador e
+              todos os colaboradores dele, que dividem a mesma cota diária.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <label className="flex items-start gap-3 rounded-md border p-3">
+              <input
+                type="checkbox"
+                checked={aiEnabled}
+                // ⭐ Desmarcar LIMPA o teto no campo. O teto pertence ao plano:
+                // deixá-lo preenchido faria a tela dizer que um cliente
+                // revogado ainda tem cota própria — e o servidor já ignora esse
+                // teto sem concessão, então o campo estaria mentindo duas vezes.
+                onChange={(e) => {
+                  setAiEnabled(e.target.checked);
+                  if (!e.target.checked) setAiLimite("");
+                }}
+                disabled={aiSaving}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">
+                  Acesso liberado (plano pago)
+                </span>
+                <span className="text-muted-foreground block text-xs">
+                  Concessão individual. Durante a prévia gratuita todos os
+                  clientes têm acesso mesmo sem isto marcado — mas quando a
+                  prévia for encerrada, só quem estiver marcado aqui continua.
+                </span>
+              </span>
+            </label>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="ai-limite">Teto diário de mensagens</Label>
+              <Input
+                id="ai-limite"
+                type="number"
+                min={0}
+                step={1}
+                value={aiLimite}
+                onChange={(e) => setAiLimite(e.target.value)}
+                disabled={aiSaving}
+                placeholder="Vazio = padrão da plataforma"
+              />
+              <p className="text-muted-foreground text-xs">
+                Deixe vazio para usar o padrão da plataforma (o teto da prévia
+                gratuita). Um número aqui sobrescreve esse padrão — é assim que
+                um cliente de plano maior ganha cota cheia. Cada mensagem custa
+                cerca de R$&nbsp;0,01.
+              </p>
+            </div>
+            {aiErro && (
+              <p
+                role="alert"
+                className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+              >
+                {aiErro}
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setAiTarget(null)}
+              disabled={aiSaving}
+            >
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveAi} disabled={aiSaving}>
+              {aiSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Salvando…
+                </>
+              ) : (
+                "Salvar"
               )}
             </Button>
           </DialogFooter>
