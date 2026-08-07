@@ -97,6 +97,11 @@ function saudacao(hora: number): string {
 interface BitzEmptyStateProps {
   nome?: string | null;
   onPergunta: (texto: string) => void;
+  /**
+   * Contador de aberturas do painel. Serve de `key` para a animação: sem ele o
+   * `<img>` nunca remonta e a saudação toca uma vez só por aba.
+   */
+  abertura?: number;
   className?: string;
 }
 
@@ -109,6 +114,7 @@ interface BitzEmptyStateProps {
 export function BitzEmptyState({
   nome,
   onPergunta,
+  abertura = 0,
   className,
 }: BitzEmptyStateProps) {
   const [tema, setTema] = React.useState<string>(TEMAS[0].id);
@@ -129,7 +135,7 @@ export function BitzEmptyState({
         {/* A saudação é o momento da animação: toca uma vez ao abrir o painel,
             sem segurar nada. O robô é de corpo inteiro (proporção 3:4), então
             ganha altura de verdade em vez de caber num círculo de 52 px. */}
-        <BitzMascotAnimado height={92} />
+        <BitzMascotAnimado key={abertura} height={92} />
         <div className="min-w-0 pb-1">
           <p className="text-muted-foreground text-sm">
             {hora === null ? "Olá" : saudacao(hora)}

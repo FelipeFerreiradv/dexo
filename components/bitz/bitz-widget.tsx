@@ -7,7 +7,7 @@ import type { Session } from "next-auth";
 import { cn } from "@/lib/utils";
 import { useBitzEntitlement } from "@/hooks/use-bitz-entitlement";
 import { useIsMobile } from "@/hooks/use-mobile";
-import type { BitzPanelMode } from "./bitz-constants";
+import { MASCOT, type BitzPanelMode } from "./bitz-constants";
 import { BitzMascot } from "./bitz-mascot";
 
 /**
@@ -44,6 +44,16 @@ export function BitzWidget({ session }: { session: Session }) {
   const [mounted, setMounted] = React.useState(false);
   const [greeting, setGreeting] = React.useState(false);
   const [mode, setMode] = React.useState<BitzPanelMode>("docked");
+  /**
+   * Quantas vezes o painel foi aberto nesta aba.
+   *
+   * ⚠️ NÃO É TELEMETRIA — é o que faz a animação de saudação TOCAR DE NOVO.
+   * O painel é montado uma vez e nunca desmontado (fechar só faz `open=false`),
+   * então o `<img>` da animação também nunca remonta. WebP animado com contador
+   * de loop 1 toca uma vez e congela no último quadro: sem esta chave, o
+   * lojista via a animação na primeira abertura da aba e NUNCA MAIS.
+   */
+  const [aberturas, setAberturas] = React.useState(0);
 
   const abrir = () => {
     // No celular o padrão é tela cheia; no desktop abre docado e o usuário
@@ -53,6 +63,7 @@ export function BitzWidget({ session }: { session: Session }) {
     setMounted(true);
     setOpen(true);
     setGreeting(true);
+    setAberturas((n) => n + 1);
   };
 
   if (!enabled) return null;
@@ -66,6 +77,10 @@ export function BitzWidget({ session }: { session: Session }) {
           // Pré-aquece o chunk do painel enquanto o mouse ainda vem chegando.
           onPointerEnter={() => {
             void import("./bitz-panel").catch(() => {});
+            // Pré-busca a animação junto do chunk: sem isso o primeiro clique
+            // gasta o começo dela baixando 237 KB, e o que o usuário vê é o
+            // robô entrando pela metade.
+            new Image().src = MASCOT.animacao;
           }}
           onAnimationEnd={() => setGreeting(false)}
           aria-label="Abrir o Bitz, assistente do Dexo"
@@ -93,6 +108,7 @@ export function BitzWidget({ session }: { session: Session }) {
           onOpenChange={setOpen}
           mode={mode}
           onModeChange={setMode}
+          abertura={aberturas}
           userName={session.user?.name}
         />
       )}

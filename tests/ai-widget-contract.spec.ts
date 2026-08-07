@@ -324,3 +324,29 @@ describe("a animação da saudação", () => {
     );
   });
 });
+
+describe("⭐ a saudação anima TODA vez que o painel abre", () => {
+  const widget = lerCodigo("components/bitz/bitz-widget.tsx");
+  const vazio = lerCodigo("components/bitz/bitz-empty-state.tsx");
+
+  it("o painel nunca desmonta — por isso a animação precisa de uma chave", () => {
+    // `mounted` vira true no primeiro clique e NUNCA volta: fechar o painel só
+    // faz `open=false`. Sem chave, o <img> da animação também nunca remonta, e
+    // um WebP com contador de loop 1 congela no último quadro. Resultado: a
+    // saudação animava na primeira abertura da aba e nunca mais.
+    expect(widget).toMatch(/setMounted\(true\)/);
+    expect(widget).not.toMatch(/setMounted\(false\)/);
+  });
+
+  it("cada abertura incrementa o contador e ele chega na animação", () => {
+    expect(widget).toMatch(/setAberturas\(\(n\) => n \+ 1\)/);
+    expect(widget).toContain("abertura={aberturas}");
+    expect(vazio).toContain("key={abertura}");
+  });
+
+  it("a animação é pré-buscada no hover, junto do chunk do painel", () => {
+    // Sem isso o primeiro clique gasta o começo da animação baixando 237 KB.
+    expect(widget).toContain("MASCOT.animacao");
+    expect(widget).toMatch(/onPointerEnter/);
+  });
+});
