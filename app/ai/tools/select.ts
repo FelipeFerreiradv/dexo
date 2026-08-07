@@ -15,6 +15,20 @@
 import { normalizeTerm } from "../../repositories/product-search-terms";
 import type { AiTool } from "./registry";
 
+// ⚠️ PALAVRA-CHAVE DE DUAS PALAVRAS É FRÁGIL, e falha em silêncio.
+//
+// A comparação é substring sobre a frase inteira, então QUALQUER palavra
+// intercalada quebra o casamento — e o turno cai no conjunto padrão sem
+// ninguém perceber. Aconteceu com a pergunta mais comum do sistema: a chave
+// era "quanto vendi", o lojista escreve "quanto EU vendi", e o relatório de
+// vendas nunca era oferecido.
+//
+// Regra: quando a chave for `interrogativo + verbo` ("quanto vendi", "quanto
+// cobrar"), use SÓ O VERBO. `interrogativo + substantivo` ("quantos produtos")
+// é seguro, porque em português o pronome vem depois, não no meio.
+//
+// `tests/ai-tools-registry.spec.ts` pina as frases reais.
+
 /** Teto de tools por turno. */
 export const MAX_TOOLS_PER_TURN = 8;
 

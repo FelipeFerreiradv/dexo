@@ -8,6 +8,7 @@ import { ALL_TOOLS, getToolRegistry } from "../app/ai/tools";
 import { ADVISORY_TOOLS } from "../app/ai/tools/advisory";
 import { READ_TOOLS, getReadToolRegistry } from "../app/ai/tools/read";
 import { toToolDefinition, toolParameters } from "../app/ai/tools/registry";
+import { selectTools } from "../app/ai/tools/select";
 import { normalizeTerm } from "../app/repositories/product-search-terms";
 import { PAGE_DEFS } from "../app/lib/page-access";
 
@@ -268,3 +269,55 @@ function listarTs(dir: string): string[] {
   }
   return saida;
 }
+
+// ===========================================================================
+// ⭐ Frase de lojista de verdade escolhe a tool certa.
+//
+// A seleção casa palavra-chave por SUBSTRING, e por isso chave com mais de uma
+// palavra é FRÁGIL: qualquer palavra no meio quebra o casamento em silêncio, e
+// o turno cai no conjunto padrão sem ninguém perceber.
+//
+// Foi o que aconteceu com a pergunta mais comum do sistema. A chave era
+// "quanto vendi"; o lojista escreve "quanto EU vendi" — e o "eu" no meio fazia
+// o relatório de vendas nunca ser oferecido. O agente respondia listando
+// pedidos um a um e dizendo que não tinha o total.
+//
+// Este bloco existe para a próxima chave frágil morrer aqui, e não na frente
+// do cliente.
+// ===========================================================================
+
+describe("⭐ seleção com a frase que o lojista realmente digita", () => {
+  const registry = getToolRegistry();
+  const nomes = (m: string) => selectTools(m, registry).map((t) => t.name);
+
+  it.each([
+    ["Quanto eu vendi em julho?", "relatorio_vendas"],
+    ["quanto vendeu a loja ontem", "relatorio_vendas"],
+    ["quanto nós vendemos esse mês", "relatorio_vendas"],
+    ["quanto faturei no mês passado", "relatorio_vendas"],
+    ["quanto eu devo cobrar nesse farol", "sugerir_preco"],
+    ["por quanto vender essa lanterna", "sugerir_preco"],
+    ["quanto eu tenho a receber?", "contas_a_receber"],
+    ["me acha o farol do gol", "buscar_produto"],
+    ["quais peças estão com estoque baixo", "relatorio_estoque"],
+    [
+      "o pedido não apareceu, deu erro na sincronização",
+      "diagnostico_operacional",
+    ],
+  ])("%s → %s", (frase, esperada) => {
+    expect(nomes(frase)).toContain(esperada);
+  });
+
+  it("⭐ a pergunta mais comum do sistema oferece o relatório, não a lista", () => {
+    // O bug que originou este bloco: "quanto vendi" como chave nunca casava
+    // "quanto EU vendi", e o turno caía no conjunto padrão. O agente listava
+    // pedido por pedido e terminava dizendo que não tinha o total.
+    for (const frase of [
+      "Quanto eu vendi em julho?",
+      "quanto a loja vendeu ontem",
+      "quanto nós vendemos esse mês",
+    ]) {
+      expect(nomes(frase), frase).toContain("relatorio_vendas");
+    }
+  });
+});

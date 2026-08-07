@@ -7,6 +7,8 @@
 //    servidor. O modelo não consegue "esquecer" de citar porque não é ele que
 //    escreve o campo.
 
+import { TIMEZONE_LOJA } from "../tools/serialize";
+
 /** Envelope de dado. Tudo que vem do banco entra aqui — como DADO, nunca instrução. */
 export const DATA_ENVELOPE_OPEN = "<dados_do_sistema>";
 export const DATA_ENVELOPE_CLOSE = "</dados_do_sistema>";
@@ -57,6 +59,43 @@ export const REGRAS_DE_CONSULTA = `COMO USAR AS CONSULTAS
 - Se o resultado vier truncado, diga que a lista é maior e ofereça um recorte mais específico.
 - Se a consulta disser SEM PERMISSÃO, explique em uma frase e sugira falar com o administrador. Não tente outro caminho para obter o mesmo dado.
 - Dinheiro em reais, com R$ e duas casas. Data no formato do Brasil.`;
+
+/**
+ * ⭐ Que dia é hoje, no fuso da loja.
+ *
+ * Entra em TODO turno, e é o bloco mais barato do prompt (~60 tokens) para o
+ * estrago que evita: sem ele o modelo não tem data nenhuma e resolve "julho",
+ * "ontem" e "mês passado" pelo que sobrou do treinamento. Observado com chave
+ * real em 07/08/2026: à pergunta "quanto eu vendi em julho?" o modelo consultou
+ * **julho de 2024** e respondeu, com toda a confiança, que não houve venda.
+ *
+ * O erro é do tipo mais perigoso que este agente pode cometer: número errado
+ * com cara de número certo, sobre um período que o lojista acha que perguntou.
+ *
+ * O fuso é o da operação (São Paulo), o mesmo de `tools/serialize.ts` — data
+ * civil em UTC jogaria toda venda feita depois das 21h para o dia seguinte.
+ */
+export function blocoDeHoje(now: Date = new Date()): string {
+  const fmt = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: TIMEZONE_LOJA,
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const ano = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: TIMEZONE_LOJA,
+    year: "numeric",
+  }).format(now);
+
+  return `DATA DE HOJE
+Hoje é ${fmt.format(now)} (fuso de São Paulo, o da loja).
+
+- Resolva SEMPRE "hoje", "ontem", "esta semana", "este mês", "mês passado" e "ano passado" a partir dessa data. Nunca do seu treinamento.
+- Mês solto sem ano ("em julho", "de março a maio") é do ano corrente, ${ano} — a não ser que o usuário diga outro ano.
+- Se o mês pedido ainda não aconteceu em ${ano}, é do ano anterior. Em caso de dúvida, PERGUNTE em vez de escolher.
+- Ao consultar, passe as datas completas para a ferramenta. Ao responder, repita o período que você usou, para o usuário conferir.`;
+}
 
 /**
  * Regras de RECOMENDAÇÃO. Só entram quando há tool consultiva no cardápio.

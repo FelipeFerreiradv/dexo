@@ -41,6 +41,7 @@ import { classifyIntent } from "./intent";
 import {
   REGRAS_DE_CONSULTA,
   REGRAS_DE_RECOMENDACAO,
+  blocoDeHoje,
   buildSystemPrompt,
   wrapSystemData,
 } from "./system-prompt";
@@ -391,7 +392,9 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     content: r.content,
   }));
 
-  const extraSystem: string[] = [];
+  // A data vem PRIMEIRO e SEMPRE: sem ela o modelo resolve "julho" e "ontem"
+  // pelo que sobrou do treinamento, e responde com confiança sobre o ano errado.
+  const extraSystem: string[] = [blocoDeHoje(input.now)];
   if (conversation.summary) {
     extraSystem.push(
       `RESUMO DO QUE JÁ FOI CONVERSADO (turnos antigos, fora da janela):\n${conversation.summary}`,

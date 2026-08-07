@@ -65,7 +65,7 @@ export const sugerirPreco: AiTool = {
   page: "produtos",
   keywords: [
     "preco",
-    "quanto cobrar",
+    "cobrar",
     "quanto vale",
     "quanto vender",
     "precificar",

@@ -119,7 +119,10 @@ export const relatorioVendas: AiTool = {
   kind: "read",
   page: "dashboard",
   keywords: [
-    "quanto vendi",
+    "vendi",
+    "vendeu",
+    "vendemos",
+    "faturou",
     "faturament",
     "faturei",
     "receita",
