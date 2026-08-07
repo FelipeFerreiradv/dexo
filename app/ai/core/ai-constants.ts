@@ -9,13 +9,41 @@
 // deixa apenas o Bitz indisponível, e todo o resto do sistema funciona igual.
 
 /** Provedores suportados. `mock` é offline/determinístico (suíte de testes). */
-export type AiProviderName = "gemini" | "mock";
+export type AiProviderName = "gemini" | "deepseek" | "mock";
+
+/**
+ * As capacidades que o Bitz roteia para modelos DIFERENTES.
+ *
+ * ⭐ POR QUE ISTO EXISTE: dinheiro. Texto é ~95% do volume (dúvida, relatório,
+ * consulta de peça) e o modelo barato dá conta. Imagem e áudio são raros e
+ * exigem modelo que os entenda. Amarrar tudo a um provedor só significa pagar
+ * preço de multimodal em toda pergunta de texto.
+ *
+ * ⚠️ NESTA RODADA SÓ `texto` É CONSUMIDO. `imagem` e `audio` resolvem, são
+ * testados e estão documentados no `.env.example`, mas nada os chama ainda —
+ * eles entram com as Fases 7 (áudio) e 8 (anexos). Estão aqui para que a
+ * configuração do cliente não precise mudar quando aquelas fases chegarem.
+ */
+export type AiCapability = "texto" | "imagem" | "audio";
 
 export const AI_CONSTANTS = {
   /** Endpoint REST do Gemini. Sem SDK — a casa fala REST com todo provedor. */
   GEMINI_BASE_URL:
     process.env.AI_GEMINI_BASE_URL ||
     "https://generativelanguage.googleapis.com",
+
+  /**
+   * Endpoint REST do DeepSeek. A API é compatível com o formato da OpenAI
+   * (`/chat/completions`, `Authorization: Bearer`, `tools`/`tool_calls`).
+   *
+   * ⚠️ O DeepSeek é TEXTO PURO na API. Não tem visão (a leitura de imagem
+   * existe só no chat.deepseek.com, não na API) e não tem áudio em forma
+   * nenhuma. Rotear `imagem` ou `audio` para ele não falha na configuração —
+   * falha na chamada, com `erro_provedor`. Por isso o `.env.example` diz, na
+   * linha de cada rota, quais provedores servem para aquela capacidade.
+   */
+  DEEPSEEK_BASE_URL:
+    process.env.AI_DEEPSEEK_BASE_URL || "https://api.deepseek.com",
 
   /** Timeout por request ao provedor. Curto de propósito: o chat degrada. */
   DEFAULT_TIMEOUT_MS: 30_000,
@@ -78,10 +106,24 @@ export function isAiFreePreviewEnabled(): boolean {
   return process.env.AI_FREE_PREVIEW === "true";
 }
 
-/** Provedor configurado. Default `mock` — sem config, nada chama rede. */
+/** Normaliza um nome de provedor. Desconhecido ⇒ `mock`. */
+function paraProvedor(raw: string | undefined): AiProviderName {
+  const v = (raw || "").trim().toLowerCase();
+  if (v === "gemini") return "gemini";
+  if (v === "deepseek") return "deepseek";
+  // ⚠️ Desconhecido cai no MOCK, e isso é deliberado: o mock não toca rede.
+  // Um typo em `AI_PROVIDER` deixa o Bitz sem graça, nunca chamando um
+  // endpoint errado com a chave do cliente.
+  return "mock";
+}
+
+/**
+ * Provedor do `AI_PROVIDER` legado. Continua sendo o padrão de TODAS as
+ * capacidades que não tiverem rota própria — é o que faz um `.env` de hoje se
+ * comportar exatamente como hoje depois desta mudança.
+ */
 export function getAiProviderName(): AiProviderName {
-  const raw = (process.env.AI_PROVIDER || "").trim().toLowerCase();
-  return raw === "gemini" ? "gemini" : "mock";
+  return paraProvedor(process.env.AI_PROVIDER);
 }
 
 /** Nome do modelo. NUNCA hardcoded no código de chamada — sempre daqui. */
@@ -89,9 +131,78 @@ export function getAiModel(): string | undefined {
   return process.env.AI_MODEL?.trim() || undefined;
 }
 
-/** Chave da API. Só no servidor, nunca em NEXT_PUBLIC_*. */
+/** Chave da API legada, do `AI_PROVIDER`. Só no servidor, nunca em NEXT_PUBLIC_*. */
 export function getAiApiKey(): string | undefined {
   return process.env.AI_API_KEY?.trim() || undefined;
+}
+
+/** Nome da env de rota de uma capacidade: `texto` ⇒ `AI_ROUTE_TEXTO`. */
+function envDaRota(capacidade: AiCapability): string {
+  return `AI_ROUTE_${capacidade.toUpperCase()}`;
+}
+
+/**
+ * ⭐ A ROTA DE UMA CAPACIDADE — o coração da troca dinâmica de modelo.
+ *
+ * Formato: `AI_ROUTE_TEXTO="deepseek:deepseek-v4"`, ou seja `provedor:modelo`.
+ *
+ * POR QUE UMA STRING SÓ, E NÃO DUAS VARIÁVEIS. Nome de modelo só significa
+ * alguma coisa DENTRO de um provedor: `deepseek-v4` não existe no Gemini e
+ * `gemini-2.5-flash` não existe no DeepSeek. Separar em `AI_TEXTO_PROVIDER` +
+ * `AI_TEXTO_MODEL` convida a combinação impossível — trocar o provedor e
+ * esquecer o modelo ao lado. Aqui os dois andam juntos ou não andam.
+ *
+ * ORDEM DE RESOLUÇÃO, e ela é a garantia de zero regressão:
+ *   1. `AI_ROUTE_<CAPACIDADE>`, se estiver preenchida e for parseável;
+ *   2. senão, o par legado `AI_PROVIDER` + `AI_MODEL` — o comportamento de hoje.
+ *
+ * Um `.env` que nunca ouviu falar de rota continua funcionando byte a byte
+ * igual, para as três capacidades.
+ *
+ * ⚠️ MODELO VAZIO NÃO VIRA DEFAULT. `AI_ROUTE_TEXTO="deepseek"` (sem `:modelo`)
+ * devolve modelo `undefined`, e quem chama degrada com `sem_modelo`. Inventar
+ * um nome de modelo aqui é o começo de uma conta surpresa: nomes mudam (o
+ * `deepseek-chat` foi descontinuado em 24/07/2026) e um default silencioso
+ * chamaria um modelo que o cliente não escolheu, com o preço que vier.
+ */
+export function getAiRoute(capacidade: AiCapability): {
+  provider: AiProviderName;
+  model: string | undefined;
+} {
+  const bruto = process.env[envDaRota(capacidade)]?.trim();
+
+  if (bruto) {
+    const sep = bruto.indexOf(":");
+    const nomeProvedor = sep >= 0 ? bruto.slice(0, sep) : bruto;
+    const modelo = sep >= 0 ? bruto.slice(sep + 1).trim() : "";
+    return { provider: paraProvedor(nomeProvedor), model: modelo || undefined };
+  }
+
+  return { provider: getAiProviderName(), model: getAiModel() };
+}
+
+/**
+ * ⭐ A CHAVE DE UM PROVEDOR — e a regra de segurança que governa esta função.
+ *
+ * Ordem:
+ *   1. `AI_GEMINI_API_KEY` / `AI_DEEPSEEK_API_KEY` — a chave daquele provedor;
+ *   2. `AI_API_KEY`, **e somente se aquele provedor for o `AI_PROVIDER`**.
+ *
+ * ⚠️ O PASSO 2 É ESTREITO DE PROPÓSITO. Sem a condição, um `.env` com
+ * `AI_PROVIDER=gemini` + `AI_ROUTE_TEXTO=deepseek:...` e sem
+ * `AI_DEEPSEEK_API_KEY` mandaria a **chave do Google para o servidor do
+ * DeepSeek** no primeiro `Authorization: Bearer`. Seria vazamento de
+ * credencial para terceiro, causado por uma linha de configuração e sem
+ * nenhum sinal de erro. Faltando a chave certa, o provedor simplesmente não
+ * sobe e o Bitz degrada — que é a falha correta.
+ */
+export function getAiApiKeyFor(provider: AiProviderName): string | undefined {
+  if (provider === "mock") return undefined;
+
+  const propria = process.env[`AI_${provider.toUpperCase()}_API_KEY`]?.trim();
+  if (propria) return propria;
+
+  return provider === getAiProviderName() ? getAiApiKey() : undefined;
 }
 
 /** Lê um inteiro positivo do ambiente, com fallback. Inválido ⇒ fallback. */
@@ -148,11 +259,15 @@ export function isAiExternalLookupEnabled(): boolean {
  * validateWhatsAppConfig/validateMagaluConfig. Devolve o motivo em vez de
  * lançar: quem chama precisa DEGRADAR, não quebrar.
  */
-export function describeAiConfigProblem(): string | null {
+export function describeAiConfigProblem(
+  capacidade: AiCapability = "texto",
+): string | null {
   if (!isAiModuleEnabled()) return "modulo_desligado";
-  const provider = getAiProviderName();
+  // O parâmetro tem default: `describeAiConfigProblem()` continua sendo a
+  // pergunta sobre o caminho de texto, que é o único consumido hoje.
+  const { provider, model } = getAiRoute(capacidade);
   if (provider === "mock") return null;
-  if (!getAiApiKey()) return "sem_api_key";
-  if (!getAiModel()) return "sem_modelo";
+  if (!getAiApiKeyFor(provider)) return "sem_api_key";
+  if (!model) return "sem_modelo";
   return null;
 }

@@ -369,9 +369,12 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // 2. Provedor. Resolvido antes da quota: sem provedor não faz sentido gastar
   //    cota do cliente.
   // -------------------------------------------------------------------------
-  const provider = resolveAiProvider();
+  // ⭐ "texto" é a CAPACIDADE deste turno, e é o que decide qual modelo atende.
+  // Um turno de chat é texto mesmo quando consulta o sistema — imagem e áudio
+  // entram com as Fases 8 e 7, cada uma declarando a sua. Ver `getAiRoute`.
+  const provider = resolveAiProvider("texto");
   if (!provider) {
-    const reason = (describeAiConfigProblem() ??
+    const reason = (describeAiConfigProblem("texto") ??
       "provedor_desconhecido") as AiFailureReason;
     auditProviderError({
       dataOwnerId,
@@ -613,9 +616,23 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       ),
     );
 
-    for (const r of resultados) {
+    for (const [i, r] of resultados.entries()) {
       trilha.push({ name: r.name, ok: r.ok, ms: r.ms });
-      messages.push({ role: "tool", content: r.content, toolName: r.name });
+      messages.push({
+        role: "tool",
+        content: r.content,
+        toolName: r.name,
+        // ⭐ O ID DO PEDIDO VOLTA JUNTO DA RESPOSTA, e o índice é confiável:
+        // `resultados` é o `Promise.all` sobre `completion.toolCalls`, na mesma
+        // ordem, uma posição para cada.
+        //
+        // O Gemini casa pedido e resposta pelo NOME e ignora este campo. As
+        // APIs no formato da OpenAI — DeepSeek inclusive — casam pelo ID e
+        // recusam (HTTP 400) um `role:"tool"` sem ele. Como o histórico é
+        // montado uma vez e servido a qualquer provedor, o id precisa estar
+        // aqui. Campo aditivo: nada no caminho do Gemini muda.
+        toolCallId: completion.toolCalls[i]?.id,
+      });
       if (r.ok) sources.push(...sourcesOf(r, registry.get(r.name)));
     }
 

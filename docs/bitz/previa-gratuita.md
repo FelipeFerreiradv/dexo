@@ -88,6 +88,16 @@ Escolha o orçamento e derive o teto global:
 > **Reapure depois de uma semana de uso real** e reajuste o teto pelo que a
 > fatura disser, não por esta tabela.
 
+### O custo depende de qual modelo atende
+
+O número acima foi medido com o Gemini atendendo tudo. **Desde o roteamento por
+capacidade, texto pode ir para um modelo bem mais barato** — e texto é ~95% do
+volume. Ver `docs/bitz/roteamento-de-modelo.md`.
+
+Isso muda a conta na direção boa, mas **não muda o que é garantia**: o teto
+global continua contando MENSAGENS, não reais. Reapure com a fatura real depois
+de uma semana, com o roteamento já ligado.
+
 ## 4. Ligar a prévia
 
 ```bash
