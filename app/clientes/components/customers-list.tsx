@@ -9,6 +9,7 @@ import {
   Pencil,
   Plus,
   Search,
+  ShoppingBag,
   Trash2,
   Users,
 } from "lucide-react";
@@ -46,6 +47,8 @@ import { cn } from "@/lib/utils";
 import { maskCpf, maskCnpj, maskPhone } from "@/app/lib/masks";
 import { SectionHeading } from "@/components/section-heading";
 import { CustomerDialog } from "./customer-dialog";
+import { CustomerPurchasesSheet } from "./customer-purchases-sheet";
+import { isPurchaseHistoryEnabled } from "../lib/customer-purchases";
 import type { CustomerFormData } from "../lib/customer-schema";
 
 interface CustomerRow {
@@ -68,6 +71,10 @@ interface Toast {
 }
 
 const LIMIT = 20;
+
+// Bloco C — histórico de compras. Flag OFF ⇒ a tabela renderiza EXATAMENTE
+// como hoje (mesmas colunas, mesmas 2 ações por linha, zero request extra).
+const PURCHASE_HISTORY = isPurchaseHistoryEnabled();
 
 interface CustomersListProps {
   // Quando true (dentro das abas de Clientes, ou seja, só com a flag ligada):
@@ -95,6 +102,11 @@ export function CustomersList({
     (Partial<CustomerFormData> & { id?: string }) | undefined
   >(undefined);
   const [deleteTarget, setDeleteTarget] = useState<CustomerRow | null>(null);
+  // Bloco C: cliente cujo histórico de compras está aberto no painel lateral.
+  const [purchasesTarget, setPurchasesTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const showToast = useCallback(
@@ -321,6 +333,18 @@ export function CustomersList({
                     )}
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">
+                        {PURCHASE_HISTORY && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Ver compras deste cliente"
+                            onClick={() =>
+                              setPurchasesTarget({ id: c.id, name: c.name })
+                            }
+                          >
+                            <ShoppingBag className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
                           size="icon"
                           variant="ghost"
@@ -380,6 +404,17 @@ export function CustomersList({
         onToast={showToast}
         onSaved={fetchCustomers}
       />
+
+      {/* Bloco C — só monta com a flag ligada E um cliente selecionado, então
+          com a flag OFF não há nem componente nem request extra. */}
+      {PURCHASE_HISTORY && purchasesTarget && (
+        <CustomerPurchasesSheet
+          customerId={purchasesTarget.id}
+          customerName={purchasesTarget.name}
+          onOpenChange={(open) => !open && setPurchasesTarget(null)}
+          onToast={showToast}
+        />
+      )}
 
       <AlertDialog
         open={!!deleteTarget}

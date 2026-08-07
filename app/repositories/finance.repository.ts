@@ -53,6 +53,10 @@ function toEntry(raw: any): FinanceEntry {
     status: raw.status,
     paidAt: raw.paidAt,
     paymentMethod: raw.paymentMethod ?? null,
+    // Bloco B — split entrada/parcelas. NULL em conta normal.
+    parentReceivableId: raw.parentReceivableId ?? null,
+    installmentNumber: raw.installmentNumber ?? null,
+    installmentTotal: raw.installmentTotal ?? null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     customer: raw.customer
@@ -79,9 +83,22 @@ function toEntry(raw: any): FinanceEntry {
           quantity: i.quantity,
           unitPrice: Number(i.unitPrice),
           createdAt: i.createdAt,
+          // Bloco F — flags da promoção a produto de catálogo.
+          createCatalogProduct: i.createCatalogProduct ?? false,
+          autoCreatedProduct: i.autoCreatedProduct ?? false,
           product: i.product
             ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
             : null,
+        }))
+      : undefined,
+    // Bloco A: mesma disciplina dos itens — quando a relação não é incluída o
+    // campo fica `undefined` e o payload continua idêntico ao histórico.
+    payments: Array.isArray(raw.payments)
+      ? raw.payments.map((p: any) => ({
+          id: p.id,
+          method: p.method,
+          amount: Number(p.amount),
+          createdAt: p.createdAt,
         }))
       : undefined,
   };
@@ -99,12 +116,23 @@ const itemsInclude = {
   },
 };
 
+// Bloco A — linhas de pagamento (somente receivable). Ordem de criação, que é
+// a ordem em que o operador digitou: o cupom deve listar igual à tela.
+const paymentsInclude = {
+  orderBy: { createdAt: "asc" as const },
+};
+
 function buildInclude(kind: FinanceKind, withItems: boolean): any {
   const include: any = {
     customer: { select: { id: true, name: true, cpf: true, email: true } },
     unidade: { select: { id: true, name: true } },
   };
-  if (withItems && kind === "receivable") include.items = itemsInclude;
+  if (withItems && kind === "receivable") {
+    include.items = itemsInclude;
+    // Viaja junto com os itens: quem precisa do detalhe da venda (edição,
+    // cupom, rascunho fiscal) precisa dos dois, e são as MESMAS chamadas.
+    include.payments = paymentsInclude;
+  }
   return include;
 }
 
@@ -116,15 +144,35 @@ export class FinanceRepository {
   ): Promise<FinanceEntry> {
     const wantsItems =
       kind === "receivable" && Array.isArray(data.items) && data.items.length > 0;
+    // Bloco A: linhas de pagamento também são filhas e também exigem tx.
+    const wantsPayments =
+      kind === "receivable" &&
+      Array.isArray(data.payments) &&
+      data.payments.length > 0;
 
-    // Sem itens => caminho atual 100% inalterado (sem $transaction se o caller
+    // Bloco B: o plano de parcelamento também exige tx (mãe + N filhas).
+    const wantsSplit =
+      kind === "receivable" &&
+      !!data.installmentPlan &&
+      Array.isArray(data.installmentPlan.installments) &&
+      data.installmentPlan.installments.length > 0;
+
+    if (wantsSplit) {
+      if (tx) return this.createWithSplit(data, tx);
+      return prisma.$transaction((txClient) =>
+        this.createWithSplit(data, txClient),
+      );
+    }
+
+    // Sem filhos => caminho atual 100% inalterado (sem $transaction se o caller
     // também não passou tx; com tx se o caller forneceu — ex.: quick-create).
-    if (!wantsItems) {
+    if (!wantsItems && !wantsPayments) {
       return this.createSingle(kind, data, tx);
     }
 
-    // Com itens => atomicidade obrigatória (Receivable + ReceivableItem na
-    // MESMA transação). Se o caller já abriu tx (ex.: quick-create), reusa.
+    // Com filhos => atomicidade obrigatória (Receivable + ReceivableItem +
+    // ReceivablePayment na MESMA transação). Se o caller já abriu tx (ex.:
+    // quick-create), reusa.
     if (tx) {
       return this.createWithItems(kind, data, tx);
     }
@@ -209,23 +257,125 @@ export class FinanceRepository {
       select: { id: true },
     });
 
-    await (tx as any).receivableItem.createMany({
-      data: data.items!.map((it) => ({
-        receivableId: created.id,
-        productId: it.productId ?? null,
-        description: it.description ?? null,
-        scrapId: it.scrapId ?? null,
-        listingId: it.listingId ?? null,
-        quantity: it.quantity,
-        unitPrice: it.unitPrice,
-      })),
-    });
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      await (tx as any).receivableItem.createMany({
+        data: data.items.map((it) => ({
+          receivableId: created.id,
+          productId: it.productId ?? null,
+          description: it.description ?? null,
+          scrapId: it.scrapId ?? null,
+          listingId: it.listingId ?? null,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          // Bloco F: só vai no payload quando LIGADO. Ausente => a coluna usa
+          // o DEFAULT false do banco e o INSERT fica byte-idêntico ao de hoje
+          // (REGRA 2: campo novo ausente => comportamento antigo intacto).
+          ...(it.createCatalogProduct ? { createCatalogProduct: true } : {}),
+        })),
+      });
+    }
+
+    // Bloco A — linhas de pagamento, na MESMA tx dos itens.
+    if (Array.isArray(data.payments) && data.payments.length > 0) {
+      await (tx as any).receivablePayment.createMany({
+        data: data.payments.map((p) => ({
+          receivableId: created.id,
+          method: p.method,
+          amount: p.amount,
+        })),
+      });
+    }
 
     const full = await (tx as any).receivable.findUnique({
       where: { id: created.id },
       include: buildInclude("receivable", true),
     });
     return toEntry(full);
+  }
+
+  /**
+   * Bloco B — cria a venda parcelada: 1 conta-ENTRADA (com os itens, e é ela
+   * que baixa o estoque quando for recebida) + N contas-PARCELA, filhas.
+   *
+   * `data.totalAmount` chega como o TOTAL DA VENDA e é dividido: a entrada
+   * fica com `downPayment` e cada parcela com o seu valor. Assim a soma das
+   * linhas continua sendo o total, sem dupla contagem em nenhum relatório.
+   *
+   * As parcelas NÃO recebem itens (a mercadoria saiu uma vez só) nem
+   * `paymentMethod` — herdar o método da entrada faria uma parcela ainda não
+   * paga aparecer como "PIX" nos gráficos de forma de pagamento. Herdam sim
+   * os ENCARGOS, que são justamente o que vale para atraso.
+   */
+  private async createWithSplit(
+    data: FinanceEntryCreate,
+    tx: Prisma.TransactionClient,
+  ): Promise<FinanceEntry> {
+    const plan = data.installmentPlan!;
+
+    // Mãe: mesmo caminho de sempre, só com o valor da entrada.
+    const mae = await this.createWithItems(
+      "receivable",
+      { ...data, totalAmount: plan.downPayment, installments: 1 },
+      tx,
+    );
+
+    const total = plan.installments.length;
+    await (tx as any).receivable.createMany({
+      data: plan.installments.map((p, idx) => ({
+        userId: data.userId,
+        customerId: data.customerId,
+        unidadeId: data.unidadeId ?? null,
+        document: data.document ?? null,
+        reason: `Parcela ${idx + 1}/${total}${data.reason ? ` — ${data.reason}` : ""}`,
+        debtDetails: null,
+        totalAmount: p.amount,
+        // Encargos herdados: multa/juros/tolerância existem para o atraso, e
+        // quem atrasa é a parcela.
+        fineAmount: data.fineAmount ?? null,
+        finePercent: data.finePercent ?? null,
+        interestPercent: data.interestPercent ?? null,
+        toleranceDays: data.toleranceDays ?? null,
+        installments: 1,
+        periodDays: null,
+        dueDate: parseDate(p.dueDate)!,
+        status: "PENDENTE" as FinanceStatus,
+        paidAt: null,
+        paymentMethod: null,
+        parentReceivableId: mae.id,
+        installmentNumber: idx + 1,
+        installmentTotal: total,
+      })),
+    });
+
+    return mae;
+  }
+
+  /**
+   * Bloco B — parcelas de uma venda, na ordem.
+   *
+   * SEM `include`: nenhum dos três chamadores lê `customer` ou `unidade` — o
+   * delete só olha `length`, o /reverse só o `status` e o cupom só
+   * número/vencimento/valor. O Prisma resolve cada relação incluída numa
+   * consulta PRÓPRIA, então incluí-las custava 3 idas ao banco em vez de 1,
+   * por chamada, mais o tráfego das linhas de cliente/unidade repetidas em
+   * cada parcela — dado que ninguém consome. `toEntry` deixa os dois campos
+   * `undefined`, exatamente como já faz para qualquer relação não incluída
+   * (mesma disciplina de `items`/`payments` na listagem).
+   *
+   * Um `select` explícito cortaria também as colunas escalares, mas obrigaria
+   * a enumerar os ~23 campos que `toEntry` lê — qualquer campo novo no schema
+   * passaria a chegar `undefined` em silêncio. Não compensa: as colunas
+   * restantes são escalares pequenos e `debtDetails` já nasce null na parcela.
+   */
+  async findChildren(
+    parentId: string,
+    userId: string,
+  ): Promise<FinanceEntry[]> {
+    const rows = await prisma.receivable.findMany({
+      where: { parentReceivableId: parentId, userId },
+      orderBy: { installmentNumber: "asc" },
+    });
+    return rows.map(toEntry);
   }
 
   async update(
@@ -239,8 +389,11 @@ export class FinanceRepository {
     // strategy). Ausência (undefined) preserva itens existentes — fluxo atual
     // não-quebra.
     const hasItemsField = "items" in data && data.items !== undefined;
+    // Bloco A: mesma semântica de replace para as linhas de pagamento.
+    // Ausência preserva o que já está gravado — nada é apagado por omissão.
+    const hasPaymentsField = "payments" in data && data.payments !== undefined;
 
-    if (!hasItemsField) {
+    if (!hasItemsField && !hasPaymentsField) {
       return this.updateSingle(kind, id, userId, data, tx);
     }
     if (kind !== "receivable") {
@@ -268,6 +421,8 @@ export class FinanceRepository {
     const delegate: any = kind === "receivable" ? db.receivable : db.payable;
     const payload: any = { ...data };
     delete payload.items; // defesa: nunca passar items pro update do delegate
+    delete payload.payments; // idem para as linhas de pagamento (Bloco A)
+    delete payload.installmentPlan; // idem para o plano de parcelas (Bloco B)
     if ("dueDate" in payload) payload.dueDate = parseDate(payload.dueDate);
     if ("paidAt" in payload) payload.paidAt = parseDate(payload.paidAt);
     delete payload.userId;
@@ -296,9 +451,14 @@ export class FinanceRepository {
     data: FinanceEntryUpdate,
     tx: Prisma.TransactionClient,
   ): Promise<FinanceEntry> {
+    const hasItemsField = "items" in data && data.items !== undefined;
+    const hasPaymentsField = "payments" in data && data.payments !== undefined;
     const items = data.items ?? [];
+    const payments = data.payments ?? [];
     const otherFields: any = { ...data };
     delete otherFields.items;
+    delete otherFields.payments;
+    delete otherFields.installmentPlan;
     delete otherFields.userId;
     if ("dueDate" in otherFields)
       otherFields.dueDate = parseDate(otherFields.dueDate);
@@ -313,19 +473,42 @@ export class FinanceRepository {
 
     // Replace strategy: apaga todos e re-cria. Igual ao padrão usado em
     // NfeRepository.updateDraft para itens de NFe.
-    await (tx as any).receivableItem.deleteMany({ where: { receivableId: id } });
-    if (items.length > 0) {
-      await (tx as any).receivableItem.createMany({
-        data: items.map((it) => ({
-          receivableId: id,
-          productId: it.productId ?? null,
-          description: it.description ?? null,
-          scrapId: it.scrapId ?? null,
-          listingId: it.listingId ?? null,
-          quantity: it.quantity,
-          unitPrice: it.unitPrice,
-        })),
+    //
+    // Só toca a relação que veio no payload: um update que manda `payments`
+    // sem `items` (ou vice-versa) NÃO pode apagar a outra lista.
+    if (hasItemsField) {
+      await (tx as any).receivableItem.deleteMany({
+        where: { receivableId: id },
       });
+      if (items.length > 0) {
+        await (tx as any).receivableItem.createMany({
+          data: items.map((it) => ({
+            receivableId: id,
+            productId: it.productId ?? null,
+            description: it.description ?? null,
+            scrapId: it.scrapId ?? null,
+            listingId: it.listingId ?? null,
+            quantity: it.quantity,
+            unitPrice: it.unitPrice,
+            ...(it.createCatalogProduct ? { createCatalogProduct: true } : {}),
+          })),
+        });
+      }
+    }
+
+    if (hasPaymentsField) {
+      await (tx as any).receivablePayment.deleteMany({
+        where: { receivableId: id },
+      });
+      if (payments.length > 0) {
+        await (tx as any).receivablePayment.createMany({
+          data: payments.map((p) => ({
+            receivableId: id,
+            method: p.method,
+            amount: p.amount,
+          })),
+        });
+      }
     }
 
     const updated = await (tx as any).receivable.findUnique({
@@ -456,8 +639,42 @@ export class FinanceRepository {
       model(kind).count({ where }),
     ]);
 
+    const items = rows.map(toEntry);
+
+    // Bloco B — o livro do dia precisa mostrar o TAMANHO DA VENDA, não só a
+    // entrada. A conta-mãe guarda apenas o valor recebido no ato; o resto vive
+    // nas filhas. UMA consulta agregada (groupBy indexado por
+    // parentReceivableId) resolve a página inteira — nada de N+1.
+    //
+    // Só no caminho do PDV (`hasItems`): a listagem do Financeiro segue
+    // byte-idêntica, sem query extra.
+    if (kind === "receivable" && filters.hasItems && items.length > 0) {
+      const ids = items.map((i: FinanceEntry) => i.id);
+      const filhas = await prisma.receivable.groupBy({
+        by: ["parentReceivableId"],
+        where: { parentReceivableId: { in: ids }, userId },
+        _sum: { totalAmount: true },
+        _count: { _all: true },
+      });
+      const porMae = new Map(
+        filhas.map((f) => [
+          f.parentReceivableId as string,
+          {
+            amount: Number(f._sum?.totalAmount ?? 0),
+            count: f._count?._all ?? 0,
+          },
+        ]),
+      );
+      for (const it of items) {
+        const f = porMae.get(it.id);
+        if (!f) continue;
+        it.installmentsCount = f.count;
+        it.installmentsAmount = f.amount;
+      }
+    }
+
     return {
-      items: rows.map(toEntry),
+      items,
       total,
       totalPages: Math.ceil(total / limit),
     };
@@ -472,6 +689,9 @@ export class FinanceRepository {
     userId: string,
     unidadeId?: string,
     hasItems?: boolean,
+    // Bloco C (aditivo): resumo de UM cliente, para o histórico de compras da
+    // ficha. Ausente/"" => fragmento vazio => where byte-idêntico ao atual.
+    customerId?: string,
   ): Promise<FinanceSummary> {
     const now = new Date();
 
@@ -489,11 +709,15 @@ export class FinanceRepository {
       ? { items: { some: {} } }
       : {};
 
+    // Mesmo contrato dos dois filtros acima: ausente => {} => where idêntico.
+    const customerWhere: Record<string, unknown> =
+      customerId === undefined || customerId === "" ? {} : { customerId };
+
     async function stats(m: any, extraWhere: Record<string, unknown> = {}) {
       const [grouped, overdue] = await Promise.all([
         m.groupBy({
           by: ["status"],
-          where: { userId, ...unidadeWhere, ...extraWhere },
+          where: { userId, ...unidadeWhere, ...customerWhere, ...extraWhere },
           _sum: { totalAmount: true },
           _count: { _all: true },
         }),
@@ -501,6 +725,7 @@ export class FinanceRepository {
           where: {
             userId,
             ...unidadeWhere,
+            ...customerWhere,
             ...extraWhere,
             status: { in: ["PENDENTE", "VENCIDA"] },
             dueDate: { lt: now },
@@ -533,11 +758,37 @@ export class FinanceRepository {
       };
     }
 
-    const [receivables, payables] = await Promise.all([
+    const [receivables, payables, parcelas] = await Promise.all([
       stats(prisma.receivable, receivableItemsWhere),
       stats(prisma.payable),
+      // Bloco B — a PARCELA de uma venda de balcão não tem itens (a mercadoria
+      // saiu uma vez só, na conta-entrada), então o filtro acima a exclui e o
+      // saldo parcelado sumia de "A receber (balcão)" no PDV.
+      //
+      // Agregado SEPARADO em vez de mexer no `where` acima: aquele formato
+      // está pinado em teste (finance-hasitems-filter), e alterá-lo seria
+      // mudar um contrato existente. Assim o comportamento atual fica
+      // byte-idêntico e o saldo é somado por cima.
+      //
+      // Sem dupla contagem: uma conta-parcela NUNCA tem itens (createWithSplit
+      // não lhe dá nenhum), então os dois conjuntos são disjuntos.
+      hasItems
+        ? stats(prisma.receivable, { parentReceivableId: { not: null } })
+        : null,
     ]);
 
-    return { receivables, payables };
+    return {
+      receivables: parcelas
+        ? {
+            totalCount: receivables.totalCount + parcelas.totalCount,
+            totalAmount: receivables.totalAmount + parcelas.totalAmount,
+            overdueCount: receivables.overdueCount + parcelas.overdueCount,
+            overdueAmount: receivables.overdueAmount + parcelas.overdueAmount,
+            pendingAmount: receivables.pendingAmount + parcelas.pendingAmount,
+            paidAmount: receivables.paidAmount + parcelas.paidAmount,
+          }
+        : receivables,
+      payables,
+    };
   }
 }

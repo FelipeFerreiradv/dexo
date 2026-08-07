@@ -35,6 +35,12 @@ import {
   FinanceEntryFormData,
 } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
+import { buildInstallmentPlan } from "../lib/installment-plan";
+
+// Bloco B — entrada + parcelas. Só na CRIAÇÃO de venda balcão: editar uma
+// venda já parcelada mexeria em contas-filhas que podem já ter sido pagas.
+const SALE_INSTALLMENTS_ENABLED =
+  process.env.NEXT_PUBLIC_SALE_INSTALLMENTS_ENABLED === "true";
 import { CustomerStep } from "./steps/customer-step";
 import { TitleStep } from "./steps/title-step";
 import { FeesStep } from "./steps/fees-step";
@@ -68,6 +74,9 @@ const STEPS: (StepperStep & { fields: (keyof FinanceEntryFormData)[] })[] = [
       "totalAmount",
       "unidadeId",
       "items",
+      // Bloco A: idem — opcional no zod, então incluir aqui é no-op quando o
+      // bloco de pagamento combinado não está na tela.
+      "payments",
     ],
   },
   {
@@ -82,7 +91,15 @@ const STEPS: (StepperStep & { fields: (keyof FinanceEntryFormData)[] })[] = [
     title: "Parcelamento",
     description: "Vencimento e parcelas",
     icon: CalendarClock,
-    fields: ["installments", "periodDays", "dueDate"],
+    // Bloco B: `splitPayment`/`downPayment` são opcionais no zod — incluí-los
+    // é no-op quando o bloco de entrada não está na tela.
+    fields: [
+      "installments",
+      "periodDays",
+      "dueDate",
+      "splitPayment",
+      "downPayment",
+    ],
   },
 ];
 
@@ -117,6 +134,9 @@ interface FinanceDialogProps {
     id: string;
     paymentMethod?: string | null;
     totalAmount?: number;
+    // Bloco A: linhas de pagamento devolvidas pelo backend. Uma linha "FIADO"
+    // no meio impede o recebimento automático — parte do valor não entrou.
+    payments?: Array<{ method: string; amount: number }> | null;
   }) => void;
 }
 
@@ -290,6 +310,60 @@ export function FinanceDialog({
         // payload para o backend limpar os itens.)
         delete payload.items;
       }
+
+      // ── Bloco A: linhas de pagamento ──
+      // Mesma disciplina dos itens. Sem o flag de balcão, ou sem linhas (e sem
+      // linhas prévias a apagar), o campo NÃO vai no payload — o request fica
+      // byte-idêntico ao da venda de uma forma só.
+      //
+      // `tendered` é estado de TELA (para calcular troco) e nunca é enviado:
+      // troco é diferença de caixa, não é dado da venda.
+      const hadPayments =
+        Array.isArray((initialData as any)?.payments) &&
+        (initialData as any).payments.length > 0;
+      const rawPayments = (payload as any).payments;
+      if (!balcaoEnabled || !Array.isArray(rawPayments)) {
+        delete payload.payments;
+      } else if (rawPayments.length === 0 && !(isEdit && hadPayments)) {
+        delete payload.payments;
+      } else {
+        payload.payments = rawPayments.map((p: any) => ({
+          method: p.method,
+          amount: p.amount,
+        }));
+      }
+      // ── Bloco B: entrada + parcelas ──
+      // `splitPayment`/`downPayment` são campos de TELA; o que vai ao backend
+      // é o plano derivado deles pela MESMA função que desenhou a prévia —
+      // não há aritmética duplicada, então tela e banco não divergem.
+      delete payload.splitPayment;
+      delete payload.downPayment;
+      if (
+        SALE_INSTALLMENTS_ENABLED &&
+        balcaoEnabled &&
+        !isEdit &&
+        (data as any).splitPayment === true
+      ) {
+        const plano = buildInstallmentPlan({
+          totalAmount: rest.totalAmount,
+          downPayment: (data as any).downPayment ?? 0,
+          count: rest.installments ?? 1,
+          periodDays: rest.periodDays ?? 30,
+          firstDueDate: rest.dueDate,
+        });
+        if (!plano) {
+          throw new Error(
+            "Parcelamento incompleto — confira entrada, nº de parcelas e vencimento.",
+          );
+        }
+        payload.installmentPlan = {
+          downPayment: plano.downPayment,
+          installments: plano.installments,
+        };
+        // A conta-entrada é à vista: quem carrega o parcelamento são as filhas.
+        payload.installments = 1;
+      }
+
       const basePath =
         kind === "receivable" ? "/finance/receivables" : "/finance/payables";
       const url = isEdit
@@ -449,7 +523,12 @@ export function FinanceDialog({
             )}
             {currentStep === 4 && (
               <div className="space-y-4">
-                <InstallmentsStep control={control} errors={errors} />
+                <InstallmentsStep
+                  control={control}
+                  errors={errors}
+                  // Bloco B: "entrada no ato" só existe onde há caixa.
+                  balcaoEnabled={balcaoEnabled && !isEdit}
+                />
 
                 {canEmitReceipt && (
                   <div className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-muted/20 p-4">

@@ -144,6 +144,12 @@ model Product {
   // e não na ProductCompatibility.
   compatibilityPositions Json?
   createdFromMarketplace Boolean                @default(false)
+  // Bloco F — peça avulsa do PDV promovida a produto. Nasce e morre com
+  // estoque 0 na mesma operação, então NÃO conta como catálogo na
+  // reconciliação de status da sucata (ver ScrapStatusReconcileService):
+  // sem este filtro, um lote vendido só no balcão viraria DEPLETED.
+  // DEFAULT FALSE em 100% das linhas existentes => reconcile byte-idêntico.
+  autoCreatedFromSale    Boolean                @default(false)
   originPlatform         Platform?
   orderItems             OrderItem[]
   compatibilities        ProductCompatibility[]
@@ -1001,6 +1007,12 @@ model Receivable {
   // Forma de pagamento (opcional). Código estável de app/lib/payment-methods.ts
   // (PIX/CREDITO/DEBITO/BOLETO/DINHEIRO/TRANSFERENCIA). Nulável: conta sem
   // método é válida (zero regressão). String? em vez de enum p/ flexibilidade.
+  //
+  // Bloco A: com N formas na mesma venda este campo continua preenchido e
+  // continua sendo UM dos 7 códigos — o método PREDOMINANTE (o de maior
+  // valor). É o que mantém intactos os 41 pontos que o leem: coluna "Forma",
+  // filtro da listagem, KPIs, dashboards, relatório e mapeamento fiscal.
+  // O detalhamento vive em `payments`.
   paymentMethod String?
 
   // Conta originada da conversão de um Orçamento (aditivo, default NULL).
@@ -1009,19 +1021,43 @@ model Receivable {
   // convertida. Setado SOMENTE pela conversão (não exposto no DTO de finance).
   budgetId String? @unique
 
+  // ── Bloco B: entrada + parcelamento do saldo ──
+  // A venda vira 1 conta-ENTRADA (esta, que carrega os itens) + N contas-
+  // PARCELA (filhas, sem itens). Cada parcela é um Receivable comum, então
+  // baixa individual, vencimento próprio, VENCIDA derivada e encargos por
+  // parcela já funcionam pelos caminhos que existem — sem status novo no enum
+  // e sem tocar markPaid/summary/dashboards.
+  //
+  // Soma sem dupla contagem: entrada + parcelas = total da venda. Cada real
+  // aparece em exatamente uma linha.
+  //
+  // SetNull (não Cascade): apagar a conta-entrada NUNCA pode sumir com
+  // parcelas que o cliente ainda deve. O `delete` bloqueia esse caminho e
+  // manda estornar; o SetNull é só a rede de segurança do banco.
+  parentReceivableId String?
+  // 1..N dentro do split; NULL em conta normal. `installments` (escalar
+  // antigo) fica 1 na parcela — ela É uma cobrança única.
+  installmentNumber  Int?
+  installmentTotal   Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user     User             @relation(fields: [userId], references: [id])
-  customer Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  unidade  Unidade?         @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  user     User                @relation(fields: [userId], references: [id])
+  customer Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade  Unidade?            @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
   items    ReceivableItem[]
-  budget   Budget?          @relation(fields: [budgetId], references: [id], onDelete: SetNull)
+  payments ReceivablePayment[]
+  budget   Budget?             @relation(fields: [budgetId], references: [id], onDelete: SetNull)
+
+  parent   Receivable?  @relation("ReceivableSplit", fields: [parentReceivableId], references: [id], onDelete: SetNull)
+  children Receivable[] @relation("ReceivableSplit")
 
   @@index([userId, dueDate])
   @@index([userId, status])
   @@index([customerId])
   @@index([userId, unidadeId])
+  @@index([parentReceivableId])
 }
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.
@@ -1080,6 +1116,14 @@ model ReceivableItem {
   // Descrição do item manual (texto livre). NULL p/ item cadastrado (a
   // descrição vem do Product). Preenchida só quando productId é NULL.
   description  String?
+  // Bloco F — opt-in do operador: "criar no catálogo" na linha do item manual.
+  // DEFAULT FALSE é o que garante a RETROATIVIDADE: todo ReceivableItem já
+  // gravado nasce false, então ligar a flag NÃO mexe em nada do histórico.
+  createCatalogProduct Boolean @default(false)
+  // Bloco F — este `productId` foi criado automaticamente a partir deste item
+  // manual? Âncora do estorno simétrico: só nestes itens o estorno faz a saída
+  // compensatória para o produto voltar a estoque 0 (sem produto fantasma).
+  autoCreatedProduct   Boolean @default(false)
   // Sucata de origem da venda (override explícito; precede Product.scrapId na
   // agregação). NULL = sucata efetiva derivada do Product, se houver.
   scrapId      String?
@@ -1097,6 +1141,28 @@ model ReceivableItem {
   @@index([productId])
   @@index([scrapId])
   @@index([listingId])
+}
+
+// Bloco A — linhas de pagamento de uma venda (PIX + dinheiro + cartão na mesma
+// compra). Tabela FILHA e puramente aditiva: `Receivable.paymentMethod`
+// continua existindo e guardando o método PREDOMINANTE, então nada do que já
+// lê aquele campo precisa saber que isto existe.
+//
+// Venda com UMA forma não grava linha aqui — o payload segue idêntico ao atual.
+// Cascade espelha ReceivableItem: apagar a conta leva os pagamentos junto,
+// senão sobrariam linhas órfãs somando dinheiro.
+model ReceivablePayment {
+  id           String   @id @default(cuid())
+  receivableId String
+  // Código estável de app/lib/payment-methods.ts. String em vez de enum: a
+  // fonte da verdade é a aplicação, e um enum exigiria DDL a cada forma nova.
+  method       String
+  amount       Decimal  @db.Decimal(12, 2)
+  createdAt    DateTime @default(now())
+
+  receivable Receivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  @@index([receivableId])
 }
 
 // Orçamento (proposta de venda ao cliente). Espelha Receivable/ReceivableItem

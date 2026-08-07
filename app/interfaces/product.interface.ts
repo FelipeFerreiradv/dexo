@@ -231,6 +231,13 @@ export interface ProductCreate {
   createdFromMarketplace?: boolean;
   originPlatform?: Platform;
 
+  // Bloco F — origem = peça avulsa promovida a produto no pagamento de uma
+  // venda de balcão. Aditivo, default false. Marca produtos que nascem e
+  // morrem com estoque 0 na mesma operação, para que a reconciliação de
+  // status da sucata NÃO os conte como catálogo (senão um lote vendido só no
+  // balcão viraria DEPLETED indevidamente). Ver ScrapStatusReconcileService.
+  autoCreatedFromSale?: boolean;
+
   scrapId?: string;
 
   // Opt-in: quando true, o servidor reserva o próximo SKU sequencial de forma
@@ -357,7 +364,9 @@ export interface ProductUpdateResult {
 }
 
 export interface ProductRepository {
-  create(data: ProductCreate): Promise<Product>;
+  // `tx` OPCIONAL (Bloco F): permite criar o produto dentro da transação do
+  // chamador. Ausente => comportamento atual, byte-idêntico.
+  create(data: ProductCreate, tx?: any): Promise<Product>;
   findBySku(sku: string, userId: string): Promise<Product | null>;
   /**
    * Só a existência (SELECT id) — evita puxar o Product inteiro (com colunas

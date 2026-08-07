@@ -928,7 +928,18 @@ class ProductRepositoryPrisma implements ProductRepository {
     return combineSqlClauses(clauses);
   }
 
-  async create(data: ProductCreate): Promise<Product> {
+  /**
+   * @param tx Client transacional OPCIONAL (Bloco F). Ausente => usa o `prisma`
+   * global, comportamento byte-idêntico ao de sempre. Presente => a criação do
+   * produto participa da transação do chamador, para que um rollback (ex.: a
+   * baixa de estoque do pagamento falhar) não deixe produto órfão no catálogo.
+   * Mesmo padrão já usado em FinanceRepository.create/update.
+   */
+  async create(
+    data: ProductCreate,
+    tx?: Prisma.TransactionClient,
+  ): Promise<Product> {
+    const db: any = tx ?? prisma;
     try {
       const compatInput = Array.isArray(data.compatibilities)
         ? data.compatibilities
@@ -959,7 +970,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       // agregações daquela sucata: getScrapParts/getScrapMoney/reconcile). No-op
       // para produtos legítimos (mesmo dono). "inválido" → 400 no route handler.
       if (data.scrapId && data.userId) {
-        const ownsScrap = await prisma.scrap.findFirst({
+        const ownsScrap = await db.scrap.findFirst({
           where: { id: data.scrapId, userId: data.userId },
           select: { id: true },
         });
@@ -970,7 +981,7 @@ class ProductRepositoryPrisma implements ProductRepository {
         }
       }
 
-      const result = await prisma.product.create({
+      const result = await db.product.create({
         data: {
           userId: data.userId ?? null,
           createdByUserId: data.createdByUserId ?? null,
@@ -1023,6 +1034,10 @@ class ProductRepositoryPrisma implements ProductRepository {
               : Prisma.DbNull,
           scrapId: data.scrapId ?? null,
           createdFromMarketplace: data.createdFromMarketplace ?? false,
+          // Bloco F — só entra no payload quando LIGADO. Ausente => a coluna
+          // usa o DEFAULT false do banco e o INSERT de todos os caminhos
+          // existentes (cadastro, importação, autodetect) fica byte-idêntico.
+          ...(data.autoCreatedFromSale ? { autoCreatedFromSale: true } : {}),
           originPlatform: data.originPlatform ?? null,
           ...(compatInput.length > 0
             ? { compatibilities: { create: compatInput } }

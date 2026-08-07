@@ -136,12 +136,20 @@ export class ScrapStatusReconcileService {
                    AND ma."userId" = ${userId}
               )
             ) AS "hasSales",
+            -- Bloco F: peças avulsas promovidas (autoCreatedFromSale) ficam
+            -- FORA da contagem de catálogo. Elas nascem e morrem com estoque 0
+            -- na mesma operação; contá-las levaria deriveScrapStatus de
+            -- (true, 0, 0)=IN_USE para (true, 1, 0)=DEPLETED, marcando como
+            -- esgotado um lote que sequer foi catalogado. A coluna é false em
+            -- 100% das linhas pré-existentes => resultado idêntico ao de hoje.
             (SELECT COUNT(*)::int FROM "Product" p3
                WHERE p3."scrapId" = ${scrapId}
-                 AND p3."userId" = ${userId}) AS "regCount",
+                 AND p3."userId" = ${userId}
+                 AND p3."autoCreatedFromSale" = false) AS "regCount",
             (SELECT COALESCE(SUM(p4."stock"), 0)::int FROM "Product" p4
                WHERE p4."scrapId" = ${scrapId}
-                 AND p4."userId" = ${userId}) AS "sumStock"
+                 AND p4."userId" = ${userId}
+                 AND p4."autoCreatedFromSale" = false) AS "sumStock"
           FROM "Scrap" s
           WHERE s."id" = ${scrapId} AND s."userId" = ${userId}
         `);

@@ -35,10 +35,20 @@ import { maskCnpj, maskCpf, maskCep, maskMoneyBRL } from "../../lib/masks";
  * Nada aqui calcula nada: os valores chegam prontos da `Receivable`.
  */
 export class ReceiptPdfService {
+  /**
+   * @param installments Bloco B — parcelas da venda (contas-filhas), quando
+   * houver. Ausente/vazio ⇒ cupom byte-idêntico ao de sempre.
+   *
+   * Por que precisa vir de fora: numa venda parcelada a conta-mãe carrega
+   * TODOS os itens mas seu `totalAmount` é só a ENTRADA. Sem as parcelas, o
+   * cupom sairia com itens somando R$ 131,11 e TOTAL de R$ 50,00 — aritmética
+   * quebrada na cara do cliente.
+   */
   async generate(
     entry: FinanceEntry,
     company: CompanyFiscalConfig | null,
     avatar?: DanfeAvatar | null,
+    installments?: InstallmentLine[],
   ): Promise<Uint8Array> {
     const doc = await PDFDocument.create();
     const page = doc.addPage([PAGE_W, PAGE_H]);
@@ -62,8 +72,8 @@ export class ReceiptPdfService {
     const afterHeaderY = drawHeader(ctx, entry, company);
     const afterPartesY = drawParties(ctx, afterHeaderY - 26, entry);
     const afterItemsY = drawItems(ctx, afterPartesY - 18, entry);
-    drawTotals(ctx, afterItemsY - 22, entry);
-    drawFooter(ctx, entry);
+    drawTotals(ctx, afterItemsY - 22, entry, installments ?? []);
+    drawFooter(ctx, entry, installments ?? []);
     stampPageChrome(ctx, company);
 
     return doc.save();
@@ -436,9 +446,39 @@ function drawItems(ctx: RenderCtx, y: number, entry: FinanceEntry): number {
 // Totais
 // ═════════════════════════════════════════════════════════════════
 
-function drawTotals(ctx: RenderCtx, y: number, entry: FinanceEntry): number {
+/** Bloco B — uma parcela da venda (conta-filha), para o cupom. */
+export interface InstallmentLine {
+  numero: number;
+  total: number;
+  dueDate: Date | string;
+  amount: number;
+}
+
+function drawTotals(
+  ctx: RenderCtx,
+  y: number,
+  entry: FinanceEntry,
+  parcelas: InstallmentLine[] = [],
+): number {
+  // Bloco A — o cupom precisa listar TODAS as formas e seus valores. Elas
+  // entram aqui (no fluxo do bloco de totais, que já sabe quebrar página) e
+  // não no rodapé, que tem 3 baselines fixas e truncaria a partir da quarta.
+  const pagamentos = Array.isArray(entry.payments) ? entry.payments : [];
+  // Altura extra reservada: cabeçalho + uma linha por forma. Sem formas, o
+  // valor é 0 e a conta de espaço fica idêntica à de sempre.
+  const extraH = pagamentos.length > 0 ? 14 + pagamentos.length * 12 : 0;
+
+  // Bloco B — numa venda parcelada, `entry.totalAmount` é só a ENTRADA, mas os
+  // ITENS acima somam a venda inteira. Sem reconciliar, o cupom sai com itens
+  // de R$ 131,11 e TOTAL de R$ 50,00. O TOTAL passa a ser o da VENDA, e
+  // entrada/saldo/parcelas aparecem discriminados abaixo.
+  const parcelado = parcelas.length > 0;
+  const saldoParcelado = parcelas.reduce((acc, p) => acc + Number(p.amount), 0);
+  const totalVenda = entry.totalAmount + saldoParcelado;
+  const parcelasH = parcelado ? 14 + (parcelas.length + 2) * 12 : 0;
+
   // Mantém o bloco inteiro acima do rodapé — se não couber, abre continuação.
-  if (y - TOTALS_H < CONTENT_BOTTOM_Y) {
+  if (y - (TOTALS_H + extraH + parcelasH) < CONTENT_BOTTOM_Y) {
     y = startContinuationPage(ctx, entry);
   }
   const { page, font, fontBold, palette } = ctx;
@@ -447,7 +487,7 @@ function drawTotals(ctx: RenderCtx, y: number, entry: FinanceEntry): number {
 
   // Subtotal é INCONDICIONAL (comportamento preservado); os demais só quando > 0.
   const linhas: Array<{ label: string; value: string }> = [
-    { label: "Subtotal", value: maskMoneyBRL(entry.totalAmount) },
+    { label: "Subtotal", value: maskMoneyBRL(totalVenda) },
   ];
   if (entry.fineAmount && entry.fineAmount > 0) {
     linhas.push({ label: "Multa", value: maskMoneyBRL(entry.fineAmount) });
@@ -469,18 +509,83 @@ function drawTotals(ctx: RenderCtx, y: number, entry: FinanceEntry): number {
   cur += 4;
   rule(page, cur, palette.hairline, 0.5, blockX);
   cur -= 20;
-  page.drawText("TOTAL", { x: blockX, y: cur, size: 11, font: fontBold, color: palette.ink });
-  drawRight(page, fontBold, maskMoneyBRL(entry.totalAmount), XR, cur - 2, 16, palette.ink);
+  page.drawText(parcelado ? "TOTAL DA VENDA" : "TOTAL", {
+    x: blockX,
+    y: cur,
+    size: 11,
+    font: fontBold,
+    color: palette.ink,
+  });
+  drawRight(page, fontBold, maskMoneyBRL(totalVenda), XR, cur - 2, 16, palette.ink);
 
   cur -= 11;
   rule(page, cur, palette.rule, 0.75, blockX);
   cur -= 13;
+
+  // Numa venda parcelada, "Vencimento" da conta-mãe é hoje (a entrada) e
+  // confundiria — o que importa é o vencimento de cada parcela, logo abaixo.
   const due = toDate(entry.dueDate);
-  if (due) {
+  if (due && !parcelado) {
     page.drawText("Vencimento", { x: blockX, y: cur, size: 9, font: fontBold, color: palette.ink });
     drawRight(page, fontBold, formatDate(due), XR, cur, 9, palette.ink);
     cur -= 12;
   }
+
+  if (parcelado) {
+    page.drawText("Entrada (paga agora)", {
+      x: blockX,
+      y: cur,
+      size: 9,
+      font: fontBold,
+      color: palette.ink,
+    });
+    drawRight(page, fontBold, maskMoneyBRL(entry.totalAmount), XR, cur, 9, palette.ink);
+    cur -= 13;
+    page.drawText("Saldo a prazo", { x: blockX, y: cur, size: 9, font: fontBold, color: palette.ink });
+    drawRight(page, fontBold, maskMoneyBRL(saldoParcelado), XR, cur, 9, palette.ink);
+    cur -= 14;
+
+    page.drawText(
+      `PARCELAS (${parcelas.length}x)`,
+      { x: blockX, y: cur, size: 7, font: fontBold, color: palette.muted },
+    );
+    cur -= 12;
+    for (const p of parcelas) {
+      const venc = toDate(p.dueDate);
+      page.drawText(
+        `${p.numero}/${p.total}   ${venc ? formatDate(venc) : "—"}`,
+        { x: blockX, y: cur, size: 9, font, color: palette.muted },
+      );
+      drawRight(page, font, maskMoneyBRL(Number(p.amount)), XR, cur, 9, palette.ink);
+      cur -= 12;
+    }
+  }
+
+  // Detalhamento do pagamento combinado (Bloco A). Sem linhas, nada é
+  // desenhado e o cupom sai byte-idêntico ao de hoje.
+  if (pagamentos.length > 0) {
+    cur -= 2;
+    page.drawText("FORMAS DE PAGAMENTO", {
+      x: blockX,
+      y: cur,
+      size: 7,
+      font: fontBold,
+      color: palette.muted,
+    });
+    cur -= 12;
+    for (const p of pagamentos) {
+      page.drawText(fitText(font, sanitize(paymentMethodLabel(p.method)), 9, 140), {
+        x: blockX,
+        y: cur,
+        size: 9,
+        font,
+        color: palette.muted,
+      });
+      drawRight(page, font, maskMoneyBRL(Number(p.amount)), XR, cur, 9, palette.ink);
+      cur -= 12;
+    }
+  }
+
   return cur;
 }
 
@@ -488,7 +593,11 @@ function drawTotals(ctx: RenderCtx, y: number, entry: FinanceEntry): number {
 // Rodapé (posição FIXA na última página)
 // ═════════════════════════════════════════════════════════════════
 
-function drawFooter(ctx: RenderCtx, entry: FinanceEntry) {
+function drawFooter(
+  ctx: RenderCtx,
+  entry: FinanceEntry,
+  parcelas: InstallmentLine[] = [],
+) {
   const { page, font, fontBold, palette } = ctx;
 
   rule(page, 136, palette.rule, 0.75);
@@ -501,14 +610,26 @@ function drawFooter(ctx: RenderCtx, entry: FinanceEntry) {
   const perInstallment =
     installments > 0 ? entry.totalAmount / installments : entry.totalAmount;
 
+  // Bloco B: com parcelas reais, o "À vista" seria mentira — a conta-mãe tem
+  // `installments = 1` porque ELA é a entrada; o parcelamento vive nas filhas.
+  const parcelado = parcelas.length > 0;
   const pagamento: string[] = [
-    installments > 1
-      ? `${installments}x de ${maskMoneyBRL(perInstallment)} a cada ${periodDays} dia(s)`
-      : `À vista: ${maskMoneyBRL(entry.totalAmount)}`,
+    parcelado
+      ? `Entrada de ${maskMoneyBRL(entry.totalAmount)} + ${parcelas.length}x (ver acima)`
+      : installments > 1
+        ? `${installments}x de ${maskMoneyBRL(perInstallment)} a cada ${periodDays} dia(s)`
+        : `À vista: ${maskMoneyBRL(entry.totalAmount)}`,
   ];
   const due = toDate(entry.dueDate);
-  if (installments > 1 && due) pagamento.push(`1º vencimento: ${formatDate(due)}`);
-  if (entry.paymentMethod) {
+  if (!parcelado && installments > 1 && due)
+    pagamento.push(`1º vencimento: ${formatDate(due)}`);
+  // Com pagamento combinado o rodapé aponta para o detalhamento do bloco de
+  // totais (que lista todas as formas) — aqui só cabem 3 linhas, e mostrar
+  // apenas o método predominante daria a impressão de forma única.
+  const nPagamentos = Array.isArray(entry.payments) ? entry.payments.length : 0;
+  if (nPagamentos > 1) {
+    pagamento.push(`Pagamento combinado em ${nPagamentos} formas (ver acima)`);
+  } else if (entry.paymentMethod) {
     pagamento.push(`Forma de pagamento: ${paymentMethodLabel(entry.paymentMethod)}`);
   }
 
@@ -875,8 +996,20 @@ function toDate(v: Date | string | null | undefined): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Formata uma data de VENCIMENTO (data civil, não instante).
+ *
+ * UTC de propósito. O vencimento nasce de um `<input type="date">`, vira
+ * "2026-10-02" e é gravado como meia-noite UTC. Formatar em America/Sao_Paulo
+ * recua 3h, cruza a meia-noite e imprime 01/10 — um dia ANTES do que o
+ * operador digitou e do que está no banco. Num crediário isso vira discussão
+ * de balcão.
+ *
+ * NÃO confundir com `formatDateTime`, usada no "Emitido em": aquilo é um
+ * INSTANTE real e continua no fuso do negócio, corretamente.
+ */
 function formatDate(d: Date): string {
-  return d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  return d.toLocaleDateString("pt-BR", { timeZone: "UTC" });
 }
 
 function formatDateTime(d: Date): string {

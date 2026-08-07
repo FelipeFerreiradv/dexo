@@ -63,12 +63,28 @@ export class ProductUseCase {
     this.preloadedOwner = preloadedOwner;
   }
 
-  async create(productData: ProductCreate): Promise<Product> {
+  /**
+   * @param tx Client transacional OPCIONAL (Bloco F). Ausente => comportamento
+   * byte-idêntico ao de hoje. Presente => o INSERT do produto participa da
+   * transação do chamador (ex.: o pagamento de uma venda de balcão), para que
+   * um rollback não deixe produto órfão no catálogo.
+   *
+   * Fora da transação, de propósito: a reserva do SKU sequencial
+   * (`reserveNextSkuSequential`) é um `UPDATE ... RETURNING` atômico por si só,
+   * e um rollback do chamador apenas "queima" um número — exatamente o que já
+   * acontece hoje quando o pre-check pula um SKU ou uma colisão P2002 força
+   * outra tentativa. Prendê-la à transação longa do pagamento só aumentaria a
+   * janela de lock na linha do User.
+   */
+  async create(
+    productData: ProductCreate,
+    tx?: any,
+  ): Promise<Product> {
     // Opt-in: atribuição atômica do SKU no servidor (ver createWithAutoSku).
     // O corpo legado abaixo só roda quando autoSku é falso — comportamento
     // de hoje preservado integralmente (sku explícito, importações, balcão).
     if (productData.autoSku) {
-      return this.createWithAutoSku(productData);
+      return this.createWithAutoSku(productData, tx);
     }
 
     if (!productData.userId) {
@@ -98,7 +114,12 @@ export class ProductUseCase {
 
     // Persistência transacional única: o repositório grava produto + compatibilidades
     // no mesmo prisma.product.create (nested write). Não duplicar aqui.
-    const created = await this.productRepository.create(productData);
+    // Sem tx, chama com UM argumento — a assinatura da chamada continua
+    // byte-idêntica à de sempre (passar `undefined` explicitamente já mudaria
+    // a aridade observável para quem espia este método).
+    const created = tx
+      ? await this.productRepository.create(productData, tx)
+      : await this.productRepository.create(productData);
 
     // Mantém o contador de sequência humana atualizado. Produtos de marketplace
     // (auto-detecção de anúncios) chegam aqui com createdFromMarketplace=true e
@@ -140,6 +161,9 @@ export class ProductUseCase {
   // colaboradores do mesmo dataOwnerId recebendo o mesmo número.
   private async createWithAutoSku(
     productData: ProductCreate,
+    // Bloco F: só o INSERT do produto entra na transação do chamador. A
+    // reserva do SKU segue fora — ver a nota em `create`.
+    tx?: any,
   ): Promise<Product> {
     if (!productData.userId) {
       throw new Error("Usuário não encontrado");
@@ -194,10 +218,11 @@ export class ProductUseCase {
       if (taken) continue;
 
       try {
-        return await this.productRepository.create({
-          ...productData,
-          sku: candidate,
-        });
+        const payload = { ...productData, sku: candidate };
+        // Idem: aridade preservada quando não há transação.
+        return tx
+          ? await this.productRepository.create(payload, tx)
+          : await this.productRepository.create(payload);
       } catch (err) {
         // Perdeu uma corrida entre o pre-check e o insert: reserva o próximo.
         if (this.isSkuTaken(err)) continue;

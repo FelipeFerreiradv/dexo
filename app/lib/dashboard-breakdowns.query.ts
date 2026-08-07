@@ -251,10 +251,18 @@ export async function fetchReceivablesByChannel(
   unidadeId?: string,
 ): Promise<FinanceBucketRow[]> {
   return prisma.$queryRaw<FinanceBucketRow[]>(Prisma.sql`
+    -- Bloco B: a PARCELA de uma venda de balcão não tem itens (a mercadoria
+    -- saiu uma vez só, na conta-entrada) — mas continua sendo receita de
+    -- balcão. Sem o OR, o saldo parcelado migraria para "avulso" e o canal
+    -- Balcão apareceria sub-reportado. A coluna parentReceivableId é NULL em
+    -- 100% das linhas existentes, então para os dados de hoje nada muda.
+    -- Espelha aggregateFinanceReport (finance-report.ts) — os dois lados têm
+    -- de mover juntos, senão o cadeado anti-drift do dashboard quebra.
     SELECT CASE WHEN EXISTS (
              SELECT 1 FROM "ReceivableItem" ri
              WHERE ri."receivableId" = r."id"
-           ) THEN 'BALCAO' ELSE 'AVULSO' END AS "key",
+           ) OR r."parentReceivableId" IS NOT NULL
+           THEN 'BALCAO' ELSE 'AVULSO' END AS "key",
            ${statusBuckets(now)}
     ${receivableScope(userId, startDate, endDate, unidadeId)}
     GROUP BY 1
