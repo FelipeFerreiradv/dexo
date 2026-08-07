@@ -44,6 +44,54 @@ export interface FinanceEntry {
   // Itens de venda balcão — ausente quando não houver. Snapshot do preço no
   // momento da venda (unitPrice é imutável).
   items?: ReceivableItemSnapshot[];
+
+  // Bloco A — linhas de pagamento quando a venda foi paga de forma combinada
+  // (PIX + dinheiro + cartão). Ausente/vazio = uma forma só, e aí a verdade
+  // está em `paymentMethod`. Quando presente, `paymentMethod` guarda o método
+  // PREDOMINANTE (maior valor) e a soma das linhas bate com `totalAmount`.
+  payments?: ReceivablePaymentSnapshot[];
+
+  // ── Bloco B: split entrada + parcelas ──
+  // Preenchidos SÓ nas contas-parcela. NULL numa conta normal — e é o NULL em
+  // 100% das linhas existentes que mantém tudo intacto.
+  parentReceivableId?: string | null;
+  installmentNumber?: number | null;
+  installmentTotal?: number | null;
+
+  // Preenchidos só na conta-ENTRADA de uma venda parcelada, e só na listagem
+  // do PDV (agregado das filhas). Servem para a tela mostrar o TAMANHO DA
+  // VENDA (`totalAmount + installmentsAmount`) sem inflar o caixa do dia, que
+  // continua somando apenas o que entrou. Ausentes = venda à vista.
+  installmentsCount?: number;
+  installmentsAmount?: number;
+}
+
+/**
+ * Bloco B — plano de parcelamento enviado no ato da venda.
+ *
+ * As linhas vêm PRONTAS do cliente (que já as exibe na prévia), e o backend
+ * valida a soma. Assim não há aritmética de datas duplicada entre front e
+ * back, que é a origem clássica de divergência de centavo e de fuso.
+ */
+export interface InstallmentPlanInput {
+  /** Valor recebido no ato. Vira o `totalAmount` da conta-entrada. */
+  downPayment: number;
+  /** Parcelas do saldo, cada uma vira uma conta a receber própria. */
+  installments: Array<{ dueDate: string | Date; amount: number }>;
+}
+
+// Bloco A — uma forma de pagamento e o quanto foi pago nela.
+export interface ReceivablePaymentInput {
+  /** Código estável de app/lib/payment-methods.ts. */
+  method: string;
+  /** Valor aplicado À VENDA nesta forma. NUNCA o valor entregue pelo cliente:
+   *  troco é diferença de caixa e não é persistido em lugar nenhum. */
+  amount: number;
+}
+
+export interface ReceivablePaymentSnapshot extends ReceivablePaymentInput {
+  id: string;
+  createdAt?: Date;
 }
 
 // Cadastro rápido de cliente (Alteração B) — CPF-only, opcional.
@@ -65,12 +113,20 @@ export interface ReceivableItemInput {
   listingId?: string | null;
   quantity: number;
   unitPrice: number; // snapshot — não acompanha mudanças em Product.price
+
+  // Bloco F — opt-in "criar no catálogo" da linha do item manual. Quando true,
+  // o pagamento promove esta peça a Product real (SKU automático), com entrada
+  // e saída de estoque na mesma operação. Ausente/false = comportamento atual.
+  createCatalogProduct?: boolean;
 }
 
 export interface ReceivableItemSnapshot extends ReceivableItemInput {
   id: string;
   product?: { id: string; sku: string; name: string } | null;
   createdAt?: Date;
+  // Bloco F — este `productId` nasceu deste item manual? Âncora do estorno
+  // simétrico (a saída compensatória só se aplica a estes itens).
+  autoCreatedProduct?: boolean;
 }
 
 export interface FinanceEntryCreate {
@@ -106,6 +162,18 @@ export interface FinanceEntryCreate {
   // 100% inalterado (nada de estoque/produto). Persistido em `ReceivableItem`
   // na mesma transação da Receivable.
   items?: ReceivableItemInput[];
+
+  // Bloco A — linhas de pagamento, opcional e receivable-only. Ausente = fluxo
+  // atual 100% inalterado (só `paymentMethod`). Quando presente, a soma tem de
+  // bater com `totalAmount` e o backend deriva `paymentMethod` daqui
+  // (predominante), gravando tudo na MESMA transação da Receivable.
+  payments?: ReceivablePaymentInput[];
+
+  // Bloco B — opcional e receivable-only. Ausente = fluxo atual 100%
+  // inalterado (uma conta só). Presente => o backend cria a conta-entrada
+  // (com os itens) + N contas-parcela na MESMA transação, e `totalAmount` do
+  // payload passa a significar o TOTAL DA VENDA, que é dividido entre elas.
+  installmentPlan?: InstallmentPlanInput;
 }
 
 export type FinanceEntryUpdate = Partial<Omit<FinanceEntryCreate, "userId">>;

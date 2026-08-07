@@ -1,6 +1,6 @@
 "use client";
 
-import { Control, Controller, FieldErrors } from "react-hook-form";
+import { Control, Controller, FieldErrors, useWatch } from "react-hook-form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CurrencyInput } from "@/components/ui/currency-input";
@@ -18,9 +18,15 @@ import {
   ProductPickerBlock,
   type ProductMeta,
 } from "../shared/product-picker-block";
+import { PaymentsBlock } from "../shared/payments-block";
 
 // Sentinela: Radix Select não aceita value="" — representa "Não informado".
 const PAYMENT_NONE = "__none__";
+
+// Bloco A — pagamento combinado. Flag OFF ⇒ o step renderiza exatamente como
+// hoje (só o Select único) e o payload não carrega `payments`.
+const MULTI_PAYMENT_ENABLED =
+  process.env.NEXT_PUBLIC_MULTI_PAYMENT_ENABLED === "true";
 
 interface Props {
   control: Control<FinanceEntryFormData>;
@@ -65,6 +71,26 @@ export function TitleStep({
     !!setProductMeta &&
     !!scrapMeta &&
     !!setScrapMeta;
+
+  // O erro de fechamento vem do superRefine do zod, que o RHF só reavalia no
+  // submit. Sem isto, o operador corrige os valores, o bloco já mostra
+  // "Confere ✓" e a mensagem vermelha antiga continua na tela — dizendo que
+  // falta dinheiro numa venda que já fecha. Escondemos o erro assim que a
+  // soma bate ao vivo; a validação de verdade continua no submit e no backend.
+  const liveValues = useWatch({ control }) as Partial<FinanceEntryFormData>;
+  const paymentsError = (() => {
+    const msg = errors.payments?.message;
+    if (!msg) return null;
+    const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
+    const linhas = (liveValues.payments ?? []) as Array<{ amount?: number }>;
+    if (linhas.length === 0) return String(msg);
+    const soma = linhas.reduce((acc, p) => acc + cents(p?.amount), 0);
+    const alvo = liveValues.splitPayment
+      ? cents(liveValues.downPayment)
+      : cents(liveValues.totalAmount);
+    return soma === alvo ? null : String(msg);
+  })();
+
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {showPicker && (
@@ -136,8 +162,24 @@ export function TitleStep({
         />
         <p className="text-xs text-muted-foreground">
           Opcional. Como esta conta foi/será paga (PIX, cartão, boleto, etc.).
+          {MULTI_PAYMENT_ENABLED && showPicker
+            ? " Para pagamento combinado, use o bloco abaixo."
+            : ""}
         </p>
       </div>
+
+      {/* Bloco A — só na venda balcão (onde existe o conceito de fechamento de
+          caixa) e só com a flag ligada. */}
+      {MULTI_PAYMENT_ENABLED && showPicker && (
+        <>
+          <PaymentsBlock control={control} kind={kind} />
+          {paymentsError && (
+            <p className="-mt-2 text-sm text-destructive md:col-span-2">
+              {paymentsError}
+            </p>
+          )}
+        </>
+      )}
 
       <div className="space-y-1 md:col-span-2">
         <label className="text-sm font-medium">Unidade</label>

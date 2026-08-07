@@ -25,6 +25,12 @@ import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
 import { paymentMethodLabel } from "@/app/lib/payment-methods";
 import { SectionHeading } from "@/components/section-heading";
+import {
+  isFiscalUiEnabled,
+  isPdvActionsMenuEnabled,
+  isSaleCancelEnabled,
+} from "../lib/pdv-actions";
+import { PdvSaleActions } from "./pdv-sale-actions";
 
 // "Livro do dia" do PDV — as vendas balcão recentes (contas a receber COM
 // itens), estilo ledger. Presentational: as linhas vêm da PdvView (uma única
@@ -42,6 +48,11 @@ export interface PdvSaleRow {
   createdAt: string;
   paidAt?: string | null;
   customer?: { id: string; name: string } | null;
+  // Bloco B — venda parcelada: `totalAmount` é só a ENTRADA; estes campos
+  // trazem o agregado das parcelas para exibir o tamanho real da venda.
+  // Ausentes = venda à vista.
+  installmentsCount?: number;
+  installmentsAmount?: number;
 }
 
 interface Props {
@@ -52,7 +63,16 @@ interface Props {
   // Fase 2 (NFC-e): quando presente, vendas PAGAs ganham o botão "NFC-e"
   // (emitir depois/reemitir/consultar — idempotente). Ausente ⇒ UI da Fase 1.
   onNfce?: (receivableId: string, totalAmount?: number) => Promise<void>;
+  // Bloco D (multi-CNPJ): emitente selecionado no caixa, repassado ao rascunho
+  // de NF-e 55 do menu de ações. Ausente/null ⇒ CNPJ padrão (igual a hoje).
+  nfceCompanyId?: string | null;
 }
+
+// Bloco D — menu "Ações". Flag OFF ⇒ a coluna renderiza EXATAMENTE os dois
+// botões de hoje ("Receber" e "NFC-e"), sem request extra nenhum.
+const ACTIONS_MENU = isPdvActionsMenuEnabled();
+// Bloco E — "Cancelar venda" no menu. Flag OFF ⇒ item nem existe.
+const SALE_CANCEL = isSaleCancelEnabled();
 
 const SHOWN = 10;
 
@@ -87,6 +107,7 @@ export function PdvSalesList({
   onToast,
   onChanged,
   onNfce,
+  nfceCompanyId,
 }: Props) {
   const { data: session } = useSession();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -133,7 +154,11 @@ export function PdvSalesList({
           eyebrow="Livro do dia · Balcão"
           title="Vendas"
           accent="recentes"
-          description="Contas a receber de venda balcão. Edição, estorno e cupom ficam no Financeiro."
+          description={
+            ACTIONS_MENU
+              ? "Contas a receber de venda balcão. Impressões no menu de ações; edição e estorno ficam no Financeiro."
+              : "Contas a receber de venda balcão. Edição, estorno e cupom ficam no Financeiro."
+          }
         />
       </CardHeader>
       <CardContent>
@@ -200,8 +225,29 @@ export function PdvSalesList({
                       {r.status}
                     </span>
                   </TableCell>
+                  {/* Bloco B — o operador precisa ver o TAMANHO DA VENDA.
+                      `totalAmount` sozinho mostraria só a entrada (R$ 50 numa
+                      venda de R$ 131,11). O caixa do dia continua somando
+                      apenas o que entrou — são números diferentes, e ambos
+                      corretos. */}
                   <TableCell className="text-right font-mono tabular-nums">
-                    {formatToBRL(r.totalAmount)}
+                    {r.installmentsCount ? (
+                      <span className="inline-flex flex-col items-end">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {r.installmentsCount}x
+                          </span>
+                          {formatToBRL(
+                            r.totalAmount + (r.installmentsAmount ?? 0),
+                          )}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          entrada {formatToBRL(r.totalAmount)}
+                        </span>
+                      </span>
+                    ) : (
+                      formatToBRL(r.totalAmount)
+                    )}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
@@ -220,21 +266,44 @@ export function PdvSalesList({
                           Receber
                         </Button>
                       )}
-                      {onNfce && r.status === "PAGA" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          title="Emitir/consultar NFC-e desta venda"
-                          disabled={nfceBusyId === r.id}
-                          onClick={() => handleNfce(r)}
-                        >
-                          {nfceBusyId === r.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <ReceiptText className="h-4 w-4" />
-                          )}
-                          NFC-e
-                        </Button>
+                      {ACTIONS_MENU ? (
+                        // Bloco D: recibo simples, NFC-e e NF-e 55 num só
+                        // menu. "Receber" continua como ação primária acima.
+                        <PdvSaleActions
+                          saleId={r.id}
+                          status={r.status}
+                          totalAmount={r.totalAmount}
+                          // A presença de onNfce JÁ é o gate da flag da NFC-e
+                          // (pdv-view.tsx:376 passa undefined com ela OFF).
+                          nfceUi={Boolean(onNfce)}
+                          fiscalUi={isFiscalUiEnabled()}
+                          onNfce={onNfce}
+                          nfceCompanyId={nfceCompanyId}
+                          // Bloco E: a UI só reflete. Quem decide é o guard
+                          // `requireAction` no backend — colaborador sem a
+                          // permissão recebe 403 mesmo chamando por fora.
+                          saleCancelUi={SALE_CANCEL}
+                          onReversed={onChanged}
+                          onToast={onToast}
+                        />
+                      ) : (
+                        onNfce &&
+                        r.status === "PAGA" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="Emitir/consultar NFC-e desta venda"
+                            disabled={nfceBusyId === r.id}
+                            onClick={() => handleNfce(r)}
+                          >
+                            {nfceBusyId === r.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ReceiptText className="h-4 w-4" />
+                            )}
+                            NFC-e
+                          </Button>
+                        )
                       )}
                     </div>
                   </TableCell>

@@ -201,10 +201,14 @@ export function PdvView() {
       id: string;
       paymentMethod?: string | null;
       totalAmount?: number;
+      payments?: Array<{ method: string; amount: number }> | null;
     }) => {
       const decision = decideAutoReceive({
         receiveNow,
         paymentMethod: entry.paymentMethod ?? null,
+        // Bloco A: uma linha FIADO no pagamento combinado mantém a venda
+        // PENDENTE — marcar PAGA baixaria estoque de uma venda com saldo.
+        payments: entry.payments ?? null,
       });
       if (!decision.pay) {
         showToast(
@@ -374,6 +378,9 @@ export function PdvView() {
             onToast={showToast}
             onChanged={bumpRefresh}
             onNfce={nfceUi ? runNfceChain : undefined}
+            // Bloco D: emitente do caixa segue para o rascunho de NF-e 55 do
+            // menu de ações (mesma semântica da cadeia de NFC-e).
+            nfceCompanyId={nfceCompanyId}
           />
         </div>
         <div className="min-w-0">

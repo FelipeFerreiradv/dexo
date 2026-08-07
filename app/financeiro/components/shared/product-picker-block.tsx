@@ -20,12 +20,19 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
+
+// Bloco F — "criar no catálogo" na linha do item manual. Flag OFF ⇒ o checkbox
+// não existe e o campo não vai no payload (o backend usa o default false da
+// coluna), então o item avulso segue exatamente como hoje.
+const MANUAL_ITEM_CATALOG_ENABLED =
+  process.env.NEXT_PUBLIC_MANUAL_ITEM_CATALOG_ENABLED === "true";
 
 // ──────────────────────────────────────────────────────────
 // Fase 5 — bloco de seleção de produto para venda balcão.
@@ -239,6 +246,9 @@ export function ProductPickerBlock({
       listingId: null,
       quantity: 1,
       unitPrice: 0,
+      // Bloco F — checkbox nasce LIGADO: no balcão o caso comum é peça de
+      // verdade. Serviço/frete/taxa é a exceção, e aí o operador desmarca.
+      createCatalogProduct: MANUAL_ITEM_CATALOG_ENABLED,
     } as any);
     // O "título" (reason) é gerenciado reativamente pelo efeito abaixo.
   };
@@ -604,6 +614,37 @@ function ItemRow({
           )}
         />
       </div>
+
+      {/* Bloco F — opt-in "criar no catálogo", só na linha do item MANUAL.
+          Marcado, o pagamento promove a peça a produto real (SKU automático)
+          com entrada e saída de estoque, e ela passa a contar na quantidade de
+          peças vendidas da sucata. Desmarcado, fica como venda avulsa — que é
+          o certo para mão de obra, frete e taxas. Flag OFF: nem aparece. */}
+      {MANUAL_ITEM_CATALOG_ENABLED && isManual && (
+        <div className="flex items-start gap-2 pl-1">
+          <Controller
+            control={control}
+            name={`items.${index}.createCatalogProduct` as const}
+            render={({ field }) => (
+              <Checkbox
+                id={`create-catalog-${index}`}
+                checked={field.value !== false}
+                onCheckedChange={(v) => field.onChange(v === true)}
+                className="mt-0.5"
+              />
+            )}
+          />
+          <label
+            htmlFor={`create-catalog-${index}`}
+            className="cursor-pointer text-[11px] leading-tight text-muted-foreground"
+          >
+            Criar no catálogo
+            <span className="block text-[10px] opacity-80">
+              Gera SKU e movimenta o estoque. Desmarque para serviços e taxas.
+            </span>
+          </label>
+        </div>
+      )}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import {
   Receipt,
   Search,
   Trash2,
+  Undo2,
 } from "lucide-react";
 
 import {
@@ -55,6 +56,7 @@ import { SectionHeading } from "@/components/section-heading";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
+import { reverseSale } from "../lib/reverse-sale";
 import {
   paymentMethodsForKind,
   paymentMethodLabel,
@@ -92,6 +94,11 @@ const LIMIT = 20;
 const BALCAO_SALE_ENABLED =
   process.env.NEXT_PUBLIC_BALCAO_SALE_ENABLED === "true";
 
+// Bloco E — botão de estorno. Flag OFF ⇒ a coluna de ações fica byte-idêntica
+// à de hoje (marcar paga, cupom, editar, excluir).
+const SALE_CANCEL_ENABLED =
+  process.env.NEXT_PUBLIC_SALE_CANCEL_ENABLED === "true";
+
 // Sentinela do filtro de forma de pagamento (Radix Select não aceita value="").
 // "todas" = não envia o parâmetro => resultado idêntico ao atual.
 const METHOD_ALL = "__all__";
@@ -126,6 +133,9 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     | undefined
   >(undefined);
   const [deleteTarget, setDeleteTarget] = useState<FinanceRow | null>(null);
+  // Bloco E — alvo do estorno e id em voo (a linha vira spinner).
+  const [reverseTarget, setReverseTarget] = useState<FinanceRow | null>(null);
+  const [reversingId, setReversingId] = useState<string | null>(null);
   // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
   // egress). Guarda o id em carregamento p/ feedback no botão de editar.
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
@@ -288,6 +298,29 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       onToast("Cupom sem validade fiscal emitido", "success");
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Erro ao emitir cupom", "error");
+    }
+  };
+
+  // Bloco E — estorno explícito. Reusa o POST /reverse que já existia (atômico:
+  // status CANCELADA + devolução de estoque na MESMA transação).
+  const handleReverse = async () => {
+    if (!reverseTarget) return;
+    const email = session?.user?.email;
+    if (!email) return;
+    setReversingId(reverseTarget.id);
+    try {
+      await reverseSale(reverseTarget.id, email);
+      onToast(
+        "Venda estornada — estoque devolvido e anúncios reabertos.",
+        "success",
+      );
+      setReverseTarget(null);
+      fetchList();
+      onChanged?.();
+    } catch (e) {
+      onToast(e instanceof Error ? e.message : "Erro ao estornar", "error");
+    } finally {
+      setReversingId(null);
     }
   };
 
@@ -471,6 +504,28 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                             <Pencil className="h-4 w-4" />
                           )}
                         </Button>
+                        {/* Bloco E — estorno. O endpoint POST /reverse existia,
+                            era atômico e testado, e NÃO tinha botão nenhum:
+                            quem tentava excluir uma venda paga recebia 409
+                            mandando "use Estornar" e não tinha como estornar.
+                            Flag OFF ⇒ o botão não existe (estado atual). */}
+                        {SALE_CANCEL_ENABLED &&
+                          kind === "receivable" &&
+                          r.status === "PAGA" && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              title="Estornar venda (devolve o estoque)"
+                              disabled={reversingId === r.id}
+                              onClick={() => setReverseTarget(r)}
+                            >
+                              {reversingId === r.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Undo2 className="h-4 w-4 text-destructive" />
+                              )}
+                            </Button>
+                          )}
                         <Button
                           size="icon"
                           variant="ghost"
@@ -544,6 +599,44 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete}>
               Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bloco E — confirmação do estorno. */}
+      <AlertDialog
+        open={!!reverseTarget}
+        onOpenChange={(o) => !o && setReverseTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Estornar esta venda?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O estoque das peças volta para o catálogo e os anúncios que
+              zeraram são reabertos. A conta fica com status CANCELADA e deixa
+              de contar no faturamento. Se já houver nota fiscal emitida, ela{" "}
+              <strong>não</strong> é cancelada por aqui — o cancelamento fiscal
+              tem prazo próprio e é feito em Notas Fiscais.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reversingId !== null}>
+              Voltar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={reversingId !== null}
+              onClick={(e) => {
+                // Sem preventDefault o diálogo fecha antes da resposta e o
+                // operador não vê o resultado (nem o 403 de permissão).
+                e.preventDefault();
+                void handleReverse();
+              }}
+            >
+              {reversingId !== null && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              Estornar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

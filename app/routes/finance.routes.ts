@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { FinanceUseCase } from "../usecases/finance.usecase";
 import { FinanceKind, FinanceStatus } from "../interfaces/finance.interface";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { requireAction } from "../middlewares/require-action.middleware";
 import { FinanceRepository } from "../repositories/finance.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { ReceiptPdfService } from "../financeiro/generators/receipt-pdf.service";
@@ -43,15 +44,18 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const { unidadeId, hasItems } = request.query as {
+        const { unidadeId, hasItems, customerId } = request.query as {
           unidadeId?: string;
           hasItems?: string;
+          customerId?: string;
         };
         const summary = await useCase.summary(
           userId,
           unidadeId || undefined,
           // Só o literal "true" ativa (PDV); ausente/lixo => idêntico ao atual.
           hasItems === "true" ? true : undefined,
+          // Bloco C: resumo de um cliente. Ausente => idêntico ao atual.
+          customerId || undefined,
         );
         return reply.status(200).send({ summary });
       } catch (error) {
@@ -220,7 +224,11 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        await useCase.delete(kind, id, userId);
+        // Auditoria (Bloco E): registra quem operou, não o dono dos dados.
+        await useCase.delete(kind, id, userId, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
         return reply.status(200).send({ message: "Registro excluído" });
       } catch (error) {
         const message =
@@ -263,9 +271,13 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     buildPayHandler("receivable"),
   );
+  // Bloco E: excluir um título a receber é a mesma capacidade destrutiva que
+  // cancelar a venda, então responde à MESMA permissão de ação. Payable segue
+  // sem guard (fora de escopo). Default é permitir ⇒ nada muda para quem já
+  // usa o sistema; só quem o admin desligar explicitamente recebe 403.
   fastify.delete(
     "/receivables/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requireAction("pdv.cancelar-venda")] },
     buildDeleteHandler("receivable"),
   );
 
@@ -273,15 +285,34 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
   // Devolve o estoque (contra-lançamento) e reabre anúncios best-effort.
   // Idempotente: já CANCELADA → no-op. Atômico via $transaction com os
   // mesmos opts do markPaid ({timeout:60_000, maxWait:20_000}).
+  //
+  // Bloco E: protegido por permissão de AÇÃO. Esconder botão não é permissão —
+  // sem o guard, um `curl` devolveria o estoque e cancelaria a venda igual.
   fastify.post(
     "/receivables/:id/reverse",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requireAction("pdv.cancelar-venda")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const entry = await useCase.reverse(id, userId);
-        return reply.status(200).send({ entry });
+        // Auditoria: quem OPEROU (request.user.id), não o dono dos dados —
+        // num tenant com colaboradores, dataOwnerId é sempre o admin.
+        const entry = await useCase.reverse(id, userId, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
+        // Bloco B (aditivo): informa o que aconteceu com as parcelas. As em
+        // aberto foram canceladas junto; as já RECEBIDAS ficaram como estão —
+        // é dinheiro que entrou, e a devolução é decisão do operador. Sem
+        // parcelas, o array vem vazio e a resposta é a de sempre + 1 campo.
+        const filhas = await financeRepo.findChildren(id, userId);
+        return reply.status(200).send({
+          entry,
+          installments: {
+            cancelled: filhas.filter((f) => f.status === "CANCELADA").length,
+            alreadyPaid: filhas.filter((f) => f.status === "PAGA").length,
+          },
+        });
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao estornar";
@@ -386,6 +417,35 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // ── Bloco D: notas fiscais já vinculadas a esta venda (leitura pura) ──
+  // Alimenta o menu "Ações" do livro do dia: com nota autorizada, "Emitir"
+  // vira "Reimprimir"; em processamento, vira "Consultar". Sem isto o botão
+  // de emitir seria um tiro no escuro sobre uma nota que já existe.
+  //
+  // ROTA NOVA — nenhum contrato existente muda. Consulta escopada por
+  // dataOwnerId dentro do repositório; id inexistente ou de outro tenant
+  // simplesmente não casa o link textual e devolve lista vazia (sem
+  // vazamento e sem custo de uma consulta extra de existência).
+  fastify.get(
+    "/receivables/:id/fiscal-docs",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const docs = await useCase.listFiscalDocsForReceivable(id, userId);
+        return reply.status(200).send({ docs });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao consultar notas da venda",
+        });
+      }
+    },
+  );
+
   // ── Cupom sem validade fiscal (apenas Receivable) ──
   fastify.get(
     "/receivables/:id/receipt",
@@ -414,7 +474,27 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         // lança: falha ⇒ null ⇒ cupom sai com as iniciais da razão social.
         const avatar = await loadTenantAvatar(prisma as never, userId);
 
-        const pdfBytes = await receiptPdf.generate(entry, company, avatar);
+        // Bloco B — parcelas da venda, para o cupom fechar a aritmética: a
+        // conta-mãe carrega TODOS os itens mas seu totalAmount é só a entrada.
+        // Sem isto o cupom sai com itens de R$ 131,11 e TOTAL de R$ 50,00.
+        // Uma consulta indexada; venda à vista devolve [] e o cupom é o de
+        // sempre (a chamada abaixo mantém a aridade original nesse caso).
+        const filhas = await financeRepo.findChildren(id, userId);
+
+        const pdfBytes =
+          filhas.length > 0
+            ? await receiptPdf.generate(
+                entry,
+                company,
+                avatar,
+                filhas.map((f) => ({
+                  numero: f.installmentNumber ?? 0,
+                  total: f.installmentTotal ?? filhas.length,
+                  dueDate: f.dueDate,
+                  amount: f.totalAmount,
+                })),
+              )
+            : await receiptPdf.generate(entry, company, avatar);
         const buffer = Buffer.from(pdfBytes);
 
         return reply
@@ -506,6 +586,9 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
               dueDate: true,
               paymentMethod: true,
               createdAt: true,
+              // Bloco B: distingue a PARCELA de uma venda (que é balcão) de
+              // uma cobrança avulsa. NULL em toda linha pré-existente.
+              parentReceivableId: true,
               _count: { select: { items: true } },
             },
           }),
@@ -532,6 +615,8 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             dueDate: Date;
             paymentMethod: string | null;
             createdAt: Date;
+            // Só receivable tem; payable nunca (Bloco B é receivable-only).
+            parentReceivableId?: string | null;
           },
           hasItems?: boolean,
         ): FinanceEntryInput => ({
@@ -544,7 +629,16 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         });
 
         const result = aggregateFinanceReport(
-          receivables.map((r) => mapEntry(r, (r._count?.items ?? 0) > 0)),
+          // Bloco B: a PARCELA de uma venda de balcão não tem itens, mas é
+          // receita de balcão. Sem o OR, o saldo parcelado migraria para
+          // "avulso" e o canal Balcão apareceria sub-reportado. Espelha o SQL
+          // de dashboard-breakdowns.query.ts — os dois têm de mover juntos.
+          receivables.map((r) =>
+            mapEntry(
+              r,
+              (r._count?.items ?? 0) > 0 || r.parentReceivableId != null,
+            ),
+          ),
           payables.map((p) => mapEntry(p)),
           range,
           new Date(),
