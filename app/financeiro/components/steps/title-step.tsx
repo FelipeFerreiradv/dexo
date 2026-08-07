@@ -72,22 +72,36 @@ export function TitleStep({
     !!scrapMeta &&
     !!setScrapMeta;
 
+  // O bloco de pagamento combinado só existe com a flag ligada E na venda
+  // balcão. Fora daí nada abaixo é lido — e a inscrição do useWatch fica
+  // DESLIGADA, para o passo Título não voltar a renderizar a cada tecla nos
+  // fluxos que não usam o bloco (que são todos os de hoje).
+  const paymentsUi = MULTI_PAYMENT_ENABLED && showPicker;
+
   // O erro de fechamento vem do superRefine do zod, que o RHF só reavalia no
   // submit. Sem isto, o operador corrige os valores, o bloco já mostra
   // "Confere ✓" e a mensagem vermelha antiga continua na tela — dizendo que
   // falta dinheiro numa venda que já fecha. Escondemos o erro assim que a
   // soma bate ao vivo; a validação de verdade continua no submit e no backend.
-  const liveValues = useWatch({ control }) as Partial<FinanceEntryFormData>;
+  //
+  // Assinatura ESTREITA (4 campos), não o formulário inteiro: observar tudo
+  // fazia este passo — e com ele o ProductPickerBlock e suas linhas de item —
+  // re-renderizar a cada tecla digitada em Nº do documento, Motivo, Detalhes
+  // da dívida e Unidade. São exatamente os 4 campos que o cálculo lê.
+  const [wPayments, wSplit, wDown, wTotal] = useWatch({
+    control,
+    name: ["payments", "splitPayment", "downPayment", "totalAmount"],
+    disabled: !paymentsUi,
+  });
   const paymentsError = (() => {
+    if (!paymentsUi) return null;
     const msg = errors.payments?.message;
     if (!msg) return null;
     const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
-    const linhas = (liveValues.payments ?? []) as Array<{ amount?: number }>;
+    const linhas = (wPayments ?? []) as Array<{ amount?: number }>;
     if (linhas.length === 0) return String(msg);
     const soma = linhas.reduce((acc, p) => acc + cents(p?.amount), 0);
-    const alvo = liveValues.splitPayment
-      ? cents(liveValues.downPayment)
-      : cents(liveValues.totalAmount);
+    const alvo = wSplit ? cents(wDown) : cents(wTotal);
     return soma === alvo ? null : String(msg);
   })();
 
@@ -162,15 +176,15 @@ export function TitleStep({
         />
         <p className="text-xs text-muted-foreground">
           Opcional. Como esta conta foi/será paga (PIX, cartão, boleto, etc.).
-          {MULTI_PAYMENT_ENABLED && showPicker
-            ? " Para pagamento combinado, use o bloco abaixo."
-            : ""}
+          {paymentsUi ? " Para pagamento combinado, use o bloco abaixo." : ""}
         </p>
       </div>
 
       {/* Bloco A — só na venda balcão (onde existe o conceito de fechamento de
-          caixa) e só com a flag ligada. */}
-      {MULTI_PAYMENT_ENABLED && showPicker && (
+          caixa) e só com a flag ligada. MESMA condição do `disabled` do
+          useWatch acima: se as duas divergirem, ou o aviso congela ou o
+          formulário volta a re-renderizar à toa. */}
+      {paymentsUi && (
         <>
           <PaymentsBlock control={control} kind={kind} />
           {paymentsError && (

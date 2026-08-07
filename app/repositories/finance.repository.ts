@@ -350,7 +350,23 @@ export class FinanceRepository {
     return mae;
   }
 
-  /** Bloco B — parcelas de uma venda, na ordem. */
+  /**
+   * Bloco B — parcelas de uma venda, na ordem.
+   *
+   * SEM `include`: nenhum dos três chamadores lê `customer` ou `unidade` — o
+   * delete só olha `length`, o /reverse só o `status` e o cupom só
+   * número/vencimento/valor. O Prisma resolve cada relação incluída numa
+   * consulta PRÓPRIA, então incluí-las custava 3 idas ao banco em vez de 1,
+   * por chamada, mais o tráfego das linhas de cliente/unidade repetidas em
+   * cada parcela — dado que ninguém consome. `toEntry` deixa os dois campos
+   * `undefined`, exatamente como já faz para qualquer relação não incluída
+   * (mesma disciplina de `items`/`payments` na listagem).
+   *
+   * Um `select` explícito cortaria também as colunas escalares, mas obrigaria
+   * a enumerar os ~23 campos que `toEntry` lê — qualquer campo novo no schema
+   * passaria a chegar `undefined` em silêncio. Não compensa: as colunas
+   * restantes são escalares pequenos e `debtDetails` já nasce null na parcela.
+   */
   async findChildren(
     parentId: string,
     userId: string,
@@ -358,10 +374,6 @@ export class FinanceRepository {
     const rows = await prisma.receivable.findMany({
       where: { parentReceivableId: parentId, userId },
       orderBy: { installmentNumber: "asc" },
-      include: {
-        customer: { select: { id: true, name: true, cpf: true, email: true } },
-        unidade: { select: { id: true, name: true } },
-      },
     });
     return rows.map(toEntry);
   }
