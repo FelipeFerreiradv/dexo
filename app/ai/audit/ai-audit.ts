@@ -103,6 +103,65 @@ export function auditProviderError(
   );
 }
 
+/**
+ * Uma tool executada.
+ *
+ * `args` NÃO entra aqui, nem sanitizado. O que interessa para auditoria é QUAL
+ * consulta rodou, se deu certo e quanto demorou — os argumentos carregam o
+ * termo de busca do usuário, que é dado do cliente e já vive na conversa.
+ */
+export function auditToolCall(
+  input: AuditBase & {
+    tool: string;
+    ok: boolean;
+    ms: number;
+    error?: string;
+  },
+): void {
+  void SystemLogService.logInfo(
+    "AI_TOOL_CALL",
+    `Bitz consultou ${input.tool} (${input.ok ? "ok" : "falhou"}, ${input.ms}ms)`,
+    {
+      resource: "AiConversation",
+      resourceId: input.conversationId,
+      details: sanitizeDeep({
+        tenantUserId: input.dataOwnerId,
+        actorUserId: input.actorUserId,
+        tool: input.tool,
+        ok: input.ok,
+        ms: input.ms,
+        error: input.error,
+      }),
+    },
+  );
+}
+
+/**
+ * Tool recusada por permissão.
+ *
+ * WARNING e linha própria: é a prova auditável de que o gate por página vale
+ * dentro do chat. Se um colaborador sem `financeiro` tentar puxar o caixa pelo
+ * Bitz, existe registro disso.
+ */
+export function auditToolDenied(
+  input: AuditBase & { tool: string; page: string },
+): void {
+  void SystemLogService.logWarning(
+    "AI_TOOL_DENIED",
+    `Bitz recusou ${input.tool}: sem acesso a ${input.page}`,
+    {
+      resource: "AiConversation",
+      resourceId: input.conversationId,
+      details: sanitizeDeep({
+        tenantUserId: input.dataOwnerId,
+        actorUserId: input.actorUserId,
+        tool: input.tool,
+        page: input.page,
+      }),
+    },
+  );
+}
+
 /** Teto diário batido. */
 export function auditQuotaExceeded(
   input: AuditBase & { denied: "tenant" | "global" },

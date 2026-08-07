@@ -21,6 +21,17 @@ export type AiIntentKind = "duvida" | "dados" | "conversa";
 export interface AiIntent {
   kind: AiIntentKind;
   needsRag: boolean;
+  /**
+   * Vale oferecer tools ao modelo neste turno?
+   *
+   * Separado de `needsRag` porque as duas coisas não são opostas: "por que meu
+   * anúncio do farol está pausado?" precisa da base (o que significa pausado) E
+   * de uma consulta (o anúncio dele). Só cumprimento dispensa as duas.
+   *
+   * QUAIS tools é decisão de tools/select.ts — este módulo não conhece o
+   * registry, e é isso que o mantém puro e sem dependência circular.
+   */
+  needsTools: boolean;
 }
 
 // Os padrões abaixo casam contra o texto JÁ NORMALIZADO por `normalizeTerm`
@@ -58,14 +69,17 @@ export function classifyIntent(message: string): AiIntent {
   const texto = normalizeTerm(message ?? "");
 
   if (!texto || SO_CONVERSA.test(texto)) {
-    return { kind: "conversa", needsRag: false };
+    return { kind: "conversa", needsRag: false, needsTools: false };
   }
 
   // Pedido de número vence, EXCETO quando a frase também pergunta como fazer
   // ("como eu vejo quanto vendi?" é dúvida de operação, não relatório).
   if (PEDE_DADOS.test(texto) && !PEDE_AJUDA.test(texto)) {
-    return { kind: "dados", needsRag: false };
+    return { kind: "dados", needsRag: false, needsTools: true };
   }
 
-  return { kind: "duvida", needsRag: true };
+  // Dúvida também recebe tools: metade das perguntas de suporte são sobre UM
+  // registro concreto ("por que ESTE anúncio caiu"), e sem consulta a resposta
+  // vira teoria.
+  return { kind: "duvida", needsRag: true, needsTools: true };
 }

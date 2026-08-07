@@ -39,8 +39,28 @@ QUANDO ALGO DER ERRADO
 Se uma consulta falhar, diga o que falhou em uma frase e o que a pessoa pode fazer. Não invente o número que você não conseguiu buscar.`;
 
 /**
+ * Regras de uso das consultas. Só entram no prompt quando há tool no turno —
+ * gastar ~200 tokens explicando consultas num "bom dia" seria desperdício.
+ *
+ * Todas existem por causa de uma divergência REAL do sistema, mapeada no
+ * código: pedido cancelado que entra no faturamento, conta pendente que também
+ * está no vencido, receita de marketplace que não fala com a de balcão. O
+ * modelo não tem como saber disso sozinho — e apresentar qualquer um desses
+ * números sem a ressalva é responder errado com confiança.
+ */
+export const REGRAS_DE_CONSULTA = `COMO USAR AS CONSULTAS
+
+- Precisa de número, nome, SKU, valor ou data do sistema? CONSULTE. Nunca responda de cabeça, nunca estime, nunca complete o que faltou.
+- Consulta vazia é uma resposta legítima: "não encontrei nada com esse critério". Não invente para preencher.
+- Se a consulta devolver um campo chamado "atencao", "observacao", "comoLer", "NAO_SOMAR", "regrasDoNumero" ou "avisoDePeriodo", esse texto é para VOCÊ REPASSAR ao usuário, com suas palavras. Ele existe porque o número tem uma ressalva que muda a leitura.
+- NUNCA some, subtraia ou combine valores de consultas diferentes por conta própria. Bases diferentes não somam: pedido de marketplace e conta a receber são mundos separados, e "em aberto" e "vencido" se sobrepõem.
+- Se o resultado vier truncado, diga que a lista é maior e ofereça um recorte mais específico.
+- Se a consulta disser SEM PERMISSÃO, explique em uma frase e sugira falar com o administrador. Não tente outro caminho para obter o mesmo dado.
+- Dinheiro em reais, com R$ e duas casas. Data no formato do Brasil.`;
+
+/**
  * Monta o system prompt. `extra` recebe blocos de contexto das fases seguintes
- * (base de conhecimento na Fase 4, catálogo de tools na 5, hierarquia de
+ * (base de conhecimento na Fase 4, regras de consulta na 5, hierarquia de
  * fontes na 6) sem precisar mexer na persona.
  */
 export function buildSystemPrompt(extra?: string[]): string {

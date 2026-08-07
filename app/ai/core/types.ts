@@ -16,6 +16,15 @@ export interface AiMessage {
   toolCallId?: string;
   /** Só em role="tool": nome da tool que produziu o conteúdo. */
   toolName?: string;
+  /**
+   * Só em role="assistant": as tools que ESTE turno do modelo pediu.
+   *
+   * Existe porque o protocolo exige devolver o pedido junto da resposta: o
+   * histórico precisa conter o `functionCall` do modelo antes do
+   * `functionResponse` correspondente. Mandar de volta um turno de texto vazio
+   * no lugar do pedido deixa a conversa incoerente para o provedor.
+   */
+  toolCalls?: AiToolCall[];
 }
 
 /** Definição que o modelo VÊ. `parameters` é JSON Schema (derivado do zod). */

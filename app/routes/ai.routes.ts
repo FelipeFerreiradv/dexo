@@ -4,6 +4,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { isAiEnabledFor } from "../ai/entitlement/ai-entitlement.service";
 import { requireAiEnabled } from "../ai/entitlement/require-ai-enabled";
 import { MAX_USER_MESSAGE_CHARS, runTurn } from "../ai/agent/orchestrator";
+import { scopeFromRequest } from "../ai/core/scope";
 import prisma from "../lib/prisma";
 
 /**
@@ -113,6 +114,11 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
           actorUserId: user.id,
           message,
           conversationId,
+          // ⭐ O escopo das consultas sai DAQUI e de nenhum outro lugar: tenant
+          // e permissões vêm da sessão já autenticada. `scopeFromRequest` é a
+          // única fábrica que existe (ai/core/scope.ts), e sem ela o turno roda
+          // sem tool nenhuma em vez de rodar com um tenant adivinhado.
+          scope: scopeFromRequest(request) ?? undefined,
         });
 
         return reply.send({

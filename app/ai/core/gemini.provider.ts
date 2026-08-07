@@ -105,6 +105,26 @@ export function toGeminiContents(messages: AiMessage[]): {
       });
       continue;
     }
+
+    // Turno do modelo que PEDIU tools: o `functionCall` volta como estava. A
+    // API casa o functionResponse seguinte pelo nome, e um turno de texto vazio
+    // no lugar do pedido deixaria a conversa sem par.
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      const parts: Array<Record<string, unknown>> = [];
+      if (m.content) parts.push({ text: m.content });
+      for (const call of m.toolCalls) {
+        parts.push({
+          functionCall: { name: call.name, args: call.args ?? {} },
+        });
+      }
+      contents.push({ role: "model", parts });
+      continue;
+    }
+
+    // Parte de texto vazia é recusada pela API; um turno sem conteúdo e sem
+    // tool não acrescenta nada ao histórico.
+    if (!m.content) continue;
+
     contents.push({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
