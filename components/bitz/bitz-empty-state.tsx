@@ -4,7 +4,7 @@ import * as React from "react";
 import { ArrowRight, BarChart3, Search, Sparkles, Tag } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { BitzMascotAnimado } from "./bitz-mascot-animado";
+import { BitzMascot } from "./bitz-mascot";
 
 interface AcaoCard {
   icon: React.ElementType;
@@ -97,11 +97,6 @@ function saudacao(hora: number): string {
 interface BitzEmptyStateProps {
   nome?: string | null;
   onPergunta: (texto: string) => void;
-  /**
-   * Contador de aberturas do painel. Serve de `key` para a animação: sem ele o
-   * `<img>` nunca remonta e a saudação toca uma vez só por aba.
-   */
-  abertura?: number;
   className?: string;
 }
 
@@ -114,7 +109,6 @@ interface BitzEmptyStateProps {
 export function BitzEmptyState({
   nome,
   onPergunta,
-  abertura = 0,
   className,
 }: BitzEmptyStateProps) {
   const [tema, setTema] = React.useState<string>(TEMAS[0].id);
@@ -131,12 +125,12 @@ export function BitzEmptyState({
 
   return (
     <div className={cn("flex flex-col gap-6 p-4 sm:p-6", className)}>
-      <div className="flex items-end gap-3">
-        {/* A saudação é o momento da animação: toca uma vez ao abrir o painel,
-            sem segurar nada. O robô é de corpo inteiro (proporção 3:4), então
-            ganha altura de verdade em vez de caber num círculo de 52 px. */}
-        <BitzMascotAnimado key={abertura} height={92} />
-        <div className="min-w-0 pb-1">
+      <div className="flex items-start gap-3">
+        {/* Estático por enquanto. A animação DO PAINEL ABERTO é um arquivo
+            próprio, ainda por chegar — quando chegar, entra aqui e vai precisar
+            de uma `key` que mude a cada abertura (ver bitz-widget.tsx). */}
+        <BitzMascot size={52} aura priority />
+        <div className="min-w-0 pt-1">
           <p className="text-muted-foreground text-sm">
             {hora === null ? "Olá" : saudacao(hora)}
             {primeiroNome ? `, ${primeiroNome}` : ""}

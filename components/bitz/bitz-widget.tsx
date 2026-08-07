@@ -9,6 +9,7 @@ import { useBitzEntitlement } from "@/hooks/use-bitz-entitlement";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MASCOT, type BitzPanelMode } from "./bitz-constants";
 import { BitzMascot } from "./bitz-mascot";
+import { BitzMascotAnimado } from "./bitz-mascot-animado";
 
 /**
  * O painel inteiro (chat, markdown, composer) só é baixado DEPOIS do primeiro
@@ -36,6 +37,16 @@ const BitzPanel = dynamic(
 // `bitz-root.tsx` só renderiza este componente depois de garantir a sessão,
 // então aqui ela não é mais nullable. Tipar como não-nulo evita um `?.`
 // defensivo que esconderia uma quebra futura daquele contrato.
+/**
+ * Quanto o painel espera a animação do mascote antes de aparecer.
+ *
+ * A animação inteira tem 3 s; 1,2 s é o pedaço em que o robô surge e se firma,
+ * que é o que dá a sensação de "ele acordou porque eu cliquei". Segurar os 3 s
+ * cobraria 3 segundos de TODA abertura do chat, o dia inteiro — e o lojista
+ * abre isso dezenas de vezes.
+ */
+const ESPERA_DA_ANIMACAO_MS = 1200;
+
 export function BitzWidget({ session }: { session: Session }) {
   const enabled = useBitzEntitlement();
   const isMobile = useIsMobile();
@@ -44,26 +55,48 @@ export function BitzWidget({ session }: { session: Session }) {
   const [mounted, setMounted] = React.useState(false);
   const [greeting, setGreeting] = React.useState(false);
   const [mode, setMode] = React.useState<BitzPanelMode>("docked");
-  /**
-   * Quantas vezes o painel foi aberto nesta aba.
-   *
-   * ⚠️ NÃO É TELEMETRIA — é o que faz a animação de saudação TOCAR DE NOVO.
-   * O painel é montado uma vez e nunca desmontado (fechar só faz `open=false`),
-   * então o `<img>` da animação também nunca remonta. WebP animado com contador
-   * de loop 1 toca uma vez e congela no último quadro: sem esta chave, o
-   * lojista via a animação na primeira abertura da aba e NUNCA MAIS.
-   */
-  const [aberturas, setAberturas] = React.useState(0);
+  /** O mascote está tocando a animação de abertura neste instante. */
+  const [animando, setAnimando] = React.useState(false);
+  const relogio = React.useRef<number | null>(null);
+
+  // Timer pendente com o componente desmontado vira setState em árvore morta.
+  React.useEffect(
+    () => () => {
+      if (relogio.current !== null) window.clearTimeout(relogio.current);
+    },
+    [],
+  );
 
   const abrir = () => {
+    // Clique repetido durante a animação não empilha timer nem reinicia nada.
+    if (animando) return;
+
     // No celular o padrão é tela cheia; no desktop abre docado e o usuário
     // expande quando quiser. Decidido na hora do clique (e não por CSS) porque
     // o modo é estado, não layout.
     setMode(isMobile ? "fullscreen" : "docked");
+
+    // ⭐ O chunk do painel começa a carregar AGORA, não daqui a 1,2 s. A espera
+    // da animação passa a ser tempo útil: quando o painel aparece, ele já está
+    // pronto. Sem isso a animação seria custo puro.
     setMounted(true);
-    setOpen(true);
-    setGreeting(true);
-    setAberturas((n) => n + 1);
+
+    const abrirDeFato = () => {
+      setOpen(true);
+      setGreeting(true);
+      setAnimando(false);
+    };
+
+    // Quem pediu menos movimento no sistema não espera nada: abre na hora.
+    const menosMovimento =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (menosMovimento) {
+      abrirDeFato();
+      return;
+    }
+
+    setAnimando(true);
+    relogio.current = window.setTimeout(abrirDeFato, ESPERA_DA_ANIMACAO_MS);
   };
 
   if (!enabled) return null;
@@ -83,6 +116,9 @@ export function BitzWidget({ session }: { session: Session }) {
             new Image().src = MASCOT.animacao;
           }}
           onAnimationEnd={() => setGreeting(false)}
+          // Durante a animação o botão para de responder: um segundo clique não
+          // teria o que abrir, e o `active:scale-95` piscaria por nada.
+          disabled={animando}
           aria-label="Abrir o Bitz, assistente do Dexo"
           className={cn(
             // z-40: acima de todo conteúdo em árvore (máx. z-30) e abaixo de
@@ -96,9 +132,25 @@ export function BitzWidget({ session }: { session: Session }) {
             "motion-reduce:transition-none motion-reduce:hover:scale-100",
             greeting &&
               "animate-[bitz-greet_620ms_cubic-bezier(0.34,1.56,0.64,1)] motion-reduce:animate-none",
+            // Enquanto anima, o botão sai do caminho do próprio mascote: sem
+            // pulo de escala e sem cursor de clique.
+            animando && "pointer-events-none scale-100",
           )}
         >
-          <BitzMascot size={56} aura priority />
+          {/* ⭐ O launcher NÃO precisa de `key` para a animação repetir: ele é
+              desmontado quando o painel abre (`{!open && ...}`) e montado de
+              novo quando fecha, então o <img> nasce novo a cada abertura e o
+              WebP recomeça sozinho.
+
+              ⚠️ Isso NÃO vale dentro do painel. Lá o componente fica montado
+              para sempre (fechar só faz `open=false`), e um WebP com contador
+              de loop 1 congela no último quadro. A animação que vier para o
+              painel aberto vai precisar de uma chave que mude a cada abertura. */}
+          {animando ? (
+            <BitzMascotAnimado height={72} />
+          ) : (
+            <BitzMascot size={56} aura priority />
+          )}
         </button>
       )}
 
@@ -108,7 +160,6 @@ export function BitzWidget({ session }: { session: Session }) {
           onOpenChange={setOpen}
           mode={mode}
           onModeChange={setMode}
-          abertura={aberturas}
           userName={session.user?.name}
         />
       )}

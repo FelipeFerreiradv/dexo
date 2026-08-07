@@ -313,40 +313,91 @@ describe("a animação da saudação", () => {
     expect(animado).toContain("BitzMascot");
   });
 
-  it("⭐ nada disso entra no shell: só o painel importa o animado", () => {
-    // O launcher (bitz-widget) usa o mascote ESTÁTICO. Se ele importasse o
-    // animado, os 237 KB entrariam no chunk de todas as páginas.
-    expect(lerCodigo("components/bitz/bitz-widget.tsx")).not.toContain(
-      "bitz-mascot-animado",
-    );
-    expect(lerCodigo("components/bitz/bitz-empty-state.tsx")).toContain(
-      "bitz-mascot-animado",
-    );
+  it("⭐ os 237 KB só saem do servidor depois que o usuário mexe", () => {
+    // O peso aqui NÃO é JavaScript — é um arquivo em /public. O que o mantém
+    // fora do caminho de quem só quer usar o ERP é o <img> não existir até o
+    // clique: o animado é renderizado apenas quando `animando` é true, e o
+    // único carregamento antecipado é o pré-aquecimento no hover.
+    const widget = lerCodigo("components/bitz/bitz-widget.tsx");
+    expect(widget).toMatch(/animando \? \(\s*<BitzMascotAnimado/);
+
+    // E o ponto de entrada do shell não conhece nem o widget nem o animado —
+    // é o `dynamic()` do bitz-root que mantém tudo isso fora de todas as
+    // páginas quando o módulo está desligado.
+    const root = lerCodigo("components/bitz/bitz-root.tsx");
+    expect(root).not.toContain("bitz-mascot-animado");
   });
 });
 
-describe("⭐ a saudação anima TODA vez que o painel abre", () => {
+describe("⭐ a animação toca no ícone, e o painel espera por ela", () => {
   const widget = lerCodigo("components/bitz/bitz-widget.tsx");
-  const vazio = lerCodigo("components/bitz/bitz-empty-state.tsx");
 
-  it("o painel nunca desmonta — por isso a animação precisa de uma chave", () => {
-    // `mounted` vira true no primeiro clique e NUNCA volta: fechar o painel só
-    // faz `open=false`. Sem chave, o <img> da animação também nunca remonta, e
-    // um WebP com contador de loop 1 congela no último quadro. Resultado: a
-    // saudação animava na primeira abertura da aba e nunca mais.
-    expect(widget).toMatch(/setMounted\(true\)/);
-    expect(widget).not.toMatch(/setMounted\(false\)/);
+  it("clicar troca o mascote estático pelo animado", () => {
+    expect(widget).toContain("BitzMascotAnimado");
+    expect(widget).toMatch(/animando \? \(/);
   });
 
-  it("cada abertura incrementa o contador e ele chega na animação", () => {
-    expect(widget).toMatch(/setAberturas\(\(n\) => n \+ 1\)/);
-    expect(widget).toContain("abertura={aberturas}");
-    expect(vazio).toContain("key={abertura}");
+  it("a espera é curta e tem número declarado, não mágico", () => {
+    expect(widget).toContain("ESPERA_DA_ANIMACAO_MS");
+    const n = Number(
+      widget.match(/ESPERA_DA_ANIMACAO_MS = (\d+)/)?.[1] ?? "99999",
+    );
+    // A animação inteira tem 3 s. Segurar tudo isso em TODA abertura seria
+    // cobrar 3 segundos de quem abre o chat dezenas de vezes por dia.
+    expect(n).toBeGreaterThanOrEqual(600);
+    expect(n).toBeLessThanOrEqual(1600);
+  });
+
+  it("⭐ o chunk do painel carrega DURANTE a espera, não depois", () => {
+    // `setMounted(true)` antes do timer é o que transforma a espera da animação
+    // em tempo útil: quando o painel aparece, ele já está pronto.
+    const abrir = widget.slice(
+      widget.indexOf("const abrir"),
+      widget.indexOf("if (!enabled)"),
+    );
+    expect(abrir.indexOf("setMounted(true)")).toBeGreaterThan(-1);
+    expect(abrir.indexOf("setMounted(true)")).toBeLessThan(
+      abrir.indexOf("setTimeout"),
+    );
+  });
+
+  it("⭐ quem pediu menos movimento não espera nada", () => {
+    const abrir = widget.slice(
+      widget.indexOf("const abrir"),
+      widget.indexOf("if (!enabled)"),
+    );
+    expect(abrir).toContain("prefers-reduced-motion");
+    // O caminho sem movimento sai ANTES de agendar o timer.
+    expect(abrir.indexOf("menosMovimento")).toBeLessThan(
+      abrir.indexOf("setTimeout"),
+    );
+  });
+
+  it("clique repetido durante a animação não empilha timer", () => {
+    expect(widget).toMatch(/if \(animando\) return/);
+    expect(widget).toContain("disabled={animando}");
+  });
+
+  it("o timer é cancelado se o componente sair", () => {
+    expect(widget).toContain("clearTimeout");
   });
 
   it("a animação é pré-buscada no hover, junto do chunk do painel", () => {
     // Sem isso o primeiro clique gasta o começo da animação baixando 237 KB.
     expect(widget).toContain("MASCOT.animacao");
     expect(widget).toMatch(/onPointerEnter/);
+  });
+
+  it("⭐ o launcher repete a animação sem precisar de chave — mas o painel vai precisar", () => {
+    // O launcher desmonta quando o painel abre, então o <img> nasce novo a cada
+    // abertura e o WebP recomeça sozinho. Dentro do painel isso NÃO vale: ele
+    // fica montado para sempre, e um WebP com loop 1 congela no último quadro.
+    // A animação do painel aberto (arquivo próprio, ainda por chegar) vai
+    // precisar de uma `key`. Este teste existe para essa armadilha não ser
+    // redescoberta na marra.
+    expect(widget).toMatch(/\{!open && \(/);
+    expect(widget).toMatch(/setMounted\(true\)/);
+    expect(widget).not.toMatch(/setMounted\(false\)/);
+    expect(widget).toContain("vai precisar de uma chave");
   });
 });

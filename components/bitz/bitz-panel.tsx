@@ -18,8 +18,6 @@ interface BitzPanelProps {
   mode: BitzPanelMode;
   onModeChange: (mode: BitzPanelMode) => void;
   userName?: string | null;
-  /** Contador de aberturas — faz a animação da saudação tocar de novo. */
-  abertura?: number;
 }
 
 /**
@@ -53,7 +51,6 @@ export function BitzPanel({
   mode,
   onModeChange,
   userName,
-  abertura,
 }: BitzPanelProps) {
   const { messages, pending, streaming, send, reset } = useBitzChat();
   const [draft, setDraft] = React.useState("");
@@ -175,11 +172,7 @@ export function BitzPanel({
                 vez de esticar por 2000px de monitor. */}
             <div className={cn("mx-auto w-full", isFull && "max-w-3xl")}>
               {vazio ? (
-                <BitzEmptyState
-                  nome={userName}
-                  onPergunta={perguntar}
-                  abertura={abertura}
-                />
+                <BitzEmptyState nome={userName} onPergunta={perguntar} />
               ) : (
                 <div className="flex flex-col gap-3 p-4">
                   {messages.map((m) => (
