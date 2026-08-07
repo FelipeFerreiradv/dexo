@@ -297,3 +297,102 @@ describe("userFacingFailureMessage — nunca vaza detalhe técnico", () => {
     expect(msg).not.toMatch(/HTTP|api_key|token|gemini|null|undefined/i);
   });
 });
+
+// ===========================================================================
+// ⭐ thoughtSignature — o carimbo que o Gemini 3.x exige de volta.
+//
+// Este bloco existe por causa de um defeito REAL, encontrado no primeiro teste
+// com chave de produção: o tradutor descartava a `thoughtSignature` que
+// acompanha um `functionCall`, e a segunda chamada do turno voltava com
+// HTTP 400 "Function call is missing a thought_signature".
+//
+// O modo de falha era cruel de diagnosticar: pergunta de DÚVIDA (que não usa
+// tool) respondia normalmente, e pergunta de DADOS (que usa) falhava sempre —
+// parecia intermitência do provedor, e era determinístico.
+// ===========================================================================
+
+describe("⭐ o carimbo do raciocínio volta inalterado no histórico", () => {
+  beforeEach(() => postMock.mockReset());
+
+  const CARIMBO = "EtQJCtEJARFNMg-carimbo-opaco-do-modelo";
+
+  it("chat() captura o carimbo que veio junto do functionCall", async () => {
+    postMock.mockResolvedValue({
+      data: {
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: {
+                    name: "buscar_produto",
+                    args: { consulta: "farol" },
+                  },
+                  thoughtSignature: CARIMBO,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    const r = await new GeminiProvider({ apiKey: "k", model: "m" }).chat({
+      messages: [{ role: "user", content: "tem farol?" }],
+    });
+
+    expect(r.ok).toBe(true);
+    expect((r as any).toolCalls[0].providerSignature).toBe(CARIMBO);
+  });
+
+  it("⭐ toGeminiContents devolve o carimbo NA MESMA parte do functionCall", () => {
+    const { contents } = toGeminiContents([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "1",
+            name: "buscar_produto",
+            args: { consulta: "farol" },
+            providerSignature: CARIMBO,
+          },
+        ],
+      },
+      { role: "tool", toolName: "buscar_produto", content: "{}" },
+    ]);
+
+    const doModelo = contents.find((c) => c.role === "model")!;
+    const parte: any = doModelo.parts[0];
+    // Mesma parte: é assim que a API associa o carimbo ao pedido.
+    expect(parte.functionCall.name).toBe("buscar_produto");
+    expect(parte.thoughtSignature).toBe(CARIMBO);
+  });
+
+  it("sem carimbo, a parte não ganha a chave (provedor que não usa isso)", () => {
+    const { contents } = toGeminiContents([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "1", name: "x", args: {} }],
+      },
+    ]);
+    const parte: any = contents[0].parts[0];
+    expect(parte.functionCall).toBeTruthy();
+    expect("thoughtSignature" in parte).toBe(false);
+  });
+
+  it("o carimbo é opaco: passa inteiro, sem interpretação", () => {
+    const estranho = 'com "aspas", \barras e \n quebra';
+    const { contents } = toGeminiContents([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "1", name: "x", args: {}, providerSignature: estranho },
+        ],
+      },
+    ]);
+    expect((contents[0].parts[0] as any).thoughtSignature).toBe(estranho);
+  });
+});

@@ -4,7 +4,7 @@ import * as React from "react";
 import { ArrowRight, BarChart3, Search, Sparkles, Tag } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { BitzMascot } from "./bitz-mascot";
+import { BitzMascotVideo } from "./bitz-mascot-video";
 
 interface AcaoCard {
   icon: React.ElementType;
@@ -126,7 +126,10 @@ export function BitzEmptyState({
   return (
     <div className={cn("flex flex-col gap-6 p-4 sm:p-6", className)}>
       <div className="flex items-start gap-3">
-        <BitzMascot size={52} aura priority />
+        {/* A saudação é o momento da animação: toca uma vez ao abrir o
+            painel, sem segurar nada. Cai no mascote estático se o vídeo não
+            puder tocar. */}
+        <BitzMascotVideo size={52} />
         <div className="min-w-0 pt-1">
           <p className="text-muted-foreground text-sm">
             {hora === null ? "Olá" : saudacao(hora)}

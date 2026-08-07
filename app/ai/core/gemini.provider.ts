@@ -47,6 +47,11 @@ const functionCallSchema = z.object({
 const partSchema = z.object({
   text: z.string().optional(),
   functionCall: functionCallSchema.optional(),
+  /**
+   * Carimbo do raciocínio do modelo. Opaco para nós — o valor precisa apenas
+   * voltar inalterado no histórico. Ver `AiToolCall.providerSignature`.
+   */
+  thoughtSignature: z.string().optional(),
 });
 
 const candidateSchema = z.object({
@@ -113,8 +118,13 @@ export function toGeminiContents(messages: AiMessage[]): {
       const parts: Array<Record<string, unknown>> = [];
       if (m.content) parts.push({ text: m.content });
       for (const call of m.toolCalls) {
+        // ⭐ O carimbo volta NA MESMA parte do functionCall — é assim que a API
+        // o associa ao pedido. Sem ele, o Gemini 3.x recusa o turno inteiro.
         parts.push({
           functionCall: { name: call.name, args: call.args ?? {} },
+          ...(call.providerSignature
+            ? { thoughtSignature: call.providerSignature }
+            : {}),
         });
       }
       contents.push({ role: "model", parts });
@@ -137,6 +147,55 @@ export function toGeminiContents(messages: AiMessage[]): {
       ? { parts: [{ text: systemTexts.join("\n\n") }] }
       : undefined,
   };
+}
+
+/**
+ * Log de diagnóstico no SERVIDOR, com o motivo que o Google devolveu.
+ *
+ * Sem isto, um turno degradado é indistinguível de outro: o usuário vê sempre
+ * "Não consegui responder agora" e o `detail` guardado é só `HTTP 400`. Foi
+ * exatamente o que aconteceu no primeiro teste com chave real — o motivo
+ * verdadeiro ("este modelo não está mais disponível para novos usuários")
+ * existia na resposta e não chegava a ninguém.
+ *
+ * O que entra no log é `error.message` do Google, que é a descrição do
+ * problema. NÃO entra a URL (carrega a chave em algumas formas de chamada),
+ * não entra o corpo enviado (carrega o prompt, com dado do cliente), e nada
+ * disto vai para o `detail` que o orquestrador persiste — `ai-secret-leak.spec.ts`
+ * continua provando isso.
+ */
+function logarFalhaDoProvedor(contexto: string, err: unknown): void {
+  const e = err as any;
+  const status = e?.response?.status;
+  const corpo = e?.response?.data;
+
+  const escrever = (motivo: unknown) =>
+    console.error(
+      `[bitz-gemini] ${contexto} falhou: HTTP ${status ?? "-"} ${e?.code ?? ""} — ${String(motivo).slice(0, 400)}`,
+    );
+
+  // ⚠️ Em `responseType: "stream"`, o corpo do ERRO também vem como stream — e
+  // não como JSON já parseado. Sem drenar, todo 400 do caminho de streaming
+  // aparece como "Request failed with status code 400" e o motivo real (que o
+  // Google manda) some. Foi assim que uma falha de payload ficou opaca no
+  // primeiro teste com chave real.
+  if (corpo && typeof corpo.on === "function") {
+    let texto = "";
+    corpo.on("data", (c: unknown) => {
+      texto += String(c);
+    });
+    corpo.on("end", () => {
+      try {
+        escrever(JSON.parse(texto)?.error?.message ?? texto);
+      } catch {
+        escrever(texto);
+      }
+    });
+    corpo.on("error", () => escrever(e?.message ?? "sem descrição"));
+    return;
+  }
+
+  escrever(corpo?.error?.message ?? e?.message ?? "sem descrição");
 }
 
 /** Classifica a falha SEM vazar corpo de resposta nem a chave para o log. */
@@ -243,6 +302,7 @@ export class GeminiProvider implements AiProvider {
       );
       raw = res.data;
     } catch (err) {
+      logarFalhaDoProvedor("generateContent", err);
       const { reason, detail } = classifyAxiosError(err);
       return fail(reason, detail);
     }
@@ -271,6 +331,9 @@ export class GeminiProvider implements AiProvider {
         id: `${p.functionCall!.name}-${i}`,
         name: p.functionCall!.name,
         args: p.functionCall!.args ?? {},
+        ...(p.thoughtSignature
+          ? { providerSignature: p.thoughtSignature }
+          : {}),
       }));
 
     // Sem texto E sem tool call é resposta vazia — tratar como falha para o
@@ -338,6 +401,7 @@ export class GeminiProvider implements AiProvider {
       );
       stream = res.data;
     } catch (err) {
+      logarFalhaDoProvedor("streamGenerateContent", err);
       const { reason, detail } = classifyAxiosError(err);
       return fail(reason, detail);
     }
@@ -382,7 +446,17 @@ export class GeminiProvider implements AiProvider {
               id: `${parte.functionCall.name}-${chamadas.length}`,
               name: parte.functionCall.name,
               args: parte.functionCall.args ?? {},
+              ...(parte.thoughtSignature
+                ? { providerSignature: parte.thoughtSignature }
+                : {}),
             });
+          } else if (parte.thoughtSignature && chamadas.length > 0) {
+            // No streaming o carimbo pode chegar numa parte SOZINHA, depois do
+            // pedido. Nesse caso ele pertence à última chamada anunciada.
+            const ultima = chamadas[chamadas.length - 1];
+            if (!ultima.providerSignature) {
+              ultima.providerSignature = parte.thoughtSignature;
+            }
           }
         }
 
@@ -395,6 +469,7 @@ export class GeminiProvider implements AiProvider {
       }
     } catch (err) {
       if (estourouOTeto) return fail("timeout", `teto de ${limiteMs}ms`);
+      logarFalhaDoProvedor("leitura do stream", err);
       const { reason, detail } = classifyAxiosError(err);
       return fail(reason, detail);
     } finally {

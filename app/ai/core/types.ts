@@ -39,6 +39,21 @@ export interface AiToolCall {
   id: string;
   name: string;
   args: unknown;
+  /**
+   * Carimbo OPACO do provedor, para ser devolvido junto do pedido na próxima
+   * chamada. Nós nunca lemos nem interpretamos o conteúdo.
+   *
+   * ⭐ POR QUE ISTO EXISTE. O Gemini 3.x exige que a `thoughtSignature` que
+   * acompanha um `functionCall` volte inalterada quando aquele turno é
+   * reenviado no histórico. Sem ela, a segunda chamada do turno é recusada com
+   * HTTP 400 ("Function call is missing a thought_signature") — ou seja,
+   * **toda pergunta que precisa consultar o sistema falha**, enquanto as de
+   * dúvida pura funcionam. É um modo de falha que parece intermitente e não é.
+   *
+   * Opcional de propósito: provedor que não usa isso simplesmente não preenche,
+   * e nada no resto do sistema muda.
+   */
+  providerSignature?: string;
 }
 
 export interface AiUsage {
