@@ -641,12 +641,18 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
           patch.password = request.body.password;
         }
         // Aditivo (Entrega C): permissões por página (só altera quando enviado).
+        //
+        // ⚠️ Gravadas por `updateAccessControl`, e NÃO no patch largo: `update()`
+        // recebe `UserUpdate`, que é o corpo cru das rotas de autoatendimento.
+        // A posse já foi checada acima (o alvo é colaborador DESTE admin).
         const pp = sanitizePagePermissions(request.body?.pagePermissions);
-        if (pp !== undefined) {
-          patch.pagePermissions = pp;
-        }
 
-        const data = await userUserCase.updateSettings(id, patch);
+        let data = await userUserCase.updateSettings(id, patch);
+        if (pp !== undefined) {
+          data = await userRepository.updateAccessControl(id, {
+            pagePermissions: pp,
+          });
+        }
 
         await SystemLogService.logUserActivity(
           id,
@@ -705,7 +711,8 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
           return reply.status(403).send({ message: "Acesso negado" });
         }
 
-        const data = await userUserCase.updateSettings(id, { isActive });
+        // Controle de acesso vai pelo método estreito. Posse já checada acima.
+        const data = await userRepository.updateAccessControl(id, { isActive });
 
         await SystemLogService.logUserActivity(
           id,

@@ -22,6 +22,12 @@ const findByIdMock = vi.hoisted(() => vi.fn());
 const findByEmailMock = vi.hoisted(() => vi.fn());
 const createMock = vi.hoisted(() => vi.fn());
 const updateMock = vi.hoisted(() => vi.fn());
+// ⭐ Caminho ESTREITO de controle de acesso (isActive / pagePermissions).
+// Separado de `update` de propósito no código de produção: `update` recebe
+// `UserUpdate`, que é o corpo cru das rotas de autoatendimento, e enquanto
+// esses campos moravam lá um colaborador se auto-liberava as páginas com um
+// PUT. Ver tests/security/user-settings-mass-assignment.spec.ts.
+const updateAccessControlMock = vi.hoisted(() => vi.fn());
 vi.mock("../app/repositories/user.repository", () => ({
   UserRepositoryPrisma: vi.fn().mockImplementation(() => ({
     findChildren: findChildrenMock,
@@ -30,6 +36,7 @@ vi.mock("../app/repositories/user.repository", () => ({
     findByEmail: findByEmailMock,
     create: createMock,
     update: updateMock,
+    updateAccessControl: updateAccessControlMock,
   })),
 }));
 
@@ -91,6 +98,7 @@ describe("team collaborators routes", () => {
     findByEmailMock.mockReset();
     createMock.mockReset();
     updateMock.mockReset();
+    updateAccessControlMock.mockReset();
     logUserActivityMock.mockReset();
   });
 
@@ -249,6 +257,35 @@ describe("team collaborators routes", () => {
       expect(JSON.parse(res.payload).password).toBeUndefined();
     });
 
+    it("⭐ permissões de página vão pelo caminho privilegiado, não pelo largo", async () => {
+      // O admin PODE editar as permissões do próprio colaborador — este teste
+      // existe para essa capacidade não se perder. E ela passa por
+      // `updateAccessControl`: o caminho largo (`update`) recebe `UserUpdate`,
+      // que é o corpo cru das rotas de autoatendimento, e enquanto
+      // `pagePermissions` morava lá um colaborador se auto-liberava com um PUT.
+      // Ver tests/security/user-settings-mass-assignment.spec.ts.
+      findByIdMock.mockResolvedValue(fullUser({ id: "c1" }));
+      updateMock.mockResolvedValue(fullUser({ id: "c1" }));
+      updateAccessControlMock.mockResolvedValue(
+        fullUser({ id: "c1", pagePermissions: { financeiro: false } }),
+      );
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/me/team/collaborators/c1",
+        headers: asUser(ADMIN),
+        payload: { pagePermissions: { financeiro: false } },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(updateAccessControlMock).toHaveBeenCalledWith("c1", {
+        pagePermissions: { financeiro: false },
+      });
+      // E o patch largo não recebeu as permissões.
+      const [, patchLargo] = updateMock.mock.calls[0] ?? [null, {}];
+      expect(patchLargo.pagePermissions).toBeUndefined();
+    });
+
     it("alvo inexistente → 404", async () => {
       findByIdMock.mockResolvedValue(null);
       const res = await app.inject({
@@ -302,7 +339,9 @@ describe("team collaborators routes", () => {
   describe("PATCH /me/team/collaborators/:id/status", () => {
     it("desativa colaborador do próprio admin", async () => {
       findByIdMock.mockResolvedValue(fullUser({ id: "c1" }));
-      updateMock.mockResolvedValue(fullUser({ id: "c1", isActive: false }));
+      updateAccessControlMock.mockResolvedValue(
+        fullUser({ id: "c1", isActive: false }),
+      );
 
       const res = await app.inject({
         method: "PATCH",
@@ -312,7 +351,13 @@ describe("team collaborators routes", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      expect(updateMock).toHaveBeenCalledWith("c1", { isActive: false });
+      // A asserção ficou MAIS específica, não mais frouxa: além de provar que a
+      // rota grava `isActive: false` em c1, ela agora prova que isso passa pelo
+      // caminho privilegiado — e que o caminho largo NÃO é usado para isto.
+      expect(updateAccessControlMock).toHaveBeenCalledWith("c1", {
+        isActive: false,
+      });
+      expect(updateMock).not.toHaveBeenCalled();
       expect(JSON.parse(res.payload).isActive).toBe(false);
     });
 
@@ -324,6 +369,11 @@ describe("team collaborators routes", () => {
         payload: { isActive: false },
       });
       expect(res.statusCode).toBe(403);
+      // ⚠️ O guarda tem que olhar o metodo que a rota REALMENTE usa. Depois
+      // que o status passou por `updateAccessControl`, asserir sobre
+      // `updateMock` aqui seria vacuamente verdadeiro — o teste passaria
+      // mesmo se a rota gravasse por cima do 403.
+      expect(updateAccessControlMock).not.toHaveBeenCalled();
       expect(updateMock).not.toHaveBeenCalled();
     });
 
@@ -338,6 +388,11 @@ describe("team collaborators routes", () => {
         payload: { isActive: false },
       });
       expect(res.statusCode).toBe(403);
+      // ⚠️ O guarda tem que olhar o metodo que a rota REALMENTE usa. Depois
+      // que o status passou por `updateAccessControl`, asserir sobre
+      // `updateMock` aqui seria vacuamente verdadeiro — o teste passaria
+      // mesmo se a rota gravasse por cima do 403.
+      expect(updateAccessControlMock).not.toHaveBeenCalled();
       expect(updateMock).not.toHaveBeenCalled();
     });
 
@@ -349,6 +404,11 @@ describe("team collaborators routes", () => {
         payload: {},
       });
       expect(res.statusCode).toBe(400);
+      // ⚠️ O guarda tem que olhar o metodo que a rota REALMENTE usa. Depois
+      // que o status passou por `updateAccessControl`, asserir sobre
+      // `updateMock` aqui seria vacuamente verdadeiro — o teste passaria
+      // mesmo se a rota gravasse por cima do 403.
+      expect(updateAccessControlMock).not.toHaveBeenCalled();
       expect(updateMock).not.toHaveBeenCalled();
     });
   });
