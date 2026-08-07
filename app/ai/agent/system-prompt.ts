@@ -91,5 +91,25 @@ export function buildSystemPrompt(extra?: string[]): string {
  * do banco no contexto — é a fronteira entre dado e instrução.
  */
 export function wrapSystemData(label: string, data: string): string {
-  return `${DATA_ENVELOPE_OPEN}\n[${label}]\n${data}\n${DATA_ENVELOPE_CLOSE}`;
+  return `${DATA_ENVELOPE_OPEN}\n[${label}]\n${neutralizarEnvelope(data)}\n${DATA_ENVELOPE_CLOSE}`;
+}
+
+/**
+ * ⭐ Impede que o CONTEÚDO feche o envelope antes da hora.
+ *
+ * Um envelope que o dado consegue fechar não é um envelope: bastaria o texto
+ * conter `</dados_do_sistema>` para tudo que vem depois voltar a ser lido como
+ * instrução do sistema. É a versão em prompt do velho `'; DROP TABLE`.
+ *
+ * Hoje só a base de conhecimento passa por aqui, e ela é escrita por nós — o
+ * risco é teórico. Amanhã pode ser descrição de produto ou mensagem de
+ * comprador, e aí é dado que qualquer pessoa digita. Fechar isso custa uma
+ * linha agora e é impossível de lembrar depois.
+ */
+function neutralizarEnvelope(data: string): string {
+  return data
+    .split(DATA_ENVELOPE_CLOSE)
+    .join("&lt;/dados_do_sistema&gt;")
+    .split(DATA_ENVELOPE_OPEN)
+    .join("&lt;dados_do_sistema&gt;");
 }
