@@ -33,13 +33,14 @@ import {
   type AiQuotaDenial,
 } from "../quota/ai-usage.service";
 import type { AiScope } from "../core/scope";
-import { getReadToolRegistry } from "../tools/read";
-import { toToolDefinition } from "../tools/registry";
+import { getToolRegistry } from "../tools";
+import { toToolDefinition, type AiTool } from "../tools/registry";
 import { selectTools } from "../tools/select";
 import { buildContextWindow, estimateTokens } from "./context-window";
 import { classifyIntent } from "./intent";
 import {
   REGRAS_DE_CONSULTA,
+  REGRAS_DE_RECOMENDACAO,
   buildSystemPrompt,
   wrapSystemData,
 } from "./system-prompt";
@@ -87,17 +88,139 @@ export interface AiTurnInput {
  * verdade.
  */
 function countOf(r: ToolRunResult): number {
+  const parsed = parseResultado(r);
+  if (Array.isArray(parsed)) return parsed.length;
+  if (typeof parsed?.total === "number") return parsed.total;
+  if (Array.isArray(parsed?.itens)) return parsed.itens.length;
+  return parsed ? 1 : 0;
+}
+
+/** O JSON que o handler devolveu, ou `null` se truncou no meio. */
+function parseResultado(r: ToolRunResult): any {
   try {
-    const parsed = JSON.parse(r.content.split("\n\n[RESULTADO TRUNCADO")[0]);
-    if (Array.isArray(parsed)) return parsed.length;
-    if (typeof parsed?.total === "number") return parsed.total;
-    if (Array.isArray(parsed?.itens)) return parsed.itens.length;
-    return parsed ? 1 : 0;
+    return JSON.parse(r.content.split("\n\n[RESULTADO TRUNCADO")[0]);
   } catch {
-    // Truncado no meio do JSON: a contagem exata não importa tanto quanto não
-    // quebrar a resposta por causa dela.
-    return 0;
+    return null;
   }
+}
+
+/** Teto de fontes por chamada de tool. Card de fontes não é lista de compras. */
+const MAX_FONTES_POR_TOOL = 8;
+
+/**
+ * ⭐ De onde veio o que esta tool respondeu.
+ *
+ * As tools consultivas montam o campo `fontes` elas mesmas, porque só elas
+ * sabem qual degrau da cadeia respondeu — leitura tem uma fonte só, recomendação
+ * tem seis possíveis. Uma tool que declara `fontes` manda: se vier `[]`, é
+ * porque NÃO houve base, e inventar a genérica aqui seria exatamente a mentira
+ * que o card de fontes existe para impedir.
+ *
+ * O conteúdo é reserializado a partir do JSON que o próprio servidor produziu —
+ * o modelo não passa por aqui. Ainda assim cada entrada é validada campo a
+ * campo: o dia em que uma tool nova devolver algo torto, a fonte é descartada,
+ * e não desenhada torta na tela do cliente.
+ */
+function sourcesOf(r: ToolRunResult, tool: AiTool | undefined): AiSource[] {
+  const parsed = parseResultado(r);
+
+  if (parsed && Array.isArray(parsed.fontes)) {
+    return parsed.fontes
+      .map(sanitizarFonte)
+      .filter((f: AiSource | null): f is AiSource => f !== null)
+      .slice(0, MAX_FONTES_POR_TOOL);
+  }
+
+  if (!tool) return [];
+  return [{ kind: "proprio", label: tool.sourceLabel, count: countOf(r) }];
+}
+
+const CONFIANCAS = new Set(["alta", "media", "baixa"]);
+
+/** Corta string longa sem depender de nada: o card tem uma linha. */
+const curto = (v: unknown, max: number): string =>
+  String(v ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+
+function sanitizarFonte(raw: any): AiSource | null {
+  if (!raw || typeof raw !== "object") return null;
+  switch (raw.kind) {
+    case "conhecimento":
+      return raw.docId && raw.docTitle
+        ? {
+            kind: "conhecimento",
+            docId: curto(raw.docId, 60),
+            docTitle: curto(raw.docTitle, 80),
+            ...(raw.heading ? { heading: curto(raw.heading, 90) } : {}),
+          }
+        : null;
+    case "proprio":
+      return raw.label
+        ? {
+            kind: "proprio",
+            label: curto(raw.label, 80),
+            count: Number.isFinite(raw.count) ? Number(raw.count) : 0,
+          }
+        : null;
+    case "plataforma":
+      return Number.isFinite(raw.sampleSize) && CONFIANCAS.has(raw.confidence)
+        ? {
+            kind: "plataforma",
+            sampleSize: Number(raw.sampleSize),
+            confidence: raw.confidence,
+            matchKey: curto(raw.matchKey, 80),
+          }
+        : null;
+    case "regra":
+      return raw.rule ? { kind: "regra", rule: curto(raw.rule, 140) } : null;
+    case "externa":
+      // Um provedor só, e literal. Fonte externa nova é decisão de produto.
+      return raw.provider === "mercado-livre"
+        ? {
+            kind: "externa",
+            provider: "mercado-livre",
+            ...(raw.ref ? { ref: curto(raw.ref, 90) } : {}),
+          }
+        : null;
+    case "estimativa":
+      return raw.note
+        ? { kind: "estimativa", note: curto(raw.note, 160) }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** Chave estável de uma fonte, para não repetir a mesma linha no card. */
+function chaveDaFonte(f: AiSource): string {
+  switch (f.kind) {
+    case "conhecimento":
+      return `conhecimento:${f.docTitle}`;
+    case "proprio":
+      return `proprio:${f.label}`;
+    case "plataforma":
+      return `plataforma:${f.matchKey}`;
+    case "regra":
+      return `regra:${f.rule}`;
+    case "externa":
+      return `externa:${f.provider}:${f.ref ?? ""}`;
+    case "estimativa":
+      return "estimativa";
+  }
+}
+
+function dedupSources(fontes: AiSource[]): AiSource[] {
+  const vistos = new Set<string>();
+  const saida: AiSource[] = [];
+  for (const f of fontes) {
+    const chave = chaveDaFonte(f);
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+    saida.push(f);
+  }
+  return saida;
 }
 
 export interface AiTurnResult {
@@ -257,13 +380,22 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
 
   // Subconjunto de tools do turno. Decidido ANTES do system prompt porque as
   // regras de consulta só entram quando há consulta a fazer.
-  const registry = getReadToolRegistry();
-  const ferramentas =
-    intent.needsTools && scope
-      ? selectTools(message, registry).map(toToolDefinition)
-      : undefined;
+  const registry = getToolRegistry();
+  const selecionadas =
+    intent.needsTools && scope ? selectTools(message, registry) : [];
+  const ferramentas = selecionadas.length
+    ? selecionadas.map(toToolDefinition)
+    : undefined;
 
-  if (ferramentas?.length) extraSystem.push(REGRAS_DE_CONSULTA);
+  if (ferramentas?.length) {
+    extraSystem.push(REGRAS_DE_CONSULTA);
+    // As regras de recomendação só entram quando há tool consultiva no
+    // cardápio. Num "quanto vendi ontem?" elas seriam ~250 tokens de entrada
+    // explicando como apresentar uma sugestão que ninguém vai pedir.
+    if (selecionadas.some((t) => t.kind === "advisory")) {
+      extraSystem.push(REGRAS_DE_RECOMENDACAO);
+    }
+  }
 
   const systemPrompt = buildSystemPrompt(extraSystem);
 
@@ -334,16 +466,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     for (const r of resultados) {
       trilha.push({ name: r.name, ok: r.ok, ms: r.ms });
       messages.push({ role: "tool", content: r.content, toolName: r.name });
-      if (r.ok) {
-        const tool = registry.get(r.name);
-        if (tool) {
-          sources.push({
-            kind: "proprio",
-            label: tool.sourceLabel,
-            count: countOf(r),
-          });
-        }
-      }
+      if (r.ok) sources.push(...sourcesOf(r, registry.get(r.name)));
     }
 
     completion = await chamar(ferramentas);
@@ -382,6 +505,11 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // -------------------------------------------------------------------------
   // 6. Persiste a resposta com tokens/latência — é o que permite medir custo.
   // -------------------------------------------------------------------------
+  // Duas tools consultivas no mesmo turno repetem as regras do canal; o card
+  // mostraria a mesma linha duas vezes. A dedupe é aqui, e não na UI, para o
+  // que fica gravado ser o que se vê ao reabrir a conversa.
+  const fontes = dedupSources(sources);
+
   await db.aiMessage.create({
     data: {
       conversationId,
@@ -390,7 +518,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       // Guardado junto da resposta: reabrir a conversa mostra as mesmas fontes
       // de antes, sem refazer a busca. Vazio vira null para não gravar `[]`
       // em toda mensagem que não consultou nada.
-      sources: sources.length > 0 ? sources : null,
+      sources: fontes.length > 0 ? fontes : null,
       // Só nome, resultado e duração. Os ARGUMENTOS ficam de fora: carregam o
       // termo que o usuário digitou, que já vive na própria conversa.
       toolCalls: trilha.length > 0 ? trilha : null,
@@ -428,7 +556,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   return {
     conversationId,
     content: completion.content,
-    sources,
+    sources: fontes,
     degraded: false,
     usage: completion.usage,
   };

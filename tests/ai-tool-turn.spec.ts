@@ -14,6 +14,7 @@ import {
   __resetMockProvider,
 } from "../app/ai/core/mock.provider";
 import { toGeminiContents } from "../app/ai/core/gemini.provider";
+import { getToolRegistry } from "../app/ai/tools";
 import { READ_TOOLS, getReadToolRegistry } from "../app/ai/tools/read";
 import { MAX_TOOLS_PER_TURN, selectTools } from "../app/ai/tools/select";
 
@@ -95,12 +96,19 @@ const turno = (message: string, espiao: Espiao, user: unknown = ADMIN) =>
     scope: scopeFromRequest(req(user)) ?? undefined,
   });
 
-/** Uma tool falsa registrada por cima do registry real, para o teste controlar o handler. */
+/**
+ * Uma tool falsa registrada por cima do registry real, para o teste controlar o
+ * handler.
+ *
+ * Tem de ser o registry COMPLETO (`getToolRegistry`), que é o que o
+ * orquestrador consulta desde a Fase 6 — trocar no registry de leitura
+ * devolveria o handler original e o teste passaria a medir outra coisa.
+ */
 function trocarTool(
   nome: string,
   handler: (args: any, scope: any) => Promise<any>,
 ) {
-  const registry = getReadToolRegistry();
+  const registry = getToolRegistry();
   const original = registry.get(nome)!;
   registry.set(nome, { ...original, handler });
   return () => registry.set(nome, original);

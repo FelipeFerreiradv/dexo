@@ -4,8 +4,11 @@ import { join } from "node:path";
 
 vi.mock("../app/lib/prisma", () => ({ default: {} }));
 
+import { ALL_TOOLS, getToolRegistry } from "../app/ai/tools";
+import { ADVISORY_TOOLS } from "../app/ai/tools/advisory";
 import { READ_TOOLS, getReadToolRegistry } from "../app/ai/tools/read";
 import { toToolDefinition, toolParameters } from "../app/ai/tools/registry";
+import { normalizeTerm } from "../app/repositories/product-search-terms";
 import { PAGE_DEFS } from "../app/lib/page-access";
 
 // ===========================================================================
@@ -34,7 +37,7 @@ function chavesDoSchema(node: any, saida: string[] = []): string[] {
 }
 
 describe("⭐ nenhuma tool aceita o tenant como argumento", () => {
-  it.each(READ_TOOLS.map((t) => [t.name, t] as const))("%s", (_nome, tool) => {
+  it.each(ALL_TOOLS.map((t) => [t.name, t] as const))("%s", (_nome, tool) => {
     const chaves = chavesDoSchema(toolParameters(tool));
     for (const chave of chaves) {
       expect(
@@ -76,7 +79,24 @@ describe("declaração das tools", () => {
     expect(getReadToolRegistry().size).toBe(13);
   });
 
-  it.each(READ_TOOLS.map((t) => [t.name, t] as const))(
+  it("as 7 tools consultivas estão registradas, e o registry completo tem 20", () => {
+    expect(ADVISORY_TOOLS).toHaveLength(7);
+    expect(ALL_TOOLS).toHaveLength(20);
+    // `buildRegistry` lançaria em nome duplicado; o tamanho prova que não houve
+    // colisão entre os dois conjuntos.
+    expect(getToolRegistry().size).toBe(20);
+  });
+
+  it("toda tool consultiva é `advisory` e mora na página de produtos", () => {
+    for (const tool of ADVISORY_TOOLS) {
+      expect(tool.kind, tool.name).toBe("advisory");
+      // Recomendar preço, medida, categoria ou título é trabalho de quem
+      // cadastra peça. Colaborador sem Produtos é barrado no tool-runner.
+      expect(tool.page, tool.name).toBe("produtos");
+    }
+  });
+
+  it.each(ALL_TOOLS.map((t) => [t.name, t] as const))(
     "%s declara página, palavras-chave e rótulo de fonte",
     (_nome, tool) => {
       expect(PAGE_IDS.has(tool.page), `page "${tool.page}" não existe`).toBe(
@@ -84,11 +104,11 @@ describe("declaração das tools", () => {
       );
       expect(tool.keywords.length).toBeGreaterThan(0);
       expect(tool.sourceLabel.length).toBeGreaterThan(3);
-      expect(tool.kind).toBe("read");
+      expect(["read", "advisory"]).toContain(tool.kind);
     },
   );
 
-  it.each(READ_TOOLS.map((t) => [t.name, t] as const))(
+  it.each(ALL_TOOLS.map((t) => [t.name, t] as const))(
     "%s usa schema .strict() (chave extra é rejeitada, não ignorada)",
     (_nome, tool) => {
       // Um schema não-strict deixaria `{consulta:"x", userId:"outro"}` passar
@@ -98,7 +118,7 @@ describe("declaração das tools", () => {
     },
   );
 
-  it.each(READ_TOOLS.map((t) => [t.name, t] as const))(
+  it.each(ALL_TOOLS.map((t) => [t.name, t] as const))(
     "%s tem descrição escrita PARA O MODELO",
     (_nome, tool) => {
       expect(tool.description.length).toBeGreaterThan(40);
@@ -107,23 +127,39 @@ describe("declaração das tools", () => {
   );
 
   it("nomes são snake_case em português, sem colisão", () => {
-    const nomes = READ_TOOLS.map((t) => t.name);
+    const nomes = ALL_TOOLS.map((t) => t.name);
     expect(new Set(nomes).size).toBe(nomes.length);
     for (const nome of nomes) expect(nome).toMatch(/^[a-z][a-z0-9_]*$/);
   });
 
   it("palavras-chave estão normalizadas o bastante para casar por substring", () => {
-    for (const tool of READ_TOOLS) {
+    for (const tool of ALL_TOOLS) {
       for (const kw of tool.keywords) {
         expect(kw, `${tool.name}: "${kw}"`).toBe(kw.toLowerCase());
         expect(kw.length).toBeGreaterThanOrEqual(2);
       }
     }
   });
+
+  it("⭐ nenhuma palavra-chave tem acento — acentuada, ela nunca casa", () => {
+    // `selectTools` compara contra `normalizeTerm(mensagem)`, que faz NFD e
+    // apaga as marcas combinantes. O texto do usuário NUNCA tem acento quando
+    // chega na comparação, então "peça" como palavra-chave é uma linha que
+    // parece funcionar e não funciona. Elas existiam: 17 entradas mortas nas
+    // tools de leitura, todas com a gêmea sem acento ao lado — por isso a
+    // limpeza não mudou seleção nenhuma. Este teste impede a próxima.
+    for (const tool of ALL_TOOLS) {
+      for (const kw of tool.keywords) {
+        expect(normalizeTerm(kw), `${tool.name}: "${kw}" nunca casaria`).toBe(
+          kw,
+        );
+      }
+    }
+  });
 });
 
 describe("conversão do schema para o modelo", () => {
-  it.each(READ_TOOLS.map((t) => [t.name, t] as const))(
+  it.each(ALL_TOOLS.map((t) => [t.name, t] as const))(
     "%s converte para JSON Schema de objeto, sem cair no fallback vazio",
     (_nome, tool) => {
       const params: any = toolParameters(tool);
@@ -166,9 +202,9 @@ describe("conversão do schema para o modelo", () => {
   });
 
   it("a definição enviada ao provedor carrega nome, descrição e parâmetros", () => {
-    const d = toToolDefinition(READ_TOOLS[0]);
-    expect(d.name).toBe(READ_TOOLS[0].name);
-    expect(d.description).toBe(READ_TOOLS[0].description);
+    const d = toToolDefinition(ALL_TOOLS[0]);
+    expect(d.name).toBe(ALL_TOOLS[0].name);
+    expect(d.description).toBe(ALL_TOOLS[0].description);
     expect(d.parameters).toBeTruthy();
   });
 });
@@ -177,11 +213,13 @@ describe("⭐ somente leitura", () => {
   const ESCRITAS =
     /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(|\$executeRaw|\$transaction/;
 
+  // Varre as tools INTEIRAS (leitura + consultivas) e também a camada de
+  // fontes: a Fase 6 é "consulta e recomenda", e nenhuma linha dela escreve.
   it.each(
-    listarTs(join(__dirname, "..", "app", "ai", "tools", "read")).map((f) => [
-      f.split(/[\\/]/).pop()!,
-      f,
-    ]),
+    [
+      ...listarTs(join(__dirname, "..", "app", "ai", "tools")),
+      ...listarTs(join(__dirname, "..", "app", "ai", "advisory")),
+    ].map((f) => [f.split(/[\\/]/).pop()!, f]),
   )("%s não chama nenhuma escrita do Prisma", (_nome, arquivo) => {
     expect(semComentarios(arquivo)).not.toMatch(ESCRITAS);
   });

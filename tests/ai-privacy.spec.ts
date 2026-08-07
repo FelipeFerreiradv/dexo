@@ -206,7 +206,40 @@ describe("máscara de documento", () => {
 });
 
 describe("⭐ arquitetura: a superfície de leitura é a dos usecases", () => {
-  const arquivosDeTools = listarTs(join(__dirname, "..", "app", "ai", "tools"));
+  const arquivosDeTools = [
+    ...listarTs(join(__dirname, "..", "app", "ai", "tools")),
+    // A camada de fontes das tools consultivas (Fase 6) lê tanto quanto as
+    // tools; a mesma regra vale para ela.
+    ...listarTs(join(__dirname, "..", "app", "ai", "advisory")),
+  ];
+
+  it("⭐ nenhuma linha de CÓDIGO menciona costPrice ou markup", () => {
+    // A trava do tool-runner é a rede; esta é a disciplina. `buscarPecasParecidas`
+    // recebe do usecase o produto INTEIRO — custo e margem inclusive — e projeta
+    // campo a campo. Um `...p` distraído no lugar da projeção passaria pelo
+    // compilador, pelo lint e pela revisão; não passa por aqui.
+    //
+    // Os COMENTÁRIOS citam os dois nomes de propósito, para registrar a regra.
+    for (const arquivo of arquivosDeTools) {
+      expect(semComentarios(arquivo), arquivo).not.toMatch(/costPrice|markup/i);
+    }
+  });
+
+  it("nenhuma tool consultiva lê a configuração do colaborador no lugar da loja", () => {
+    // `defaultProductDescription` é configuração da LOJA. Buscar por `actorId`
+    // traria o texto do colaborador (quase sempre vazio) e o Bitz diria que a
+    // loja não tem padrão configurado quando tem.
+    const descricao = readFileSync(
+      join(__dirname, "..", "app", "ai", "tools", "advisory", "descricao.ts"),
+      "utf8",
+    );
+    expect(descricao).toContain("id: scope.dataOwnerId");
+    expect(
+      semComentarios(
+        join(__dirname, "..", "app", "ai", "tools", "advisory", "descricao.ts"),
+      ),
+    ).not.toContain("scope.actorId");
+  });
 
   it("nenhuma tool importa um repositório direto", () => {
     // Vários repositórios têm `userId?` OPCIONAL, e sem ele a query varre TODOS

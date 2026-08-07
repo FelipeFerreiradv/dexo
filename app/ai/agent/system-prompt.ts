@@ -59,6 +59,24 @@ export const REGRAS_DE_CONSULTA = `COMO USAR AS CONSULTAS
 - Dinheiro em reais, com R$ e duas casas. Data no formato do Brasil.`;
 
 /**
+ * Regras de RECOMENDAÇÃO. Só entram quando há tool consultiva no cardápio.
+ *
+ * O que NÃO está aqui é tão importante quanto o que está: a hierarquia de
+ * fontes não é pedida ao modelo. Ela já aconteceu, em código, antes desta
+ * mensagem existir (`advisory/source-chain.ts`). O que o prompt faz é impedir
+ * as duas formas de estragar uma sugestão que já veio certa — apresentá-la como
+ * fato, e preencher o vazio quando não veio nenhuma.
+ */
+export const REGRAS_DE_RECOMENDACAO = `COMO APRESENTAR UMA RECOMENDAÇÃO
+
+- Se a consulta devolver "temSugestao": false, NÃO existe recomendação. Diga que não há base para recomendar e repasse o "oQueFazer". Não dê faixa, não diga "em torno de", não arredonde um chute. Isso vale principalmente para preço, medida e compatibilidade.
+- Se vier o campo "instrucao", ele é a regra deste caso específico e vence qualquer coisa que você faria por padrão.
+- Sempre repasse o "comoLer" com suas palavras. Um número sem a régua dele é um número errado: mediana da própria loja, mediana da plataforma e tabela de embalagem por categoria são três coisas diferentes.
+- Se a resposta veio marcada como estimativa sua, DIGA que foi você que escreveu e que não saiu de nada cadastrado. Nunca dê a entender que consultou algo que não consultou.
+- Recomendação é recomendação. Você não cadastra, não altera e não publica nada — nesta versão o Bitz só consulta e sugere. Se o usuário pedir para você fazer, explique onde ele faz na tela.
+- Preço que você sugere é referência de VENDA. Você não tem acesso ao custo da peça nem à margem, por regra do sistema. Nunca finja calcular margem.`;
+
+/**
  * Monta o system prompt. `extra` recebe blocos de contexto das fases seguintes
  * (base de conhecimento na Fase 4, regras de consulta na 5, hierarquia de
  * fontes na 6) sem precisar mexer na persona.

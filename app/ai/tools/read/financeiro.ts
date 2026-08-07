@@ -165,7 +165,6 @@ export const contasAReceber: AiTool = {
     "cobran",
     "recebiment",
     "balcao",
-    "balcão",
     "pdv",
     "pvd",
   ],
@@ -208,16 +207,7 @@ export const buscarOrcamento: AiTool = {
     .strict(),
   kind: "read",
   page: "financeiro",
-  keywords: [
-    "orcamento",
-    "orçamento",
-    "proposta",
-    "funil",
-    "negocia",
-    "kanban",
-    "cotacao",
-    "cotação",
-  ],
+  keywords: ["orcamento", "proposta", "funil", "negocia", "kanban", "cotacao"],
   sourceLabel: "Orçamentos",
   handler: async (args, scope) => {
     const limite = Math.min(args.limite ?? 20, MAX_ITENS);

@@ -50,13 +50,10 @@ export const buscarLocalizacao: AiTool = {
     "prateleira",
     "gaveta",
     "barracao",
-    "barracão",
     "estante",
     "onde esta",
-    "onde está",
     "guardad",
     "endereco",
-    "endereço",
   ],
   sourceLabel: "Localizações do seu estoque",
   handler: async (args, scope) => {

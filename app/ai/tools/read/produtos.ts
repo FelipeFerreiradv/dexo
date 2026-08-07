@@ -90,12 +90,10 @@ export const buscarProduto: AiTool = {
   page: "produtos",
   keywords: [
     "peca",
-    "peça",
     "produto",
     "sku",
     "part number",
     "catalogo",
-    "catálogo",
     "estoque",
     "farol",
     "porta",
@@ -153,14 +151,7 @@ export const detalheProduto: AiTool = {
     .strict(),
   kind: "read",
   page: "produtos",
-  keywords: [
-    "detalhe",
-    "ficha",
-    "sku",
-    "essa peca",
-    "essa peça",
-    "esse produto",
-  ],
+  keywords: ["detalhe", "ficha", "sku", "essa peca", "esse produto"],
   sourceLabel: "Ficha da peça",
   handler: async (args, scope) => {
     const usecase = new ProductUseCase();
