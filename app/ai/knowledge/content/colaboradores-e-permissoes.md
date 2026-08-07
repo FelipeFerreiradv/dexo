@@ -65,4 +65,22 @@ Como qualquer outra página, ela pode ser desligada por colaborador — e normal
 - Só existe uma permissão por ação hoje (estorno de venda).
 - Não há hierarquia de colaboradores: todos são filhos diretos do administrador.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: se o colaborador consegue trocar a própria senha e por onde. Não confirmei o caminho, e é uma das perguntas mais previsíveis de suporte.
+## Troca de senha
+
+São **dois caminhos diferentes**, e confundi-los é a causa mais comum de "não acho onde troca a senha":
+
+- **Você trocando a SUA própria senha** (dono ou colaborador): avatar no topo → **Configurações** → aba **Conta** → seção Segurança. Não pede a senha atual.
+- **O dono trocando a senha de UM COLABORADOR**: página **Colaboradores**, editando a pessoa, campo _"Nova senha (opcional)"_ — em branco mantém a atual.
+
+**Colaborador não entra na página Colaboradores** — é redirecionado. Se tentar uma ação de equipe pela API, recebe: _"Colaboradores não podem realizar esta ação. Solicite ao administrador da conta."_
+
+**O dono também não se edita por Colaboradores.** Se tentar, o sistema responde _"Use as configurações da sua conta para editar você mesmo."_ A senha do dono só muda pelo avatar → Configurações.
+
+Detalhe de tela: tanto o _"As senhas não coincidem."_ quanto o _"Conta atualizada com sucesso!"_ são **janelinhas do navegador**, não avisos na página. E o botão "Salvar alterações" da aba Conta grava nome, foto e senha juntos.
+
+> ⚠️ **O mínimo de 8 caracteres só vale quando o DONO define a senha em Colaboradores.** Pela tela de Configurações não há regra nenhuma: o texto "Use pelo menos 8 caracteres" é só recado, e o sistema aceita senha de **1 caractere**. Ou seja, o colaborador pode enfraquecer sozinho a senha que o dono definiu — e o histórico registra só "Configurações atualizadas", sem dizer que foi a senha.
+
+**Esqueceu a senha? Não existe recuperação.** Não há "esqueci minha senha", não há e-mail de redefinição, e **nem a equipe Dexo tem tela para redefinir senha de terceiro** — a edição de usuário do Superadmin não tem campo de senha.
+
+- **Colaborador esqueceu:** o dono redefine em Colaboradores. Resolve na hora.
+- **Dono esqueceu:** não há caminho no sistema. Só suporte com acesso ao banco.

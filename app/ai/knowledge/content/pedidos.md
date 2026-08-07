@@ -58,4 +58,15 @@ O Magalu tem um estado de "indisponível" que **não** é cancelamento e **não*
 - Venda de balcão não aparece nesta tela.
 - O total de faturamento exibido aqui inclui pedidos cancelados; quem precisa do número sem cancelados usa o filtro de status.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: quais marketplaces, hoje, exigem NF-e enviada antes de liberar a etiqueta de envio para o cliente dele. Cada canal tem regra própria e ela muda; não quero afirmar por qual deles isso vale sem você confirmar.
+## NF-e antes da etiqueta de envio
+
+**Todos os marketplaces exigem a NF-e enviada antes de liberar a etiqueta de envio.** A única exceção é **conta de pessoa física (CPF)** — nesse caso a nota não é exigida.
+
+**O Dexo aplica essa regra sozinho.** Ele não deixa gerar a etiqueta sem a nota — e as mensagens dizem exatamente o que falta:
+
+- _"Pedido sem NF-e autorizada de produção. Emita e autorize a NF-e antes de gerar a etiqueta."_ — não há nota autorizada para este pedido.
+- _"A NF-e autorizada do pedido é de homologação. Emita uma NF-e de produção antes de gerar a etiqueta."_ — a nota existe, mas foi emitida em ambiente de teste. Homologação não vale para o marketplace.
+- _"A NF-e do pedido não é modelo 55 — não aceita pelo marketplace."_ — foi emitida NFC-e (65) em vez de NF-e (55). Para venda de marketplace tem que ser 55.
+- _"XML autorizado da NF-e ainda não disponível. Tente novamente em instantes."_ — a SEFAZ autorizou, mas o arquivo ainda não chegou. É questão de segundos; tentar de novo resolve.
+
+Ordem prática para quem vende com CNPJ: **emitir a NF-e modelo 55 em produção → esperar autorizar → gerar a etiqueta.** O Dexo anexa o XML ao canal junto com o pedido de etiqueta.

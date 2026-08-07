@@ -73,4 +73,26 @@ Na tela Localizações dá para gerar o **PDF das etiquetas** das prateleiras se
 - Não existe inventário cíclico nem contagem programada no sistema.
 - Uma peça está em uma localização por vez.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: o que deve acontecer quando o usuário exclui uma localização que ainda tem peças dentro — se as peças ficam sem localização ou se a exclusão é bloqueada. Não confirmei o comportamento na tela.
+## Excluir uma localização que tem peças dentro
+
+**A exclusão nunca é bloqueada.** Não existe trava do tipo "essa prateleira tem peça, não dá para apagar". Confirmou, a localização vai embora — com 0 ou com 5.000 peças dentro.
+
+1. **As peças não são apagadas.** Continuam no estoque, mesmo SKU, mesma quantidade, mesmo preço. Só perdem o vínculo com o lugar.
+2. **Todas as sublocalizações abaixo vão junto**, em cascata, até o último nível — e as peças de cada nível também são soltas. Apagar o "GALPÃO 1" leva corredores, prateleiras e caixas.
+3. As peças soltas **não aparecem mais dentro de nenhuma localização**. Para reencontrá-las é scan/etiqueta, uma a uma ou em lote.
+4. A tela avisa antes: _"Todos os N subtópico(s) também serão excluídos. Os M produto(s) vinculados serão desvinculados. Esta ação é irreversível."_ Não há desfazer nem lixeira. **A exclusão fica no histórico** — aparece em Colaboradores como "Excluir localização", com quem fez, IP e horário. Até as tentativas que deram erro ficam lá.
+5. **Não roda em tudo-ou-nada.** Se estourar no meio, os níveis de baixo já foram apagados e as peças deles já foram soltas. O lojista vê só "Erro ao excluir localização" e acha que nada aconteceu. Deu erro: confira a árvore antes de tentar de novo.
+
+> ⚠️ **O TEXTO DA LOCALIZAÇÃO FICA GRUDADO NA PEÇA COMO FANTASMA.** A peça tem **dois** campos de localização: o vínculo de verdade (usado pela tela de Localizações) e um campo de **texto** (o que aparece escrito no card, na lista e na ficha). A exclusão limpa **só o vínculo** e não limpa o texto. A peça continua mostrando "GALPÃO 1 > CORREDOR A > CX-10", o funcionário vai lá e não acha nada — o lugar nem existe mais. E se alguém abrir e salvar essa peça, o texto velho é regravado.
+>
+> O botão **"Desvincular"** (dentro da localização, selecionando as peças) limpa **os dois** campos. Desvincular na mão é limpo; apagar a localização deixa sujeira.
+
+> ⚠️ O aviso do diálogo conta **só o nível de baixo**: "N subtópicos" são apenas os filhos diretos e "M produtos" apenas os que estão direto naquele nó. Numa árvore de três níveis o aviso pode dizer "2 subtópicos e 0 produtos" e a exclusão levar 40 caixas e 800 peças.
+
+**Antes de apagar, mova.** Mas saiba que a gaveta de produtos da localização mostra **50 peças por vez, sem "carregar mais"** — o cabeçalho pode dizer "800 produtos vinculados" e a lista mostrar 50, e o "Selecionar todos" marca só esses 50. Prateleira de 800 itens = ~16 rodadas. E se o destino tiver capacidade máxima cadastrada, o sistema recusa por capacidade.
+
+Se apagar sem mover: **não existe filtro "sem localização"** na tela de Produtos para reencontrar as órfãs — e, por causa do texto fantasma, elas nem parecem órfãs.
+
+**Excluir localizações em massa não existe.** Dá para marcar várias com as caixinhas, mas a única ação em massa é "Gerar etiquetas". Criar em massa existe (por faixa, CX-001 a CX-100); apagar em massa não. O único atalho é apagar o pai — e aí vem a cascata inteira.
+
+**Sucata (veículo) vinculada à localização:** a rotina de exclusão trata sublocalizações e **peças**, e não encosta na sucata. Quem decide é a regra do banco, que não dá para ler no código. Pelo padrão que o sistema usa em todas as outras ligações opcionais, o mais provável é que o banco **solte a sucata em silêncio**. E, diferente das peças, **a sucata não guarda endereço em texto** — não sobra nem a pista do lugar antigo, o campo simplesmente fica vazio. Antes de apagar qualquer localização de pátio, abra Sucatas e mova o veículo primeiro. O diálogo de confirmação **nunca menciona veículo/sucata**.

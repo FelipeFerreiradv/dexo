@@ -50,4 +50,25 @@ Cliente com conta, venda ou orçamento vinculado **não pode ser excluído** —
 - Não há junção (merge) de clientes duplicados.
 - Não há busca de endereço por CEP integrada.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: se existe validação de CPF/CNPJ no cadastro (dígito verificador) ou se o campo aceita qualquer texto. Não confirmei na tela, e a resposta muda o que eu digo a quem reclamar de "documento inválido".
+## Validação de CPF e CNPJ
+
+**Depende do caminho.** A conferência de dígito (mod-11) existe em **três** telas e não existe em **três** caminhos automáticos.
+
+**Confere o dígito:** cadastro de cliente, cadastro rápido do Financeiro, cadastro rápido do Orçamento. Documento errado aí é barrado na hora, com "CPF inválido".
+
+**NÃO confere nada:** importação de planilha, cliente criado a partir de pedido de marketplace, e cliente criado automaticamente ao autorizar NF-e. Esses entram do jeito que vierem.
+
+**O servidor** é mais frouxo que a tela — e assimétrico:
+
+- **Ao criar**, confere só o documento que combina com o tipo: cliente PF → CPF com 11 dígitos; cliente PJ → CNPJ com 14. O outro documento entra sem conferência nenhuma.
+- **Ao editar**, confere **os dois** (CPF 11 dígitos + duplicado, CNPJ 14 + duplicado), independente do tipo.
+
+> ⚠️ É por isso que **um cliente que entrou torto pela importação pode se recusar a salvar na primeira edição**, com "CNPJ inválido" ou "Já existe um cliente com esse CNPJ" — sem que ninguém tenha mexido no campo. O cadastro passou; a edição é que aperta.
+
+**Importação:** documento que não fecha 11/14 dígitos, ou com todos os dígitos iguais (`000...`, `111...`), é **jogado fora em silêncio** e o cliente entra **sem documento**. Não aparece como erro no relatório do import — e isso também derruba a deduplicação por documento nas próximas importações.
+
+**Duplicidade:** a trava de CPF é por loja (mesmo CPF não repete). **CNPJ não tem trava** — só índice de busca. Cliente sem CPF pode repetir à vontade.
+
+> ⚠️ **A tela de Clientes hoje é só Pessoa Física**, a não ser que `NEXT_PUBLIC_CUSTOMER_PJ_ENABLED=true` esteja ligada no servidor — e ela não está ligada por padrão. Com ela desligada não existe seletor PF/PJ nem campo CNPJ na tela de Clientes: todo cliente criado por ali nasce PF. Os campos de **CNPJ de entrega** do passo de Entrega continuam aparecendo e têm validação de dígito.
+
+Quando a trava do banco é quem barra (em vez do sistema), a tela mostra **erro técnico** em vez de "Já existe um cliente com esse CPF".

@@ -57,4 +57,31 @@ A aba **Sincronização** mostra o histórico de ciclos e o que deu errado em ca
 - Estoque nunca é individual por anúncio — a peça física é uma só.
 - Os campos de "modelo" da Shopee não são modelo de carro; é a nomenclatura de variação de produto da própria Shopee e não tem relação com compatibilidade veicular.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: quanto tempo, na prática, o cliente costuma esperar entre a venda na Shopee e o pedido aparecer no Dexo. O intervalo é configurável no servidor e prefiro não cravar um número que pode não ser o da instalação dele.
+## Quanto tempo a venda demora para virar pedido
+
+**Até cerca de 15 minutos** — contados de quando o marketplace confirma o **pagamento**, não de quando o comprador clicou em comprar.
+
+Nem a Shopee nem o Magalu avisam o Dexo na prática: o endereço de aviso existe e confere assinatura, mas o histórico de produção mostra **zero avisos recebidos** dos dois canais. Quem vai buscar é o Dexo, a cada 15 minutos.
+
+**O que faz demorar mais:**
+
+**0. A conta caiu — e aí não vem nunca.** Se o token da Shopee/Magalu expirou e a renovação falhou, o Dexo marca a conta como **ERRO**. A partir daí a venda não chega por caminho nenhum: nem na passada de 15 minutos, nem pelo botão "Importar Pedidos" (que responde _"Conta não conectada ou sem credenciais"_), nem por aviso automático. Não existe espera — é reconectar em Integrações ou nada. **Sintoma típico: pararam de entrar pedidos de UM canal enquanto os outros seguem normais.**
+
+**1. A venda ainda não está paga.** Na Shopee, pedido `UNPAID` não é importado. No Magalu, só entra em pago / aprovado / processando / faturado / enviado / entregue — "novo" fica de fora. O relógio só começa aí.
+
+**2. O anúncio não está ligado a um produto.** O pedido vira **Pendência**. O sistema tenta sozinho com espera crescente (1 min → 5 → 15 → 30 → de hora em hora) e uma varredura geral a cada 10 minutos. Depois de 5 tentativas sem item vinculado, sai da fila automática e fica "precisa de ação".
+
+**3. Muitas contas conectadas.** A passada processa 4 contas por vez. Se demorar mais que 15 minutos, a próxima começa 5 segundos depois — o intervalo real vira a duração da passada.
+
+**Não quer esperar:** botão **"Importar Pedidos"** na tela de Pedidos, que puxa na hora dos três canais, últimos 7 dias, já com baixa de estoque.
+
+> ⚠️ **O botão "Tentar novamente" da pendência só re-busca o pedido quando é da SHOPEE.** Em pendência do Magalu (e do Mercado Livre) ele apenas confere se o pedido já entrou; se ainda não entrou, não acontece nada visível. Depois de cadastrar a peça numa pendência Magalu/ML, clique em **"Importar Pedidos"** — e só então o "Tentar novamente" fecha.
+
+> ⚠️ Enquanto a conta estiver em ERRO, as pendências dela seguem **contando tentativas sem nunca poder resolver** — e por isso viram "precisa de ação" rápido, mesmo com a peça já cadastrada.
+
+**Diferenças entre os canais:**
+
+- **Shopee** — busca pela **data de última atualização**, não pela de criação: pedido de semana passada que mudou de estado hoje também entra. Janela de 7 dias; a API não aceita mais de 15 dias por consulta, e o Dexo guarda uma marca d'água com 6 h de folga para recuperar atraso (até 90 dias) se o servidor ficar fora. Se algum pedido der erro no ciclo, a marca d'água não avança.
+- **Magalu** — janela de 7 dias por data de atualização, mas **esse filtro nunca foi confirmado contra a API real** (está anotado como pendente no código). Se o Magalu ignorar o filtro, o Dexo lê as páginas até o teto de 500 pedidos.
+
+Os 15 minutos, a busca por data de atualização e o descarte só de `UNPAID` são o comportamento **padrão** — existem chaves no servidor que revertem cada um deles.

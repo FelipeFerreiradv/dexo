@@ -93,4 +93,39 @@ O sistema detecta os anúncios que a conta já tinha e cria o produto correspond
 - O estoque é sempre o do produto, compartilhado entre todos os anúncios da peça.
 - Métricas do anúncio (visitas, avaliações) são atualizadas por sincronização periódica, não em tempo real.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: de quanto em quanto tempo o cliente deve esperar que visitas e avaliações apareçam atualizadas na tela. O ciclo é configurável no servidor, então prefiro não afirmar um número.
+## Visitas e avaliações: de quanto em quanto tempo
+
+**Antes do intervalo, o que mais importa: esses números não aparecem em tela nenhuma do Dexo.** O sistema busca as visitas e as avaliações no Mercado Livre e guarda no banco, mas não existe lugar no sistema que mostre "este anúncio teve X visitas" ou "tem nota Y". A única pista é o aviso **"Métricas atualizadas"** no sininho — sem número junto.
+
+Quem perguntar "por que minhas visitas não atualizam?" está procurando uma tela que não existe. Diga isso.
+
+O ritmo é de **6 em 6 horas** (padrão de fábrica), e na prática costuma ser mais:
+
+- A mesma rodada faz a varredura de catálogo da Shopee e do Magalu de **todas as contas da plataforma**, em série — as métricas são a **última** coisa da fila.
+- Há uma pausa proposital de ~0,34 s por anúncio para não tomar bloqueio do ML. Numa loja com 10 mil anúncios, só de pausa é quase 1 hora.
+- Se a rodada inteira passar de 6 horas, a próxima começa 5 segundos depois — o sistema fica rodando direto.
+- **As visitas são o total do anúncio desde que ele nasceu**, não as do mês ou da semana.
+
+**Nunca recebem visita nem avaliação:** anúncio que falhou na publicação (os pendentes) e anúncio de catálogo migrado (`LEGACY-`). Loja que veio de migração nunca teve esses números buscados.
+
+**Se o token do Mercado Livre estiver vencido**, a busca falha calada: nada é gravado, nada aparece em log do cliente, e o número congela no último valor.
+
+> ⚠️ Três números parecem ser a resposta e não são: o loop de 30 minutos existe no código mas **não roda em produção**; a varredura de 1 em 1 hora só espelha ativo/pausado/encerrado e **não toca em métrica**; e o ciclo antigo de "15 minutos" já registrou uma volta de **71,9 horas** em produção.
+
+## Publicação em massa: não existe controle de ritmo
+
+**Não há trava anti-spam por tempo.** Nem espera entre anúncios, nem pausa a cada 100, nem a cada 1.000. Não há variável de ambiente, campo no banco ou botão de tela para ligar isso.
+
+O que existe:
+
+- **Teto de 2.000 anúncios por trabalho** (produtos × contas). Passando disso: _"Limite excedido — Operação muito grande"_. É teto por trabalho, não por hora: nada impede disparar outro em seguida.
+- **Fila de 4 em paralelo.** Quando um termina, o próximo entra na hora. O Dexo dispara na velocidade que o Mercado Livre aguentar.
+
+> ⚠️ **Nada no servidor impede DOIS trabalhos em massa ao mesmo tempo.** A única trava é no navegador, contra duplo-clique na mesma janela. Duas abas, dois colaboradores, ou clicar "reprocessar falhas" com um lote ainda rodando dobra os disparos simultâneos na mesma conta — e o reprocessar falhas nem passa pelo teto de 2.000.
+
+Duas coisas parecem ser controle de ritmo e não são:
+
+- O **semáforo por conta** existe e cita o limite de ~10 req/s do ML — mas só é usado na **exclusão** em massa. O motor de publicação não o usa.
+- A **repescagem** de anúncios que falharam tem espera (30 s, 60, 120, 300, 900, no máximo 5 tentativas). Vale só para quem já deu erro; não segura a primeira publicação.
+
+Se alguém perguntar quantos anúncios por minuto: **não há número confiável.** Cada anúncio custa de 13 a 23 chamadas ao Mercado Livre, e o pior caso de um anúncio sozinho é 1 a 2 minutos.

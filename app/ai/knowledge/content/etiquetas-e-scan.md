@@ -58,4 +58,12 @@ Em celular, a leitura precisa de HTTPS — navegador nenhum libera câmera fora 
 - Não há leitura de código de barras comum — só QR.
 - O Receber por scan vincula localização; ele não altera quantidade em estoque.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: qual o tamanho de etiqueta e o modelo de impressora que os clientes usam de fato. O PDF hoje é uma etiqueta por página; se o padrão do galpão for etiqueta térmica de rolo, isso muda o que eu devo recomendar.
+## Etiqueta e impressora: o padrão do galpão
+
+- **Tamanho da etiqueta de peça: 100 × 50 mm.**
+- **Impressoras usadas:** Argox OS-240 Plus e Elgin L42 Pro. São essas duas, independente do cliente.
+- **Ribbon: resina ou misto.** ⚠️ **Ribbon de cera falha** nessa etiqueta — a impressão sai borrada, apagando ou incompleta. Se o lojista reclamar de etiqueta falhando, saindo fraca ou sumindo com o tempo, **pergunte o ribbon antes de qualquer outra coisa**: cera é a causa mais provável, e a troca por resina ou misto resolve.
+
+Etiqueta com impressão falhando não é problema do Dexo nem do QR: o PDF é o mesmo. É consumível ou configuração da impressora.
+
+**Configuração:** o PDF sai com **uma etiqueta por página**, então a impressora precisa estar com o tamanho de página em 100 × 50 mm — não em A4. Impressora configurada em A4 imprime a etiqueta minúscula num canto da folha, ou corta o QR.

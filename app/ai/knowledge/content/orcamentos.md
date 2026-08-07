@@ -76,4 +76,20 @@ Um orçamento converte em **no máximo uma venda**. Apagar o orçamento depois *
 - Não há histórico de versões da proposta: editar sobrescreve.
 - Não há aprovação do cliente dentro do sistema.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: como o cliente hoje entrega o orçamento ao comprador (imprime, tira print, manda PDF). Isso muda o que faz sentido eu sugerir quando alguém perguntar "como envio o orçamento".
+## Como entregar o orçamento ao comprador
+
+Na prática: **manda o PDF** (normalmente por WhatsApp) e, depois de aceito, imprime.
+
+O único caminho no sistema é **baixar o PDF**. O botão "Imprimir orçamento (PDF)" está no kanban de Clientes, na lista e na aba Orçamentos do Financeiro, e funciona em **qualquer etapa do funil**. Apesar do nome, ele **baixa o arquivo** — não abre a janela de impressão.
+
+Não existe envio por e-mail, por WhatsApp direto da tela, nem link público. **Mandar o endereço do PDF não adianta: ele exige login.** Tem que anexar o arquivo.
+
+**Antes de mandar o primeiro orçamento, ajuste três coisas — todas aparecem na frente do comprador:**
+
+1. **Preencha os dados fiscais da empresa.** Sem isso o cabeçalho do PDF sai escrito literalmente **"Sua empresa"**, sem CNPJ e sem endereço.
+2. **Preencha o "Nº do documento"** (campo opcional, exemplo `ORC 1234`). Em branco, o PDF imprime `#` seguido de 8 caracteres do código interno — feio.
+3. **Renomeie o arquivo.** Ele baixa como `orcamento-<código interno>.pdf`, uma sequência ilegível tipo `orcamento-cmb7x9k2p0001abcd.pdf` — **não** o número que você digitou.
+
+Outros detalhes do PDF: o **logotipo do topo é fixo do sistema**, não é o logo da loja (não há upload). Ele mostra nome, CPF/CNPJ **e o e-mail** do cliente. Orçamento feito só com valor total sai com a frase _"Orçamento de valor único (sem itens detalhados)"_ no lugar da tabela.
+
+> ⚠️ A aba Orçamentos — tanto em Clientes quanto no Financeiro — depende da chave `NEXT_PUBLIC_BUDGET_ENABLED` estar ligada na instalação. Desligada, a tela de Clientes mostra só a lista de clientes e o Financeiro não tem aba Orçamentos. Ligar exige rebuild.

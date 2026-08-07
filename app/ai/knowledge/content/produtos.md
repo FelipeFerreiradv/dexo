@@ -77,7 +77,32 @@ Alterar o **estoque** também sincroniza — é o que evita vender uma peça que
 
 A exclusão em massa está na própria lista, selecionando as peças. Excluir um produto é definitivo.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: o que exatamente o usuário vê quando tenta excluir uma peça que já foi vendida no balcão ou que está em uma nota fiscal emitida. O banco impede a exclusão nesses casos (o histórico não pode perder a referência), mas eu não confirmei o texto exato da mensagem na tela.
+## Quando a exclusão da peça é barrada
+
+Não existe uma tela única de "não pode excluir". Cada caso se comporta de um jeito.
+
+**⚠️ A ordem das coisas é o que mais surpreende:** o Dexo primeiro **encerra os anúncios** da peça no Mercado Livre, na Shopee e no Magalu. Só depois tenta apagar a peça do banco. Se a peça não puder ser apagada, os anúncios **já foram destruídos** — e a janela de resultado não dá nenhuma pista disso. A peça continua no Dexo, sem anúncio nenhum.
+
+- **Peça com anúncio** — não barra. O anúncio é encerrado junto (no ML vira `closed`, na Shopee o item é apagado). Se algum anúncio não puder ser encerrado (conta desconectada, erro do canal), a peça **não** é apagada: abre a janela "Resultado da exclusão" com o placar, o motivo por anúncio, uma etiqueta _Recuperável_ ou _Definitivo_, e o botão "Reintentar".
+- **Peça com pedido** (venda de marketplace) — **barrada**, com mensagem em português: _"Não é possível deletar o produto pois ele possui pedidos associados"_. O botão "Reintentar" aparece, mas nunca vai funcionar: o bloqueio dura enquanto o pedido existir.
+- **Peça vendida no balcão, ou dentro de um orçamento** — **barrada**, mas com mensagem **técnica e feia**: o texto cru do banco, algo como `Foreign key constraint violated on the constraint: ReceivableItem_productId_fkey` (ou `BudgetItem_productId_fkey`). Significa apenas: essa peça já foi vendida no balcão (ou está num orçamento) e por isso não pode ser apagada.
+- **Peça em nota fiscal emitida** — a nota guarda cópia própria da descrição, código, NCM, CFOP e valores, então ela não depende da peça para continuar válida.
+
+> ⚠️ Se a NF-e **barra** ou não a exclusão não dá para provar pelo código: essa ligação foi criada por DDL manual, fora do repositório. Trate como "provavelmente não barra" e confirme na prática antes de prometer.
+
+**Vai junto, sem aviso:** todo o histórico de movimentação de estoque da peça e as compatibilidades de veículo. Some definitivamente.
+
+**Cancelar o orçamento NÃO solta a peça.** Cancelar só muda o status; os itens continuam lá segurando. Só **excluir** o orçamento libera.
+
+**O que fazer no lugar:** peça que já vendeu não se apaga — deixe cadastrada com estoque 0, porque o histórico depende dela. Se o problema é continuar anunciada, **pause** os anúncios.
+
+## Excluir várias peças de uma vez
+
+Marcando as peças aparece "Excluir selecionados". A regra é a mesma, peça por peça, e no fim abre a janela com o placar e uma linha por peça — verde para as que saíram, vermelha com o motivo para as que ficaram.
+
+- **O teto real é 100**, que é o máximo de "Itens por página". **Não dá para acumular seleção entre páginas:** virar a página, trocar o tamanho da página, mexer no filtro ou na ordenação **apaga tudo que você marcou, sem avisar**. Para apagar muita coisa, ponha 100 por página e vá de 100 em 100.
+- **Se der erro vermelho no meio, não conclua que nada foi apagado.** As peças dos primeiros lotes podem já ter sido excluídas de verdade, mesmo continuando visíveis na tela. Atualize a página (F5) antes de tentar de novo.
+- A confirmação da exclusão em massa **avisa** que os anúncios serão fechados e que peças com pedido não serão excluídas. A confirmação da exclusão **individual** — a lixeira de uma peça só, que é a mais usada — **não avisa nada disso**, só diz "Esta ação é irreversível".
 
 ## Erros comuns
 

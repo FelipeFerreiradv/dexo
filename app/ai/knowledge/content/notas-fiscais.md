@@ -99,4 +99,15 @@ O campo de informações complementares vai para o XML e aparece no DANFE. É on
 - Não há apuração de impostos nem geração de SPED.
 - Nota fiscal de entrada (compra da sucata) é registrada nos dados fiscais da sucata, mas não é emitida pelo sistema.
 
-> ⚠️ PENDENTE DE CONFIRMAÇÃO: quais provedores de emissão estão de fato em uso pelos clientes hoje, e se algum cliente emite direto na SEFAZ. Isso muda o vocabulário certo de erro quando alguém me trouxer uma rejeição.
+## Como os clientes emitem hoje
+
+Não há um padrão único. Os perfis são quatro, e a resposta certa para uma rejeição depende de qual deles a pessoa é:
+
+- **Só pelo Dexo** — emite tudo por aqui. É o caso em que o Dexo tem a nota inteira e consegue ajudar do início ao fim.
+- **Direto na SEFAZ** — usa o certificado próprio contra o webservice da SEFAZ. Aqui a rejeição vem com o código e o texto oficiais da SEFAZ (`cStat` + motivo), e é por eles que se procura a causa.
+- **IBR** — um sistema antigo que parte dos clientes ainda usa em paralelo. Vocabulário de erro próprio, que não é o da SEFAZ nem o do Dexo.
+- **Sistemas externos em geral** — cada um com a sua tela e as suas mensagens.
+
+**Antes de interpretar uma rejeição, pergunte por onde a nota foi emitida.** O mesmo problema fiscal aparece com nome diferente em cada caminho, e responder com o vocabulário errado manda a pessoa procurar uma tela que ela não tem.
+
+Se a nota **não foi emitida pelo Dexo**, o Dexo não tem o retorno da SEFAZ e não consegue dizer o motivo da rejeição — o que dá para fazer é ajudar a entender o código e a corrigir o cadastro que originou o erro (NCM, CFOP, CST, endereço, documento do destinatário).
