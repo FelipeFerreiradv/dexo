@@ -357,3 +357,75 @@
     opacity: 1;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Bitz (agente de IA). Keyframes prefixadas com `bitz-` para nao poderem
+ * colidir com nada existente. Aditivo: nenhuma regra acima foi alterada.
+ *
+ * TODAS sao consumidas com o modificador `motion-reduce:animate-none` nos
+ * componentes de components/bitz/*. O Bitz e a primeira parte do repositorio a
+ * respeitar prefers-reduced-motion.
+ * ------------------------------------------------------------------------- */
+
+/* Aura do mascote pensando — a traducao do orbe iridescente da referencia
+ * para os tokens da marca Dexo. */
+@keyframes bitz-aura {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+/* Flutuacao leve enquanto o Bitz pensa. */
+@keyframes bitz-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+/* Destaque de abertura: pisca e gira levemente, e VOLTA para a posicao.
+ * Referencia visual: docs/bitz/bitz-mascote-animacao-referencia.mp4 (o MP4 e
+ * so referencia — nunca e servido ao navegador; o movimento vive aqui). */
+@keyframes bitz-greet {
+  0% {
+    transform: rotate(0deg) scale(1);
+    opacity: 1;
+  }
+  22% {
+    opacity: 0.35;
+  }
+  40% {
+    transform: rotate(-9deg) scale(1.06);
+    opacity: 1;
+  }
+  70% {
+    transform: rotate(7deg) scale(1.03);
+  }
+  100% {
+    transform: rotate(0deg) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Tres pontinhos do "digitando". */
+@keyframes bitz-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
