@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 // ===========================================================================
@@ -276,5 +276,51 @@ describe("streaming no front — o texto ao vivo é PRÉVIA", () => {
   it("o indicador de consulta fala a língua do lojista, não o nome da tool", () => {
     expect(bolha).toContain("RÓTULO_DA_CONSULTA");
     expect(bolha).not.toMatch(/\{consultando\[0\]\}/);
+  });
+});
+
+describe("a animação da saudação", () => {
+  const animado = lerCodigo("components/bitz/bitz-mascot-animado.tsx");
+
+  it("⭐ é imagem, não vídeo — o material tem fundo branco e o Dexo tem tema escuro", () => {
+    // MP4/H.264 não tem canal alpha: no tema escuro o fundo branco vira uma
+    // placa luminosa atrás do robô. WebP animado tem alpha e é `<img>`.
+    expect(animado).toContain("MASCOT.animacao");
+    expect(animado).not.toMatch(/<video|playsInline|autoPlay/);
+  });
+
+  it("o arquivo servido é o WebP animado, e o MP4 de 4,9 MB não existe mais", () => {
+    expect(
+      existsSync(join(raiz, "public/bitz/bitz-mascote-animacao.webp")),
+    ).toBe(true);
+    // O original tinha 4,9 MB, 4K e 10 s — peso permanente no repositório e no
+    // navegador de quem abrisse o chat.
+    expect(
+      existsSync(join(raiz, "public/bitz/bitz-mascote-animacao.mp4")),
+    ).toBe(false);
+  });
+
+  it("pesa o que cabe numa saudação", () => {
+    const kb =
+      statSync(join(raiz, "public/bitz/bitz-mascote-animacao.webp")).size /
+      1024;
+    expect(kb, `${Math.round(kb)} KB`).toBeLessThan(400);
+  });
+
+  it("cai no mascote estático quando falha ou quando pedem menos movimento", () => {
+    expect(animado).toContain("prefers-reduced-motion");
+    expect(animado).toContain("onError");
+    expect(animado).toContain("BitzMascot");
+  });
+
+  it("⭐ nada disso entra no shell: só o painel importa o animado", () => {
+    // O launcher (bitz-widget) usa o mascote ESTÁTICO. Se ele importasse o
+    // animado, os 237 KB entrariam no chunk de todas as páginas.
+    expect(lerCodigo("components/bitz/bitz-widget.tsx")).not.toContain(
+      "bitz-mascot-animado",
+    );
+    expect(lerCodigo("components/bitz/bitz-empty-state.tsx")).toContain(
+      "bitz-mascot-animado",
+    );
   });
 });

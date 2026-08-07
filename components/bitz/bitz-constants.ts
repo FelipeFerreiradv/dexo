@@ -24,12 +24,12 @@ export const MASCOT = {
   png128: "/bitz/bitz-mascote-128.png",
   png256: "/bitz/bitz-mascote-256.png",
   /**
-   * A animação de saudação.
+   * A animação de saudação — WebP animado COM transparência, 237 KB.
    *
-   * ⚠️ Só é buscada quando `BitzMascotVideo` monta — dentro do chunk dinâmico
+   * ⚠️ Só é buscada quando `BitzMascotAnimado` monta — dentro do chunk dinâmico
    * do painel, ou seja, depois do primeiro clique. Nunca entra no shell.
    */
-  video: "/bitz/bitz-mascote-animacao.mp4",
+  animacao: "/bitz/bitz-mascote-animacao.webp",
 } as const;
 
 /** Teto de caracteres da mensagem — espelha MAX_USER_MESSAGE_CHARS do backend. */
