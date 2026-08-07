@@ -90,16 +90,37 @@ function Markdown({ children }: { children: string }) {
   );
 }
 
+/**
+ * O desenho das bolhas, compartilhado por mensagem pronta, texto ao vivo e
+ * indicadores.
+ *
+ * ⭐ UMA CONSTANTE, e não classes repetidas em cinco lugares: a bolha em escrita
+ * e a bolha definitiva TÊM que ser idênticas, senão o texto "pula de lugar" no
+ * instante em que o quadro `fim` chega e a segunda substitui a primeira.
+ *
+ * Cantos generosos (`rounded-[1.35rem]`) com UM canto fechado do lado de quem
+ * fala — é o que dá a leitura de rabinho sem desenhar um triângulo.
+ */
+const BOLHA_BASE =
+  "max-w-[85%] px-3.5 py-2.5 text-sm shadow-sm transition-shadow motion-reduce:transition-none";
+const BOLHA_DO_BITZ =
+  "bg-card/80 border-border/60 rounded-[1.35rem] rounded-tl-md border backdrop-blur text-foreground md:max-w-[80%]";
+/** Entrada suave, de baixo para cima. Enfeite: `motion-reduce` desliga. */
+const BOLHA_ENTRANDO =
+  "animate-in fade-in-0 slide-in-from-bottom-1 duration-300 motion-reduce:animate-none";
+
 export function BitzMessage({ message }: { message: BitzChatMessage }) {
   const isUser = message.role === "user";
 
   if (isUser) {
     return (
-      <div className="flex justify-end">
+      <div className={cn("flex justify-end", BOLHA_ENTRANDO)}>
         <div
           className={cn(
-            "bg-primary text-primary-foreground max-w-[85%] rounded-2xl rounded-tr-sm px-3.5 py-2.5",
-            "text-sm leading-relaxed break-words whitespace-pre-wrap md:max-w-[75%]",
+            BOLHA_BASE,
+            // Amarelo da marca, canto fechado à direita — do lado de quem fala.
+            "bg-primary text-primary-foreground rounded-[1.35rem] rounded-tr-md",
+            "leading-relaxed break-words whitespace-pre-wrap md:max-w-[75%]",
           )}
         >
           {message.content}
@@ -109,12 +130,12 @@ export function BitzMessage({ message }: { message: BitzChatMessage }) {
   }
 
   return (
-    <div className="flex items-start gap-2.5">
+    <div className={cn("flex items-start gap-2.5", BOLHA_ENTRANDO)}>
       <BitzMascot size={28} state={message.errorCode ? "error" : "idle"} />
       <div
         className={cn(
-          "bg-card/80 border-border/60 max-w-[85%] rounded-2xl rounded-tl-sm border px-3.5 py-2.5 backdrop-blur",
-          "text-foreground text-sm md:max-w-[80%]",
+          BOLHA_BASE,
+          BOLHA_DO_BITZ,
           message.errorCode && "border-destructive/30",
         )}
       >
@@ -148,12 +169,10 @@ export function BitzStreaming({
   return (
     <div className="flex items-start gap-2.5" aria-live="polite">
       <BitzMascot size={28} state="thinking" aura />
-      <div
-        className={cn(
-          "bg-card/80 border-border/60 max-w-[85%] rounded-2xl rounded-tl-sm border px-3.5 py-2.5 backdrop-blur",
-          "text-foreground text-sm md:max-w-[80%]",
-        )}
-      >
+      {/* ⚠️ EXATAMENTE a mesma bolha da mensagem pronta (as duas constantes,
+          na mesma ordem). Qualquer divergência aqui faz o texto pular de lugar
+          quando o quadro `fim` chega e a bolha definitiva o substitui. */}
+      <div className={cn(BOLHA_BASE, BOLHA_DO_BITZ)}>
         <Markdown>{content}</Markdown>
       </div>
     </div>
@@ -196,7 +215,12 @@ export function BitzThinking({ consultando }: { consultando?: string[] } = {}) {
     return (
       <div className="flex items-start gap-2.5" aria-live="polite">
         <BitzMascot size={28} state="thinking" aura />
-        <div className="bg-card/80 border-border/60 text-muted-foreground rounded-2xl rounded-tl-sm border px-3.5 py-2.5 text-xs backdrop-blur">
+        <div
+          className={cn(
+            BOLHA_DO_BITZ,
+            "text-muted-foreground px-3.5 py-2.5 text-xs shadow-sm",
+          )}
+        >
           {rotulo}…
         </div>
       </div>
@@ -210,7 +234,9 @@ function BitzThinkingPontos() {
   return (
     <div className="flex items-start gap-2.5" aria-live="polite">
       <BitzMascot size={28} state="thinking" aura />
-      <div className="bg-card/80 border-border/60 flex items-center gap-1 rounded-2xl rounded-tl-sm border px-3.5 py-3 backdrop-blur">
+      <div
+        className={cn(BOLHA_DO_BITZ, "flex items-center gap-1 px-3.5 py-3 shadow-sm")}
+      >
         <span className="sr-only">Bitz está pensando</span>
         {[0, 1, 2].map((i) => (
           <span

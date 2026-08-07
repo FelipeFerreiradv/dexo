@@ -124,19 +124,39 @@ export function BitzEmptyState({
   const primeiroNome = nome?.trim().split(/\s+/)[0];
 
   return (
-    <div className={cn("flex flex-col gap-6 p-4 sm:p-6", className)}>
+    <div className={cn("relative flex flex-col gap-6 p-4 sm:p-6", className)}>
+      {/* Halo quente atrás da saudação — mesma leitura da apresentação, em
+          dose menor porque esta tela reaparece a cada "nova conversa". */}
+      <div
+        aria-hidden
+        className={cn(
+          "from-primary/20 pointer-events-none absolute -top-6 left-0 -z-10 h-40 w-56",
+          "rounded-[50%] bg-gradient-to-b to-transparent blur-3xl",
+        )}
+      />
+
       <div className="flex items-start gap-3">
-        {/* Estático por enquanto. A animação DO PAINEL ABERTO é um arquivo
-            próprio, ainda por chegar — quando chegar, entra aqui e vai precisar
-            de uma `key` que mude a cada abertura (ver bitz-widget.tsx). */}
+        {/* Estático de propósito: esta tela aparece em TODA "nova conversa", e
+            o lojista abre isso dezenas de vezes por dia. O robô animado mora na
+            apresentação (`bitz-apresentacao.tsx`), que é vista uma vez na vida. */}
         <BitzMascot size={52} aura priority />
-        <div className="min-w-0 pt-1">
-          <p className="text-muted-foreground text-sm">
+        <div className="min-w-0 pt-0.5">
+          <p className="text-muted-foreground font-mono text-[10px] tracking-[0.2em] uppercase">
             {hora === null ? "Olá" : saudacao(hora)}
             {primeiroNome ? `, ${primeiroNome}` : ""}
           </p>
-          <h2 className="font-display text-foreground text-xl leading-tight font-semibold sm:text-2xl">
-            Como posso ajudar?
+          {/* Wordmark da casa (components/page-header.tsx): Outfit, font-black,
+              minúsculas, tracking fechado, ponto em amarelo. `style` porque a
+              regra base de `h2` já aponta para --font-display. */}
+          <h2
+            className={cn(
+              "text-foreground mt-1 text-3xl leading-[0.9] font-black",
+              "tracking-[-0.04em] text-balance select-none sm:text-4xl",
+            )}
+            style={{ fontFamily: "var(--font-outfit)" }}
+          >
+            como posso ajudar
+            <span className="text-primary">?</span>
           </h2>
         </div>
       </div>

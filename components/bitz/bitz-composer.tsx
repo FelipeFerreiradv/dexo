@@ -59,8 +59,12 @@ export function BitzComposer({
     <div className="border-border/60 bg-background/80 border-t p-3 backdrop-blur">
       <div
         className={cn(
-          "border-border/60 bg-card/70 flex items-end gap-1.5 rounded-2xl border p-1.5",
-          "focus-within:border-primary/50 transition motion-reduce:transition-none",
+          "border-border/60 bg-card/70 flex items-end gap-1.5 rounded-3xl border p-1.5",
+          // O campo é o centro de gravidade da tela: ao receber foco ele ganha
+          // a borda E um halo da cor da marca, em vez do anel genérico de
+          // sistema. Sem `ring-offset`, para o halo abraçar a pílula.
+          "focus-within:border-primary/60 focus-within:ring-primary/25 focus-within:ring-4",
+          "shadow-sm transition motion-reduce:transition-none",
         )}
       >
         <EmBreve label="Anexar arquivo (em breve)">
@@ -96,8 +100,9 @@ export function BitzComposer({
             disabled={disabled}
             aria-label="Enviar"
             className={cn(
-              "bg-primary text-primary-foreground inline-flex size-8 shrink-0 items-center justify-center rounded-xl",
-              "hover:bg-primary/90 disabled:opacity-50 transition motion-reduce:transition-none",
+              "bg-primary text-primary-foreground inline-flex size-9 shrink-0 items-center justify-center rounded-full",
+              "hover:bg-primary/90 disabled:opacity-50 shadow-sm transition",
+              "hover:scale-105 active:scale-95 motion-reduce:transition-none motion-reduce:hover:scale-100",
               "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
             )}
           >

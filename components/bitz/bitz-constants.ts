@@ -24,12 +24,33 @@ export const MASCOT = {
   png128: "/bitz/bitz-mascote-128.png",
   png256: "/bitz/bitz-mascote-256.png",
   /**
-   * A animação de saudação — WebP animado COM transparência, 237 KB.
+   * O LOOP — 190×294, 29 quadros, 2,4 s, loop infinito, **235 KB**.
    *
-   * ⚠️ Só é buscada quando `BitzMascotAnimado` monta — dentro do chunk dinâmico
+   * É o robô se mexendo sem começo nem fim, usado na tela "Conheça o Bitz".
+   * Loop infinito é obrigatório aqui: o painel fica montado para sempre, e um
+   * WebP de loop finito congelaria no último quadro.
+   *
+   * ⚠️ Só é buscado quando `BitzMascotAnimado` monta — dentro do chunk dinâmico
    * do painel, ou seja, depois do primeiro clique. Nunca entra no shell.
    */
-  animacao: "/bitz/bitz-mascote-animacao.webp",
+  loop: "/bitz/bitz-mascote-loop.webp",
+  /**
+   * A ENTRADA — 260×354, 144 quadros, 9,6 s, loop 1, **1.045 KB**.
+   *
+   * O material original menos a emenda do loop: o robô sai do canto da tela, se
+   * apresenta e vai embora. Um megabyte é muito para um enfeite — e é por isso
+   * que ele toca UMA VEZ NA VIDA de cada usuário (ver `bitz-onboarding.ts`) e só
+   * é baixado nessa única ocasião. Quem já viu nunca mais pede o arquivo.
+   *
+   * ⚠️ Os 6 quadros finais do material (9,60 s → 10,0 s) são a VOLTA AO COMEÇO,
+   * que o autor deixou lá para o vídeo poder rodar em loop. Aqui a animação toca
+   * uma vez só: aquilo virava um solavanco de meio segundo no fim, o robô sumia
+   * e reaparecia do início. Foram cortados na reexportação.
+   *
+   * Loop 1 é o correto aqui, ao contrário do arquivo acima: esta animação tem
+   * um fim narrativo, e o componente que a exibe morre junto com ela.
+   */
+  entrada: "/bitz/bitz-mascote-entrada.webp",
 } as const;
 
 /** Teto de caracteres da mensagem — espelha MAX_USER_MESSAGE_CHARS do backend. */

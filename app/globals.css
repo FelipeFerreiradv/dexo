@@ -416,6 +416,29 @@
   }
 }
 
+/* Entrada do robo: ele sobe para o lugar, encostado no canto direito da tela.
+ *
+ * ⚠️ SEM DESLOCAMENTO HORIZONTAL, e isso ja foi errado uma vez. A versao
+ * anterior comecava em translateX(46px), o que jogava metade do robo PARA FORA
+ * da viewport nos primeiros quadros — ele aparecia cortado pela borda em vez de
+ * apoiado nela. Quem entrega a caminhada e o proprio WebP; este keyframe so
+ * assenta o quadro no lugar. Qualquer translateX positivo aqui volta a cortar.
+ *
+ * Toca uma vez na vida do usuario (components/bitz/bitz-onboarding.ts). */
+@keyframes bitz-entrada {
+  0% {
+    transform: translateY(22px) scale(0.94);
+    opacity: 0;
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
 /* Tres pontinhos do "digitando". */
 @keyframes bitz-dot {
   0%,

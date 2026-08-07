@@ -43,8 +43,11 @@ export function BitzSources({ sources }: { sources?: unknown[] }) {
   if (linhas.length === 0) return null;
 
   return (
-    <div className="border-border/50 mt-2.5 border-t pt-2">
-      <p className="text-muted-foreground mb-1 flex items-center gap-1 text-[11px] font-medium">
+    <div className="border-border/50 mt-3 border-t pt-2.5">
+      {/* Rótulo em mono maiúsculo, como os eyebrows do resto do produto — deixa
+          claro que este bloco é METADADO, e não continuação do texto que o
+          modelo escreveu. Quem preenche `sources[]` é o servidor. */}
+      <p className="text-muted-foreground mb-1.5 flex items-center gap-1.5 font-mono text-[9px] tracking-[0.18em] uppercase">
         <Info className="size-3" aria-hidden />
         Fontes
       </p>
