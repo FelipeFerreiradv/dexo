@@ -1,0 +1,262 @@
+// Provedor Gemini via REST puro (axios), sem SDK.
+//
+// POR QUE REST E NÃO SDK: a casa já fala REST com ML, Shopee, Magalu, Focus e
+// SEFAZ por axios puro — um SDK aqui seria a exceção, não a regra. Ganhos
+// concretos: zero KB de dependência nova na API, endpoint novo é mudança de
+// string (não espera release do SDK), e o mock dos testes é `vi.mock("axios")`,
+// que é o padrão de todos os *-api.service.ts do repositório.
+//
+// A resposta do modelo é ENTRADA NÃO CONFIÁVEL e passa por zod antes de virar
+// AiCompletion (REGRA 12). Um `candidates[0].content.parts` com shape
+// inesperado vira `resposta_invalida`, não um crash e não um `undefined`
+// vazando para o banco.
+//
+// NADA aqui lança. Ver o contrato em types.ts.
+
+import axios from "axios";
+import { z } from "zod";
+
+import {
+  AI_CONSTANTS,
+  getAiApiKey,
+  getAiMaxTokens,
+  getAiModel,
+  getAiTemperature,
+  getAiTimeoutMs,
+} from "./ai-constants";
+import type {
+  AiChatInput,
+  AiCompletion,
+  AiFailureReason,
+  AiMessage,
+  AiProvider,
+  AiToolCall,
+} from "./types";
+
+export const GEMINI_PROVIDER_NAME = "gemini";
+
+// ---------------------------------------------------------------------------
+// Schema da resposta. Tudo opcional de propósito: a API omite campos conforme
+// o finishReason, e um campo ausente é um caso NORMAL, não um erro.
+// ---------------------------------------------------------------------------
+const functionCallSchema = z.object({
+  name: z.string(),
+  args: z.unknown().optional(),
+});
+
+const partSchema = z.object({
+  text: z.string().optional(),
+  functionCall: functionCallSchema.optional(),
+});
+
+const candidateSchema = z.object({
+  content: z.object({ parts: z.array(partSchema).optional() }).optional(),
+  finishReason: z.string().optional(),
+});
+
+const geminiResponseSchema = z.object({
+  candidates: z.array(candidateSchema).optional(),
+  usageMetadata: z
+    .object({
+      promptTokenCount: z.number().optional(),
+      candidatesTokenCount: z.number().optional(),
+    })
+    .optional(),
+  promptFeedback: z.object({ blockReason: z.string().optional() }).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Tradução das mensagens normalizadas para o dialeto do Gemini.
+// ---------------------------------------------------------------------------
+interface GeminiContent {
+  role: "user" | "model";
+  parts: Array<Record<string, unknown>>;
+}
+
+/**
+ * O Gemini só conhece os papéis "user" e "model", e leva o system separado em
+ * `systemInstruction`. Resultado de tool vai como functionResponse com role
+ * "user" — é assim que a API espera receber de volta.
+ */
+export function toGeminiContents(messages: AiMessage[]): {
+  contents: GeminiContent[];
+  systemInstruction?: { parts: Array<{ text: string }> };
+} {
+  const systemTexts: string[] = [];
+  const contents: GeminiContent[] = [];
+
+  for (const m of messages) {
+    if (m.role === "system") {
+      systemTexts.push(m.content);
+      continue;
+    }
+    if (m.role === "tool") {
+      contents.push({
+        role: "user",
+        parts: [
+          {
+            functionResponse: {
+              name: m.toolName ?? "desconhecida",
+              // A API exige objeto; o conteúdo da tool é string para nós.
+              response: { resultado: m.content },
+            },
+          },
+        ],
+      });
+      continue;
+    }
+    contents.push({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    });
+  }
+
+  return {
+    contents,
+    systemInstruction: systemTexts.length
+      ? { parts: [{ text: systemTexts.join("\n\n") }] }
+      : undefined,
+  };
+}
+
+/** Classifica a falha SEM vazar corpo de resposta nem a chave para o log. */
+function classifyAxiosError(err: unknown): {
+  reason: AiFailureReason;
+  detail: string;
+} {
+  const anyErr = err as any;
+  const code = anyErr?.code;
+  if (code === "ECONNABORTED" || code === "ETIMEDOUT") {
+    return { reason: "timeout", detail: `timeout (${code})` };
+  }
+  const status = anyErr?.response?.status;
+  if (status === 429) {
+    return { reason: "rate_limit_provedor", detail: "HTTP 429" };
+  }
+  if (typeof status === "number") {
+    // Só o status. O corpo pode ecoar trecho do prompt — que carrega dado do
+    // cliente — e a URL carrega a chave na query string.
+    return { reason: "erro_provedor", detail: `HTTP ${status}` };
+  }
+  return {
+    reason: "erro_provedor",
+    detail: code ? String(code) : "erro de rede",
+  };
+}
+
+export class GeminiProvider implements AiProvider {
+  readonly name = GEMINI_PROVIDER_NAME;
+  readonly model: string;
+
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+
+  constructor(opts?: { apiKey?: string; model?: string; baseUrl?: string }) {
+    this.apiKey = opts?.apiKey ?? getAiApiKey() ?? "";
+    this.model = opts?.model ?? getAiModel() ?? "";
+    this.baseUrl = opts?.baseUrl ?? AI_CONSTANTS.GEMINI_BASE_URL;
+  }
+
+  async chat(input: AiChatInput): Promise<AiCompletion> {
+    const started = Date.now();
+    const fail = (reason: AiFailureReason, detail?: string): AiCompletion => ({
+      ok: false,
+      reason,
+      detail,
+      provider: this.name,
+      model: this.model,
+      latencyMs: Date.now() - started,
+    });
+
+    if (!this.apiKey) return fail("sem_api_key");
+    if (!this.model) return fail("sem_modelo");
+
+    const { contents, systemInstruction } = toGeminiContents(input.messages);
+
+    const body: Record<string, unknown> = {
+      contents,
+      generationConfig: {
+        temperature: input.temperature ?? getAiTemperature(),
+        maxOutputTokens: input.maxTokens ?? getAiMaxTokens(),
+      },
+    };
+    if (systemInstruction) body.systemInstruction = systemInstruction;
+    if (input.tools?.length) {
+      body.tools = [
+        {
+          functionDeclarations: input.tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+          })),
+        },
+      ];
+    }
+
+    let raw: unknown;
+    try {
+      const res = await axios.post(
+        `${this.baseUrl}/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,
+        body,
+        {
+          // Chave em header, NUNCA na query string: a URL vaza em log de proxy,
+          // em stack trace do axios e no `detail` de erro.
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": this.apiKey,
+          },
+          timeout: getAiTimeoutMs(),
+        },
+      );
+      raw = res.data;
+    } catch (err) {
+      const { reason, detail } = classifyAxiosError(err);
+      return fail(reason, detail);
+    }
+
+    const parsed = geminiResponseSchema.safeParse(raw);
+    if (!parsed.success) return fail("resposta_invalida", "shape inesperado");
+
+    const data = parsed.data;
+    if (data.promptFeedback?.blockReason) {
+      return fail(
+        "resposta_invalida",
+        `bloqueado: ${data.promptFeedback.blockReason}`,
+      );
+    }
+
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const content = parts
+      .map((p) => p.text ?? "")
+      .join("")
+      .trim();
+
+    const toolCalls: AiToolCall[] = parts
+      .filter((p) => p.functionCall)
+      .map((p, i) => ({
+        // A API não devolve id de chamada; geramos um estável por posição.
+        id: `${p.functionCall!.name}-${i}`,
+        name: p.functionCall!.name,
+        args: p.functionCall!.args ?? {},
+      }));
+
+    // Sem texto E sem tool call é resposta vazia — tratar como falha para o
+    // orquestrador degradar, em vez de gravar uma mensagem em branco.
+    if (!content && toolCalls.length === 0) {
+      return fail("resposta_invalida", "resposta vazia");
+    }
+
+    return {
+      ok: true,
+      content,
+      toolCalls,
+      usage: {
+        inputTokens: data.usageMetadata?.promptTokenCount ?? null,
+        outputTokens: data.usageMetadata?.candidatesTokenCount ?? null,
+      },
+      provider: this.name,
+      model: this.model,
+      latencyMs: Date.now() - started,
+    };
+  }
+}

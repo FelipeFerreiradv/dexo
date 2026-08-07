@@ -101,7 +101,23 @@ export type LogAction =
   // Não usar `ProductListing.lastError` para isto: aquele campo é o canal de
   // retry (prefixo [TERMINAL]) e é zerado a cada sucesso de sync, o que
   // apagaria o aviso. Mesma razão de `compatDiagnostics` existir separado.
-  | "ML_UP_REPUBLISH_ORPHAN";
+  | "ML_UP_REPUBLISH_ORPHAN"
+  // ---------------------------------------------------------------------
+  // Bitz (agente de IA). ADITIVO: a coluna `action` no banco é String livre
+  // (schema.prisma:783), então acrescentar aqui é mudança só de TypeScript —
+  // sem migração. A UI de /logs faz fallback gracioso para a string crua
+  // (logs-view.tsx:212), então nenhuma tela quebra com um valor novo.
+  //
+  // Todas gravadas com a COLUNA userId nula e o tenant em
+  // `details.tenantUserId` — convenção de rembg-telemetry.ts:112-117, para
+  // telemetria interna não poluir o /logs do cliente (que filtra por userId)
+  // e ainda assim ser contável globalmente.
+  // ---------------------------------------------------------------------
+  | "AI_CHAT_TURN"
+  | "AI_TOOL_CALL"
+  | "AI_TOOL_DENIED"
+  | "AI_QUOTA_EXCEEDED"
+  | "AI_PROVIDER_ERROR";
 
 export interface SystemLog {
   id: string;

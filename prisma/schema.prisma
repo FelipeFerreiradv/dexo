@@ -89,8 +89,66 @@ model User {
   bulkListingJobs     BulkListingJob[]
   unidades            Unidade[]
   whatsAppAccounts    WhatsAppAccount[]
+  aiConversations     AiConversation[]
 
   @@index([parentUserId])
+}
+
+// Conversa com o Bitz (agente de IA).
+//
+// DOIS ids, de propósito:
+//  - dataOwnerId: o TENANT. É o escopo de tudo que o agente consulta.
+//  - actorUserId: QUEM digitou. É o dono da conversa e a trilha de auditoria.
+// Um colaborador escreve no tenant do admin pai, mas a conversa é dele: a
+// listagem filtra por actorUserId para o histórico de um não aparecer no do
+// outro. A relação FK é com o ator (quem tem a conversa), não com o tenant.
+//
+// Migração: ver prisma/migrations/20260807110000_add_ai_conversation.
+model AiConversation {
+  id          String   @id @default(cuid())
+  dataOwnerId String
+  actorUserId String
+  title       String?
+  // Resumo EXTRATIVO do que saiu da janela de contexto. Não é gerado por LLM:
+  // isso custaria uma segunda chamada ao modelo por turno.
+  summary     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  actor    User        @relation(fields: [actorUserId], references: [id])
+  messages AiMessage[]
+
+  @@index([dataOwnerId, updatedAt])
+  @@index([actorUserId, updatedAt])
+}
+
+// Uma mensagem da conversa.
+//
+// Guarda tokens/provedor/modelo/latência POR MENSAGEM — é o que permite medir
+// o custo real por cliente em vez de estimar. `role` e `errorCode` são String
+// livre (não enum) para acrescentar valor novo não exigir migração, mesma
+// decisão de ImageBgJob.status e SystemLog.action.
+model AiMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String // "user" | "assistant" | "tool"
+  content        String
+  // [{ name, ok, ms }] — argumentos NÃO entram aqui crus (contêm dado do
+  // cliente); o que interessa para auditoria é qual tool rodou e se deu certo.
+  toolCalls      Json?
+  // [{ kind, ... }] — a explicabilidade das recomendações (Fase 6).
+  sources        Json?
+  provider       String?
+  model          String?
+  inputTokens    Int?
+  outputTokens   Int?
+  latencyMs      Int?
+  errorCode      String?
+  createdAt      DateTime @default(now())
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
 }
 
 model Product {
