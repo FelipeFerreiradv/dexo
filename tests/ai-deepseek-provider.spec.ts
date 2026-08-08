@@ -201,12 +201,42 @@ describe("a chamada", () => {
     postMock.mockResolvedValue({
       data: {
         choices: [
-          { message: { content: "", tool_calls: [{ function: {} }] } },
+          // Com texto: sem ele, a guarda de resposta vazia (abaixo) dispararia
+          // e este teste passaria a medir outra coisa.
+          { message: { content: "segue o texto", tool_calls: [{ function: {} }] } },
         ],
       },
     });
     const r = await provedor().chat({ messages: [] });
     expect(r.ok && r.toolCalls).toEqual([]);
+    expect(r.ok && r.content).toBe("segue o texto");
+  });
+
+  it("⭐ sem texto E sem tool_call é resposta VAZIA — vira falha, não bolha em branco", async () => {
+    // Não é hipotético: nos modelos de raciocínio do DeepSeek o `max_tokens`
+    // cobre o raciocínio E a resposta, então uma pergunta difícil pode gastar o
+    // teto inteiro pensando e voltar com `content` vazio e
+    // `finish_reason:"length"`. Com `ok:true` o orquestrador gravaria uma
+    // mensagem em branco e cobraria a cota do cliente. Mesma guarda do Gemini.
+    postMock.mockResolvedValue({
+      data: {
+        choices: [{ message: { content: "" }, finish_reason: "length" }],
+        usage: { prompt_tokens: 2000, completion_tokens: 2048 },
+      },
+    });
+
+    const r = await provedor().chat({ messages: [] });
+
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toBe("resposta_invalida");
+    expect(!r.ok && r.detail).toBe("resposta vazia");
+  });
+
+  it("espaço em branco não conta como resposta", async () => {
+    postMock.mockResolvedValue({
+      data: { choices: [{ message: { content: "   \n  " } }] },
+    });
+    expect((await provedor().chat({ messages: [] })).ok).toBe(false);
   });
 
   it("shape inesperado: resposta_invalida, não crash", async () => {
@@ -457,11 +487,56 @@ describe("streaming", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("sem chave nem modelo o streaming também degrada antes da rede", async () => {
+  it("sem chave, o streaming degrada antes da rede", async () => {
     const semChave = new DeepSeekProvider({ model: "m" });
-    expect(
-      !(await semChave.chatStream({ messages: [] }, () => {})).ok,
-    ).toBe(true);
+    const r = await semChave.chatStream({ messages: [] }, () => {});
+    expect(!r.ok && r.reason).toBe("sem_api_key");
     expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("sem modelo, o streaming degrada antes da rede", async () => {
+    // O ramo `sem_modelo` do streaming não era exercido: o teste anterior
+    // prometia "sem chave nem modelo" e só cobria a chave, porque a checagem
+    // da chave vem primeiro e mascarava a outra.
+    const semModelo = new DeepSeekProvider({ apiKey: CHAVE });
+    const r = await semModelo.chatStream({ messages: [] }, () => {});
+    expect(!r.ok && r.reason).toBe("sem_modelo");
+    expect(postMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("200 com envelope de erro no corpo", () => {
+  it("⭐ vira erro_provedor, não o genérico de shape", async () => {
+    // Modo de falha real de API — o repositório já levou isso da Shopee. Sem
+    // distinguir, a investigação começaria pelo lugar errado.
+    postMock.mockResolvedValue({
+      data: { error: { message: "insufficient balance" } },
+    });
+
+    const r = await provedor().chat({ messages: [] });
+
+    expect(!r.ok && r.reason).toBe("erro_provedor");
+    expect(!r.ok && r.detail).toBe("erro no corpo (HTTP 200)");
+    // E o texto do provedor NÃO entra no que é persistido.
+    expect(JSON.stringify(r)).not.toContain("insufficient balance");
+  });
+});
+
+describe("o endpoint padrão", () => {
+  it("⭐ sem baseUrl injetada, chama api.deepseek.com", async () => {
+    // Todos os outros testes injetam `baseUrl`, então a constante que de fato
+    // vai para produção nunca era exercida: um typo nela passaria a suíte
+    // inteira e só apareceria na primeira chamada real.
+    postMock.mockResolvedValue({
+      data: { choices: [{ message: { content: "ok" } }] },
+    });
+
+    await new DeepSeekProvider({ apiKey: CHAVE, model: "m" }).chat({
+      messages: [],
+    });
+
+    expect(postMock.mock.calls[0][0]).toBe(
+      "https://api.deepseek.com/chat/completions",
+    );
   });
 });

@@ -106,15 +106,37 @@ export function isAiFreePreviewEnabled(): boolean {
   return process.env.AI_FREE_PREVIEW === "true";
 }
 
-/** Normaliza um nome de provedor. Desconhecido ⇒ `mock`. */
-function paraProvedor(raw: string | undefined): AiProviderName {
-  const v = (raw || "").trim().toLowerCase();
+/**
+ * Nome de provedor de uma ROTA. Desconhecido ⇒ `"desconhecido"`, NUNCA `mock`.
+ *
+ * ⚠️ ESTA É A DIFERENÇA QUE IMPORTA, e ela custou um achado de auditoria.
+ * Cair no mock aqui seria falha ABERTA: `AI_ROUTE_TEXTO="deepsek:v4"` faria o
+ * cliente pagante receber `Bitz (mock): recebi "..."` como se fosse resposta
+ * de verdade, com `ok:true`, cota do dia debitada e nada no log. O `.env` já é
+ * barrado no boot (`app/lib/env.ts`), e isto aqui é a segunda camada, para
+ * quem lê a rota fora do caminho de boot.
+ */
+export type AiRouteProvider = AiProviderName | "desconhecido";
+
+function paraProvedorDeRota(raw: string): AiRouteProvider {
+  const v = raw.trim().toLowerCase();
   if (v === "gemini") return "gemini";
   if (v === "deepseek") return "deepseek";
-  // ⚠️ Desconhecido cai no MOCK, e isso é deliberado: o mock não toca rede.
-  // Um typo em `AI_PROVIDER` deixa o Bitz sem graça, nunca chamando um
-  // endpoint errado com a chave do cliente.
-  return "mock";
+  if (v === "mock") return "mock";
+  return "desconhecido";
+}
+
+/**
+ * Normaliza o `AI_PROVIDER` LEGADO. Desconhecido ⇒ `mock`.
+ *
+ * Aqui o fallback para mock é seguro e é o comportamento de sempre: um typo em
+ * `AI_PROVIDER` já é barrado no boot por `app/lib/env.ts`
+ * (`tests/ai-zero-impact.spec.ts`: "typo não vira mock silencioso"), então este
+ * ramo só é alcançável fora do processo da API.
+ */
+function paraProvedor(raw: string | undefined): AiProviderName {
+  const v = paraProvedorDeRota(raw || "");
+  return v === "desconhecido" ? "mock" : v;
 }
 
 /**
@@ -166,7 +188,7 @@ function envDaRota(capacidade: AiCapability): string {
  * chamaria um modelo que o cliente não escolheu, com o preço que vier.
  */
 export function getAiRoute(capacidade: AiCapability): {
-  provider: AiProviderName;
+  provider: AiRouteProvider;
   model: string | undefined;
 } {
   const bruto = process.env[envDaRota(capacidade)]?.trim();
@@ -175,7 +197,12 @@ export function getAiRoute(capacidade: AiCapability): {
     const sep = bruto.indexOf(":");
     const nomeProvedor = sep >= 0 ? bruto.slice(0, sep) : bruto;
     const modelo = sep >= 0 ? bruto.slice(sep + 1).trim() : "";
-    return { provider: paraProvedor(nomeProvedor), model: modelo || undefined };
+    // ⚠️ `paraProvedorDeRota`, não `paraProvedor`: rota com typo tem que
+    // DEGRADAR VISIVELMENTE, não virar mock respondendo eco em produção.
+    return {
+      provider: paraProvedorDeRota(nomeProvedor),
+      model: modelo || undefined,
+    };
   }
 
   return { provider: getAiProviderName(), model: getAiModel() };
@@ -196,8 +223,8 @@ export function getAiRoute(capacidade: AiCapability): {
  * nenhum sinal de erro. Faltando a chave certa, o provedor simplesmente não
  * sobe e o Bitz degrada — que é a falha correta.
  */
-export function getAiApiKeyFor(provider: AiProviderName): string | undefined {
-  if (provider === "mock") return undefined;
+export function getAiApiKeyFor(provider: AiRouteProvider): string | undefined {
+  if (provider === "mock" || provider === "desconhecido") return undefined;
 
   const propria = process.env[`AI_${provider.toUpperCase()}_API_KEY`]?.trim();
   if (propria) return propria;
@@ -266,6 +293,9 @@ export function describeAiConfigProblem(
   // O parâmetro tem default: `describeAiConfigProblem()` continua sendo a
   // pergunta sobre o caminho de texto, que é o único consumido hoje.
   const { provider, model } = getAiRoute(capacidade);
+  // Rota com provedor que ninguém reconhece: o Bitz fica INDISPONÍVEL e diz
+  // isso. Cair no mock aqui entregaria eco ao cliente como se fosse resposta.
+  if (provider === "desconhecido") return "provedor_desconhecido";
   if (provider === "mock") return null;
   if (!getAiApiKeyFor(provider)) return "sem_api_key";
   if (!model) return "sem_modelo";

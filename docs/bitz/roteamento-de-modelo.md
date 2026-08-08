@@ -72,9 +72,22 @@ modelo padrão: o chat degrada com `sem_modelo`. Inventar um nome aqui é o come
 de uma conta surpresa — chamaria um modelo que ninguém escolheu, com o preço que
 vier.
 
-**Typo vira mock.** Provedor desconhecido (`deepsek`, `gemni`) cai no mock, que
-não toca rede. O Bitz fica sem graça em vez de chamar um endpoint errado com a
-chave do cliente.
+**⭐ Typo na rota não deixa a API subir.** `AI_ROUTE_TEXTO="deepsek:v4"` é
+recusado **no boot** (`app/lib/env.ts`) — a mesma regra que a casa já aplica a
+`AI_PROVIDER`. Parece severo e é o oposto: sem essa barreira o typo cairia no
+provedor `mock`, e um mock em produção responde `Bitz (mock): recebi "..."`
+**como se fosse resposta de verdade**, com `ok:true`, a cota do dia debitada e
+nada no log. Falhar no boot é barulhento e você conserta em um minuto; falhar
+assim é silencioso e cobra do cliente.
+
+Como segunda camada, se a rota chegar ao runtime com provedor desconhecido (um
+script fora do caminho de boot, por exemplo), o Bitz devolve
+`provedor_desconhecido` e se declara indisponível — nunca vira mock.
+
+⚠️ **`AI_PROVIDER=deepseek` precisa estar no allowlist do boot.** Ele está — e
+essa linha existe porque a primeira versão desta entrega **não** o tinha: o
+valor que este documento manda usar teria derrubado a API inteira (pedido,
+NF-e, PDV, estoque), não só o Bitz. Há teste para isso agora.
 
 **O kill-switch vence tudo.** Com `NEXT_PUBLIC_AI_MODULE_ENABLED` desligada,
 nenhuma capacidade resolve, com ou sem rota.

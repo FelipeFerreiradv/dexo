@@ -159,9 +159,13 @@ export function toDeepSeekMessages(messages: AiMessage[]): MensagemOpenAi[] {
       saida.push({
         role: "tool",
         content: m.content,
-        // Sem id nenhum a API recusaria o turno inteiro. Um id sintético e
-        // estável é melhor que 400: o pior caso é o modelo casar errado duas
-        // respostas, e não o turno morrer.
+        // ⚠️ ÚLTIMO RECURSO, E ELE NÃO SALVA O TURNO. Uma API no formato da
+        // OpenAI valida que o `tool_call_id` corresponda a um pedido anunciado,
+        // então um id sintético provavelmente será recusado do mesmo jeito. O
+        // que ele garante é só que a montagem local não quebre e que o erro
+        // venha do servidor, classificado, em vez de um `undefined` viajando no
+        // corpo. Chegar aqui significa histórico incoerente — o caminho normal
+        // é o `toolCallId` do orquestrador ou a reconstrução por nome acima.
         tool_call_id: id ?? `call_${nome || "desconhecida"}`,
       });
       continue;
@@ -291,6 +295,18 @@ export class DeepSeekProvider implements AiProvider {
       return this.falhar(started, "resposta_invalida", "shape inesperado");
     }
 
+    // ⚠️ 200 COM ENVELOPE DE ERRO NO CORPO é um modo de falha real de API — o
+    // repositório já levou isso da Shopee. Sem distinguir, ele viraria o
+    // genérico "sem choices[0].message" e a investigação começaria pelo lugar
+    // errado. O texto do erro vai só para o LOG (que passa por redação de
+    // segredo); o `detail` persistido continua sem conteúdo vindo do provedor.
+    if (parsed.data.error) {
+      logarFalha("chat/completions (200 com erro no corpo)", {
+        response: { status: 200, data: parsed.data },
+      });
+      return this.falhar(started, "erro_provedor", "erro no corpo (HTTP 200)");
+    }
+
     const escolha = parsed.data.choices?.[0];
     if (!escolha?.message) {
       return this.falhar(started, "resposta_invalida", "sem choices[0].message");
@@ -307,11 +323,24 @@ export class DeepSeekProvider implements AiProvider {
       });
     }
 
+    // `content` vem `null` quando o turno é só pedido de tool. Isso é normal.
+    const content = (escolha.message.content ?? "").trim();
+
+    // ⭐ SEM TEXTO **E** SEM TOOL CALL É RESPOSTA VAZIA — vira falha, para o
+    // orquestrador degradar em vez de gravar uma bolha em branco cobrando a
+    // cota do cliente. Mesma guarda do provedor do Gemini.
+    //
+    // Não é hipotético aqui: nos modelos de raciocínio do DeepSeek o
+    // `max_tokens` cobre o raciocínio E a resposta, então uma pergunta difícil
+    // pode gastar o teto inteiro pensando e voltar com `content` vazio e
+    // `finish_reason: "length"`. Também acontece em filtro de conteúdo.
+    if (!content && chamadas.length === 0) {
+      return this.falhar(started, "resposta_invalida", "resposta vazia");
+    }
+
     return {
       ok: true,
-      // `content` vem `null` quando o turno é só pedido de tool. Isso é normal,
-      // e o orquestrador já trata texto vazio com tool_calls presentes.
-      content: escolha.message.content ?? "",
+      content,
       toolCalls: chamadas,
       usage: {
         inputTokens: parsed.data.usage?.prompt_tokens ?? null,
@@ -400,6 +429,11 @@ export class DeepSeekProvider implements AiProvider {
         }
 
         for (const [i, frag] of (delta?.tool_calls ?? []).entries()) {
+          // ⚠️ O `?? i` é fallback para um fragmento sem `index`, que o
+          // protocolo não permite. Se um servidor compatível fizer isso com
+          // DUAS tools no mesmo turno, a posição no array pode atribuir o
+          // pedaço à chamada errada. Não há como acertar sem o índice; o que
+          // dá para prometer é que o caso normal (índice presente) é exato.
           const idx = frag.index ?? i;
           const atual = emMontagem.get(idx) ?? { args: "" };
           if (frag.id) atual.id = frag.id;
@@ -441,9 +475,16 @@ export class DeepSeekProvider implements AiProvider {
         args: parseArgs(c.args),
       }));
 
+    const conteudo = texto.trim();
+    // Mesma guarda do caminho não-streaming: stream que não entregou texto nem
+    // pedido de tool é resposta vazia, não um turno bem-sucedido em branco.
+    if (!conteudo && chamadas.length === 0) {
+      return this.falhar(started, "resposta_invalida", "resposta vazia");
+    }
+
     return {
       ok: true,
-      content: texto,
+      content: conteudo,
       toolCalls: chamadas,
       usage: { inputTokens: entrada, outputTokens: saida },
       provider: this.name,

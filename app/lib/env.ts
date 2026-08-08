@@ -22,6 +22,40 @@ const optionalUrlIsh = z
     message: "deve começar com http:// ou https://",
   });
 
+/** Provedores de IA aceitos. Espelha `AiProviderName` de ai-constants.ts. */
+const PROVEDORES_DE_IA = ["gemini", "deepseek", "mock"] as const;
+
+/**
+ * Rota de capacidade do Bitz: `"provedor:modelo"`, opcional.
+ *
+ * ⭐ VALIDA O PROVEDOR NO BOOT, e essa é a razão de existir. A casa já barra
+ * `AI_PROVIDER` desconhecido aqui — há teste chamado "typo não vira mock
+ * silencioso". A superfície de rota é nova e precisa da MESMA barreira: no
+ * runtime, nome não reconhecido cai no provedor mock, e um mock em produção
+ * responde `Bitz (mock): recebi "..."` com `ok:true`, debita a cota do dia e
+ * não escreve nada em lugar nenhum. Falha aberta e silenciosa, para um cliente
+ * pagante.
+ *
+ * O MODELO não é validado: é string livre por natureza, e nomes mudam com
+ * frequência (o `deepseek-chat` foi descontinuado em 24/07/2026). Modelo
+ * ausente já é tratado em runtime, com `sem_modelo`.
+ */
+function rotaDeCapacidade(nome: string) {
+  return z
+    .string()
+    .optional()
+    .refine(
+      (v) => {
+        if (v === undefined || v.trim() === "") return true;
+        const provedor = v.split(":")[0].trim().toLowerCase();
+        return (PROVEDORES_DE_IA as readonly string[]).includes(provedor);
+      },
+      {
+        message: `${nome} deve ser "provedor:modelo" com provedor em ${PROVEDORES_DE_IA.join("|")}`,
+      },
+    );
+}
+
 /**
  * Inteiro positivo opcional que permanece STRING no tipo de saída.
  *
@@ -117,11 +151,27 @@ const envSchema = z.object({
   // resto do sistema funciona igual — só o Bitz reporta indisponibilidade.
   // A validação de runtime é describeAiConfigProblem() (ai-constants.ts), que
   // DEVOLVE o motivo em vez de lançar: quem chama precisa degradar, não quebrar.
-  AI_PROVIDER: z.enum(["gemini", "mock"]).optional(),
+  AI_PROVIDER: z.enum(["gemini", "deepseek", "mock"]).optional(),
   AI_MODEL: z.string().optional(),
   // NUNCA em NEXT_PUBLIC_*: a chave só existe no servidor.
   AI_API_KEY: z.string().optional(),
+  // Chaves POR PROVEDOR — é o que permite dois provedores ao mesmo tempo.
+  // ⚠️ Um provedor NUNCA herda a chave de outro: `AI_API_KEY` só vale para o
+  // provedor nomeado em `AI_PROVIDER` (ver getAiApiKeyFor em ai-constants.ts).
+  AI_GEMINI_API_KEY: z.string().optional(),
+  AI_DEEPSEEK_API_KEY: z.string().optional(),
+  // ⭐ ROTA POR CAPACIDADE, no formato "provedor:modelo".
+  //
+  // Validadas AQUI, no boot, pelo mesmo motivo que `AI_PROVIDER` é: typo não
+  // pode virar mock silencioso. Sem esta barreira,
+  // `AI_ROUTE_TEXTO="deepsek:v4"` sobe a API, o cliente pergunta, recebe
+  // `Bitz (mock): recebi "..."` como se fosse resposta de verdade, e ainda tem
+  // a cota do dia debitada — falha ABERTA, sem nada no log.
+  AI_ROUTE_TEXTO: rotaDeCapacidade("AI_ROUTE_TEXTO"),
+  AI_ROUTE_IMAGEM: rotaDeCapacidade("AI_ROUTE_IMAGEM"),
+  AI_ROUTE_AUDIO: rotaDeCapacidade("AI_ROUTE_AUDIO"),
   AI_GEMINI_BASE_URL: optionalUrlIsh,
+  AI_DEEPSEEK_BASE_URL: optionalUrlIsh,
   AI_TIMEOUT_MS: positiveIntString("AI_TIMEOUT_MS"),
   AI_MAX_TOKENS: positiveIntString("AI_MAX_TOKENS"),
   AI_MAX_DAILY_PER_TENANT: positiveIntString("AI_MAX_DAILY_PER_TENANT"),

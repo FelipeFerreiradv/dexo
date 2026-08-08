@@ -172,9 +172,24 @@ export class GeminiProvider implements AiProvider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
 
+  /**
+   * ⚠️ SEM FALLBACK PARA `AI_API_KEY`, e isto mudou quando o roteamento entrou.
+   *
+   * Antes, `AI_API_KEY` só podia ser do Google — este provedor só era
+   * instanciado com `AI_PROVIDER=gemini`. Hoje `AI_PROVIDER=deepseek` +
+   * `AI_API_KEY=sk-...` é uma configuração SUPORTADA, e um
+   * `new GeminiProvider({ model })` sem chave explícita mandaria a chave do
+   * DeepSeek no header `x-goog-api-key` para o Google — vazamento de
+   * credencial para terceiro, silencioso (o Google responde 400 e nada indica
+   * o que aconteceu).
+   *
+   * Quem resolve chave e modelo é `resolveAiProvider`, que já os passa
+   * explícitos e por capacidade. Sem chave aqui, o provedor devolve
+   * `sem_api_key` — a falha correta.
+   */
   constructor(opts?: { apiKey?: string; model?: string; baseUrl?: string }) {
-    this.apiKey = opts?.apiKey ?? getAiApiKey() ?? "";
-    this.model = opts?.model ?? getAiModel() ?? "";
+    this.apiKey = opts?.apiKey ?? "";
+    this.model = opts?.model ?? "";
     this.baseUrl = opts?.baseUrl ?? AI_CONSTANTS.GEMINI_BASE_URL;
   }
 
