@@ -1,10 +1,7 @@
 import type { MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-links";
 
 export type ListingStatusBadgeVariant =
-  | "success"
-  | "warning"
-  | "destructive"
-  | "secondary";
+  "success" | "warning" | "destructive" | "secondary";
 
 export const LISTING_STATUS_LABELS: Record<
   string,
@@ -24,10 +21,15 @@ export const LISTING_STATUS_LABELS: Record<
   banned: { label: "Banido", variant: "destructive" },
 };
 
-export const LISTING_PLATFORM_LABELS: Record<MarketplaceListingPlatform, string> = {
+export const LISTING_PLATFORM_LABELS: Record<
+  MarketplaceListingPlatform,
+  string
+> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
   MAGALU: "Magalu",
+  OLX: "OLX",
+  FACEBOOK: "Facebook",
 };
 
 export function getListingStatusBadge(status?: string | null) {

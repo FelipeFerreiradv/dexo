@@ -1,7 +1,8 @@
 import { BulkJobStatus, Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
 
-export type BulkListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+export type BulkListingPlatform =
+  "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 export interface BulkListingRequestSpec {
   platform: BulkListingPlatform;
@@ -59,13 +60,25 @@ export interface PerProductMagaluOverride {
   listingPrice?: number;
 }
 
+export interface PerProductOlxOverride {
+  categoryId?: string;
+}
+
+export interface PerProductFacebookOverride {
+  categoryId?: string;
+}
+
 export interface PerProductOverrideEntry {
   ml?: PerProductMlOverride;
   shopee?: PerProductShopeeOverride;
   magalu?: PerProductMagaluOverride;
+  olx?: PerProductOlxOverride;
+  facebook?: PerProductFacebookOverride;
   disabledMlAccountIds?: string[];
   disabledShopeeAccountIds?: string[];
   disabledMagaluAccountIds?: string[];
+  disabledOlxAccountIds?: string[];
+  disabledFacebookAccountIds?: string[];
 }
 
 export interface BulkOverrideTemplate {
@@ -94,6 +107,8 @@ export interface BulkOverrideTemplate {
     indexByAccountId?: Record<string, number>;
     shopeeIndexByAccountId?: Record<string, number>;
     magaluIndexByAccountId?: Record<string, number>;
+    olxIndexByAccountId?: Record<string, number>;
+    fbIndexByAccountId?: Record<string, number>;
   };
 
   // Config por produto (modo Revisão individual). Opcional/aditivo: ausente ⇒

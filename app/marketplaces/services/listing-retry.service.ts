@@ -1,3 +1,4 @@
+import { Platform } from "@prisma/client";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MLApiService } from "./ml-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -160,6 +161,24 @@ export class ListingRetryService {
           }
           continue;
         }
+        // Só MERCADO_LIVRE segue no caminho ML: OLX/Facebook não podem enviar
+        // seus tokens para api.mercadolibre.com (vazamento de token).
+        // DESABILITA o retry ao pular: este é o único publish-retry e
+        // claimRetryCandidate é agnóstico de plataforma — sem desligar, um
+        // candidato Magalu/OLX/FB é reivindicado (write no banco) a cada ciclo,
+        // p/ sempre, e nunca sai da fila.
+        if (account?.platform && account.platform !== Platform.MERCADO_LIVRE) {
+          console.log(
+            `[ListingRetryService] skipping ${cand.id} (plataforma ${account.platform} não suportada pelo retry ML) — retry desabilitado`,
+          );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            retryEnabled: false,
+            nextRetryAt: null,
+            lastError: "[TERMINAL] plataforma sem retry",
+          });
+          continue;
+        }
+
         if (!account || !account.accessToken) {
           console.log(
             `[ListingRetryService] skipping ${cand.id} (no account/token)`,

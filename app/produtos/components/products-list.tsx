@@ -192,10 +192,14 @@ const STOCK_STATUS_OPTIONS: Array<{
   { value: "LOW_STOCK", label: "Estoque baixo" },
 ];
 
-// Magalu (3º marketplace) atrás da flag — quando off, o filtro fica idêntico
-// ao de hoje (só ML/Shopee/Todos os canais).
+// Magalu/OLX/Facebook (canais adicionais) atrás das flags — quando off, cada
+// filtro some e a lista fica idêntica ao anterior (só ML/Shopee/Todos os canais).
 const MAGALU_ENABLED =
   process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+const OLX_ENABLED =
+  process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+const FACEBOOK_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
 
 const MARKETPLACE_OPTIONS: Array<{
   value: ProductFilterMarketplace;
@@ -206,6 +210,18 @@ const MARKETPLACE_OPTIONS: Array<{
   { value: "SHOPEE", label: "Shopee" },
   ...(MAGALU_ENABLED
     ? ([{ value: "MAGALU", label: "Magalu" }] as Array<{
+        value: ProductFilterMarketplace;
+        label: string;
+      }>)
+    : []),
+  ...(OLX_ENABLED
+    ? ([{ value: "OLX", label: "OLX" }] as Array<{
+        value: ProductFilterMarketplace;
+        label: string;
+      }>)
+    : []),
+  ...(FACEBOOK_ENABLED
+    ? ([{ value: "FACEBOOK", label: "Facebook" }] as Array<{
         value: ProductFilterMarketplace;
         label: string;
       }>)

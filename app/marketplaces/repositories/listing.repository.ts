@@ -92,6 +92,8 @@ export class ListingRepository {
     // Autor real da criação. Só entra no branch `create` — autoria = quem
     // criou a linha pela primeira vez; retries/updates nunca sobrescrevem.
     createdByUserId?: string | null;
+    // OLX: id REAL do anúncio (list_id), separado do externalListingId=SKU.
+    olxListId?: string | null;
   }) {
     return prisma.productListing.upsert({
       where: {
@@ -112,6 +114,7 @@ export class ListingRepository {
         nextRetryAt: data.nextRetryAt ?? null,
         retryAttempts: data.retryAttempts ?? 0,
         createdByUserId: data.createdByUserId ?? null,
+        olxListId: data.olxListId ?? null,
       },
       update: {
         status: data.status,
@@ -123,6 +126,9 @@ export class ListingRepository {
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
         retryAttempts: data.retryAttempts ?? undefined,
+        // Não sobrescreve o list_id já capturado quando o novo valor é null
+        // (poll inconclusivo devolve null): só grava quando há valor real.
+        olxListId: data.olxListId == null ? undefined : data.olxListId,
       },
     });
   }
@@ -597,10 +603,7 @@ export class ListingRepository {
    * houver outro listing local para o mesmo externalId nessa conta-destino,
    * o que indicaria duplicação prévia (raro; deixar o erro propagar).
    */
-  static async reassignAccount(
-    listingId: string,
-    newAccountId: string,
-  ) {
+  static async reassignAccount(listingId: string, newAccountId: string) {
     return prisma.productListing.update({
       where: { id: listingId },
       data: { marketplaceAccountId: newAccountId },
@@ -669,6 +672,8 @@ export class ListingRepository {
       externalSku?: string;
       permalink?: string | null;
       status?: string;
+      // OLX: id REAL do anúncio (list_id), repopulado na republicação.
+      olxListId?: string | null;
       // retry metadata updates
       retryAttempts?: number;
       nextRetryAt?: Date | null;
@@ -697,6 +702,8 @@ export class ListingRepository {
       categoryOverride?: string | null;
       mlCategoryOverride?: string | null;
       shopeeCategoryOverride?: string | null;
+      olxCategoryOverride?: string | null;
+      fbCategoryOverride?: string | null;
       partNumberOverride?: string | null;
       qualityOverride?: string | null;
       heightCmOverride?: number | null;
@@ -719,6 +726,8 @@ export class ListingRepository {
         externalSku: data.externalSku || undefined,
         permalink: data.permalink === undefined ? undefined : data.permalink,
         status: data.status || undefined,
+        // Não zera o list_id já gravado quando o novo valor é null.
+        olxListId: data.olxListId == null ? undefined : data.olxListId,
         retryAttempts: data.retryAttempts ?? undefined,
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
@@ -786,6 +795,14 @@ export class ListingRepository {
           data.shopeeCategoryOverride === undefined
             ? undefined
             : data.shopeeCategoryOverride,
+        olxCategoryOverride:
+          data.olxCategoryOverride === undefined
+            ? undefined
+            : data.olxCategoryOverride,
+        fbCategoryOverride:
+          data.fbCategoryOverride === undefined
+            ? undefined
+            : data.fbCategoryOverride,
         partNumberOverride:
           data.partNumberOverride === undefined
             ? undefined

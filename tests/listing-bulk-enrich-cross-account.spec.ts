@@ -60,6 +60,29 @@ describe("enrichCrossAccountIncrease — mapas por plataforma", () => {
     });
   });
 
+  it("congela também os mapas OLX/FB (sem eles o job publicava no preço base)", async () => {
+    const out = await enrichCrossAccountIncrease(
+      "user-1",
+      [
+        { platform: "OLX" as const, accountId: "o1" },
+        { platform: "OLX" as const, accountId: "o2" },
+        { platform: "FACEBOOK" as const, accountId: "f1" },
+        { platform: "FACEBOOK" as const, accountId: "f2" },
+      ],
+      { crossAccountIncrease: { enabled: true, percent: 10 } },
+    );
+    // A prévia já mostrava a escada; sem estes mapas o job persistido publicava
+    // tudo no preço base (o dispatcher só escalona a plataforma que tem mapa).
+    expect(out?.crossAccountIncrease?.olxIndexByAccountId).toEqual({
+      o1: 0,
+      o2: 1,
+    });
+    expect(out?.crossAccountIncrease?.fbIndexByAccountId).toEqual({
+      f1: 0,
+      f2: 1,
+    });
+  });
+
   it("só 1 conta Shopee ⇒ mapa Shopee omitido (nada a escalonar)", async () => {
     const out = await enrichCrossAccountIncrease(
       "user-1",

@@ -14,6 +14,7 @@ import {
   Quality,
 } from "../interfaces/product.interface";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import { isOlxDisabled, isFacebookDisabled } from "../lib/integration-flags";
 import {
   ListingDispatcher,
   ListingDispatchRequest,
@@ -54,6 +55,8 @@ const MARKETPLACE_VALUES = new Set<ProductMarketplaceFilter>([
   "MERCADO_LIVRE",
   "SHOPEE",
   "MAGALU",
+  "OLX",
+  "FACEBOOK",
   "BOTH",
 ]);
 
@@ -878,6 +881,22 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                   platform: "MAGALU",
                   accountId: accId,
                   // categoria opcional — createMagaluListing resolve (de-para/busca)
+                  categoryId: lst.categoryId,
+                });
+              }
+            } else if (lst.platform === "OLX" && !isOlxDisabled()) {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "OLX",
+                  accountId: accId,
+                  categoryId: lst.categoryId,
+                });
+              }
+            } else if (lst.platform === "FACEBOOK" && !isFacebookDisabled()) {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "FACEBOOK",
+                  accountId: accId,
                   categoryId: lst.categoryId,
                 });
               }

@@ -4,6 +4,8 @@ const FILTER_PLATFORMS = new Set<Platform>([
   "MERCADO_LIVRE",
   "SHOPEE",
   "MAGALU",
+  "OLX",
+  "FACEBOOK",
 ]);
 
 export interface ParsedProductListingCategoryValue {

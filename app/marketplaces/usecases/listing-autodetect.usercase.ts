@@ -11,6 +11,7 @@ import { SyncUseCase } from "./sync.usercase";
 import { MLItemDetails } from "../types/ml-api.types";
 import { ShopeeItem } from "../types/shopee-api.types";
 import { MagaluSku } from "../types/magalu-api.types";
+import { FacebookCatalogProduct } from "../types/facebook-api.types";
 
 /**
  * Formato comum para o qual ML e Shopee normalizam um anúncio antes de chamar o
@@ -476,8 +477,72 @@ export class ListingAutodetectUseCase {
     };
   }
 
+  /**
+   * Normaliza um item do Catálogo Meta (GET /{catalog_id}/products) para o
+   * núcleo de auto-detecção. Espelha normalizeMagaluItem: a identidade do item
+   * é o `retailer_id`, que o Dexo grava = SKU (buildRetailerId) — por isso ele é
+   * a chave de vínculo (externalListingId/externalSku), sem divergir do create.
+   * `availability` "out of stock" ⇒ status "paused"; qualquer outro ⇒ "active".
+   * A borda /products não expõe created_at confiável ⇒ createdAt = agora
+   * (informativo; o vínculo é por SKU, não por data).
+   */
+  static normalizeFacebookItem(
+    account: { id: string; userId: string },
+    item: FacebookCatalogProduct,
+  ): NormalizedMarketplaceItem {
+    const rawSku =
+      typeof item.retailer_id === "string" && item.retailer_id.trim().length > 0
+        ? item.retailer_id
+        : null;
+    const externalListingId = String(rawSku ?? item.id ?? "");
+    const imageUrl =
+      typeof item.image_url === "string" && item.image_url.trim().length > 0
+        ? item.image_url
+        : null;
+    const availability = (item.availability as string) || "in stock";
+    const status = /out.?of.?stock|discontinued/i.test(availability)
+      ? "paused"
+      : "active";
+    return {
+      platform: Platform.FACEBOOK,
+      account,
+      externalListingId,
+      rawSku,
+      title: (item.name as string) || rawSku || externalListingId,
+      price: this.coercePrice(item.price),
+      stock: status === "paused" ? 0 : 1,
+      status,
+      permalink: (item.url as string) || null,
+      imageUrl,
+      imageUrls: imageUrl ? [imageUrl] : [],
+      createdAt: new Date(),
+    };
+  }
+
   private static coercePrice(value: unknown): number {
-    const n = typeof value === "number" ? value : Number(value);
+    if (typeof value === "number") {
+      return Number.isFinite(value) && value >= 0 ? value : 0;
+    }
+    // A Meta devolve o preço como string "199.90 BRL" (valor + código de moeda):
+    // Number("199.90 BRL") = NaN, o que zerava TODO produto importado do catálogo.
+    // Extrai o número e normaliza o separador decimal (pt-BR "1.199,90" ou en).
+    if (typeof value === "string") {
+      const match = value.match(/-?\d[\d.,]*/);
+      if (!match) return 0;
+      let s = match[0];
+      if (s.includes(",") && s.includes(".")) {
+        // O separador decimal é o último a aparecer; o outro é de milhar.
+        s =
+          s.lastIndexOf(",") > s.lastIndexOf(".")
+            ? s.replace(/\./g, "").replace(",", ".")
+            : s.replace(/,/g, "");
+      } else if (s.includes(",")) {
+        s = s.replace(",", ".");
+      }
+      const n = Number(s);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+    const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? n : 0;
   }
 

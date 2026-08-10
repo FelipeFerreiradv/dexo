@@ -1,3 +1,4 @@
+import axios from "axios";
 import prisma from "@/app/lib/prisma";
 import { MLApiService } from "./ml-api.service";
 import { MLOAuthService } from "./ml-oauth.service";
@@ -6,6 +7,11 @@ import { ShopeeOAuthService } from "./shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { normalizeListingStatus } from "../lib/listing-status";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
+import {
+  FACEBOOK_CONSTANTS,
+  facebookGraphBase,
+} from "../facebook/facebook-constants";
 
 const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
 const SHOPEE_BATCH_SIZE = 50;
@@ -22,6 +28,7 @@ export type RefreshableListingRow = {
     refreshToken: string | null;
     expiresAt: Date | null;
     shopId: number | null;
+    fbCatalogId: string | null;
   } | null;
 };
 
@@ -137,10 +144,57 @@ const parseShopeeItemId = (externalListingId: string): number | null => {
 };
 
 /**
- * Consulta o status remoto ao vivo (ML/Shopee) para um conjunto de listings e
- * grava o valor normalizado nos que mudaram. Fase de espelhamento
+ * Lê o status remoto dos itens do catálogo Meta (retailer_id → availability/
+ * review_status) via GET /{catalog_id}/products?filter=... A Meta não tem
+ * refresh de token (long-lived; expira ⇒ re-OAuth), então usa o token salvo —
+ * expirado ⇒ a chamada falha e o try/catch do grupo isola. review_status
+ * (rejected/pending) tem prioridade sobre availability no espelho: um item
+ * barrado/em revisão importa mais que a disponibilidade. Item ausente ⇒ omitido.
+ */
+async function getFacebookItemStatuses(
+  accessToken: string,
+  retailerIds: string[],
+  catalogId?: string | null,
+): Promise<Map<string, string | undefined>> {
+  const out = new Map<string, string | undefined>();
+  // Catálogo por conta (env só fallback) p/ não ler o catálogo global do .env.
+  const catalog = catalogId ?? FACEBOOK_CONSTANTS.CATALOG_ID;
+  if (retailerIds.length === 0 || !catalog) return out;
+
+  const filter = JSON.stringify({ retailer_id: { is_any: retailerIds } });
+  const url = new URL(`${facebookGraphBase()}/${catalog}/products`);
+  url.searchParams.set("fields", "retailer_id,availability,review_status");
+  url.searchParams.set("filter", filter);
+  url.searchParams.set("limit", String(retailerIds.length));
+
+  const response = await axios.get<{
+    data?: Array<{
+      retailer_id?: string;
+      availability?: string;
+      review_status?: string;
+    }>;
+  }>(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: FACEBOOK_CONSTANTS.REQUEST_TIMEOUT,
+  });
+
+  for (const item of response.data?.data ?? []) {
+    if (!item?.retailer_id) continue;
+    const reviewBlocked =
+      item.review_status &&
+      item.review_status.toLowerCase() !== "approved" &&
+      item.review_status.toLowerCase() !== "active";
+    out.set(item.retailer_id, reviewBlocked ? item.review_status : item.availability);
+  }
+  return out;
+}
+
+/**
+ * Consulta o status remoto ao vivo (ML/Shopee/Facebook) para um conjunto de
+ * listings e grava o valor normalizado nos que mudaram. Fase de espelhamento
  * marketplace→Dexo: usada pelo GET /listings/status?live=1 (dialog) e pela
- * varredura periódica. Magalu fica de fora até a leitura da API ser validada.
+ * varredura periódica. Magalu e OLX ficam de fora até a leitura de status da
+ * API ser validada/implementada.
  * Kill-switch: LISTING_STATUS_SYNC_DISABLED=1 ⇒ Map vazio. Nunca lança.
  *
  * EGRESS/PERF: fetch ML via multiget lean (attributes=id,status), writes via
@@ -163,7 +217,10 @@ export class ListingStatusRefreshService {
         !row.externalListingId.startsWith("PENDING_") &&
         row.marketplaceAccount &&
         row.marketplaceAccount.status === "ACTIVE" &&
-        row.marketplaceAccount.accessToken,
+        row.marketplaceAccount.accessToken &&
+        // Kill-switch: não consulta status ao vivo de plataforma desligada
+        // (cobre o live=1 do dialog, que escapava do kill-switch).
+        !isPlatformDisabled(row.marketplaceAccount.platform),
     );
     if (eligible.length === 0) return changed;
 
@@ -228,9 +285,28 @@ export class ListingStatusRefreshService {
               ];
             }),
           );
+        } else if (account.platform === "FACEBOOK") {
+          await reloadFreshTokens(account);
+          if (!account.accessToken) return;
+          const retailerIds = [
+            ...new Set(group.map((r) => r.externalListingId)),
+          ];
+          const statusByRetailerId = await getFacebookItemStatuses(
+            account.accessToken,
+            retailerIds,
+            account.fbCatalogId,
+          );
+          rawByExternalId = new Map(
+            group.map((r) => [
+              r.externalListingId,
+              statusByRetailerId.get(r.externalListingId),
+            ]),
+          );
         } else {
           // MAGALU: leitura de status da API ainda não validada (TODO na
-          // MagaluApiService) — sem espelhamento ativo nesta fase.
+          // MagaluApiService) — sem espelhamento ativo nesta fase. OLX: a
+          // leitura de status do anúncio publicado ainda não existe (fase
+          // futura do autoupload) — sem espelhamento ativo.
           return;
         }
 

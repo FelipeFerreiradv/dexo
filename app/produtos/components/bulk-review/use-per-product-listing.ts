@@ -27,6 +27,8 @@ interface UsePerProductListingArgs {
   globalMlIds: string[];
   globalShopeeIds: string[];
   globalMagaluIds: string[];
+  globalOlxIds?: string[];
+  globalFacebookIds?: string[];
   mlOptions: ReviewCategoryOption[];
   email: string;
 }
@@ -35,10 +37,14 @@ const EMPTY_CONFIG: PerProductListingConfig = {
   includeMl: false,
   includeShopee: false,
   includeMagalu: false,
+  includeOlx: false,
+  includeFacebook: false,
   autoCategory: true,
   mlAccountIds: [],
   shopeeAccountIds: [],
   magaluAccountIds: [],
+  olxAccountIds: [],
+  facebookAccountIds: [],
   attributes: {},
   mlCatalogProductId: null,
   mlListingType: "gold_special",
@@ -59,6 +65,8 @@ export function usePerProductListing({
   globalMlIds,
   globalShopeeIds,
   globalMagaluIds,
+  globalOlxIds = [],
+  globalFacebookIds = [],
   mlOptions,
   email,
 }: UsePerProductListingArgs) {
@@ -95,6 +103,10 @@ export function usePerProductListing({
         shopeeCategoryLabel?: string;
         magaluCategory?: string;
         magaluCategoryLabel?: string;
+        olxCategoryOverride?: string;
+        olxCategoryOverrideLabel?: string;
+        fbCategoryOverride?: string;
+        fbCategoryOverrideLabel?: string;
       } = {};
       const base = getApiBaseUrl();
       const headers = { email } as Record<string, string>;
@@ -153,9 +165,50 @@ export function usePerProductListing({
           // fail-open: sem sugestão ⇒ backend resolve no envio (DRAFT)
         }
       }
+      if (globalOlxIds.length > 0) {
+        try {
+          const r = await fetch(
+            `${base}/marketplace/olx/category-suggest?name=${encodeURIComponent(p.name)}`,
+            { headers },
+          );
+          if (r.ok) {
+            const d = await r.json();
+            if (d?.categoryId) {
+              out.olxCategoryOverride = d.categoryId as string;
+              out.olxCategoryOverrideLabel = (d.path || d.categoryId) as string;
+            }
+          }
+        } catch {
+          // fail-open: sem sugestão ⇒ backend resolve no envio
+        }
+      }
+      if (globalFacebookIds.length > 0) {
+        try {
+          const r = await fetch(
+            `${base}/marketplace/facebook/category-suggest?name=${encodeURIComponent(p.name)}`,
+            { headers },
+          );
+          if (r.ok) {
+            const d = await r.json();
+            if (d?.categoryId) {
+              out.fbCategoryOverride = d.categoryId as string;
+              out.fbCategoryOverrideLabel = (d.path || d.categoryId) as string;
+            }
+          }
+        } catch {
+          // fail-open: sem sugestão ⇒ backend resolve no envio
+        }
+      }
       return out;
     },
-    [email, globalMlIds.length, globalShopeeIds.length, globalMagaluIds.length],
+    [
+      email,
+      globalMlIds.length,
+      globalShopeeIds.length,
+      globalMagaluIds.length,
+      globalOlxIds.length,
+      globalFacebookIds.length,
+    ],
   );
 
   // Preenche categorias sugeridas no form atual. onlyEmpty=true respeita o que
@@ -193,6 +246,31 @@ export function usePerProductListing({
           });
           changed = true;
         }
+        if (
+          sug.olxCategoryOverride &&
+          (!onlyEmpty || !cur.olxCategoryOverride)
+        ) {
+          form.setValue("olxCategoryOverride", sug.olxCategoryOverride, {
+            shouldDirty: false,
+          });
+          form.setValue(
+            "olxCategoryOverrideLabel",
+            sug.olxCategoryOverrideLabel ?? "",
+            { shouldDirty: false },
+          );
+          changed = true;
+        }
+        if (sug.fbCategoryOverride && (!onlyEmpty || !cur.fbCategoryOverride)) {
+          form.setValue("fbCategoryOverride", sug.fbCategoryOverride, {
+            shouldDirty: false,
+          });
+          form.setValue(
+            "fbCategoryOverrideLabel",
+            sug.fbCategoryOverrideLabel ?? "",
+            { shouldDirty: false },
+          );
+          changed = true;
+        }
         if (changed) writeConfig(p.id, form.getValues());
       } finally {
         if (currentIdRef.current === p.id) setInitializing(false);
@@ -221,6 +299,8 @@ export function usePerProductListing({
           globalMlIds,
           globalShopeeIds,
           globalMagaluIds,
+          globalOlxIds,
+          globalFacebookIds,
         );
         // NÃO semear mlCategory do produto: product.mlCategoryId é um id INTERNO
         // (cuid, FK p/ MarketplaceCategory) — incompatível com o combobox/sugestão
@@ -249,6 +329,8 @@ export function usePerProductListing({
       globalMlIds,
       globalShopeeIds,
       globalMagaluIds,
+      globalOlxIds,
+      globalFacebookIds,
       writeConfig,
       form,
       runAutoSuggest,

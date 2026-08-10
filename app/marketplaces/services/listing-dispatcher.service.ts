@@ -19,7 +19,8 @@ import type {
 } from "../repositories/bulk-listing-job.repository";
 import { SystemLogService } from "../../services/system-log.service";
 
-export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+export type ListingPlatform =
+  "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 export interface ListingDispatchRequest {
   platform: ListingPlatform;
@@ -72,7 +73,9 @@ function mergePerProductMlSettings(
   const merged: NonNullable<ListingDispatchRequest["mlSettings"]> = {
     ...(base ?? {}),
   };
-  const pick = <K extends keyof NonNullable<ListingDispatchRequest["mlSettings"]>>(
+  const pick = <
+    K extends keyof NonNullable<ListingDispatchRequest["mlSettings"]>,
+  >(
     key: K,
     value: NonNullable<ListingDispatchRequest["mlSettings"]>[K] | undefined,
   ) => {
@@ -161,10 +164,7 @@ export class ListingDispatcher {
               name: p.name,
               price: p.price as unknown as number | { toNumber(): number },
               costPrice: p.costPrice as unknown as
-                | number
-                | { toNumber(): number }
-                | null
-                | undefined,
+                number | { toNumber(): number } | null | undefined,
             };
           }
         } catch (e) {
@@ -350,6 +350,88 @@ export class ListingDispatcher {
         }
         return;
       }
+      if (req.platform === "OLX") {
+        const result = await ListingUseCase.createOlxListing(
+          userId,
+          productId,
+          req.categoryId,
+          req.accountId,
+          actorId,
+        );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+        });
+        if (!result.success) {
+          console.error(
+            `[ListingDispatcher] OLX listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        } else {
+          this.logCreatedListing(
+            actorId,
+            (result as any).listingId,
+            productId,
+            "OLX",
+          );
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
+        }
+        return;
+      }
+      if (req.platform === "FACEBOOK") {
+        const result = await ListingUseCase.createFacebookListing(
+          userId,
+          productId,
+          req.categoryId,
+          req.accountId,
+          actorId,
+        );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+        });
+        if (!result.success) {
+          console.error(
+            `[ListingDispatcher] Facebook listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        } else {
+          this.logCreatedListing(
+            actorId,
+            (result as any).listingId,
+            productId,
+            "FACEBOOK",
+          );
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
+        }
+        return;
+      }
     } catch (err) {
       console.error(
         `[ListingDispatcher] ${req.platform} error (product=${productId}, account=${req.accountId}):`,
@@ -426,7 +508,7 @@ export class ListingDispatcher {
     actorId: string | undefined,
     listingId: string | undefined,
     productId: string,
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK",
   ): void {
     if (!actorId || !listingId) return;
     const marketplace =
@@ -434,7 +516,11 @@ export class ListingDispatcher {
         ? "Shopee"
         : platform === "MAGALU"
           ? "Magalu"
-          : "MercadoLivre";
+          : platform === "OLX"
+            ? "OLX"
+            : platform === "FACEBOOK"
+              ? "Facebook"
+              : "MercadoLivre";
     void SystemLogService.logListingCreate(
       actorId,
       listingId,
@@ -483,7 +569,13 @@ export class ListingDispatcher {
             ? ov?.disabledMlAccountIds?.includes(r.accountId)
             : r.platform === "SHOPEE"
               ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-              : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+              : r.platform === "MAGALU"
+                ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+                : r.platform === "OLX"
+                  ? ov?.disabledOlxAccountIds?.includes(r.accountId)
+                  : r.platform === "FACEBOOK"
+                    ? ov?.disabledFacebookAccountIds?.includes(r.accountId)
+                    : false;
         if (skipped) continue;
         pairs.push({
           productId: pid,
@@ -518,10 +610,7 @@ export class ListingDispatcher {
           name: p.name,
           price: p.price as unknown as number | { toNumber(): number },
           costPrice: p.costPrice as unknown as
-            | number
-            | { toNumber(): number }
-            | null
-            | undefined,
+            number | { toNumber(): number } | null | undefined,
         });
       }
     }
@@ -612,6 +701,24 @@ export class ListingDispatcher {
         // escolhida vence o request global; ausente ⇒ backend resolve no envio.
         const categoryId = ov?.magalu?.categoryId ?? req.categoryId;
         createResult = await ListingUseCase.createMagaluListing(
+          userId,
+          productId,
+          categoryId,
+          req.accountId,
+          actorId,
+        );
+      } else if (req.platform === "OLX") {
+        const categoryId = ov?.olx?.categoryId ?? req.categoryId;
+        createResult = await ListingUseCase.createOlxListing(
+          userId,
+          productId,
+          categoryId,
+          req.accountId,
+          actorId,
+        );
+      } else if (req.platform === "FACEBOOK") {
+        const categoryId = ov?.facebook?.categoryId ?? req.categoryId;
+        createResult = await ListingUseCase.createFacebookListing(
           userId,
           productId,
           categoryId,
@@ -714,10 +821,7 @@ export class ListingDispatcher {
             name: product.name,
             price: product.price as unknown as number | { toNumber(): number },
             costPrice: product.costPrice as unknown as
-              | number
-              | { toNumber(): number }
-              | null
-              | undefined,
+              number | { toNumber(): number } | null | undefined,
           };
         }
       }
@@ -744,7 +848,11 @@ export class ListingDispatcher {
                 ? ca.shopeeIndexByAccountId
                 : req.platform === "MAGALU"
                   ? ca.magaluIndexByAccountId
-                  : undefined;
+                  : req.platform === "OLX"
+                    ? ca.olxIndexByAccountId
+                    : req.platform === "FACEBOOK"
+                      ? ca.fbIndexByAccountId
+                      : undefined;
         const idx = staggerMap?.[req.accountId] ?? 0;
         if (idx > 0) {
           const base =
@@ -876,7 +984,9 @@ export class ListingDispatcher {
     const staggerOthers = !crossMarketplaceStaggerDisabled();
     const shopee = staggerOthers ? mapFor("SHOPEE") : null;
     const magalu = staggerOthers ? mapFor("MAGALU") : null;
-    if (!ml && !shopee && !magalu) return null;
+    const olx = staggerOthers ? mapFor("OLX") : null;
+    const facebook = staggerOthers ? mapFor("FACEBOOK") : null;
+    if (!ml && !shopee && !magalu && !olx && !facebook) return null;
     return {
       crossAccountIncrease: {
         enabled: true,
@@ -884,6 +994,8 @@ export class ListingDispatcher {
         ...(ml ? { indexByAccountId: ml } : {}),
         ...(shopee ? { shopeeIndexByAccountId: shopee } : {}),
         ...(magalu ? { magaluIndexByAccountId: magalu } : {}),
+        ...(olx ? { olxIndexByAccountId: olx } : {}),
+        ...(facebook ? { fbIndexByAccountId: facebook } : {}),
       },
     };
   }

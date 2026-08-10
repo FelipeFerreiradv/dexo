@@ -13,7 +13,9 @@ import {
 } from "../marketplaces/repositories/bulk-listing-job.repository";
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import { ProductRepositoryPrisma } from "../repositories/product.repository";
+import { isPlatformDisabled } from "../lib/integration-flags";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { OLX_CONSTANTS } from "../marketplaces/olx/olx-constants";
 import { ListingStatusRefreshService } from "../marketplaces/services/listing-status-refresh.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
@@ -98,6 +100,8 @@ export async function enrichCrossAccountIncrease(
   const staggerOthers = !crossMarketplaceStaggerDisabled();
   const shopeeMap = staggerOthers ? mapFor("SHOPEE") : null;
   const magaluMap = staggerOthers ? mapFor("MAGALU") : null;
+  const olxMap = staggerOthers ? mapFor("OLX") : null;
+  const fbMap = staggerOthers ? mapFor("FACEBOOK") : null;
 
   return {
     ...template,
@@ -107,6 +111,10 @@ export async function enrichCrossAccountIncrease(
       indexByAccountId,
       ...(shopeeMap ? { shopeeIndexByAccountId: shopeeMap } : {}),
       ...(magaluMap ? { magaluIndexByAccountId: magaluMap } : {}),
+      // OLX/FB: sem estes mapas a prévia mostrava a escada de preço mas o job
+      // publicava tudo no preço base (o dispatcher só escalona quem tem mapa).
+      ...(olxMap ? { olxIndexByAccountId: olxMap } : {}),
+      ...(fbMap ? { fbIndexByAccountId: fbMap } : {}),
     },
   };
 }
@@ -448,6 +456,8 @@ export async function listingRoutes(app: FastifyInstance) {
             categoryOverride: listing.categoryOverride ?? null,
             mlCategoryOverride: listing.mlCategoryOverride ?? null,
             shopeeCategoryOverride: listing.shopeeCategoryOverride ?? null,
+            olxCategoryOverride: listing.olxCategoryOverride ?? null,
+            fbCategoryOverride: listing.fbCategoryOverride ?? null,
             partNumberOverride: listing.partNumberOverride ?? null,
             qualityOverride: listing.qualityOverride ?? null,
             heightCmOverride: listing.heightCmOverride ?? null,
@@ -571,6 +581,8 @@ export async function listingRoutes(app: FastifyInstance) {
           shopeeCategoryOverride: pickOverride<string | null>(
             "shopeeCategoryOverride",
           ),
+          olxCategoryOverride: pickOverride<string | null>("olxCategoryOverride"),
+          fbCategoryOverride: pickOverride<string | null>("fbCategoryOverride"),
           partNumberOverride: pickOverride<string | null>("partNumberOverride"),
           qualityOverride: pickOverride<string | null>("qualityOverride"),
           heightCmOverride: pickOverride<number | null>("heightCmOverride"),
@@ -808,6 +820,7 @@ export async function listingRoutes(app: FastifyInstance) {
                       refreshToken: true,
                       expiresAt: true,
                       shopId: true,
+                      fbCatalogId: true,
                     }
                   : {}),
               },
@@ -911,7 +924,9 @@ export async function listingRoutes(app: FastifyInstance) {
           if (
             req.platform !== "MERCADO_LIVRE" &&
             req.platform !== "SHOPEE" &&
-            req.platform !== "MAGALU"
+            req.platform !== "MAGALU" &&
+            req.platform !== "OLX" &&
+            req.platform !== "FACEBOOK"
           ) {
             return reply.status(400).send({
               error: "Dados inválidos",
@@ -920,13 +935,28 @@ export async function listingRoutes(app: FastifyInstance) {
           }
         }
 
+        // Kill-switch: pula SÓ os itens da plataforma desligada e segue com o
+        // resto do lote (antes um único item OLX/FB desligado devolvia 503 e
+        // derrubava a publicação de ML/Shopee/Magalu no mesmo request). 503 só
+        // se TODOS os requests forem de plataformas desativadas.
+        const enabledRequests = body.requests.filter(
+          (req) => !isPlatformDisabled(req.platform),
+        );
+        if (enabledRequests.length === 0) {
+          return reply.status(503).send({
+            error: "Integração desativada",
+            message:
+              "Todas as plataformas deste lote estão desativadas por kill-switch",
+          });
+        }
+
         // Aumento percentual escalonado entre contas ML (edição de produto):
         // monta o overrideTemplate a partir da ordem das contas ML nos
         // requests. Sem cfg habilitada, o dispatch segue idêntico ao de hoje.
         const caCfg = body.crossAccountIncrease;
         const overrideTemplate = caCfg?.enabled
           ? ListingDispatcher.buildCrossAccountOverride(
-              body.requests,
+              enabledRequests,
               await ListingDispatcher.resolveCrossAccountPercent(
                 userId,
                 caCfg.percent,
@@ -937,7 +967,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const snapshot = ListingDispatcher.dispatch({
           userId,
           productId: body.productId,
-          requests: body.requests,
+          requests: enabledRequests,
           overrideTemplate,
           actorId: request.user!.id,
         });
@@ -983,6 +1013,8 @@ export async function listingRoutes(app: FastifyInstance) {
         const userId = request.user!.dataOwnerId;
         const body = request.body as {
           shopeeAccountId?: string;
+          olxAccountId?: string;
+          facebookAccountId?: string;
           productIds?: string[];
           categoryOverrides?: Record<string, string>;
         };
@@ -999,7 +1031,11 @@ export async function listingRoutes(app: FastifyInstance) {
 
         const issues: Array<{
           productId: string;
-          code: "shopee_category_missing" | "shopee_category_not_leaf";
+          code:
+            | "shopee_category_missing"
+            | "shopee_category_not_leaf"
+            | "price_invalid"
+            | "image_missing";
           message: string;
         }> = [];
 
@@ -1084,6 +1120,86 @@ export async function listingRoutes(app: FastifyInstance) {
           }
         }
 
+        // OLX/Facebook: valida a config da conta (uma falha aqui reprova TODO o
+        // lote) e a prontidão do produto (preço>0 + imagem — o build de ambos
+        // lança sem eles). Config da conta reprova via 400, como o Shopee.
+        if (body.facebookAccountId) {
+          const acc = await MarketplaceRepository.findByIdAndUser(
+            body.facebookAccountId,
+            userId,
+          );
+          if (!acc || !acc.accessToken) {
+            return reply.status(400).send({
+              error: "Conta Facebook inválida",
+              message:
+                "Conta Facebook não encontrada ou sem credenciais para preflight",
+            });
+          }
+          if (!acc.fbCatalogId) {
+            return reply.status(400).send({
+              error: "Conta Facebook sem catálogo",
+              message:
+                "Conta Facebook sem catálogo (fbCatalogId) configurado — a publicação é bloqueada. Configure o catálogo antes de publicar.",
+            });
+          }
+        }
+        if (body.olxAccountId) {
+          const acc = await MarketplaceRepository.findByIdAndUser(
+            body.olxAccountId,
+            userId,
+          );
+          if (!acc || !acc.accessToken) {
+            return reply.status(400).send({
+              error: "Conta OLX inválida",
+              message:
+                "Conta OLX não encontrada ou sem credenciais para preflight",
+            });
+          }
+          const phone = acc.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
+          const zipcode = acc.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+          if (!phone || !zipcode) {
+            return reply.status(400).send({
+              error: "Conta OLX sem dados do vendedor",
+              message:
+                "Conta OLX sem telefone/CEP do vendedor — a publicação é bloqueada. Preencha os dados do vendedor.",
+            });
+          }
+        }
+        if (body.olxAccountId || body.facebookAccountId) {
+          // Prontidão do produto (preço > 0 + ≥1 imagem): comum a OLX e FB.
+          const productRepo = new ProductRepositoryPrisma();
+          const rows = await productRepo.findBulkPublishReadiness(
+            body.productIds,
+            userId,
+          );
+          const byId = new Map(rows.map((r) => [r.id, r]));
+          for (const id of body.productIds) {
+            const p = byId.get(id);
+            if (!p) continue; // produto sumiu — o dispatch reporta
+            const price = Number(p.price);
+            if (!Number.isFinite(price) || price <= 0) {
+              issues.push({
+                productId: id,
+                code: "price_invalid",
+                message:
+                  "Produto sem preço válido (> 0) — OLX/Facebook recusam a publicação.",
+              });
+            }
+            const hasImage =
+              (typeof p.imageUrl === "string" && p.imageUrl.trim().length > 0) ||
+              (Array.isArray(p.imageUrls) &&
+                p.imageUrls.some((u) => typeof u === "string" && u.trim()));
+            if (!hasImage) {
+              issues.push({
+                productId: id,
+                code: "image_missing",
+                message:
+                  "Produto sem imagem — OLX/Facebook exigem ao menos uma.",
+              });
+            }
+          }
+        }
+
         return reply.send({ issues });
       } catch (error) {
         console.error("[Listing Routes] Bulk preflight error:", error);
@@ -1136,7 +1252,9 @@ export async function listingRoutes(app: FastifyInstance) {
               !r ||
               (r.platform !== "MERCADO_LIVRE" &&
                 r.platform !== "SHOPEE" &&
-                r.platform !== "MAGALU") ||
+                r.platform !== "MAGALU" &&
+                r.platform !== "OLX" &&
+                r.platform !== "FACEBOOK") ||
               typeof r.accountId !== "string" ||
               !r.accountId,
           )
@@ -1147,7 +1265,20 @@ export async function listingRoutes(app: FastifyInstance) {
               "requests deve conter ao menos um par platform+accountId válido",
           });
         }
-        if (body.productIds.length * body.requests.length > 2000) {
+        // Kill-switch: pula SÓ os requests de plataforma desligada e segue com o
+        // resto do lote (não devolve 503 no lote inteiro). 503 só se TODOS
+        // forem de plataformas desativadas.
+        const enabledRequests = body.requests.filter(
+          (r) => !isPlatformDisabled(r.platform),
+        );
+        if (enabledRequests.length === 0) {
+          return reply.status(503).send({
+            error: "Integração desativada",
+            message:
+              "Todas as plataformas deste lote estão desativadas por kill-switch",
+          });
+        }
+        if (body.productIds.length * enabledRequests.length > 2000) {
           return reply.status(400).send({
             error: "Limite excedido",
             message:
@@ -1161,7 +1292,7 @@ export async function listingRoutes(app: FastifyInstance) {
         // retry-failed, que relê o template persistido, reproduza preços iguais.
         const overrideTemplate = await enrichCrossAccountIncrease(
           userId,
-          body.requests,
+          enabledRequests,
           body.overrideTemplate ?? null,
         );
 
@@ -1169,18 +1300,20 @@ export async function listingRoutes(app: FastifyInstance) {
         // individual, em overrideTemplate.perProductOverrides). Sem overrides ⇒
         // produtos×requests, idêntico ao de hoje. Espelha a poda do dispatcher.
         const ppo = overrideTemplate?.perProductOverrides;
-        let effectiveTotal = body.productIds.length * body.requests.length;
+        let effectiveTotal = body.productIds.length * enabledRequests.length;
         if (ppo) {
           effectiveTotal = 0;
           for (const pid of body.productIds) {
             const ov = ppo[pid];
-            for (const r of body.requests) {
+            for (const r of enabledRequests) {
               const skipped =
                 r.platform === "MERCADO_LIVRE"
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
                   : r.platform === "SHOPEE"
                     ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+                    : r.platform === "MAGALU"
+                      ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+                      : false;
               if (!skipped) effectiveTotal++;
             }
           }
@@ -1189,7 +1322,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const job = await BulkListingJobRepository.create({
           userId,
           productIds: body.productIds,
-          requests: body.requests as BulkListingRequestSpec[],
+          requests: enabledRequests as BulkListingRequestSpec[],
           overrideTemplate,
           totalItems: effectiveTotal,
         });
@@ -1202,7 +1335,7 @@ export async function listingRoutes(app: FastifyInstance) {
               userId,
               actorId,
               productIds: body.productIds!,
-              requests: body.requests!.map((r) => ({
+              requests: enabledRequests.map((r) => ({
                 platform: r.platform,
                 accountId: r.accountId,
                 categoryId: r.categoryId,
@@ -1374,7 +1507,18 @@ export async function listingRoutes(app: FastifyInstance) {
         }
 
         const retryProductIds = Array.from(productIdsSet);
-        const retryRequests = Array.from(requestsKey.values());
+        // Kill-switch: não re-enfileira itens de plataforma desligada (este
+        // endpoint não tinha guard nenhum e reprocessava OLX/FB desligado).
+        const retryRequests = Array.from(requestsKey.values()).filter(
+          (r) => !isPlatformDisabled(r.platform),
+        );
+        if (retryRequests.length === 0) {
+          return reply.status(503).send({
+            error: "Integração desativada",
+            message:
+              "Todos os itens falhos são de plataformas desativadas por kill-switch",
+          });
+        }
         const retryTemplate =
           (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
           null;
@@ -1394,7 +1538,9 @@ export async function listingRoutes(app: FastifyInstance) {
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
                   : r.platform === "SHOPEE"
                     ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+                    : r.platform === "MAGALU"
+                      ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+                      : false;
               if (!skipped) retryTotal++;
             }
           }
