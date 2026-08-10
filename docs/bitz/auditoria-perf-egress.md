@@ -312,3 +312,135 @@ O spec novo desta rodada não fazia, e foi pego porque a fila do mock ficou inta
 depois do turno. **Toda asserção de turno deve conferir
 `__pendingMockCompletions() === 0`** — é o que distingue "o cenário encenado
 rodou" de "alguma coisa quebrou antes".
+
+---
+
+# Rodada 2 — Fases 7 a 11 (10/08/2026)
+
+A rodada anterior cobriu as Fases 1–6. Esta cobre o que veio depois: áudio,
+anexo, escrita com confirmação, criação em massa e memória da loja — mais os
+dois consertos posteriores (`credencial_ou_saldo` e o espectro de ondas).
+
+## 0. Placar
+
+| | |
+| --- | --- |
+| Achados reais | 3 corrigidos · 6 documentados e não corrigidos |
+| Regra de negócio alterada | **nenhuma** |
+| Contrato de API alterado | **nenhum** |
+| Fluxo funcional alterado | **nenhum** |
+| Verificação | 3 mutações deliberadas, cada uma derrubando o teste que a prende |
+
+## 1. Corrigido
+
+### 1.1 ⭐⭐ Histórico e memória iam ao Postgres em SÉRIE
+
+`runTurn` lia o histórico da conversa, esperava, e só então lia a memória da
+loja. As duas leituras são independentes — nenhuma usa o resultado da outra, e
+as duas só são consumidas na montagem do prompt.
+
+Em série somavam **dois tempos de ida e volta** ao Postgres em **todo turno**.
+Pelo pooler do Supabase, cada um custa dezenas de milissegundos (o log de
+produção mostra `/ai/memorias` em ~60 ms). Agora vão num `Promise.all`.
+
+⚠️ **A ordem do prompt não mudou.** O que passou a ser paralelo é a ESPERA; os
+blocos entram em `extraSystem` na mesma sequência (data → resumo → memória →
+base de conhecimento).
+
+⚠️ **E a memória continua best-effort**: o `.catch` mora DENTRO da promessa, não
+em volta do `Promise.all`. Em volta, uma falha ao ler a memória derrubaria junto
+o histórico, que é caminho crítico.
+
+### 1.2 ⭐ Confirmar uma ação lia o cartão inteiro do banco
+
+`confirmarAcao` fazia `findFirst` **sem projeção**, trazendo a linha completa de
+`AiAction` — inclusive `preview`, que num lote de 25 peças passa de 2 KB de JSON
+(nome, preço, estoque, detalhe e aviso de cada linha).
+
+Varredura exaustiva de `linha.*` no arquivo: os campos lidos são `id`, `status`,
+`resultId`, `expiresAt`, `action`, `payload` e `conversationId`. **`preview`
+nunca é lido** — a execução sai do `payload`, e é essa separação que faz o cartão
+contar a verdade do que foi decidido mesmo que o formato do payload mude.
+
+Há dois testes: um exige que `preview` esteja FORA da projeção, o outro deriva a
+lista de campos lidos do próprio arquivo e exige que todos estejam DENTRO —
+porque esquecer um não daria erro de compilação, viraria `undefined` em produção.
+
+### 1.3 `/ai/memorias` era chamada duas vezes ao abrir a tela
+
+O StrictMode do React em desenvolvimento monta, desmonta e monta de novo, e a
+tela abria com duas chamadas com 1 ms de diferença, **as duas indo ao Postgres**
+— ao contrário de `/ai/entitlement`, que tem cache de 60 s no servidor e absorve
+a segunda em 0,5 ms.
+
+Em produção o StrictMode não duplica efeito, então isto **não muda o
+comportamento de ninguém hoje**. A trava (`emVooRef`, mesmo padrão de
+`use-bitz-capacidades`) é a rede que impede a duplicata de voltar por uma
+remontagem futura. Colapsa só chamadas simultâneas.
+
+## 2. Real, verificado, e NÃO corrigido
+
+### 2.1 `HISTORY_FETCH_LIMIT = 40` lê mais mensagens do que a janela usa
+
+O turno lê até 40 mensagens (`select` de `role` e `content`) e a janela de
+contexto depois corta por orçamento de tokens. Numa conversa longa, boa parte do
+que veio do banco é descartada.
+
+**Não mexido de propósito:** o número que sobra alimenta o RESUMO, e reduzir a
+leitura muda o que entra nele — comportamento, não custo. Risco de regressão
+maior que o ganho.
+
+### 2.2 O aviso de peça homônima faz até 10 buscas por proposta de lote
+
+`contarHomonimos` roda em paralelo, com teto declarado de 10 nomes. São 10
+consultas ao catálogo numa proposta de lote — mas **por proposta, não por
+turno**, e o teto já está documentado na linha do cartão. Aceitável.
+
+### 2.3 O espectro de ondas roda a 60 fps enquanto grava
+
+CPU do cliente, limitada pela duração da gravação (teto de tempo já existente).
+Não há egress. Reduzir para 30 fps economizaria bateria em celular fraco, ao
+custo de uma onda menos fluida — trocar isso sem medir em aparelho real seria
+adivinhação.
+
+### 2.4 A memória acrescenta até ~1.250 tokens de entrada por turno
+
+É a funcionalidade, não um desperdício: 25 memórias × 200 caracteres, no pior
+caso. **Loja sem memória não acrescenta um byte** — há guarda de lista vazia e
+teste que a prende, e na largada esse é 100% dos clientes.
+
+Seleção por relevância foi considerada e **rejeitada**: uma regra que só vale
+quando o texto do lojista a menciona falha exatamente quando importa.
+
+### 2.5 Áudio e imagem trafegam para o provedor
+
+Inerente às Fases 7 e 8. Já mitigado: a foto é reduzida **no navegador** antes
+de subir (`createImageBitmap`, teto de 1600 px), o XML de NF-e é lido localmente
+sem sair da rede, e os três contadores de cota são separados.
+
+### 2.6 Itens da rodada anterior seguem abertos
+
+Os 14 achados documentados e não corrigidos da rodada 1 continuam válidos e
+**não foram reabertos** — inclusive `/ai/entitlement` em toda página, o RAG sem
+cache e a projeção larga de `buscar_produto`.
+
+## 3. As regras da branch de Segurança e Otimização continuam valendo?
+
+**Sim.** Verificado com evidência, não por afirmação:
+
+| Verificação | Evidência |
+| --- | --- |
+| Fluxos críticos intocados | `git diff --numstat origin/main...HEAD` sobre `app/marketplaces`, `app/usecases`, `app/services`, `app/middlewares`, `app/workers`: **0 arquivos** |
+| Rotas de negócio intocadas | fora de `ai.routes.ts`, só `superadmin.routes.ts` e `team.routes.ts` — e as duas são o endurecimento de segurança do `01f0465` |
+| Nenhum teste enfraquecido | `tests/`: **+16.941 / −2**, e as 2 deleções são a asserção que acompanhou o método estreito `updateAccessControl` (endurece) |
+| Zero `skip`/`only`/`todo` | a única ocorrência do padrão é a string `exit(1)` dentro de um comentário |
+| Sem sincronização nova | nenhum worker, job, fila ou webhook aparece no diff |
+| Sem chamada externa nova | o único destino externo do módulo é o provedor de IA, atrás de cota, gate e rate limit |
+
+## 4. Lacunas desta rodada
+
+As mesmas da anterior, e vale repetir porque nenhuma foi fechada: **nada foi
+medido com servidor rodando**, não há `EXPLAIN ANALYZE`, não há medição de custo
+real em tokens, e o ganho de latência do item 1.1 é derivado de leitura de
+código e do tempo de resposta observado no log de produção — não cronometrado
+lado a lado.

@@ -33,8 +33,25 @@ export function useBitzMemorias(ativo: boolean) {
   const [erro, setErro] = React.useState<string | null>(null);
   /** Ids em processo de exclusão — o botão some enquanto a resposta não volta. */
   const [apagando, setApagando] = React.useState<string[]>([]);
+  /**
+   * Uma busca por vez.
+   *
+   * ⚠️ Sem isto, o StrictMode do React em desenvolvimento monta, desmonta e
+   * monta de novo — e a tela abria com DUAS chamadas a `/ai/memorias` com 1 ms
+   * de diferença, as duas indo ao Postgres (ao contrário do `/ai/entitlement`,
+   * que tem cache de 60 s no servidor e absorve a segunda em 0,5 ms).
+   *
+   * Em produção o StrictMode não duplica efeito, então isto não muda o
+   * comportamento de ninguém hoje — é a rede que impede a duplicata de voltar
+   * pela porta dos fundos, num `<Suspense>` novo ou numa remontagem de rota.
+   * Ele colapsa só chamadas SIMULTÂNEAS; um recarregar depois da resposta segue
+   * normal.
+   */
+  const emVooRef = React.useRef(false);
 
   const carregar = React.useCallback(async () => {
+    if (emVooRef.current) return;
+    emVooRef.current = true;
     setEstado("carregando");
     setErro(null);
     try {
@@ -54,6 +71,10 @@ export function useBitzMemorias(ativo: boolean) {
     } catch {
       setErro("Não consegui carregar a memória agora.");
       setEstado("erro");
+    } finally {
+      // `finally`, e não no fim do `try`: os `return` de erro lá em cima
+      // deixariam a trava presa e a tela nunca mais recarregaria.
+      emVooRef.current = false;
     }
   }, []);
 

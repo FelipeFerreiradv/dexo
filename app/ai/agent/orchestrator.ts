@@ -536,12 +536,42 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // 4. Contexto: system prompt + resumo + base de conhecimento + cardápio de
   //    tools + janela do histórico.
   // -------------------------------------------------------------------------
-  const historyRows = await db.aiMessage.findMany({
-    where: { conversationId },
-    orderBy: { createdAt: "desc" },
-    take: HISTORY_FETCH_LIMIT,
-    select: { role: true, content: true },
-  });
+  // ⭐ AS DUAS LEITURAS DE CONTEXTO VÃO JUNTAS, e não uma depois da outra.
+  //
+  // O histórico da conversa e a memória da loja são independentes: nenhuma
+  // precisa do resultado da outra, e as duas são consumidas só mais abaixo, na
+  // montagem do prompt. Em série elas somavam DOIS tempos de ida e volta ao
+  // Postgres em todo turno — e o do Supabase, pelo pooler, custa dezenas de
+  // milissegundos cada.
+  //
+  // ⚠️ A ORDEM DO PROMPT NÃO MUDA. O que passa a ser paralelo é a ESPERA; os
+  // blocos continuam entrando em `extraSystem` na mesma sequência de sempre
+  // (data → resumo → memória → base de conhecimento), que é o que o modelo lê.
+  //
+  // ⚠️ E A MEMÓRIA CONTINUA BEST-EFFORT: o `.catch` mora dentro da promessa, e
+  // não em volta do `Promise.all` — senão uma falha ao ler a memória derrubaria
+  // junto o histórico, que é caminho crítico. Falhar ali devolve lista vazia; o
+  // Bitz responde sem lembrar de nada, e a conversa segue inteira.
+  const [historyRows, memorias] = await Promise.all([
+    db.aiMessage.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: "desc" },
+      take: HISTORY_FETCH_LIMIT,
+      select: { role: true, content: true },
+    }),
+    // O `db?.aiMemory` é conferido ANTES de chamar, e a distinção importa:
+    // cliente Prisma sem o model (deploy sem `prisma generate`, dublê de teste
+    // antigo) é "esta fase não existe aqui" e sai em silêncio; um ERRO de
+    // verdade (tabela ausente no banco, pool estourado) é anotado no log,
+    // porque aí há o que consertar. Engolir os dois igual esconderia o segundo.
+    db?.aiMemory
+      ? listarMemorias({ dataOwnerId, db }).catch((err) => {
+          console.error("[bitz] não consegui ler a memória da loja:", err);
+          return [];
+        })
+      : Promise.resolve([]),
+  ]);
+
   const history: AiMessage[] = historyRows.reverse().map((r: any) => ({
     role: r.role as AiMessage["role"],
     content: r.content,
@@ -585,20 +615,16 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   //
   // A moldura vem de `blocoDeMemoria`: texto NOSSO fora do envelope, conteúdo do
   // lojista dentro dele, neutralizado. Ver o comentário longo em system-prompt.
-  // ⚠️ O `db?.aiMemory` é conferido ANTES de chamar, e a distinção importa:
-  // cliente Prisma sem o model (deploy sem `prisma generate`, dublê de teste
-  // antigo) é "esta fase não existe aqui" e sai em silêncio; um ERRO de verdade
-  // (tabela ausente no banco, pool estourado) é anotado no log, porque aí há o
-  // que consertar. Engolir os dois igual esconderia o segundo.
-  if (db?.aiMemory) {
-    try {
-      const memorias = await listarMemorias({ dataOwnerId, db });
-      if (memorias.length > 0) {
-        extraSystem.push(blocoDeMemoria(formatarMemoriasParaPrompt(memorias)));
-      }
-    } catch (err) {
-      console.error("[bitz] não consegui ler a memória da loja:", err);
-    }
+  //
+  // A leitura já aconteceu lá em cima, em paralelo com o histórico. Aqui é só o
+  // encaixe no prompt — e ele continua ANTES da base de conhecimento, na mesma
+  // posição de sempre.
+  //
+  // ⚠️ Loja sem memória não acrescenta UM BYTE ao prompt: sem esta guarda, todo
+  // tenant que nunca ensinou nada pagaria a moldura (~180 tokens) em todo turno,
+  // para embrulhar uma lista vazia.
+  if (memorias.length > 0) {
+    extraSystem.push(blocoDeMemoria(formatarMemoriasParaPrompt(memorias)));
   }
 
   // Base de conhecimento sobre o Dexo — só quando a intenção é dúvida.

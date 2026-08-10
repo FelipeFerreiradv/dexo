@@ -131,6 +131,23 @@ export async function confirmarAcao(input: {
       dataOwnerId: scope.dataOwnerId,
       actorUserId: scope.actorId,
     },
+    // ⚠️ PROJEÇÃO EXPLÍCITA, e o campo que ela deixa de fora é o que importa:
+    // `preview` é a TABELA que o cartão desenhou, e num lote de 25 peças ela
+    // passa de 2 KB de JSON. Confirmar lia esse JSON do Postgres em toda
+    // confirmação para descartá-lo sem ler um campo — a execução sai do
+    // `payload`, nunca do `preview` (é essa separação que faz o cartão contar a
+    // verdade do que foi decidido, mesmo que o formato do payload mude).
+    //
+    // Sem comportamento novo: são exatamente os campos que este arquivo lê.
+    select: {
+      id: true,
+      status: true,
+      resultId: true,
+      expiresAt: true,
+      action: true,
+      payload: true,
+      conversationId: true,
+    },
   });
   if (!linha) return falha("nao_encontrada");
 
