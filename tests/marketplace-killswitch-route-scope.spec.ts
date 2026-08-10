@@ -10,24 +10,26 @@ import { afterEach, describe, expect, it } from "vitest";
 // preencher telefone/CEP do vendedor. A integração pausada ficava
 // indistinguível de quebrada.
 //
-// Regra atual: bloqueia o que FALA COM O CANAL (OAuth + métodos mutantes),
-// libera leitura local e configuração por conta.
+// Regra atual: bloqueia o que MEXE NOS ANÚNCIOS (`/sync`, `/import`) e libera a
+// administração da conta — leitura, dados do vendedor e o OAuth de
+// conectar/desconectar, que só troca token e escreve no NOSSO banco. Sem isso,
+// uma reautorização em produção exigiria DESLIGAR o kill-switch.
 //
 // Este spec reproduz a decisão do hook isoladamente — o predicado é a regra, e
 // é ele que precisa ficar travado contra regressão.
 // ──────────────────────────────────────────────────────────
 
 /** Cópia fiel do predicado de marketplace.routes.ts (hook onRequest). */
-function ehLeituraOuConfigLocal(metodo: string, path: string): boolean {
-  if (path.endsWith("/auth") || path.endsWith("/callback")) return false;
-  if (metodo === "GET") return true;
-  if (metodo === "PATCH" && /\/accounts\/[^/]+$/.test(path)) return true;
+function mexeNosAnunciosDoCanal(metodo: string, path: string): boolean {
+  if (metodo === "GET") return false;
+  if (/\/sync(\/|$)/.test(path)) return true;
+  if (/\/import(\/|$)/.test(path)) return true;
   return false;
 }
 
 /** true = a requisição é barrada com 503 quando a flag está ligada. */
 const bloqueada = (metodo: string, path: string) =>
-  !ehLeituraOuConfigLocal(metodo, path);
+  mexeNosAnunciosDoCanal(metodo, path);
 
 afterEach(() => {});
 
@@ -49,23 +51,24 @@ describe("kill-switch de rota — o que continua PASSANDO com a integração pau
   });
 
   it("configuração do vendedor por conta — escrita puramente local", () => {
-    // O caso que motivou a correção: dá para preparar telefone/CEP e catálogo
-    // ANTES de ligar a integração.
+    // Dá para preparar telefone/CEP e catálogo ANTES de ligar a integração.
     expect(bloqueada("PATCH", "/marketplace/olx/accounts/acc-1")).toBe(false);
     expect(bloqueada("PATCH", "/marketplace/facebook/accounts/acc-2")).toBe(
       false,
     );
   });
+
+  it("CONECTAR e desconectar a conta — OAuth e vínculo, nunca anúncio", () => {
+    // O caso que motivou esta correção: sem isto, reautorizar uma conta em
+    // produção obrigaria a DESLIGAR o kill-switch antes.
+    expect(bloqueada("POST", "/marketplace/olx/auth")).toBe(false);
+    expect(bloqueada("GET", "/marketplace/olx/callback")).toBe(false);
+    expect(bloqueada("POST", "/marketplace/facebook/auth")).toBe(false);
+    expect(bloqueada("DELETE", "/marketplace/olx")).toBe(false);
+  });
 });
 
 describe("kill-switch de rota — o que continua BLOQUEADO", () => {
-  it("OAuth, mesmo sendo GET, porque conversa com o canal", () => {
-    expect(bloqueada("GET", "/marketplace/olx/auth")).toBe(true);
-    expect(bloqueada("GET", "/marketplace/olx/callback")).toBe(true);
-    expect(bloqueada("GET", "/marketplace/facebook/auth")).toBe(true);
-    expect(bloqueada("GET", "/marketplace/facebook/callback")).toBe(true);
-  });
-
   it("tudo que publica, sincroniza ou importa", () => {
     expect(bloqueada("POST", "/marketplace/olx/sync")).toBe(true);
     expect(bloqueada("POST", "/marketplace/olx/sync/prod-1")).toBe(true);
@@ -73,14 +76,13 @@ describe("kill-switch de rota — o que continua BLOQUEADO", () => {
     expect(bloqueada("POST", "/marketplace/facebook/sync")).toBe(true);
   });
 
-  it("desconectar conta", () => {
-    expect(bloqueada("DELETE", "/marketplace/olx")).toBe(true);
-    expect(bloqueada("DELETE", "/marketplace/facebook")).toBe(true);
+  it("GET de status de import é leitura local e PASSA", () => {
+    expect(bloqueada("GET", "/marketplace/facebook/import/job-1")).toBe(false);
   });
 
-  it("PATCH fora de /accounts/:id não é considerado config local", () => {
-    // Guarda contra o regex virar permissivo demais no futuro.
+  it("qualquer método sobre /sync e /import, não só POST", () => {
+    // Guarda contra o predicado virar permissivo demais no futuro.
     expect(bloqueada("PATCH", "/marketplace/olx/sync")).toBe(true);
-    expect(bloqueada("PATCH", "/marketplace/olx/accounts")).toBe(true);
+    expect(bloqueada("PUT", "/marketplace/facebook/import")).toBe(true);
   });
 });

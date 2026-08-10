@@ -140,24 +140,32 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   // /marketplace/facebook/* quando OLX_INTEGRATION_DISABLED / FACEBOOK_INTEGRATION_DISABLED=1.
   // Encapsulado neste plugin (prefixo /marketplace), então só afeta estas rotas.
   //
-  // ESCOPO: o kill-switch bloqueia o que FALA COM O CANAL, não a tela inteira.
+  // ESCOPO: o kill-switch para de MEXER NOS ANÚNCIOS, não de administrar a conta.
   //
   // Bloquear tudo sob /marketplace/olx/* deixava a integração pausada
-  // indistinguível de quebrada: a aba de Integrações não conseguia nem LER quais
-  // contas existem (`GET /olx/accounts` toca só o banco local), e o operador não
-  // conseguia preencher telefone/CEP do vendedor enquanto a integração estivesse
-  // pausada — justamente a configuração que se quer fazer ANTES de ligar.
+  // indistinguível de quebrada — e, pior, impedia justamente o que se precisa
+  // fazer com ela pausada: conectar/reconectar a conta e preencher os dados do
+  // vendedor ANTES de ligar. Numa reautorização em produção, o operador ficaria
+  // obrigado a DESLIGAR o kill-switch para conseguir reconectar.
   //
-  // Continuam bloqueados: OAuth (`/auth`, `/callback`, que chamam a OLX/Meta) e
-  // todo método mutante (POST/PUT/DELETE: publicar, sincronizar, importar,
-  // desconectar). Liberados: os GET de leitura local e o PATCH de dados do
-  // vendedor, que não geram uma única chamada externa.
-  const ehLeituraOuConfigLocal = (metodo: string, path: string): boolean => {
-    // OAuth conversa com o canal mesmo sendo GET.
-    if (path.endsWith("/auth") || path.endsWith("/callback")) return false;
-    if (metodo === "GET") return true;
-    // Dados do vendedor por conta: escrita puramente local.
-    if (metodo === "PATCH" && /\/accounts\/[^/]+$/.test(path)) return true;
+  // Bloqueado: `/sync` e `/import` — publicar, empurrar estoque, importar
+  // catálogo. Liberado: leitura local, dados do vendedor, e o OAuth
+  // (connect/disconnect), que só troca token e escreve no NOSSO banco — não
+  // toca em nenhum anúncio do vendedor.
+  //
+  // Este hook é camada extra, não a única: a publicação nunca passou por aqui
+  // (vive em /listings/*, filtrada por isPlatformDisabled em listing.routes.ts
+  // :946/:1274/:1521 e product.routes.ts:940/948) e pausar/reativar tem guarda
+  // própria em ListingUseCase.updateListingStatus.
+  const mexeNosAnunciosDoCanal = (metodo: string, path: string): boolean => {
+    // Toda leitura destas rotas é do banco local — nunca sai chamada.
+    if (metodo === "GET") return false;
+    // Publicar/sincronizar estoque e importar catálogo: é o que o kill-switch
+    // existe para parar.
+    if (/\/sync(\/|$)/.test(path)) return true;
+    if (/\/import(\/|$)/.test(path)) return true;
+    // O resto (OAuth, dados do vendedor, desconectar) é CONFIGURAÇÃO: mexe só
+    // no nosso banco e no vínculo da conta, nunca nos anúncios do vendedor.
     return false;
   };
 
@@ -175,7 +183,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       (isOlxDisabled() && ehOlx) ||
       (isFacebookDisabled() && ehFacebook)
     ) {
-      if (ehLeituraOuConfigLocal(metodo, path)) return;
+      if (!mexeNosAnunciosDoCanal(metodo, path)) return;
 
       const nome = ehOlx ? "OLX" : "Facebook";
       const flag = ehOlx
@@ -183,7 +191,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         : "FACEBOOK_INTEGRATION_DISABLED";
       return reply.code(503).send({
         error: "Integração pausada",
-        message: `${nome} pausado por kill-switch (${flag}). Leitura e configuração seguem disponíveis; publicação e sincronização estão suspensas.`,
+        message: `${nome} pausado por kill-switch (${flag}). Conectar a conta e configurar seguem liberados; publicar, sincronizar estoque e importar estão suspensos.`,
       });
     }
   });

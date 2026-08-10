@@ -126,9 +126,14 @@ No terminal 1 você deve ver a linha
 | | Modo seguro (padrão) | Modo publicação (`-Publicar`) |
 |---|---|---|
 | UI de OLX/Facebook | completa | completa |
-| Chamadas a OLX/Meta | **nenhuma** | **reais** |
-| Publicar/pausar/editar | devolve erro de kill-switch | cria anúncio de verdade |
+| **Conectar/desconectar conta** | **liberado** | liberado |
+| Ler contas, salvar telefone/CEP | liberado | liberado |
+| Publicar, sincronizar, importar | **bloqueado** | **real** |
 | Serve para | tudo do §3 | só o §4 |
+
+O kill-switch para de **mexer nos anúncios**, não de administrar a conta: dá para
+conectar a OLX e o Facebook e deixar tudo configurado com a integração pausada. É o mesmo
+que você vai querer em produção numa reautorização — sem precisar desligar a proteção.
 
 Comece pelo seguro. Ele cobre os 11 primeiros testes.
 
@@ -144,11 +149,13 @@ Marque conforme for passando.
       `http://localhost:3000/integracoes/olx` e `/integracoes/facebook` abrem (não dão 404).
 - [ ] **T2** — Mercado Livre, Shopee e Magalu continuam **exatamente** como antes:
       abas, listagens e sincronizações intactas. *É o teste mais importante da lista.*
-- [ ] **T3** — Aba de conexão da OLX **abre e lista o status**, sem banner vermelho de
-      kill-switch. Com uma conta conectada, os campos **Telefone** e **CEP do vendedor**
-      aparecem, salvam e persistem após recarregar.
-      *Sem conta OLX conectada, o esperado é o card "Conecte sua conta" — o botão
-      **Conectar à OLX** continua bloqueado em modo seguro (o OAuth fala com a OLX).*
+- [ ] **T3** — Aba de conexão da OLX abre sem banner de erro, e o botão
+      **Conectar à OLX** funciona **no modo seguro** (conectar é configuração, não
+      publicação). Depois de conectado, os campos **Telefone** e **CEP do vendedor**
+      aparecem, salvam e persistem após recarregar. Idem no Facebook, com o **catálogo**.
+- [ ] **T3b** — Ainda em modo seguro, clicar em **Sincronizar estoque** na aba de
+      Sincronização devolve "Integração pausada". É o kill-switch fazendo o trabalho dele:
+      conta conectada, publicação suspensa.
 
 ### Produtos e anúncios
 
@@ -203,7 +210,7 @@ Marque conforme for passando.
 | Toda ação OLX/FB responde "desativado por kill-switch" | é o modo seguro funcionando — use `-Publicar` |
 | Erro de coluna inexistente | faltou algum passo do §1; rode o **Passo 4** para ver o que falta |
 | Mudei o código e a API responde igual | processo antigo pendurado na 3333. `Get-NetTCPConnection -LocalPort 3333 -State Listen` e `Stop-Process -Id <PID> -Force` |
-| Banner "Integração pausada" ao publicar | correto em modo seguro: leitura e configuração passam, publicação e OAuth não |
+| "Integração pausada" ao sincronizar/importar | correto em modo seguro. Conectar e configurar passam; publicar não |
 | `invalid input value for enum "Platform"` | o **Passo 1** não commitou; rode-o sozinho de novo |
 | Front chama produção | subiu o Next sem o script (`API_URL` do `.env` tem prioridade no server-side) |
 
