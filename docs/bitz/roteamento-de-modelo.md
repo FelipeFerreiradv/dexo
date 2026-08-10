@@ -59,6 +59,18 @@ nomes de propósito, e o código também não.
 legado `AI_PROVIDER` + `AI_MODEL`. Um `.env` que nunca ouviu falar de rota se
 comporta exatamente como antes. Há teste para as três.
 
+**⭐ `AI_PROVIDER=mock` vence QUALQUER rota.** Não é preferência de provedor: é o
+interruptor de "não fale com ninguém lá fora". Use-o para tirar o Bitz do ar sem
+desmontar a configuração de rotas.
+
+⚠️ Isto já quebrou de verdade. Quando as rotas entraram, um `.env` de
+desenvolvimento com `AI_ROUTE_TEXTO` passou a vencer o `AI_PROVIDER=mock` que
+dezenas de specs de turno fixam — e eles começaram a chamar o provedor **real,
+com chave real**, saindo pela rede. O sintoma foi enganoso ("nenhuma ferramenta
+foi selecionada", não "erro de rede"), e por isso a regra virou explícita e
+testada. `AI_PROVIDER` **ausente** não desliga rota nenhuma; só o valor escrito
+conta.
+
 **⭐ Chave nunca cruza de provedor.** `AI_API_KEY` só é usada pelo provedor
 nomeado em `AI_PROVIDER`. Sem essa regra, um `.env` com `AI_PROVIDER=gemini` +
 `AI_ROUTE_TEXTO=deepseek:...` e sem `AI_DEEPSEEK_API_KEY` mandaria **a chave do

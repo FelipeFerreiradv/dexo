@@ -101,6 +101,36 @@ describe("compatibilidade com o .env legado", () => {
     expect(resolveAiProvider("texto")).toBeNull();
   });
 
+  it("⭐ AI_PROVIDER=mock VENCE a rota — é o interruptor de ficar offline", () => {
+    // ⚠️ REGRESSÃO REAL, pega pela suíte completa e não pelos testes de
+    // roteamento: com `AI_ROUTE_TEXTO` no `.env` de desenvolvimento, o
+    // `AI_PROVIDER=mock` que dezenas de specs de turno fixam deixou de valer, e
+    // eles passaram a chamar o provedor REAL, com chave real, saindo pela rede.
+    //
+    // O sintoma foi enganoso: "nenhuma tool foi selecionada", não "erro de
+    // rede". Levaria muito tempo para alguém ligar uma coisa à outra.
+    //
+    // `mock` não é preferência de provedor — é "não fale com ninguém lá fora".
+    vi.stubEnv("AI_PROVIDER", "mock");
+    vi.stubEnv("AI_ROUTE_TEXTO", "deepseek:ds-x");
+    vi.stubEnv("AI_ROUTE_IMAGEM", "gemini:gm-x");
+    vi.stubEnv("AI_DEEPSEEK_API_KEY", "k");
+    vi.stubEnv("AI_GEMINI_API_KEY", "k2");
+
+    for (const cap of CAPACIDADES) {
+      expect(getAiRoute(cap).provider, cap).toBe("mock");
+      expect(resolveAiProvider(cap)?.name, cap).toBe("mock");
+    }
+  });
+
+  it("AI_PROVIDER AUSENTE não desliga rota nenhuma", () => {
+    // Só o valor explícito manda. Sem `AI_PROVIDER`, a rota vale — senão
+    // configurar só rotas (que é o caminho recomendado) não funcionaria.
+    vi.stubEnv("AI_ROUTE_TEXTO", "deepseek:ds-x");
+    vi.stubEnv("AI_DEEPSEEK_API_KEY", "k");
+    expect(getAiRoute("texto").provider).toBe("deepseek");
+  });
+
   it("rota pedindo mock explicitamente continua sendo permitida", () => {
     // "mock" escrito à mão é intenção, não typo — é como se testa em ambiente
     // de homologação sem gastar com provedor.

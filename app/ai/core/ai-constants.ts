@@ -74,6 +74,39 @@ export const AI_CONSTANTS = {
   /** Prefixo das linhas de quota em ProviderDailyUsage. */
   USAGE_PROVIDER_GLOBAL: "ai:global",
   USAGE_PROVIDER_TENANT_PREFIX: "ai:tenant:",
+
+  /**
+   * Contador SEPARADO para transcrição de áudio (Fase 7).
+   *
+   * ⭐ Por que não reusar o contador de mensagens: transcrever não é enviar. O
+   * lojista fala, lê o que saiu, corrige e só então manda — e é comum gravar
+   * duas ou três vezes até sair direito. Debitar uma mensagem em cada tentativa
+   * gastaria a cota do dia sem ele ter perguntado nada.
+   *
+   * Mas transcrição CUSTA (áudio vira ~32 tokens por segundo), então precisa de
+   * teto próprio: sem ele, a rota é uma superfície de gasto ilimitada para
+   * qualquer autenticado.
+   */
+  USAGE_PROVIDER_AUDIO_PREFIX: "ai:audio:",
+
+  /** Teto diário de transcrições por tenant. 3× o de mensagens: cabe errar. */
+  DEFAULT_MAX_DAILY_AUDIO_PER_TENANT: 15,
+
+  /**
+   * Teto de BYTES do áudio aceito pelo servidor.
+   *
+   * ⚠️ ESTE É O TETO QUE VALE. A duração é limitada no navegador, mas o
+   * navegador é o cliente e o cliente mente — um `curl` manda o que quiser. Só
+   * o tamanho é verificável do lado de cá.
+   *
+   * 2 MB ≈ 90 s de Opus a 128 kbps, que é a folga do gravador do chat. Deixar
+   * em 20 MB (o teto do multipart) aceitaria ~16 minutos de áudio numa
+   * requisição — e áudio é cobrado por segundo.
+   */
+  MAX_AUDIO_BYTES: 2 * 1024 * 1024,
+
+  /** Teto de duração da gravação, aplicado no navegador. */
+  MAX_AUDIO_SECONDS: 90,
 } as const;
 
 /**
@@ -191,6 +224,21 @@ export function getAiRoute(capacidade: AiCapability): {
   provider: AiRouteProvider;
   model: string | undefined;
 } {
+  // ⭐ `AI_PROVIDER=mock` VENCE QUALQUER ROTA. Não é preferência de provedor: é
+  // o interruptor de "não fale com ninguém lá fora" — usado pela suíte inteira
+  // e pelo operador que quer o Bitz offline sem desmontar a configuração.
+  //
+  // ⚠️ ISTO JÁ QUEBROU DE VERDADE. Quando as rotas entraram, um `.env` de
+  // desenvolvimento com `AI_ROUTE_TEXTO` passou a vencer o `AI_PROVIDER=mock`
+  // que dezenas de specs de turno fixam — e eles começaram a chamar o provedor
+  // REAL, com chave real, saindo pela rede. Passou despercebido porque o
+  // sintoma foi "tool nenhuma foi selecionada", não "erro de rede".
+  //
+  // Só o valor EXPLÍCITO conta: `AI_PROVIDER` ausente não desliga rota nenhuma.
+  if ((process.env.AI_PROVIDER || "").trim().toLowerCase() === "mock") {
+    return { provider: "mock", model: getAiModel() };
+  }
+
   const bruto = process.env[envDaRota(capacidade)]?.trim();
 
   if (bruto) {
@@ -263,6 +311,13 @@ export function getAiMaxDailyPerTenant(): number {
   return readPositiveInt(
     process.env.AI_MAX_DAILY_PER_TENANT,
     AI_CONSTANTS.DEFAULT_MAX_DAILY_PER_TENANT,
+  );
+}
+
+export function getAiMaxDailyAudioPerTenant(): number {
+  return readPositiveInt(
+    process.env.AI_MAX_DAILY_AUDIO_PER_TENANT,
+    AI_CONSTANTS.DEFAULT_MAX_DAILY_AUDIO_PER_TENANT,
   );
 }
 
