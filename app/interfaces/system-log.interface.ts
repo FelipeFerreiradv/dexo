@@ -117,7 +117,12 @@ export type LogAction =
   | "AI_TOOL_CALL"
   | "AI_TOOL_DENIED"
   | "AI_QUOTA_EXCEEDED"
-  | "AI_PROVIDER_ERROR";
+  | "AI_PROVIDER_ERROR"
+  // ⭐ A única ação do Bitz que ALTERA alguma coisa (Fase 9), e por isso a única
+  // que fica no log geral como WARNING mesmo quando dá certo: é aqui que o
+  // suporte procura ao responder "quem mexeu no preço dessa peça?". A trilha
+  // detalhada vive em `AiAction`, que tem escopo de tenant.
+  | "AI_ACTION";
 
 export interface SystemLog {
   id: string;

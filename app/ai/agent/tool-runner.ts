@@ -23,10 +23,11 @@
 
 import type { ZodError } from "zod";
 
+import type { AiAcaoProposta } from "../acoes/acao.types";
 import { auditToolCall, auditToolDenied } from "../audit/ai-audit";
 import type { AiScope } from "../core/scope";
 import type { AiToolCall } from "../core/types";
-import type { AiTool } from "../tools/registry";
+import type { AiTool, AiWriteToolResult } from "../tools/registry";
 
 /**
  * Teto do resultado de UMA tool no contexto do modelo.
@@ -50,6 +51,13 @@ export interface ToolRunResult {
   content: string;
   ms: number;
   failure?: ToolFailure;
+  /**
+   * ⭐ SÓ EM TOOL DE ESCRITA: a proposta gravada, para a UI desenhar o cartão.
+   *
+   * NÃO entra em `content` e portanto NÃO vai para o provedor de IA. O modelo
+   * só precisa saber que a proposta existe; quem precisa dos campos é a tela.
+   */
+  acao?: AiAcaoProposta;
 }
 
 export interface ToolRunContext {
@@ -243,6 +251,32 @@ export async function runTool(
     );
   }
 
+  // 2b. ⭐ PERMISSÃO POR AÇÃO — a trava que só existe para escrita (Fase 9).
+  //
+  // SOMA-SE ao acesso à página, e a ordem importa: quem não entra em Produtos
+  // já foi barrado acima, e quem entra ainda precisa da chave da ação. É o que
+  // permite ao administrador deixar o balconista cadastrar peça NA TELA e não
+  // pelo chat — duas coisas que só parecem a mesma.
+  //
+  // ⚠️ Tool de escrita SEM `action` declarada é barrada aqui, não liberada. Um
+  // esquecimento de autoria não pode virar uma escrita sem dono; a suíte também
+  // falha nesse caso, mas o runtime não confia na suíte.
+  if (tool.kind === "write") {
+    if (!tool.action || !scope.canAction(tool.action)) {
+      auditToolDenied({
+        dataOwnerId: scope.dataOwnerId,
+        actorUserId: scope.actorId,
+        conversationId,
+        tool: tool.name,
+        page: tool.action ? `acao:${tool.action}` : "acao:nao-declarada",
+      });
+      return fail(
+        "sem_permissao",
+        `SEM PERMISSÃO: este usuário não pode executar "${tool.name}" pelo Bitz. Diga isso a ele em uma frase, explique que ele pode fazer isso pela tela do sistema se tiver acesso, e sugira falar com o administrador da conta. NÃO tente outra ferramenta para contornar.`,
+      );
+    }
+  }
+
   // 3. Argumentos. `.strict()` no schema faz chave desconhecida ser REJEITADA
   //    em vez de ignorada — é a terceira trava contra o modelo tentar escolher
   //    o tenant (ver core/scope.ts).
@@ -257,8 +291,28 @@ export async function runTool(
 
   // 4. Execução. O `scope` é o único caminho do tenant para dentro do handler.
   let resultado: unknown;
+  let acao: AiAcaoProposta | undefined;
   try {
-    resultado = await tool.handler(parsed.data, scope);
+    resultado = await tool.handler(parsed.data, scope, { conversationId });
+
+    // ⭐ ESCRITA: separa o que é da TELA do que é do MODELO.
+    //
+    // A tool de escrita devolve `{ acao, paraOModelo }`. A proposta sai daqui
+    // por fora do `content` e nunca entra no contexto do provedor de IA — ele
+    // não precisa dos campos para dizer "preparei, confirma no cartão", e
+    // mandá-los custaria a mesma carga em todo turno seguinte da conversa.
+    if (tool.kind === "write") {
+      const bruto = resultado as Partial<AiWriteToolResult> | null;
+      // `acao: null` é legítimo — "não achei a peça" é resposta de negócio, e
+      // não falha de sistema. O que não pode faltar é `paraOModelo`.
+      if (!bruto || !("acao" in bruto) || !bruto.paraOModelo) {
+        throw new Error(
+          `${tool.name}: tool de escrita deve devolver { acao, paraOModelo }`,
+        );
+      }
+      acao = bruto.acao ?? undefined;
+      resultado = bruto.paraOModelo;
+    }
   } catch (err) {
     // O erro cru pode conter fragmento de SQL e valor de coluna. Fica no log do
     // servidor; ao modelo vai só o fato.
@@ -332,5 +386,6 @@ export async function runTool(
     ok: true,
     content: truncateToolResult(texto),
     ms,
+    ...(acao ? { acao } : {}),
   };
 }

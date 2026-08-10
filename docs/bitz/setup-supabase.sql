@@ -148,7 +148,46 @@ CREATE INDEX IF NOT EXISTS "AiKnowledgeChunk_docId_idx"
   ON "AiKnowledgeChunk"("docId");
 
 -- ---------------------------------------------------------------------------
--- 4/4 — LIBERE O SEU USUÁRIO
+-- 4/5 — A AÇÃO DE ESCRITA PROPOSTA (Fase 9)
+--
+-- ⭐ ESTA TABELA É A CONFIRMAÇÃO HUMANA. O Bitz nunca escreve: ele grava aqui
+-- uma proposta com status 'pendente' e devolve o id. Só o clique do lojista em
+-- `POST /ai/acoes/:id/confirmar` executa — e a execução lê o `payload` DESTA
+-- LINHA, nunca o que o navegador devolveu.
+--
+-- A confirmação é um UPDATE condicional (`WHERE status = 'pendente'`), atômico
+-- no Postgres: clique duplo, retry de rede ou dois navegadores abertos executam
+-- UMA vez. Sem esta tabela, "criar produto" viraria dois produtos.
+--
+-- Fica VAZIA até alguém pedir uma escrita ao Bitz. Vazia, nada muda.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "AiAction" (
+    "id"             TEXT NOT NULL,
+    "dataOwnerId"    TEXT NOT NULL,
+    "actorUserId"    TEXT NOT NULL,
+    "conversationId" TEXT,
+    "action"         TEXT NOT NULL,
+    "status"         TEXT NOT NULL,
+    "payload"        JSONB NOT NULL,
+    "preview"        JSONB NOT NULL,
+    "resultId"       TEXT,
+    "errorCode"      TEXT,
+    "createdAt"      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "decidedAt"      TIMESTAMP(3),
+    "expiresAt"      TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "AiAction_pkey" PRIMARY KEY ("id")
+);
+
+-- Toda leitura da confirmação é (tenant, ator, status).
+CREATE INDEX IF NOT EXISTS "AiAction_dataOwnerId_actorUserId_status_idx"
+  ON "AiAction" ("dataOwnerId", "actorUserId", "status");
+
+CREATE INDEX IF NOT EXISTS "AiAction_conversationId_idx"
+  ON "AiAction" ("conversationId");
+
+-- ---------------------------------------------------------------------------
+-- 5/5 — LIBERE O SEU USUÁRIO
 --
 -- ⚠️ TROQUE O E-MAIL ABAIXO PELO SEU e rode esta linha. Sem ela, o mascote não
 -- aparece e /ai/chat responde 403 — que é exatamente o comportamento correto
@@ -181,11 +220,17 @@ SELECT
     WHERE table_name = 'AiMessage')                                   AS tabela_message,
   (SELECT count(*) FROM information_schema.tables
     WHERE table_name = 'AiKnowledgeChunk')                            AS tabela_knowledge,
+  (SELECT count(*) FROM information_schema.tables
+    WHERE table_name = 'AiAction')                                    AS tabela_action,
   (SELECT count(*) FROM "AiKnowledgeChunk")                           AS pedacos_indexados,
   (SELECT count(*) FROM "User" WHERE "aiEnabledAt" IS NOT NULL)       AS usuarios_liberados;
 
--- Esperado depois deste script: 1, 1, 1, 1, 1, 0, 1
+-- Esperado depois deste script: 1, 1, 1, 1, 1, 1, 0, 1
 -- `pedacos_indexados` vira 85 depois do `npm run ai:index -- --apply`.
+--
+-- ⚠️ `tabela_action` = 0 significa que a Fase 9 (escrita com confirmação) não
+-- sobe: o Bitz continua conversando e consultando, mas toda proposta de escrita
+-- falha. O resto do sistema NÃO é afetado — nenhuma outra tabela a referencia.
 
 -- Não achou o seu usuário no passo 4? Veja como o e-mail está gravado:
 -- SELECT "id", "email", "aiEnabledAt" FROM "User" ORDER BY "createdAt" LIMIT 20;
@@ -199,10 +244,15 @@ SELECT
 --   DROP TABLE IF EXISTS "AiMessage";
 --   DROP TABLE IF EXISTS "AiConversation";
 --   DROP TABLE IF EXISTS "AiKnowledgeChunk";
+--   DROP TABLE IF EXISTS "AiAction";
 --   ALTER TABLE "User" DROP COLUMN IF EXISTS "aiEnabledAt";
 --   ALTER TABLE "User" DROP COLUMN IF EXISTS "aiDailyLimit";
 --
--- Nenhuma outra tabela aponta para estas três, e as duas colunas só guardam a
+-- Nenhuma outra tabela aponta para estas quatro, e as duas colunas só guardam a
 -- data de concessão do plano e o teto diário do cliente. Reversível sem perda
 -- para o resto do sistema.
+--
+-- ⚠️ Apagar `AiAction` apaga a TRILHA das escritas que o Bitz executou — as
+-- escritas em si (produto criado, preço alterado) permanecem, porque elas vivem
+-- nas tabelas de sempre. O que se perde é o registro de quem pediu.
 -- ===========================================================================

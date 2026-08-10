@@ -8,9 +8,18 @@
 
 import { ADVISORY_TOOLS } from "./advisory";
 import { READ_TOOLS } from "./read";
+import { WRITE_TOOLS } from "./write";
 import { buildRegistry, type AiTool } from "./registry";
 
-export const ALL_TOOLS: AiTool[] = [...READ_TOOLS, ...ADVISORY_TOOLS];
+// ⭐ ESCRITA POR ÚLTIMO, e não é arbitrário: a ordem é o desempate da seleção
+// por palavra-chave. Numa frase ambígua ("preço do farol do palio"), consultar
+// tem que vencer alterar — errar para o lado de mostrar um número é recuperável,
+// errar para o lado de propor uma alteração assusta o lojista.
+export const ALL_TOOLS: AiTool[] = [
+  ...READ_TOOLS,
+  ...ADVISORY_TOOLS,
+  ...WRITE_TOOLS,
+];
 
 let cache: Map<string, AiTool> | null = null;
 

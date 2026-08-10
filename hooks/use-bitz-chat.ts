@@ -8,6 +8,7 @@ import {
   lerNdjson,
   type BitzStreamEvent,
 } from "@/lib/ndjson-stream";
+import { lerAcoes, type BitzAcao } from "@/hooks/use-bitz-acao";
 
 /** O que foi anexado a uma pergunta. Só o rótulo — a leitura já foi ao servidor. */
 export interface BitzMensagemAnexo {
@@ -30,6 +31,14 @@ export interface BitzChatMessage {
    * texto que o lojista acabou de conferir no cartão.
    */
   anexos?: BitzMensagemAnexo[];
+  /**
+   * Propostas de escrita deste turno (Fase 9). Viram cartões abaixo da bolha.
+   *
+   * ⭐ NADA FOI ESCRITO ainda. Elas ficam presas à mensagem que as gerou de
+   * propósito: o cartão precisa continuar visível junto da frase do Bitz que o
+   * explicou, e não flutuando no rodapé como se fosse de outra pergunta.
+   */
+  acoes?: BitzAcao[];
 }
 
 /** O que o composer entrega junto da pergunta. */
@@ -78,6 +87,33 @@ export function useBitzChat() {
   );
   const conversationId = React.useRef<string | null>(null);
 
+  /**
+   * ⭐ Registra a decisão de um cartão NA MENSAGEM.
+   *
+   * ⚠️ É aqui que ela precisa morar: o `DialogPrimitive.Content` do Radix
+   * DESMONTA ao fechar o painel, e leva junto o estado local do cartão. A lista
+   * de mensagens vive um nível acima e sobrevive — sem isto, fechar e reabrir o
+   * Bitz devolvia um cartão já executado ao estado "confirme aqui", com o botão
+   * ativo.
+   */
+  const decidirAcao = React.useCallback(
+    (acaoId: string, status: "confirmada" | "cancelada") => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.acoes?.some((a) => a.id === acaoId)
+            ? {
+                ...m,
+                acoes: m.acoes.map((a) =>
+                  a.id === acaoId ? { ...a, decidida: status } : a,
+                ),
+              }
+            : m,
+        ),
+      );
+    },
+    [],
+  );
+
   const reset = React.useCallback(() => {
     setMessages([]);
     setStreaming(null);
@@ -113,6 +149,7 @@ export function useBitzChat() {
         texto: string,
         errorCode: string | null,
         sources: unknown[] = [],
+        acoes: BitzAcao[] = [],
       ) => {
         setMessages((prev) => [
           ...prev,
@@ -122,6 +159,9 @@ export function useBitzChat() {
             content: texto,
             sources,
             errorCode,
+            // Ausente quando não houve proposta: a bolha de uma consulta
+            // continua exatamente como era.
+            ...(acoes.length ? { acoes } : {}),
           },
         ]);
       };
@@ -175,6 +215,7 @@ export function useBitzChat() {
             data?.message?.content ?? ERRO_GENERICO,
             data?.degraded ? "degraded" : null,
             data?.message?.sources ?? [],
+            lerAcoes(data?.acoes),
           );
           return;
         }
@@ -216,6 +257,7 @@ export function useBitzChat() {
                 evento.message?.content ?? ERRO_GENERICO,
                 evento.degraded ? "degraded" : null,
                 evento.message?.sources ?? [],
+                lerAcoes(evento.acoes),
               );
               break;
             default:
@@ -247,5 +289,5 @@ export function useBitzChat() {
     [pending],
   );
 
-  return { messages, pending, streaming, send, reset };
+  return { messages, pending, streaming, send, reset, decidirAcao };
 }

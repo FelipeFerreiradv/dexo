@@ -67,6 +67,14 @@ export type BitzStreamEvent =
       message: { content: string; sources?: unknown[] };
       degraded?: boolean;
       usage?: { inputTokens: number | null; outputTokens: number | null };
+      /**
+       * Propostas de escrita criadas neste turno (Fase 9).
+       *
+       * ⭐ NADA FOI ESCRITO. Cada uma vira um cartão com Confirmar/Cancelar, e
+       * só o clique executa. Ausente quando não houve — o quadro `fim` de um
+       * turno de consulta continua idêntico ao de antes.
+       */
+      acoes?: unknown[];
     };
 
 /**

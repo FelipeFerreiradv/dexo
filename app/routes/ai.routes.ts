@@ -10,6 +10,12 @@ import {
   type AiTurnAnexo,
 } from "../ai/agent/orchestrator";
 import { AI_CONSTANTS } from "../ai/core/ai-constants";
+import { cancelarAcao, confirmarAcao } from "../ai/acoes/acao.service";
+import {
+  ACAO_EXIGE_PERMISSAO,
+  mensagemDeFalhaDeAcao,
+  type AiAcaoTipo,
+} from "../ai/acoes/acao.types";
 import { detectarFormatoDeAudio } from "../ai/audio/audio-formato";
 import { nomeDeAnexoSeguro } from "../ai/anexo/anexo-formato";
 import {
@@ -448,6 +454,9 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
             message: { content: result.content, sources: result.sources },
             degraded: result.degraded,
             usage: result.usage,
+            // Propostas de escrita deste turno. Ausente quando não houve —
+            // o quadro `fim` de um turno de consulta não muda.
+            ...(result.acoes ? { acoes: result.acoes } : {}),
           });
         } catch (error) {
           // Os cabeçalhos já foram; não existe mais status para mudar. A falha
@@ -493,6 +502,7 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
           message: { content: result.content, sources: result.sources },
           degraded: result.degraded,
           usage: result.usage,
+          ...(result.acoes ? { acoes: result.acoes } : {}),
         });
       } catch (error) {
         // runTurn não deveria lançar. Se lançar, o erro morre AQUI: o chat
@@ -512,6 +522,111 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
           usage: { inputTokens: null, outputTokens: null },
         });
       }
+    },
+  );
+
+  /**
+   * POST /ai/acoes/:id/confirmar — ⭐ O ÚNICO CAMINHO DE ESCRITA DO BITZ.
+   *
+   * Nenhuma tool escreve. Elas gravam uma proposta em `AiAction` com status
+   * "pendente"; esta rota é a que executa, e só ela.
+   *
+   * ⭐ O CORPO É IGNORADO DE PROPÓSITO — não há corpo. O que é executado sai do
+   * `payload` da linha no banco, não do que o navegador devolveu. Sem isso, esta
+   * rota seria uma rota de escrita genérica com nome de confirmação: um `curl`
+   * mandaria `{produtoId, preco: 1}` e o servidor obedeceria, porque "o usuário
+   * confirmou".
+   *
+   * TRÊS TRAVAS, nesta ordem:
+   *   1. o gate de sempre (autenticado + plano);
+   *   2. ⭐ A PERMISSÃO É CONFERIDA DE NOVO, AGORA. A checagem do tool-runner
+   *      aconteceu quando a proposta nasceu; entre lá e aqui o administrador
+   *      pode ter tirado a permissão do colaborador, e o que vale é o AGORA.
+   *   3. o escopo `(id, dataOwnerId, actorUserId)` dentro do serviço — proposta
+   *      de outra pessoa não resolve.
+   */
+  fastify.post(
+    "/acoes/:id/confirmar",
+    {
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "1 minute",
+          hook: "preHandler",
+          keyGenerator: (req: any) => req.user?.id ?? req.ip,
+        },
+      },
+      preHandler: [authMiddleware, requireAiEnabled],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const scope = scopeFromRequest(request);
+      if (!scope) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const { id } = request.params as { id: string };
+
+      // A proposta é lida ANTES para saber QUAL permissão exigir. Ela ainda não
+      // executa nada — quem executa é `confirmarAcao`, logo abaixo.
+      const pendente = await prisma.aiAction.findFirst({
+        where: {
+          id,
+          dataOwnerId: scope.dataOwnerId,
+          actorUserId: scope.actorId,
+        },
+        select: { action: true },
+      });
+      if (!pendente) {
+        // 404 e não 403: não confirmamos a existência de um id alheio.
+        return reply
+          .status(404)
+          .send({ error: mensagemDeFalhaDeAcao("nao_encontrada") });
+      }
+
+      const exigida = ACAO_EXIGE_PERMISSAO[pendente.action as AiAcaoTipo];
+      if (!exigida || !scope.canAction(exigida)) {
+        return reply
+          .status(403)
+          .send({ error: mensagemDeFalhaDeAcao("sem_permissao") });
+      }
+
+      const r = await confirmarAcao({ id, scope });
+
+      if (!r.ok) {
+        // 200 com `ok:false`: proposta vencida ou já decidida é estado de
+        // negócio, e o cartão mostra a mensagem no lugar dos botões.
+        return reply.send({ ok: false, error: r.mensagem });
+      }
+      return reply.send({
+        ok: true,
+        status: r.status,
+        resultId: r.resultId,
+        jaEstava: r.jaEstava,
+      });
+    },
+  );
+
+  /**
+   * POST /ai/acoes/:id/cancelar — o lojista desistiu.
+   *
+   * Não exige a permissão da ação de propósito: quem pode CRIAR uma proposta
+   * pode desistir dela, e recusar um cancelamento por falta de permissão
+   * deixaria uma proposta pendente que ninguém consegue fechar. O escopo
+   * `(id, tenant, ator)` continua valendo.
+   */
+  fastify.post(
+    "/acoes/:id/cancelar",
+    { preHandler: [authMiddleware, requireAiEnabled] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const scope = scopeFromRequest(request);
+      if (!scope) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const { id } = request.params as { id: string };
+
+      const r = await cancelarAcao({ id, scope });
+      return r.ok
+        ? reply.send({ ok: true, status: r.status })
+        : reply.send({ ok: false, error: r.mensagem });
     },
   );
 

@@ -14,6 +14,7 @@
 // o modelo possa produzir.
 
 import prisma from "../../lib/prisma";
+import type { AiAcaoProposta } from "../acoes/acao.types";
 import {
   auditChatTurn,
   auditProviderError,
@@ -41,6 +42,7 @@ import { buildContextWindow, estimateTokens } from "./context-window";
 import { classifyIntent } from "./intent";
 import {
   REGRAS_DE_CONSULTA,
+  REGRAS_DE_ESCRITA,
   REGRAS_DE_RECOMENDACAO,
   blocoDeHoje,
   buildSystemPrompt,
@@ -292,6 +294,16 @@ export interface AiTurnResult {
   /** true quando a resposta NÃO veio do modelo (indisponível, quota, erro). */
   degraded: boolean;
   usage: { inputTokens: number | null; outputTokens: number | null };
+  /**
+   * Propostas de escrita criadas NESTE turno. Fase 9.
+   *
+   * ⭐ NADA FOI ESCRITO. Cada uma é uma linha `AiAction` com status "pendente";
+   * a UI desenha um cartão e só o clique do lojista executa.
+   *
+   * Ausente quando não houve proposta — é o que mantém o contrato de um turno
+   * de consulta byte a byte igual ao de antes desta fase.
+   */
+  acoes?: AiAcaoProposta[];
 }
 
 /**
@@ -601,6 +613,14 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     if (selecionadas.some((t) => t.kind === "advisory")) {
       extraSystem.push(REGRAS_DE_RECOMENDACAO);
     }
+    // ⭐ As regras de ESCRITA entram só quando há como escrever — e aí entram
+    // SEMPRE. A mais importante delas é "não diga que fez": o modelo chama a
+    // ferramenta, lê "proposta criada" e a tentação de escrever "pronto,
+    // cadastrei!" é enorme. O lojista fecharia o chat achando que a peça está
+    // no catálogo, e ela não está.
+    if (selecionadas.some((t) => t.kind === "write")) {
+      extraSystem.push(REGRAS_DE_ESCRITA);
+    }
   }
 
   const systemPrompt = buildSystemPrompt(extraSystem);
@@ -701,6 +721,8 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // Trilha das consultas do turno. Vai para `AiMessage.toolCalls` (auditoria) e
   // para a contagem do log — SEM os argumentos, que carregam dado do cliente.
   const trilha: Array<{ name: string; ok: boolean; ms: number }> = [];
+  /** Propostas de escrita deste turno. NADA foi escrito — ver `AiTurnResult`. */
+  const acoes: AiAcaoProposta[] = [];
   let rodadas = 0;
 
   while (
@@ -737,6 +759,10 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
 
     for (const [i, r] of resultados.entries()) {
       trilha.push({ name: r.name, ok: r.ok, ms: r.ms });
+      // ⭐ A proposta de escrita sobe por FORA do conteúdo da tool: ela vai para
+      // a tela desenhar o cartão de confirmação, e não para o contexto do
+      // modelo. Ver `ToolRunResult.acao`.
+      if (r.acao) acoes.push(r.acao);
       messages.push({
         role: "tool",
         content: r.content,
@@ -863,5 +889,8 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     sources: fontes,
     degraded: false,
     usage: usoDoTurno(),
+    // Ausente quando não houve proposta: um turno de consulta continua
+    // devolvendo exatamente o objeto de antes da Fase 9.
+    ...(acoes.length ? { acoes } : {}),
   };
 }

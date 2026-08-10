@@ -216,6 +216,34 @@ regra nova (sem modelo de visão, sobra `.xml` — e o clipe continua útil).
 extensível não deve ser fixado com igualdade estrita sobre o objeto todo. O certo
 teria sido asserção por campo. Fica registrado.
 
+### ⚠️ A terceira — 3 specs desta entrega alterados na Fase 9 (escrita)
+
+Também são `ai-*.spec.ts` desta mesma entrega, mas um deles muda por causa de uma
+**mudança de comportamento aprovada**, e isso merece o registro.
+
+**1. `tests/ai-tools-registry.spec.ts` — contagem e enumeração.**
+`toHaveLength(20)` → `24`, e `["read","advisory"]` → `["read","advisory","write"]`.
+São afirmações sobre o tamanho do catálogo, e o catálogo cresceu. O bloco ganhou
+**4 testes novos** que valem mais que os dois números: toda tool de escrita
+declara `action`; **nenhuma** tool tem nome de exclusão; toda tool de escrita
+avisa na descrição que não executa; e o mapa de permissão cobre exatamente as
+ações executáveis.
+
+**2. `tests/ai-advisory-turn.spec.ts` — uma asserção reapontada.**
+Ela exigia que as regras de recomendação contivessem `/não publica|não altera/`.
+Era verdade até a Fase 8: o Bitz não escrevia nada. Com a escrita aprovada pelo
+dono em 10/08/2026, manter aquela frase faria o **prompt mentir para o modelo**
+sobre o que ele pode fazer. A asserção foi reapontada para o que a regra
+realmente protege, que não mudou: **sugerir um preço não é trocar o preço**
+(`/não é trocar o preço/` + `/confirmar/`). Duas asserções no lugar de uma.
+
+**3. `tests/ai-preview-and-limits.spec.ts` — só acréscimo.** Ganhou o guarda de
+TABELAS de IA (setup SQL + migração versionada, lida do índice do git), derivado
+do `schema.prisma`. Nada foi alterado ali.
+
+**Nenhuma asserção foi afrouxada nos três.** Duas ficaram mais específicas e o
+resto é acréscimo.
+
 ### Os 9 arquivos pré-existentes tocados — e nada além deles
 
 | Arquivo                                  | Δ       | Natureza                                                   |

@@ -162,6 +162,49 @@ export function auditToolDenied(
   );
 }
 
+/**
+ * ⭐ UMA ESCRITA CONFIRMADA PELO LOJISTA (Fase 9).
+ *
+ * A trilha primária vive na própria tabela `AiAction` — esta linha é a segunda,
+ * no log geral do sistema, e existe por um motivo prático: é no `SystemLog` que
+ * o suporte procura quando alguém pergunta "quem mexeu no preço dessa peça?".
+ * Sem ela, a resposta estaria numa tabela que ninguém pensa em abrir.
+ *
+ * `logWarning` e não `logInfo`, inclusive no caminho de sucesso: escrita
+ * automatizada em dado de cliente merece aparecer no filtro de atenção. É a
+ * única ação do Bitz que ALTERA alguma coisa.
+ *
+ * ⚠️ Nada do conteúdo entra aqui — nem preço, nem nome, nem os campos. Só o
+ * QUE aconteceu, com QUAL ação, sobre QUAL id. O detalhe está na `AiAction`,
+ * que tem escopo de tenant; o `SystemLog` é geral e já chegou a 1,86 GB.
+ */
+export function auditAiAction(
+  input: AuditBase & {
+    acaoId: string;
+    tipo: string;
+    status: "confirmada" | "falhou";
+    resultId?: string;
+    erro?: string;
+  },
+): void {
+  void SystemLogService.logWarning(
+    "AI_ACTION",
+    `Bitz ${input.status === "confirmada" ? "executou" : "falhou em"} ${input.tipo}`,
+    {
+      resource: "AiAction",
+      resourceId: input.acaoId,
+      details: sanitizeDeep({
+        tenantUserId: input.dataOwnerId,
+        actorUserId: input.actorUserId,
+        acao: input.tipo,
+        status: input.status,
+        resultId: input.resultId,
+        erro: snippet(input.erro),
+      }),
+    },
+  );
+}
+
 /** Teto diário batido. */
 export function auditQuotaExceeded(
   input: AuditBase & { denied: "tenant" | "global" },

@@ -159,6 +159,58 @@ model AiMessage {
   @@index([conversationId, createdAt])
 }
 
+// Uma AÇÃO DE ESCRITA proposta pelo Bitz e ainda não executada. Fase 9.
+//
+// ⭐ ESTA TABELA É A CONFIRMAÇÃO HUMANA. O agente NUNCA escreve: ele grava aqui
+// uma PROPOSTA com status "pendente" e devolve o id. Só o clique do lojista em
+// `POST /ai/acoes/:id/confirmar` executa — e a execução lê o `payload` DESTA
+// LINHA, nunca o que o navegador mandou de volta. É o que impede que a volta
+// pelo cliente vire uma porta de escrita.
+//
+// TRÊS COISAS QUE SÓ EXISTEM PORQUE ELA EXISTE:
+//
+//  1. IDEMPOTÊNCIA REAL. A confirmação é um `updateMany` condicional
+//     (`where status = "pendente"`), atômico no Postgres. Clique duplo, retry de
+//     rede ou dois navegadores abertos executam UMA vez — o segundo encontra 0
+//     linhas e devolve o resultado já registrado. Sem tabela, "criar produto"
+//     viraria dois produtos.
+//
+//  2. AUDITORIA. Responde "quem mandou o Bitz mexer no preço dessa peça, e
+//     quando" sem depender do `SystemLog`, que é genérico e já chegou a 1,86 GB.
+//
+//  3. A PROPOSTA É DO SERVIDOR. `payload` é o que a tool VALIDOU, com o alvo já
+//     resolvido pelo tenant. O cliente devolve só o id.
+//
+// `action` e `status` são String livre (não enum) — ação nova não exige
+// migração, mesma decisão de SystemLog.action e AiMessage.role.
+model AiAction {
+  id             String    @id @default(cuid())
+  dataOwnerId    String
+  // Quem PEDIU. É por ele que a confirmação é conferida: a proposta de um
+  // colaborador não pode ser confirmada por outro.
+  actorUserId    String
+  conversationId String?
+  action         String // "produto.criar" | "produto.preco" | "produto.estoque" | "cliente.criar"
+  status         String // "pendente" | "confirmada" | "cancelada" | "falhou"
+  // Os campos JÁ VALIDADOS pela tool, com o alvo resolvido dentro do tenant.
+  payload        Json
+  // O que o CARTÃO mostra: [{ campo, de, para }] + o aviso de marketplace.
+  // Separado do payload de propósito — o que o lojista viu na hora de decidir
+  // fica registrado, mesmo que o formato do payload mude depois.
+  preview        Json
+  // Id da entidade criada ou alterada. Preenchido só quando dá certo.
+  resultId       String?
+  errorCode      String?
+  createdAt      DateTime  @default(now())
+  decidedAt      DateTime?
+  // Proposta velha não executa. O catálogo muda, o preço muda, e confirmar
+  // amanhã uma proposta de ontem aplicaria um "de X para Y" cujo X não é mais X.
+  expiresAt      DateTime
+
+  @@index([dataOwnerId, actorUserId, status])
+  @@index([conversationId])
+}
+
 // Base de conhecimento do Bitz — um pedaço de um documento sobre COMO O DEXO
 // FUNCIONA.
 //

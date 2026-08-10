@@ -464,6 +464,62 @@ describe("DDL das colunas de IA em User", () => {
     }
   });
 
+  /**
+   * ⭐ AS TABELAS DO BITZ, pela mesma régua das colunas.
+   *
+   * A lista sai do `schema.prisma` — não é chumbada aqui —, então uma tabela
+   * nova de IA entra automaticamente sob vigilância. Sem isto, `AiAction`
+   * chegaria a produção sem DDL e toda proposta de escrita falharia; e ao
+   * contrário das colunas de `User`, isso NÃO derruba o login, então passaria
+   * despercebido até um cliente tentar cadastrar uma peça pelo chat.
+   */
+  function tabelasDeIa(): string[] {
+    const schema = ler("prisma/schema.prisma");
+    return [...schema.matchAll(/^model\s+(Ai[A-Za-z]+)\s*\{/gm)].map(
+      (m) => m[1],
+    );
+  }
+
+  it("o schema declara as tabelas de IA que este spec vigia", () => {
+    // Guarda do guarda: se o regex parar de casar, os dois testes abaixo
+    // passariam vazios.
+    expect(tabelasDeIa()).toEqual(
+      expect.arrayContaining([
+        "AiConversation",
+        "AiMessage",
+        "AiKnowledgeChunk",
+        "AiAction",
+      ]),
+    );
+  });
+
+  it("⭐ toda tabela de IA está no SQL de setup E numa migração versionada", () => {
+    const setup = ler("docs/bitz/setup-supabase.sql");
+    const versionadas = execFileSync(
+      "git",
+      ["ls-files", "--", "prisma/migrations/*/migration.sql"],
+      { cwd: raiz, encoding: "utf8" },
+    )
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const migracoes = versionadas.map((p) => ler(p)).join("\n");
+
+    for (const tabela of tabelasDeIa()) {
+      const criacao = new RegExp(
+        `CREATE TABLE IF NOT EXISTS\\s+"${tabela}"`,
+      );
+      expect(
+        setup,
+        `${tabela} falta em docs/bitz/setup-supabase.sql`,
+      ).toMatch(criacao);
+      expect(
+        migracoes,
+        `${tabela} não tem migração VERSIONADA (\`git add -f prisma/migrations/<pasta>\`)`,
+      ).toMatch(criacao);
+    }
+  });
+
   it("o SQL de setup continua idempotente e sem extensão nova", () => {
     // Sem tirar os comentários, o `DROP COLUMN` de rollback que mora comentado
     // dentro dos arquivos seria lido como comando de verdade.

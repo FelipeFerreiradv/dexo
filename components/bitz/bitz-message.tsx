@@ -7,6 +7,7 @@ import { FileText, ImageIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { BitzChatMessage } from "@/hooks/use-bitz-chat";
+import { BitzAcaoCard } from "./bitz-acao";
 import { BitzMascot } from "./bitz-mascot";
 import { BitzSources } from "./bitz-sources";
 
@@ -110,7 +111,13 @@ const BOLHA_DO_BITZ =
 const BOLHA_ENTRANDO =
   "animate-in fade-in-0 slide-in-from-bottom-1 duration-300 motion-reduce:animate-none";
 
-export function BitzMessage({ message }: { message: BitzChatMessage }) {
+export function BitzMessage({
+  message,
+  aoDecidirAcao,
+}: {
+  message: BitzChatMessage;
+  aoDecidirAcao?: (id: string, status: "confirmada" | "cancelada") => void;
+}) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -164,6 +171,17 @@ export function BitzMessage({ message }: { message: BitzChatMessage }) {
       >
         <Markdown>{message.content}</Markdown>
         <BitzSources sources={message.sources} />
+
+        {/* ⭐ O cartão de confirmação fica DENTRO da bolha que o explicou.
+            Solto no rodapé, ele pareceria de outra pergunta — e o lojista
+            confirmaria uma alteração lendo a frase errada. */}
+        {message.acoes?.length ? (
+          <div className="mt-2.5 flex flex-col gap-2">
+            {message.acoes.map((a) => (
+              <BitzAcaoCard key={a.id} acao={a} aoDecidir={aoDecidirAcao} />
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );

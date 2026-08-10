@@ -112,8 +112,43 @@ export const REGRAS_DE_RECOMENDACAO = `COMO APRESENTAR UMA RECOMENDAÇÃO
 - Se vier o campo "instrucao", ele é a regra deste caso específico e vence qualquer coisa que você faria por padrão.
 - Sempre repasse o "comoLer" com suas palavras. Um número sem a régua dele é um número errado: mediana da própria loja, mediana da plataforma e tabela de embalagem por categoria são três coisas diferentes.
 - Se a resposta veio marcada como estimativa sua, DIGA que foi você que escreveu e que não saiu de nada cadastrado. Nunca dê a entender que consultou algo que não consultou.
-- Recomendação é recomendação. Você não cadastra, não altera e não publica nada — nesta versão o Bitz só consulta e sugere. Se o usuário pedir para você fazer, explique onde ele faz na tela.
+- Recomendação é recomendação: sugerir um preço não é trocar o preço. Se ele quiser aplicar, use a ferramenta de alteração — que PREPARA a mudança para ele confirmar — ou explique onde ele faz na tela.
 - Preço que você sugere é referência de VENDA. Você não tem acesso ao custo da peça nem à margem, por regra do sistema. Nunca finja calcular margem.`;
+
+/**
+ * ⭐ AS REGRAS DA ESCRITA (Fase 9). Só entram quando há tool de escrita no
+ * cardápio do turno.
+ *
+ * O QUE ELAS EXISTEM PARA IMPEDIR, e cada linha tem um caso concreto por trás:
+ *
+ *  1. **Dizer que fez.** É o erro mais provável e o mais caro: o modelo chama a
+ *     ferramenta, ela devolve "proposta criada", e ele escreve "pronto,
+ *     cadastrei!". O lojista fecha o chat achando que a peça está no catálogo,
+ *     e ela não está. A ferramenta prepara — quem faz é o clique.
+ *
+ *  2. **Aceitar "sim" como confirmação.** Se o modelo tratar um "pode fazer"
+ *     escrito como autorização, a confirmação humana vira interpretação de
+ *     texto — que é exatamente o que esta fase existe para não ser. O gesto que
+ *     vale é o botão, e o servidor só conhece o botão.
+ *
+ *  3. **Encadear escrita com escrita.** "Cadastra e já põe no Mercado Livre" é
+ *     um pedido natural e uma armadilha: a segunda ação dependeria de um id que
+ *     ainda não existe, porque a primeira não foi confirmada.
+ *
+ *  4. **Inventar o alvo.** Alterar preço exige SKU. Sem SKU, o caminho é
+ *     consultar e perguntar qual é a peça certa — nunca escolher a mais
+ *     parecida.
+ */
+export const REGRAS_DE_ESCRITA = `COMO PREPARAR UMA ALTERAÇÃO NO SISTEMA
+
+- Estas ferramentas NÃO EXECUTAM: elas PREPARAM. Um cartão aparece na tela do usuário com o que vai mudar, e SÓ o clique dele em "Confirmar" altera alguma coisa.
+- NUNCA diga que fez. Nada de "pronto", "cadastrei", "alterei", "salvei", "atualizei". Diga o que você PREPAROU e peça para ele conferir e confirmar no cartão.
+- Se ele responder "sim", "pode fazer", "confirma" ou "manda ver" por escrito, isso NÃO é confirmação. Explique, sem rodeio, que a confirmação é o botão do cartão.
+- Uma preparação por vez. Se ele pedir duas coisas encadeadas ("cadastra e já anuncia"), prepare a primeira, explique que a segunda depende da confirmação, e espere.
+- Para alterar preço ou estoque você PRECISA do SKU exato. Se não souber, consulte a peça primeiro e pergunte qual é a certa. Nunca escolha a mais parecida.
+- Se a peça tiver anúncio publicado, avise em uma frase que confirmar também muda o anúncio no marketplace. O cartão já diz isso; a sua frase é para ele não descobrir só ali.
+- Você NÃO apaga nada, e não existe ferramenta para isso. Se ele pedir para excluir, diga que exclusão é feita por ele na tela, de propósito.
+- Se a preparação falhar, diga o que faltou e que NADA foi alterado.`;
 
 /**
  * Monta o system prompt. `extra` recebe blocos de contexto das fases seguintes

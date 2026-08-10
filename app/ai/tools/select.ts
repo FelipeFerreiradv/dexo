@@ -78,6 +78,31 @@ export function selectTools(
     return { tool, pontos, ordem };
   });
 
+  // ⭐⭐ TOOL DE ESCRITA PRECISA DE DOIS SINAIS, NUNCA DE UM.
+  //
+  // Conserto de um achado da revisão adversarial, e a regra vale nos dois
+  // sentidos:
+  //
+  //  - PARA MENOS: "cadastro de cliente sumiu" e "quanto tenho de estoque"
+  //    casavam UMA chave de uma tool de escrita e a arrastavam para dentro de um
+  //    turno de pura consulta — pagando ~250 tokens das regras de escrita e,
+  //    pior, oferecendo ao modelo a chance de propor uma alteração que ninguém
+  //    pediu. Errar mostrando um número é recuperável; errar propondo uma
+  //    alteração assusta o lojista.
+  //
+  //  - PARA MAIS: com o piso em dois, as chaves podem ser palavras SOLTAS
+  //    (`altera`, `preco`) em vez de pares frágeis como "alterar preco", que
+  //    qualquer palavra intercalada quebrava — e quebrava em silêncio. "altera o
+  //    preço dessa peça" não casava "alterar preco" e a ferramenta simplesmente
+  //    não era oferecida.
+  //
+  // Verbo de mudança + objeto ("altera" + "preco") dão 2 e passam. Só o objeto
+  // ("qual o preço do farol?") dá 1 e fica de fora.
+  const MIN_PONTOS_ESCRITA = 2;
+  for (const p of pontuadas) {
+    if (p.tool.kind === "write" && p.pontos < MIN_PONTOS_ESCRITA) p.pontos = 0;
+  }
+
   const comPonto = pontuadas
     .filter((p) => p.pontos > 0)
     .sort((a, b) => b.pontos - a.pontos || a.ordem - b.ordem)

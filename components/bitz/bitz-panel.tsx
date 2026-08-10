@@ -62,7 +62,8 @@ export function BitzPanel({
   userName,
   usuarioId,
 }: BitzPanelProps) {
-  const { messages, pending, streaming, send, reset } = useBitzChat();
+  const { messages, pending, streaming, send, reset, decidirAcao } =
+    useBitzChat();
   const [draft, setDraft] = React.useState("");
 
   // Microfone e clipe só existem se o servidor disser que sabe fazer aquilo.
@@ -353,7 +354,11 @@ export function BitzPanel({
               ) : (
                 <div className="flex flex-col gap-3 p-4">
                   {messages.map((m) => (
-                    <BitzMessage key={m.id} message={m} />
+                    <BitzMessage
+                      key={m.id}
+                      message={m}
+                      aoDecidirAcao={decidirAcao}
+                    />
                   ))}
                   {/* Enquanto o turno corre: o texto ao vivo quando já há
                       texto, o indicador de consulta quando o Bitz foi ao

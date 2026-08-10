@@ -20,11 +20,45 @@
 
 import type { ZodTypeAny } from "zod";
 
+import type { ActionId } from "../../lib/action-access";
 import type { PageId } from "../../lib/page-access";
 import type { AiScope } from "../core/scope";
 import type { AiToolDefinition } from "../core/types";
 
-export type AiToolKind = "read" | "advisory";
+export type AiToolKind = "read" | "advisory" | "write";
+
+/**
+ * O que uma tool de ESCRITA devolve. Fase 9.
+ *
+ * ⭐ DOIS DESTINOS DIFERENTES, e essa separação é o ponto. `acao` é a proposta
+ * gravada e vai para a UI desenhar o cartão de confirmação — **nunca** entra no
+ * contexto do modelo. `paraOModelo` é a frase curta que ele lê para saber o que
+ * dizer ao lojista.
+ *
+ * Sem a separação, o `payload` inteiro da proposta viajaria para o provedor de
+ * IA a cada turno seguinte da conversa, junto com o histórico. Ele não precisa
+ * disso para dizer "preparei aqui, confirma no cartão".
+ */
+export interface AiWriteToolResult {
+  /**
+   * A proposta gravada — ou `null` quando não houve o que propor.
+   *
+   * ⚠️ `null` É UM RESULTADO LEGÍTIMO, e permiti-lo foi conserto de um achado:
+   * "não achei peça com esse SKU" é uma resposta de NEGÓCIO, não uma falha de
+   * sistema. Quando a tool lançava nesse caso, o tool-runner traduzia para "a
+   * consulta falhou, tente de novo" — e o lojista, que só tinha digitado o SKU
+   * errado, tentava a mesma coisa para sempre sem nunca ser informado do
+   * problema real.
+   */
+  acao: import("../acoes/acao.types").AiAcaoProposta | null;
+  paraOModelo: Record<string, unknown>;
+}
+
+/** Contexto de execução que não é escopo nem argumento. */
+export interface AiToolContext {
+  /** Para amarrar a proposta à conversa em que ela nasceu. */
+  conversationId?: string;
+}
 
 export interface AiTool<TArgs = any, TResult = any> {
   /** Nome que o modelo chama. snake_case, em português — ele responde em pt-BR. */
@@ -49,7 +83,23 @@ export interface AiTool<TArgs = any, TResult = any> {
    * Escreva para o LOJISTA, não para o modelo.
    */
   sourceLabel: string;
-  handler(args: TArgs, scope: AiScope): Promise<TResult>;
+  /**
+   * ⭐ SÓ EM `kind: "write"`: a permissão por AÇÃO que o ator precisa ter.
+   *
+   * SOMA-SE ao acesso à página, nunca o substitui — o tool-runner exige as duas.
+   * Motivo: pedir por escrito a um agente não é a mesma coisa que preencher um
+   * formulário, e é legítimo o administrador querer que o balconista continue
+   * cadastrando peça na tela e não pelo chat.
+   *
+   * ⚠️ Tool de escrita SEM `action` é erro de autoria e a suíte falha: seria uma
+   * escrita atrás de uma permissão só, sem ninguém ter decidido isso.
+   */
+  action?: ActionId;
+  handler(
+    args: TArgs,
+    scope: AiScope,
+    ctx?: AiToolContext,
+  ): Promise<TResult>;
 }
 
 // ---------------------------------------------------------------------------

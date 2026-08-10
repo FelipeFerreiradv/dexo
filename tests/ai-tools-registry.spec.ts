@@ -6,6 +6,10 @@ vi.mock("../app/lib/prisma", () => ({ default: {} }));
 
 import { ALL_TOOLS, getToolRegistry } from "../app/ai/tools";
 import { ADVISORY_TOOLS } from "../app/ai/tools/advisory";
+import { WRITE_TOOLS } from "../app/ai/tools/write";
+import { ACAO_EXIGE_PERMISSAO } from "../app/ai/acoes/acao.types";
+import { TIPOS_EXECUTAVEIS } from "../app/ai/acoes/executores";
+import { ACTION_DEFS } from "../app/lib/action-access";
 import { READ_TOOLS, getReadToolRegistry } from "../app/ai/tools/read";
 import { toToolDefinition, toolParameters } from "../app/ai/tools/registry";
 import { selectTools } from "../app/ai/tools/select";
@@ -80,12 +84,66 @@ describe("declaração das tools", () => {
     expect(getReadToolRegistry().size).toBe(13);
   });
 
-  it("as 7 tools consultivas estão registradas, e o registry completo tem 20", () => {
+  it("7 consultivas + 4 de escrita, e o registry completo tem 24", () => {
     expect(ADVISORY_TOOLS).toHaveLength(7);
-    expect(ALL_TOOLS).toHaveLength(20);
+    expect(WRITE_TOOLS).toHaveLength(4);
+    expect(ALL_TOOLS).toHaveLength(24);
     // `buildRegistry` lançaria em nome duplicado; o tamanho prova que não houve
-    // colisão entre os dois conjuntos.
-    expect(getToolRegistry().size).toBe(20);
+    // colisão entre os três conjuntos.
+    expect(getToolRegistry().size).toBe(24);
+  });
+
+  // -------------------------------------------------------------------------
+  // ⭐ AS TOOLS DE ESCRITA (Fase 9) — o contrato mais apertado do catálogo.
+  // -------------------------------------------------------------------------
+
+  it("⭐ TODA tool de escrita declara `action` — escrita sem dono não existe", () => {
+    // O tool-runner barra quem não declarar, mas o runtime não pode ser a
+    // primeira linha de defesa contra um esquecimento de autoria: permissão de
+    // PÁGINA sozinha deixaria o balconista alterar preço pelo chat sem ninguém
+    // ter decidido isso.
+    for (const tool of WRITE_TOOLS) {
+      expect(tool.kind, tool.name).toBe("write");
+      expect(tool.action, `${tool.name} sem action`).toBeTruthy();
+      expect(
+        Object.values(ACAO_EXIGE_PERMISSAO),
+        `${tool.name}: action fora do mapa único`,
+      ).toContain(tool.action);
+    }
+  });
+
+  it("⭐ NENHUMA tool apaga nada — a ausência é a garantia", () => {
+    // Regra do dono do produto: o Bitz não exclui. A defesa não é validação, é
+    // não existir a ferramenta — não há o que o modelo possa pedir.
+    for (const tool of ALL_TOOLS) {
+      expect(
+        tool.name,
+        `${tool.name} parece uma tool de exclusão`,
+      ).not.toMatch(/apagar|excluir|deletar|remover|delete|cancelar/i);
+    }
+  });
+
+  it("⭐ toda tool de escrita AVISA, na descrição, que não executa", () => {
+    // A descrição é o que o MODELO lê para decidir. Se ela não disser que a
+    // ferramenta só prepara, ele dirá ao lojista que já fez.
+    for (const tool of WRITE_TOOLS) {
+      expect(tool.description, tool.name).toMatch(/PREPARA/);
+      expect(tool.description, tool.name).toMatch(/NÃO (cadastra|altera)/);
+      expect(tool.description, tool.name).toMatch(/confirma/i);
+    }
+  });
+
+  it("⭐ o mapa de permissão cobre exatamente as ações executáveis", () => {
+    // Uma ação executável sem permissão declarada seria escrita sem gate; uma
+    // permissão declarada sem executor seria confirmação que não faz nada.
+    expect(Object.keys(ACAO_EXIGE_PERMISSAO).sort()).toEqual(
+      [...TIPOS_EXECUTAVEIS].sort(),
+    );
+    // E toda permissão exigida existe de verdade no catálogo da casa.
+    const conhecidas = new Set(ACTION_DEFS.map((a) => a.id));
+    for (const id of Object.values(ACAO_EXIGE_PERMISSAO)) {
+      expect(conhecidas, `${id} não está em ACTION_DEFS`).toContain(id);
+    }
   });
 
   it("toda tool consultiva é `advisory` e mora na página de produtos", () => {
@@ -105,7 +163,7 @@ describe("declaração das tools", () => {
       );
       expect(tool.keywords.length).toBeGreaterThan(0);
       expect(tool.sourceLabel.length).toBeGreaterThan(3);
-      expect(["read", "advisory"]).toContain(tool.kind);
+      expect(["read", "advisory", "write"]).toContain(tool.kind);
     },
   );
 

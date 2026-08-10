@@ -308,8 +308,18 @@ describe("as regras de recomendação entram só quando cabem", () => {
     expect(REGRAS_DE_RECOMENDACAO).toMatch(/em torno de/);
     expect(REGRAS_DE_RECOMENDACAO).toMatch(/comoLer/);
     expect(REGRAS_DE_RECOMENDACAO).toMatch(/estimativa/);
-    // E lembra que o Bitz não escreve nada no sistema nesta versão.
-    expect(REGRAS_DE_RECOMENDACAO).toMatch(/não publica|não altera/);
+
+    // ⚠️ ESTA ASSERÇÃO MUDOU NA FASE 9, e o motivo é uma mudança de
+    // comportamento, não um ajuste de texto. Antes ela exigia "não publica|não
+    // altera", que era verdade: o Bitz não escrevia nada. Agora ele PREPARA
+    // alterações para o lojista confirmar, e manter a frase antiga faria o
+    // prompt mentir para o modelo sobre o que ele pode fazer.
+    //
+    // O que a regra protege continua sendo o mesmo, e é isto que a asserção
+    // pina: SUGERIR UM PREÇO NÃO É TROCAR O PREÇO. Sem essa separação, um
+    // "acho que R$ 240 está bom" viraria uma alteração que ninguém pediu.
+    expect(REGRAS_DE_RECOMENDACAO).toMatch(/não é trocar o preço/);
+    expect(REGRAS_DE_RECOMENDACAO).toMatch(/confirmar/);
   });
 });
 
