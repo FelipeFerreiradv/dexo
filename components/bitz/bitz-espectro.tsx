@@ -2,6 +2,19 @@
 
 import * as React from "react";
 
+import {
+  ALTURA_MINIMA,
+  BARRAS,
+  DESCIDA,
+  DESCIDA_CALMA,
+  PARADAS,
+  SUBIDA,
+  SUBIDA_CALMA,
+  alturaDaBarra,
+  alturaEmRepouso,
+  binDaBarra,
+} from "./bitz-espectro-math";
+
 /**
  * O ESPECTRO DE ONDAS da tela de escuta — barras simétricas que reagem à voz.
  *
@@ -21,66 +34,32 @@ import * as React from "react";
  * recusar, se qualquer coisa aqui falhar — as barras ficam na linha de base e a
  * gravação segue intacta. Este arquivo é enfeite com opinião, nunca caminho
  * crítico.
- */
-
-/** Ímpar de propósito: existe uma barra CENTRAL de verdade, não uma emenda. */
-const BARRAS = 45;
-
-/** Altura mínima: no silêncio as barras viram os pontinhos das pontas. */
-const ALTURA_MINIMA = 0.035;
-
-/**
- * Sobe rápido, desce devagar.
  *
- * A voz tem picos curtos; sem essa assimetria a onda pisca em vez de ondular, e
- * o resultado parece defeito de renderização, não energia sonora.
+ * A matemática mora em `bitz-espectro-math.ts`, sem React e sem JSX, para poder
+ * ser testada com números em vez de asserções sobre texto de arquivo — e não é
+ * zelo abstrato: o defeito que deixou a primeira versão desta onda parada era
+ * exatamente do tipo que só um teste numérico pega.
  */
-const SUBIDA = 0.45;
-const DESCIDA = 0.12;
-
-/**
- * ⭐ AS CORES SÃO FIXAS, e é a única superfície do sistema onde isso é certo.
- *
- * Gravar é um estado modal deliberado — a tela escurece para dizer "o microfone
- * está aberto" —, então ela não segue o tema claro/escuro do usuário: ela é
- * sempre a mesma, em qualquer tema, como a tela de chamada de um telefone. As
- * cores são as da marca (`app/globals.css`): Amarelo Sinalização no centro,
- * Pergaminho Técnico nos flancos, Verde Operação apagando nas pontas.
- */
-const PARADAS: Array<[number, string]> = [
-  [0, "rgba(44,95,79,0.45)"],
-  [0.22, "rgba(242,237,226,0.8)"],
-  [0.5, "#f2c419"],
-  [0.78, "rgba(242,237,226,0.8)"],
-  [1, "rgba(44,95,79,0.45)"],
-];
-
-/**
- * O quanto uma barra pode crescer, conforme a distância do centro.
- *
- * É o que dá o formato de fuso da referência — alto no meio, sumindo nas
- * pontas — mesmo quando todas as faixas de frequência estão cheias.
- */
-function tetoDaBarra(distanciaNormalizada: number): number {
-  return Math.pow(Math.cos((distanciaNormalizada * Math.PI) / 2), 1.5);
-}
-
-/** A faixa de frequência que alimenta cada barra. Voz humana vive nas baixas. */
-function binDaBarra(distancia: number, meio: number, bins: number): number {
-  const t = distancia / meio;
-  // Curva, não linear: as primeiras barras cobrem os graves (onde está a
-  // energia da fala) e as últimas varrem o resto do espectro de uma vez.
-  const alvo = Math.pow(t, 1.7) * 0.22;
-  return Math.min(bins - 1, Math.floor(alvo * bins));
-}
-
 export function BitzEspectro({
-  stream,
+  streamRef,
   ativo,
   className,
 }: {
-  /** O stream que está sendo gravado. `null` ⇒ linha de base parada. */
-  stream: MediaStream | null;
+  /**
+   * ⭐⭐ REF, NÃO PROP DE VALOR — e a diferença é a razão de esta tela ter
+   * ficado parada uma vez.
+   *
+   * Com o stream vindo como prop, o espectro dependia de o React re-renderizar
+   * no instante certo entre `getUserMedia` resolver e o `MediaRecorder` começar.
+   * Ele lia o valor UMA vez, na montagem, e se naquele render o stream ainda
+   * fosse `null`, ficava na linha de base para sempre — sem erro, sem aviso,
+   * com a tela inteira parecendo funcionar.
+   *
+   * Com o ref, o laço pergunta a cada quadro: apareceu stream? Liga o
+   * analisador. Sumiu? Desliga e volta ao repouso. Não existe mais um instante
+   * crítico para errar.
+   */
+  streamRef: React.RefObject<MediaStream | null>;
   /** Gravando? Fora disso a onda descansa (transcrevendo, por exemplo). */
   ativo: boolean;
   className?: string;
@@ -97,6 +76,7 @@ export function BitzEspectro({
     // Alturas atuais (0..1), suavizadas quadro a quadro. Fora do React de
     // propósito — ver o cabeçalho.
     const alturas = new Float32Array(BARRAS).fill(0);
+    const meio = (BARRAS - 1) / 2;
 
     let largura = 0;
     let altura = 0;
@@ -116,7 +96,6 @@ export function BitzEspectro({
     const desenhar = () => {
       ctx.clearRect(0, 0, largura, altura);
 
-      const meio = (BARRAS - 1) / 2;
       const passo = largura / BARRAS;
       const espessura = Math.max(2, Math.min(6, passo * 0.42));
       const metadeDaTela = altura / 2;
@@ -131,7 +110,7 @@ export function BitzEspectro({
         const x = passo * (i + 0.5);
         // Metade da altura para cada lado: a barra cresce do centro para fora,
         // simétrica, como no espectro de referência.
-        const h = Math.max(espessura, alturas[i] * metadeDaTela * 0.92);
+        const h = Math.max(espessura / 2, alturas[i] * metadeDaTela * 0.94);
         ctx.beginPath();
         ctx.moveTo(x, metadeDaTela - h);
         ctx.lineTo(x, metadeDaTela + h);
@@ -139,94 +118,118 @@ export function BitzEspectro({
       }
     };
 
+    /** O repouso: o fuso baixinho da referência, quando não há o que ouvir. */
+    const repousar = () => {
+      for (let i = 0; i < BARRAS; i++) {
+        const alvo = alturaEmRepouso(Math.abs(i - meio) / meio);
+        alturas[i] += (alvo - alturas[i]) * 0.15;
+      }
+    };
+
+    const aoRedimensionar = () => medir();
+    window.addEventListener("resize", aoRedimensionar);
+
     // -----------------------------------------------------------------------
-    // Sem movimento: uma linha de base desenhada UMA vez.
+    // ⭐ MOVIMENTO REDUZIDO NÃO CONGELA A ONDA — e a decisão merece o parágrafo.
     //
-    // `prefers-reduced-motion` não é preferência estética — há quem passe mal
-    // com movimento. A tela continua dizendo tudo que precisa pelo cronômetro e
-    // pela legenda; o que some é só a dança.
+    // A primeira versão desenhava uma linha estática e ia embora. Está errado:
+    // `prefers-reduced-motion` existe para tirar movimento DECORATIVO, e esta
+    // onda não é decoração — ela é a única confirmação visual de que o
+    // microfone está captando. Congelá-la remove a informação junto com a
+    // animação, e quem ligou a preferência fica sem saber se pode falar.
+    //
+    // O que muda é o TEMPERAMENTO: a onda passa a subir e descer devagar, sem
+    // o repique nervoso dos picos. Continua respondendo à voz, sem piscar.
     // -----------------------------------------------------------------------
-    const semMovimento =
+    const calmo =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const subida = calmo ? SUBIDA_CALMA : SUBIDA;
+    const descida = calmo ? DESCIDA_CALMA : DESCIDA;
 
-    if (semMovimento || !stream || !ativo) {
-      for (let i = 0; i < BARRAS; i++) {
-        const d = Math.abs(i - (BARRAS - 1) / 2) / ((BARRAS - 1) / 2);
-        alturas[i] = ALTURA_MINIMA * tetoDaBarra(d) * 3;
-      }
-      desenhar();
-      const aoRedimensionar = () => {
-        medir();
-        desenhar();
-      };
-      window.addEventListener("resize", aoRedimensionar);
-      return () => window.removeEventListener("resize", aoRedimensionar);
-    }
-
-    // -----------------------------------------------------------------------
-    // O caminho vivo: analisador ligado no stream que já está gravando.
-    // -----------------------------------------------------------------------
     const Contexto: typeof AudioContext | undefined =
       window.AudioContext ??
       (window as unknown as { webkitAudioContext?: typeof AudioContext })
         .webkitAudioContext;
 
-    if (!Contexto) {
+    // Sem Web Audio, ou fora de uma gravação: o desenho é o repouso, uma vez.
+    if (!Contexto || !ativo) {
+      for (let i = 0; i < 30; i++) repousar();
       desenhar();
-      return;
+      return () => window.removeEventListener("resize", aoRedimensionar);
     }
 
     let audio: AudioContext | null = null;
+    let analisador: AnalyserNode | null = null;
     let fonte: MediaStreamAudioSourceNode | null = null;
+    let ligadoEm: MediaStream | null = null;
+    // ⚠️ `Uint8Array<ArrayBuffer>`, e não o `Uint8Array` solto: desde o TS 5.7 o
+    // tipo é genérico sobre o buffer, e `getByteFrequencyData` exige um apoiado
+    // em `ArrayBuffer` de verdade — um `ArrayBufferLike` (que aceitaria
+    // `SharedArrayBuffer`) não compila.
+    let dados: Uint8Array<ArrayBuffer> | null = null;
     let quadro = 0;
+
+    /** Liga (ou religa) o analisador no stream que estiver no ref agora. */
+    const conectar = (stream: MediaStream) => {
+      if (!audio || !analisador) return;
+      try {
+        fonte?.disconnect();
+      } catch {
+        // Nó já solto não é problema de ninguém.
+      }
+      fonte = audio.createMediaStreamSource(stream);
+      fonte.connect(analisador);
+      // ⚠️ E NÃO LIGA NA SAÍDA DE ÁUDIO. Pendurar o analisador na saída
+      // devolveria a própria voz pelo alto-falante, com atraso — microfonia
+      // garantida em quem estiver sem fone.
+      ligadoEm = stream;
+    };
 
     try {
       audio = new Contexto();
-      const analisador = audio.createAnalyser();
+      analisador = audio.createAnalyser();
       // 1024 dá 512 faixas — resolução de sobra para 45 barras, e metade do
       // custo de 2048. O smoothing do próprio nó já tira o tremor mais fino.
       analisador.fftSize = 1024;
-      analisador.smoothingTimeConstant = 0.7;
-
-      fonte = audio.createMediaStreamSource(stream);
-      fonte.connect(analisador);
-      // ⚠️ E NÃO CONECTA NA SAÍDA. Ligar o analisador em `audio.destination`
-      // devolveria a própria voz pelo alto-falante, com atraso — microfonia
-      // garantida em quem estiver sem fone.
-
-      const dados = new Uint8Array(analisador.frequencyBinCount);
-      const meio = (BARRAS - 1) / 2;
+      analisador.smoothingTimeConstant = 0.62;
+      dados = new Uint8Array(analisador.frequencyBinCount);
 
       // Alguns navegadores criam o contexto suspenso; sem isto o analisador
       // devolve silêncio para sempre e a onda nunca se mexe.
       void audio.resume?.().catch(() => {});
-
-      const passo = () => {
-        analisador.getByteFrequencyData(dados);
-
-        for (let i = 0; i < BARRAS; i++) {
-          const d = Math.abs(i - meio);
-          const bin = binDaBarra(d, meio, dados.length);
-          const bruto = dados[bin] / 255;
-          const alvo =
-            ALTURA_MINIMA + bruto * tetoDaBarra(d / meio) * (1 - ALTURA_MINIMA);
-          const atual = alturas[i];
-          alturas[i] =
-            atual + (alvo - atual) * (alvo > atual ? SUBIDA : DESCIDA);
-        }
-
-        desenhar();
-        quadro = window.requestAnimationFrame(passo);
-      };
-      quadro = window.requestAnimationFrame(passo);
     } catch {
-      // Navegador recusou o contexto. Linha de base, e a gravação segue.
+      for (let i = 0; i < 30; i++) repousar();
       desenhar();
+      return () => window.removeEventListener("resize", aoRedimensionar);
     }
 
-    const aoRedimensionar = () => medir();
-    window.addEventListener("resize", aoRedimensionar);
+    const passoDoQuadro = () => {
+      const atual = streamRef.current;
+
+      // ⭐ O ref é lido A CADA QUADRO. Stream que chega atrasado entra sozinho;
+      // stream que morre (o `stop()` das trilhas) devolve a onda ao repouso no
+      // quadro seguinte — ela nunca sobrevive ao microfone.
+      if (atual && atual !== ligadoEm) conectar(atual);
+
+      if (!atual || !analisador || !dados) {
+        repousar();
+      } else {
+        analisador.getByteFrequencyData(dados);
+        for (let i = 0; i < BARRAS; i++) {
+          const d = Math.abs(i - meio);
+          const byte = dados[binDaBarra(d, meio, dados.length)];
+          const alvo = alturaDaBarra(byte, d / meio);
+          const anterior = alturas[i];
+          alturas[i] =
+            anterior + (alvo - anterior) * (alvo > anterior ? subida : descida);
+        }
+      }
+
+      desenhar();
+      quadro = window.requestAnimationFrame(passoDoQuadro);
+    };
+    quadro = window.requestAnimationFrame(passoDoQuadro);
 
     return () => {
       window.removeEventListener("resize", aoRedimensionar);
@@ -242,11 +245,12 @@ export function BitzEspectro({
         // Contexto já fechado não é problema de ninguém.
       }
     };
-  }, [stream, ativo]);
+  }, [streamRef, ativo]);
 
   // `aria-hidden`: quem usa leitor de tela recebe a informação pelo cronômetro
   // e pela legenda. Uma canvas não tem o que anunciar.
   return <canvas ref={canvasRef} aria-hidden className={className} />;
 }
 
+export { ALTURA_MINIMA };
 export default BitzEspectro;

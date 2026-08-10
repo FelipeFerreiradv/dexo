@@ -36,15 +36,20 @@ export function BitzEscuta({
   estado,
   segundos,
   maxSegundos,
-  stream,
+  streamRef,
   onParar,
   onCancelar,
 }: {
   estado: EstadoDoAudio;
   segundos: number;
   maxSegundos: number;
-  /** O stream vivo, para o espectro desenhar. `null` ⇒ onda em repouso. */
-  stream?: MediaStream | null;
+  /**
+   * O ref do stream vivo, lido pelo espectro a cada quadro.
+   *
+   * ⚠️ REF e não valor: passar o stream como prop tornava a onda refém do
+   * instante em que o React re-renderizasse, e ela já ficou parada por isso.
+   */
+  streamRef: React.RefObject<MediaStream | null>;
   onParar: () => void;
   onCancelar: () => void;
 }) {
@@ -102,13 +107,13 @@ export function BitzEscuta({
       {/* ⭐ O ESPECTRO. Largura cheia e altura generosa: é o protagonista da
           tela, e uma onda pequena voltaria a ser um enfeite de canto. */}
       <BitzEspectro
-        stream={gravando ? (stream ?? null) : null}
+        streamRef={streamRef}
         ativo={gravando}
         className="relative h-32 w-full max-w-[22rem] sm:h-36"
       />
 
       <div className="relative flex flex-col items-center gap-2">
-        <p
+        {/*<p
           className={cn(
             "font-mono text-3xl tabular-nums",
             perto ? "text-[#ff8a7a]" : "text-[#f2ede2]",
@@ -116,7 +121,7 @@ export function BitzEscuta({
           aria-live="off"
         >
           {mm}:{ss}
-        </p>
+        </p>*/}
         <p className="max-w-[26ch] text-sm text-balance text-[#f2ede2]/65">
           {enviando
             ? "Transcrevendo o que você falou…"
