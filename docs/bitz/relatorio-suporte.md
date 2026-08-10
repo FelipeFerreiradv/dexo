@@ -9,6 +9,23 @@
 
 ---
 
+## ⚠️ LEIA ANTES: versão 2 (10/08/2026)
+
+Este documento foi escrito quando o Bitz **só lia**. Com as Fases 9, 10 e 11 ele
+passou a **cadastrar peça, cadastrar até 25 de uma vez, alterar preço, ajustar
+estoque, cadastrar cliente e aprender as regras da loja** — sempre com um cartão
+de confirmação que o lojista precisa clicar.
+
+**As seções 1 a 15 abaixo continuam válidas para tudo que elas descrevem, com
+UMA exceção corrigida em linha:** onde estava escrito que "o Bitz só lê, não cria,
+não edita e não apaga", agora está a redação certa.
+
+👉 **A versão completa e atual está na seção 16, no fim deste arquivo**, e no
+relatório publicado para o Suporte:
+https://claude.ai/code/artifact/09b720d3-f2c1-49e7-b384-63ca3db7bcdf
+
+---
+
 ## 1. Resumo executivo
 
 O **Bitz** é o assistente de IA do Dexo: um robôzinho no canto inferior direito
@@ -23,7 +40,7 @@ Três coisas o Suporte precisa ter na ponta da língua:
 
 | | |
 | --- | --- |
-| **O Bitz só lê.** | Ele não cria, não edita e não apaga nada. Um erro dele nunca vira um erro no sistema do cliente. |
+| ~~**O Bitz só lê.**~~ **CORRIGIDO na v2** | Valia até a Fase 8. Hoje ele **prepara** cadastros e alterações, e o lojista confirma num cartão. Ele continua **não apagando nada**. Ver a seção 16. |
 | **5 mensagens por dia, por loja.** | A cota é da conta, somando o uso de todos os colaboradores, e zera todo dia. |
 | **Ele respeita as permissões.** | Colaborador sem acesso ao Financeiro continua sem acesso, dentro do chat também. |
 
@@ -408,9 +425,11 @@ de número.
 
 **As cinco coisas que mais vão aparecer no atendimento:**
 
-1. **"O Bitz mexeu no meu cadastro?"** — Não. Ele só lê. Não cria, não edita, não
-   apaga, não emite nota, não publica anúncio, não dá baixa em estoque. Se algo
-   mudou no sistema, não foi ele.
+1. **"O Bitz mexeu no meu cadastro?"** — ⚠️ **RESPOSTA CORRIGIDA NA V2.** Ele
+   pode ter mexido, **se o cliente clicou em Confirmar num cartão**. Peça para
+   procurar o cartão na conversa: ele fica lá, marcado como "Feito" ou
+   "Cancelado". O que ele **não** faz é agir sozinho — e continua não apagando
+   nada, não emitindo nota e não publicando anúncio. Ver a seção 16.
 
 2. **"Acabaram minhas mensagens."** — São 5 por dia **por loja**, somando todos os
    colaboradores, e zeram todo dia. Para aumentar, é ajuste da Dexo, conta a
@@ -567,3 +586,130 @@ Antes de considerar a entrega no ar:
 **Rollback:** `NEXT_PUBLIC_AI_MODULE_ENABLED=false` (com rebuild do front)
 desliga tudo sem deploy de código. As colunas e tabelas podem ficar — são
 aditivas e ninguém mais as lê.
+
+---
+
+# 16. Versão 2 — o Bitz passou a alterar o sistema (10/08/2026)
+
+**Relatório publicado para o Suporte:**
+https://claude.ai/code/artifact/09b720d3-f2c1-49e7-b384-63ca3db7bcdf
+
+Levantado a partir do código, com verificação adversarial: dois revisores
+tentaram **refutar** cada afirmação antes de ela entrar aqui. Seis afirmações
+que eu teria escrito foram derrubadas e reescritas — estão marcadas com ⚠️.
+
+## 16.1 A resposta que o Suporte mais vai dar
+
+> **"Dá para editar meu produto pelo chat?"**
+> Depois que a peça já existe, o Bitz muda **duas coisas, e só duas: o preço de
+> venda e a quantidade em estoque.** Não existe uma terceira.
+
+| Campo da peça | Pelo chat? |
+| --- | --- |
+| Preço de venda | ✅ |
+| Quantidade em estoque | ✅ |
+| Nome, descrição | ❌ só na tela |
+| Marca, modelo, ano, versão | ❌ só na tela |
+| Categoria, part number, qualidade | ❌ só na tela |
+| Fotos, localização | ❌ só na tela |
+| Peso e medidas | ❌ só na tela |
+| Preço de custo e margem | ❌ **nem lê** |
+| Compatibilidades, anúncios | ❌ só na tela |
+| Apagar a peça | ❌ **não existe a ferramenta** |
+
+**Cadastrar é diferente de editar.** Ao criar uma peça nova o lojista dita nome,
+preço, estoque, marca, modelo, ano, categoria e part number; o SKU é gerado pelo
+servidor. Depois que ela existe, só preço e estoque voltam a ser alcançáveis.
+
+## 16.2 As 6 ferramentas de alteração
+
+| Ferramenta | Permissão própria |
+| --- | --- |
+| Cadastrar peça | `bitz.criar-produto` |
+| Cadastrar até 25 peças de uma vez | `bitz.criar-produto-lote` |
+| Alterar preço (acha a peça por SKU exato) | `bitz.atualizar-preco` |
+| Ajustar estoque (acha a peça por SKU exato) | `bitz.ajustar-estoque` |
+| Cadastrar cliente (sem CPF/CNPJ) | `bitz.criar-cliente` |
+| Ensinar uma regra à loja | **só o dono da conta** |
+
+As chaves nascem **ligadas** para o colaborador que já tem a página — ninguém
+perdeu capacidade no dia do lançamento. O administrador desliga na tela de
+Colaboradores. A permissão é conferida **duas vezes**: quando a proposta nasce e
+de novo no clique, porque entre uma e outra passam até 30 minutos.
+
+## 16.3 O cartão de confirmação
+
+| Situação | O que acontece |
+| --- | --- |
+| Confirmar | "✓ Feito." O cartão **não some** — vira o registro do que foi feito |
+| Cancelar | "✕ Cancelado — nada foi alterado." Fica esmaecido na conversa |
+| Clicar duas vezes | Executa **uma vez só** (três travas, uma delas atômica no banco) |
+| 30 minutos sem clicar | Expira, e manda pedir de novo para conferir os valores atuais |
+| Corrigir no meio | O cartão anterior do mesmo assunto é cancelado sozinho |
+| **F5 na página** | A conversa e os cartões pendentes somem. Fechar/reabrir o painel **não** apaga |
+| Internet cai no clique | "Perdi a conexão antes de saber o resultado. Confira na tela." — nunca afirma que nada mudou |
+| Lote com falha | "28 de 30 cadastradas" + a lista nominal das que faltaram, com o motivo |
+
+## 16.4 ⚠️ Três comportamentos que os céticos acharam, e que ninguém tinha escrito
+
+1. **O preço personalizado do anúncio é perdido.** Confirmar uma troca de preço
+   substitui o `priceOverride` daquele anúncio pelo preço do produto — em todos
+   os anúncios da peça. **O cartão não avisa isso hoje.** Se a loja usa preço
+   diferente por canal, ela precisa reconfigurar em "Editar anúncio individual".
+
+2. **A atualização do marketplace é melhor esforço.** Se o canal recusar, o erro
+   é registrado no log e a ação continua marcada como confirmada. Ou seja: pode
+   **mudar no Dexo e não mudar no anúncio**. E o **Magalu** também é atualizado,
+   não só ML e Shopee.
+
+3. **Marca, modelo, ano e categoria podem ser derivados do NOME no cadastro** e
+   **não aparecem no cartão de conferência**. Se o cliente disser "eu não escolhi
+   essa categoria", é isso.
+
+## 16.5 ⚠️ Duas frases que precisam de ressalva
+
+- **"O Bitz nunca apaga nada"** — verdade para dado de negócio (não existe a
+  ferramenta). Mas o administrador apaga as próprias memórias e conversas pela
+  tela, e a troca de preço substitui o preço personalizado do anúncio (16.4).
+- **"A foto não fica guardada"** — o **arquivo** nunca toca disco nem banco. Mas
+  o **texto que o Bitz leu dela** fica no histórico daquela conversa e volta nas
+  perguntas seguintes. Apagar a conversa remove. Idem para a transcrição do áudio.
+
+## 16.6 Cotas
+
+| | Cota | Limites |
+| --- | --- | --- |
+| Mensagem | 5/dia/loja | 4.000 caracteres · 20 por minuto por pessoa |
+| Áudio | 15/dia/loja | 90 segundos · 2 MB |
+| Foto | 15/dia/loja | 8 MB · reduzida a 1600 px no navegador |
+| XML de NF-e | **não gasta cota** | modelo 55 · até 40 itens lidos |
+
+A cota é da **loja**, não da pessoa, e vira **às 21h de Brasília** (meia-noite
+UTC). Quando a falha é nossa (chave inválida, provedor sem saldo), a cota é
+devolvida.
+
+## 16.7 A memória da loja
+
+Só o **dono da conta** ensina, vê e apaga — o colaborador nem vê o botão. Mas as
+regras **valem para as conversas de todo mundo da loja**, e o cartão avisa isso
+antes do clique. Cabem 25 regras de 200 caracteres.
+
+Recusa na entrada: CPF, CNPJ, telefone, e-mail, CEP; senha, token, chave de
+acesso; e qualquer número que muda (SKU, estoque, saldo, quantidade).
+
+## 16.8 Gates de qualidade da v2
+
+| Gate | Resultado |
+| --- | --- |
+| Suíte automatizada | **5.905 passando · 0 falhas** (476 arquivos) |
+| Verificação de tipos | **100 = baseline exata**, 0 nos arquivos novos |
+| Testes enfraquecidos | **0** (`tests/`: +16.941 / −2) |
+| Fluxos críticos no diff | **0 arquivos** em marketplaces, usecases, services, middlewares e workers |
+| Auditoria de perf/egress | 3 achados corrigidos, 6 documentados, cada correção verificada por mutação |
+
+## 16.9 Pendências
+
+- **Tabela `AiMemory` ainda não criada em produção.** A ausência **não derruba
+  nada**: o chat segue inteiro, só sem lembrar, e só a tela de memória falha.
+- **Leitura de foto ainda não testada em produção** (depende de saldo no
+  provedor de visão).
