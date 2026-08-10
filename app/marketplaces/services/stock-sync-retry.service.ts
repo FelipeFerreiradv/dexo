@@ -12,26 +12,69 @@ const BATCH_LIMIT = 100;
 // marcar FAILED enquanto o operador só desligou temporariamente).
 const DISABLED_DEFER_SECONDS = 1800;
 
+// Teto do adiamento. O job NUNCA é apagado por idade — apagar devolveria
+// exatamente o oversell que o defer existe para evitar. O que o teto faz é
+// PARAR DE SER SILENCIOSO: passadas 24h com o kill-switch ligado, cada job
+// adiado emite um SystemLog de alerta UMA única vez (marcado no lastError,
+// que é reescrito a cada defer) e segue reagendando normalmente.
+const DISABLED_DEFER_ALERT_AFTER_MS = 24 * 60 * 60 * 1000;
+const DEFER_ALERT_MARK = "[alertado]";
+
 const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
-const TERMINAL_PATTERNS = [
+// Vocabulário terminal ESCOPADO POR PLATAFORMA — mesmo desenho com que o
+// ListingRetryService trata o vocabulário da Shopee. Um termo específico de um
+// canal não pode decidir o destino do job de outro: `refused_` é definitivo na
+// OLX, mas não significa nada no ML, e classificar por engano faz o job morrer
+// sem nunca ter sido tentado de verdade.
+const TERMINAL_PATTERNS_COMUNS = [
   /invalid_token/i,
   /token revoked/i,
   /item does not exist/i,
   /item_not_found/i,
   /listing not found/i,
   /unauthorized/i,
-  // Vocabulário PERMANENTE da OLX (espelha classifyOlxRemoveError): sem isto
-  // uma recusa definitiva da OLX (preço suspeito, sem slot, imagem pequena)
-  // era tratada como transitória e queimava as 6 tentativas do backoff.
+];
+
+// Espelha classifyOlxRemoveError (listing-removal.helpers.ts): sem isto uma
+// recusa definitiva da OLX (preço suspeito, sem slot, imagem pequena) era
+// tratada como transitória e queimava as 6 tentativas do backoff.
+// Os códigos -4 (validação) e -6 (permissão/plano) chegam aqui já achatados
+// dentro da mensagem por olxRespError, por isso são casados como texto.
+const TERMINAL_PATTERNS_OLX = [
   /refused_/i,
   /error_image_too_small/i,
   /not_enough_ad_slots/i,
+  /statusCode\s*-4\b/i,
+  /statusCode\s*-6\b/i,
+  /ad_not_found/i,
 ];
 
-const isTerminalError = (message: string) =>
-  TERMINAL_PATTERNS.some((re) => re.test(message));
+// Graph API da Meta. O código numérico (190/100/200) NÃO chega até aqui —
+// FacebookApiService.formatError monta só a mensagem —, então o casamento é
+// por texto, que é o que de fato trafega.
+const TERMINAL_PATTERNS_FACEBOOK = [
+  /invalid oauth access token/i,
+  /session has expired/i,
+  /error validating access token/i,
+  /oauthexception/i,
+  /does not exist, cannot be loaded due to missing permission/i,
+  /unsupported get request/i,
+];
+
+const TERMINAL_PATTERNS_POR_PLATAFORMA: Record<string, RegExp[]> = {
+  OLX: TERMINAL_PATTERNS_OLX,
+  FACEBOOK: TERMINAL_PATTERNS_FACEBOOK,
+};
+
+const isTerminalError = (message: string, platform?: string) => {
+  if (TERMINAL_PATTERNS_COMUNS.some((re) => re.test(message))) return true;
+  const especificos = platform
+    ? TERMINAL_PATTERNS_POR_PLATAFORMA[platform]
+    : undefined;
+  return especificos ? especificos.some((re) => re.test(message)) : false;
+};
 
 type StockSyncJobRow = {
   id: string;
@@ -41,6 +84,8 @@ type StockSyncJobRow = {
   targetStock: number;
   attempts: number;
   status: string;
+  createdAt?: Date | string | null;
+  lastError?: string | null;
 };
 
 /**
@@ -112,16 +157,25 @@ export class StockSyncRetryService {
         continue;
       }
 
-      // Indexar resultados por externalListingId.
-      const resultByListingId = new Map<
-        string,
-        (typeof results)[number]
-      >();
+      // Indexar resultados por listingId — chave ÚNICA por anúncio.
+      //
+      // Antes a chave era `externalListingId`, que é o SKU em MAGALU, OLX e
+      // FACEBOOK: um produto anunciado em duas dessas plataformas produzia dois
+      // resultados com a MESMA chave, o Map guardava só o último e os dois jobs
+      // liam o mesmo resultado. Se um lado tinha sucesso e o outro falha, os
+      // dois jobs eram apagados e a baixa daquele canal se perdia — o anúncio
+      // ficava no ar com a peça vendida (oversell).
+      //
+      // `listingId` vem do funil único de `syncProductStock`. O fallback por
+      // `externalListingId` cobre resultados de caminhos que não o preencham,
+      // preservando o comportamento anterior para eles.
+      const resultByListingId = new Map<string, (typeof results)[number]>();
+      const resultByExternalId = new Map<string, (typeof results)[number]>();
       for (const r of results) {
-        if (r.externalListingId) resultByListingId.set(r.externalListingId, r);
+        if (r.listingId) resultByListingId.set(r.listingId, r);
+        if (r.externalListingId) resultByExternalId.set(r.externalListingId, r);
       }
 
-      // Match de cada job com o resultado correspondente via listing.externalListingId.
       const listingRows = await prisma.productListing.findMany({
         where: { id: { in: productJobs.map((j) => j.listingId) } },
         select: { id: true, externalListingId: true },
@@ -134,7 +188,9 @@ export class StockSyncRetryService {
           await this.markFailed(job, "Listing removido");
           continue;
         }
-        const r = resultByListingId.get(listing.externalListingId);
+        const r =
+          resultByListingId.get(job.listingId) ??
+          resultByExternalId.get(listing.externalListingId);
         if (!r) {
           await this.handleFailure(job, "Sem resultado da sincronização");
           continue;
@@ -166,22 +222,74 @@ export class StockSyncRetryService {
   private static async deferJob(job: {
     id: string;
     listingId: string;
+    productId?: string;
+    platform?: string;
+    createdAt?: Date | string | null;
+    lastError?: string | null;
   }): Promise<void> {
     const nextRunAt = new Date(Date.now() + DISABLED_DEFER_SECONDS * 1000);
+
+    // Teto por idade: só muda a VISIBILIDADE do problema, nunca o destino do
+    // job. Um adiamento que já dura mais de 24h deixou de ser "o operador
+    // desligou por um instante" e virou baixa de estoque parada — o operador
+    // precisa saber. Alerta uma vez só: o marcador vive no próprio lastError.
+    const createdAtMs = job.createdAt ? new Date(job.createdAt).getTime() : NaN;
+    const deferredForMs = Number.isFinite(createdAtMs)
+      ? Date.now() - createdAtMs
+      : 0;
+    const jaAlertado = (job.lastError ?? "").includes(DEFER_ALERT_MARK);
+    const deveAlertar =
+      deferredForMs > DISABLED_DEFER_ALERT_AFTER_MS && !jaAlertado;
+
     await (prisma as any).stockSyncJob.updateMany({
       where: { id: job.id },
       data: {
         nextRunAt,
-        lastError: "integration_disabled: reagendado (kill-switch ligado)",
+        lastError:
+          deveAlertar || jaAlertado
+            ? `integration_disabled: reagendado (kill-switch ligado) ${DEFER_ALERT_MARK}`
+            : "integration_disabled: reagendado (kill-switch ligado)",
       },
     });
+
+    if (!deveAlertar) return;
+
+    const horas = Math.floor(deferredForMs / (60 * 60 * 1000));
+    try {
+      await SystemLogService.logError(
+        "STOCK_SYNC_DEFERRED_TOO_LONG",
+        `Baixa de estoque do listing ${job.listingId} está represada há ${horas}h: ` +
+          `a integração ${job.platform ?? ""} segue desligada por kill-switch. ` +
+          `O job NÃO foi perdido e será processado assim que a integração religar.`,
+        {
+          resource: "ProductListing",
+          resourceId: job.listingId,
+          details: {
+            productId: job.productId,
+            platform: job.platform,
+            deferredForHours: horas,
+          },
+        },
+      );
+    } catch (logErr) {
+      console.error(
+        "[StockSyncRetryService] Falha ao registrar alerta de adiamento:",
+        logErr,
+      );
+    }
   }
 
   private static async handleFailure(
-    job: { id: string; attempts: number; productId: string; listingId: string },
+    job: {
+      id: string;
+      attempts: number;
+      productId: string;
+      listingId: string;
+      platform?: string;
+    },
     message: string,
   ): Promise<void> {
-    if (isTerminalError(message)) {
+    if (isTerminalError(message, job.platform)) {
       await this.markFailed(job, message);
       return;
     }

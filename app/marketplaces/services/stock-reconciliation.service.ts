@@ -49,14 +49,20 @@ export class StockReconciliationService {
     // marketplace e volta a vender) — antes do espelho essas linhas ficavam
     // stale em active/paused e ENTRAVAM aqui; a ampliação preserva a
     // cobertura de drift que elas sempre tiveram.
+    // "pending"/"PENDING" entram porque é o estado ESTÁVEL de um anúncio OLX
+    // publicado: a OLX confirma na fila de revisão e o Dexo não espelha esse
+    // status, então o anúncio fica pending indefinidamente e ficava invisível
+    // para a rede de segurança de drift.
     const reconcilableStatuses =
       process.env.LISTING_STATUS_SYNC_DISABLED === "1"
-        ? ["ACTIVE", "active", "paused", "PAUSED"]
+        ? ["ACTIVE", "active", "paused", "PAUSED", "pending", "PENDING"]
         : [
             "ACTIVE",
             "active",
             "paused",
             "PAUSED",
+            "pending",
+            "PENDING",
             "under_review",
             "reviewing",
             "unlist",
@@ -67,6 +73,12 @@ export class StockReconciliationService {
       where: {
         productId: { in: productIds },
         status: { in: reconcilableStatuses },
+        // Placeholders locais NUNCA existiram no canal: ML, Shopee e o
+        // republish do ML criam linhas com externalListingId `PENDING_*` e
+        // status exatamente "pending". Sem este filtro, admitir "pending"
+        // acima passaria a enfileirar job de sync para anúncio que não existe
+        // do outro lado — regressão direta em ML e Shopee.
+        NOT: { externalListingId: { startsWith: "PENDING_" } },
       },
       select: {
         id: true,

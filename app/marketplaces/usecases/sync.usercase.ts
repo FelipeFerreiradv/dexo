@@ -171,6 +171,15 @@ export interface SyncResult {
   success: boolean;
   productId: string;
   externalListingId: string;
+  /**
+   * Id do ProductListing que originou este resultado. É a ÚNICA chave que
+   * identifica um anúncio sem ambiguidade: `externalListingId` é o SKU em
+   * MAGALU, OLX e FACEBOOK, então o mesmo produto anunciado em duas dessas
+   * plataformas produz resultados com chave idêntica. Preenchido pelo funil
+   * único de `syncProductStock`; opcional porque os caminhos que montam
+   * SyncResult sem um listing (produto não encontrado) não têm o que informar.
+   */
+  listingId?: string;
   platform?: Platform;
   previousStock?: number;
   newStock?: number;
@@ -3239,6 +3248,7 @@ export class SyncUseCase {
           success: true,
           productId,
           externalListingId: listing.externalListingId,
+          listingId: listing.id,
           platform: account.platform,
           skipped: true,
           skipReason: "integration_disabled",
@@ -3274,7 +3284,11 @@ export class SyncUseCase {
             };
         }
 
-        results.push({ ...result, platform: account.platform });
+        results.push({
+          ...result,
+          listingId: listing.id,
+          platform: account.platform,
+        });
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
@@ -3282,6 +3296,7 @@ export class SyncUseCase {
           success: false,
           productId,
           externalListingId: listing.externalListingId,
+          listingId: listing.id,
           platform: account.platform,
           error: errorMessage,
         });
