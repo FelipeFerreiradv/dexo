@@ -503,6 +503,35 @@ export class ListingAutodetectUseCase {
     const status = /out.?of.?stock|discontinued/i.test(availability)
       ? "paused"
       : "active";
+
+    // Estoque REAL do catálogo quando a Meta o expõe. O fallback é o
+    // comportamento anterior (1 unidade disponível) — a edge de leitura pode
+    // não devolver o campo dependendo da versão/permissão do app, e inventar
+    // um número seria pior do que assumir a unidade.
+    const rawQty = item.quantity_to_sell_on_facebook;
+    const parsedQty =
+      typeof rawQty === "number"
+        ? rawQty
+        : typeof rawQty === "string" && rawQty.trim() !== ""
+          ? Number(rawQty)
+          : NaN;
+    const stock =
+      status === "paused"
+        ? 0
+        : Number.isFinite(parsedQty) && parsedQty >= 0
+          ? Math.trunc(parsedQty)
+          : 1;
+
+    // Galeria inteira: capa + adicionais, sem duplicar a capa.
+    const extras = Array.isArray(item.additional_image_urls)
+      ? item.additional_image_urls.filter(
+          (u): u is string => typeof u === "string" && u.trim().length > 0,
+        )
+      : [];
+    const imageUrls = [...(imageUrl ? [imageUrl] : []), ...extras].filter(
+      (u, i, arr) => arr.indexOf(u) === i,
+    );
+
     return {
       platform: Platform.FACEBOOK,
       account,
@@ -510,11 +539,11 @@ export class ListingAutodetectUseCase {
       rawSku,
       title: (item.name as string) || rawSku || externalListingId,
       price: this.coercePrice(item.price),
-      stock: status === "paused" ? 0 : 1,
+      stock,
       status,
       permalink: (item.url as string) || null,
       imageUrl,
-      imageUrls: imageUrl ? [imageUrl] : [],
+      imageUrls,
       createdAt: new Date(),
     };
   }

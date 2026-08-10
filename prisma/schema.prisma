@@ -425,8 +425,11 @@ model ProductListing {
   // `permalink`. Só populado para listings da plataforma OLX.
   olxListId            String?
 
-  // Facebook/Meta Commerce Catalog: id numérico do item no catálogo (devolvido
-  // no items_batch). O `retailer_id` enviado ao catálogo = o SKU, guardado em
+  // Facebook/Meta Commerce Catalog: id numérico do item no catálogo.
+  // ATENÇÃO: NÃO vem no items_batch — a publicação recebe apenas `handles`.
+  // O id só aparece na LEITURA (GET /{catalog_id}/products), então quem preenche
+  // esta coluna é o import de anúncios, não o create.
+  // O `retailer_id` enviado ao catálogo = o SKU, guardado em
   // `externalListingId`; o permalink (quando houver) vai em `permalink`. Só
   // populado para listings da plataforma FACEBOOK.
   fbCatalogItemId      String?

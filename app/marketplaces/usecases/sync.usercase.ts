@@ -410,6 +410,7 @@ export class SyncUseCase {
             status: true,
             permalink: true,
             productId: true,
+            fbCatalogItemId: true,
           },
         }),
     );
@@ -1010,6 +1011,59 @@ export class SyncUseCase {
         ),
     );
 
+    // Repescagem pelo SKU SANITIZADO.
+    //
+    // A publicação grava `retailer_id` = SKU sanitizado (buildRetailerId troca
+    // tudo fora de [A-Za-z0-9_.-] por "_"), mas `normalizeSku` só faz trim e
+    // lowercase. Logo, para um SKU com espaço, barra ou acento — comum em
+    // auto-peças — o retailer_id que volta da Meta ("abc_123") nunca casa com o
+    // skuNormalized do produto ("abc 123"), e o import criava um produto NOVO,
+    // duplicando a peça.
+    //
+    // Só roda para o que não casou pelo caminho normal: com SKUs limpos o
+    // conjunto é vazio e nada é consultado.
+    const naoCasados = normalizedSkus.filter((s) => !productsMap.has(s));
+    if (naoCasados.length > 0) {
+      try {
+        const repescados = await prisma.$queryRaw<
+          Array<{ id: string; skuNormalized: string | null; name: string }>
+        >`
+          SELECT "id", "skuNormalized", "name"
+            FROM "Product"
+           WHERE "userId" = ${account.userId}
+             AND "skuNormalized" IS NOT NULL
+             AND regexp_replace("skuNormalized", '[^a-z0-9_.\-]', '_', 'g')
+                 = ANY(${naoCasados}::text[])
+        `;
+        for (const p of repescados) {
+          // Indexa pela forma SANITIZADA, que é a chave que o item da Meta traz.
+          const chave = (p.skuNormalized ?? "").replace(
+            /[^a-z0-9_.\-]/g,
+            "_",
+          );
+          if (chave && !productsMap.has(chave)) {
+            productsMap.set(chave, {
+              id: p.id,
+              skuNormalized: p.skuNormalized,
+              name: p.name,
+            });
+            products.push({
+              id: p.id,
+              skuNormalized: p.skuNormalized,
+              name: p.name,
+            });
+          }
+        }
+      } catch (err) {
+        // Repescagem é best-effort: se falhar, o import segue com o casamento
+        // exato (comportamento anterior) em vez de abortar o lote inteiro.
+        console.warn(
+          "[SyncUseCase] Repescagem de SKU sanitizado falhou (Facebook):",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
     const matchedProductIds = products.map((p) => p.id);
     const withListing = new Set<string>(
       (
@@ -1060,11 +1114,25 @@ export class SyncUseCase {
           const needsStatusUpdate = existingListing.status !== status;
           const needsPermalinkUpdate =
             !!permalink && existingListing.permalink !== permalink;
-          if (needsIdUpgrade || needsStatusUpdate || needsPermalinkUpdate) {
+          // O id numérico do item no Catálogo Meta só existe AQUI: o
+          // items_batch da publicação devolve handles, não o id. Este é o
+          // único caminho que pode preencher a coluna.
+          const catalogItemId = item.id ? String(item.id) : null;
+          const needsCatalogItemId =
+            !!catalogItemId &&
+            (existingListing as { fbCatalogItemId?: string | null })
+              .fbCatalogItemId !== catalogItemId;
+          if (
+            needsIdUpgrade ||
+            needsStatusUpdate ||
+            needsPermalinkUpdate ||
+            needsCatalogItemId
+          ) {
             await ListingRepository.updateListing(existingListing.id, {
               externalListingId: needsIdUpgrade ? externalListingId : undefined,
               status: needsStatusUpdate ? status : undefined,
               permalink: needsPermalinkUpdate ? permalink : undefined,
+              fbCatalogItemId: needsCatalogItemId ? catalogItemId : undefined,
             });
           }
         } else {

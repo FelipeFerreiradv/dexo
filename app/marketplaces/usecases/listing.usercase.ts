@@ -4054,6 +4054,10 @@ export class ListingUseCase {
         lastError: null,
         retryEnabled: false,
         nextRetryAt: null,
+        // Categoria efetivamente publicada — alimenta o filtro "Categoria
+        // publicada". Na OLX é o código do VEÍCULO (2101 carros / 2103 motos);
+        // o tipo de peça viaja em `params`, não aqui.
+        requestedCategoryId: String(resolvedCategory),
         // "Criado por": o ator humano que disparou o create (mesmo padrão
         // ML/Shopee/Magalu). Sem isto o anúncio OLX nascia sem autor.
         createdByUserId: actorId ?? null,
@@ -6686,6 +6690,11 @@ export class ListingUseCase {
         lastError: null,
         retryEnabled: false,
         nextRetryAt: null,
+        // Categoria efetivamente publicada (google_product_category) — mesmo
+        // papel que mlCategoryId cumpre no ML para o filtro de Produtos.
+        requestedCategoryId: googleProductCategory
+          ? String(googleProductCategory)
+          : null,
         // "Criado por": ator humano do create (mesmo padrão ML/Shopee/Magalu).
         createdByUserId: actorId ?? null,
       });

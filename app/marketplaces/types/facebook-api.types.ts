@@ -89,6 +89,14 @@ export interface FacebookCatalogProduct {
   url?: string;
   price?: string | number;
   image_url?: string;
+  /**
+   * Quantidade real no catálogo. Pode não vir na edge de LEITURA dependendo da
+   * versão/permissão do app — por isso é opcional e o import só usa quando
+   * presente, sem inventar default.
+   */
+  quantity_to_sell_on_facebook?: number | string;
+  /** Galeria além da capa. Ausente quando o item foi criado só com image_url. */
+  additional_image_urls?: string[];
 }
 
 /** Resposta paginada do GET /{catalog_id}/products (cursor `after`). */

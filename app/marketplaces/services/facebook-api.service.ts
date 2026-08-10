@@ -211,7 +211,12 @@ export class FacebookApiService {
   ): Promise<FacebookCatalogProduct[]> {
     const limit = opts?.limit ?? 100;
     const maxPages = opts?.maxPages ?? 200; // trava (até 20k itens) contra loop
-    const fields = "id,retailer_id,name,availability,url,price,image_url";
+    // quantity_to_sell_on_facebook e additional_image_urls entram para o import
+    // trazer estoque REAL e a galeria inteira — sem eles todo produto importado
+    // nascia com estoque 1 e uma única foto, e republicar mutilava o anúncio.
+    const fields =
+      "id,retailer_id,name,availability,url,price,image_url," +
+      "quantity_to_sell_on_facebook,additional_image_urls";
     const items: FacebookCatalogProduct[] = [];
     let after: string | undefined;
     try {
