@@ -538,7 +538,7 @@ export class ListingAutodetectUseCase {
       externalListingId,
       rawSku,
       title: (item.name as string) || rawSku || externalListingId,
-      price: this.coercePrice(item.price),
+      price: this.coerceFacebookPrice(item.price),
       stock,
       status,
       permalink: (item.url as string) || null,
@@ -548,27 +548,40 @@ export class ListingAutodetectUseCase {
     };
   }
 
+  /**
+   * Preço vindo de ML, Shopee e Magalu. BYTE-IDÊNTICO ao da main: estes três
+   * canais entregam número, e alargar o parse aqui mudaria silenciosamente o
+   * preço com que um produto é criado na auto-detecção deles.
+   * O caso do Facebook (string com moeda) vive em `coerceFacebookPrice`.
+   */
   private static coercePrice(value: unknown): number {
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+
+  /**
+   * Preço do Catálogo Meta, que vem como string com moeda ("199.90 BRL"):
+   * `Number("199.90 BRL")` é NaN, o que zerava todo produto importado.
+   * Isolado do `coercePrice` de propósito — ver o comentário acima.
+   */
+  private static coerceFacebookPrice(value: unknown): number {
     if (typeof value === "number") {
       return Number.isFinite(value) && value >= 0 ? value : 0;
     }
-    // A Meta devolve o preço como string "199.90 BRL" (valor + código de moeda):
-    // Number("199.90 BRL") = NaN, o que zerava TODO produto importado do catálogo.
-    // Extrai o número e normaliza o separador decimal (pt-BR "1.199,90" ou en).
     if (typeof value === "string") {
       const match = value.match(/-?\d[\d.,]*/);
       if (!match) return 0;
-      let s = match[0];
-      if (s.includes(",") && s.includes(".")) {
+      let t = match[0];
+      if (t.includes(",") && t.includes(".")) {
         // O separador decimal é o último a aparecer; o outro é de milhar.
-        s =
-          s.lastIndexOf(",") > s.lastIndexOf(".")
-            ? s.replace(/\./g, "").replace(",", ".")
-            : s.replace(/,/g, "");
-      } else if (s.includes(",")) {
-        s = s.replace(",", ".");
+        t =
+          t.lastIndexOf(",") > t.lastIndexOf(".")
+            ? t.replace(/\./g, "").replace(",", ".")
+            : t.replace(/,/g, "");
+      } else if (t.includes(",")) {
+        t = t.replace(",", ".");
       }
-      const n = Number(s);
+      const n = Number(t);
       return Number.isFinite(n) && n >= 0 ? n : 0;
     }
     const n = Number(value);

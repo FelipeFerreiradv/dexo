@@ -161,3 +161,89 @@ describe("ListingRetryService — guard de plataforma", () => {
     );
   });
 });
+
+describe("ListingRetryService — teto de tentativas e kill-switch (OLX/Facebook)", () => {
+  it("recusa DEFINITIVA da OLX sai da fila na 1a tentativa, sem republicar para sempre", async () => {
+    vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
+      makeListing(Platform.OLX),
+    ] as any);
+    vi.spyOn(ListingRepository, "claimRetryCandidate").mockResolvedValue(
+      true as any,
+    );
+    const incSpy = vi
+      .spyOn(ListingRepository, "incrementRetryAttempts")
+      .mockResolvedValue(undefined as any);
+    const { ListingUseCase } = await import("../../usecases/listing.usercase");
+    vi.spyOn(ListingUseCase, "createOlxListing").mockResolvedValue({
+      success: false,
+      error: "OLX recusou o anúncio: REFUSED_SUSPECT_PRICE",
+    } as any);
+
+    await ListingRetryService.runOnce();
+
+    // Sem isto o create regravaria retryEnabled:true a cada 60s, para sempre:
+    // ~1.440 chamadas/dia à OLX por um anúncio que ela nunca vai aceitar.
+    expect(incSpy).toHaveBeenCalledWith(
+      "listing-1",
+      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
+    );
+    expect(
+      (incSpy.mock.calls[0][1] as any).lastError.startsWith("[TERMINAL]"),
+    ).toBe(true);
+  });
+
+  it("falha TRANSITORIA continua reagendando, com backoff", async () => {
+    vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
+      makeListing(Platform.FACEBOOK),
+    ] as any);
+    vi.spyOn(ListingRepository, "claimRetryCandidate").mockResolvedValue(
+      true as any,
+    );
+    const incSpy = vi
+      .spyOn(ListingRepository, "incrementRetryAttempts")
+      .mockResolvedValue(undefined as any);
+    const { ListingUseCase } = await import("../../usecases/listing.usercase");
+    vi.spyOn(ListingUseCase, "createFacebookListing").mockResolvedValue({
+      success: false,
+      error: "socket hang up",
+    } as any);
+
+    await ListingRetryService.runOnce();
+
+    const arg = incSpy.mock.calls[0][1] as any;
+    expect(arg.retryEnabled).toBe(true);
+    expect(arg.nextRetryAt).toBeInstanceOf(Date);
+  });
+
+  it("kill-switch ligado ⇒ o cron NAO publica e NAO consome tentativa", async () => {
+    const anterior = process.env.OLX_INTEGRATION_DISABLED;
+    process.env.OLX_INTEGRATION_DISABLED = "1";
+    try {
+      vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
+        makeListing(Platform.OLX),
+      ] as any);
+      vi.spyOn(ListingRepository, "claimRetryCandidate").mockResolvedValue(
+        true as any,
+      );
+      const incSpy = vi
+        .spyOn(ListingRepository, "incrementRetryAttempts")
+        .mockResolvedValue(undefined as any);
+      const { ListingUseCase } = await import("../../usecases/listing.usercase");
+      const createSpy = vi
+        .spyOn(ListingUseCase, "createOlxListing")
+        .mockResolvedValue({ success: true } as any);
+
+      await ListingRetryService.runOnce();
+
+      // O cron de retry era o unico caminho de publicacao que o kill-switch
+      // nao cobria: com a integracao pausada, ele seguia publicando na OLX.
+      expect(createSpy).not.toHaveBeenCalled();
+      const arg = incSpy.mock.calls[0][1] as any;
+      expect(arg.retryEnabled).toBeUndefined();
+      expect(arg.nextRetryAt).toBeInstanceOf(Date);
+    } finally {
+      if (anterior === undefined) delete process.env.OLX_INTEGRATION_DISABLED;
+      else process.env.OLX_INTEGRATION_DISABLED = anterior;
+    }
+  });
+});

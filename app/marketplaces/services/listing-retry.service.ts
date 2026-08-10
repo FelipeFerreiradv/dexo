@@ -4,6 +4,11 @@ import { MLApiService } from "./ml-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MLOAuthService } from "./ml-oauth.service";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
+import {
+  classifyFacebookRemoveError,
+  classifyOlxRemoveError,
+} from "./listing-removal.helpers";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -174,6 +179,18 @@ export class ListingRetryService {
         ) {
           const ehOlx = account.platform === Platform.OLX;
           const nome = ehOlx ? "OLX" : "Facebook";
+
+          // Kill-switch: com a integração pausada, este cron NÃO pode continuar
+          // publicando. Reagenda sem consumir tentativa — quando o operador
+          // religar, o candidato volta à fila no estado em que estava.
+          if (isPlatformDisabled(account.platform)) {
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              nextRetryAt: new Date(Date.now() + 30 * 60 * 1000),
+              lastError: `${nome} pausado por kill-switch — retry adiado`,
+            });
+            continue;
+          }
+
           try {
             const { ListingUseCase } =
               await import("../usecases/listing.usercase");
@@ -191,10 +208,38 @@ export class ListingRetryService {
                   account?.id,
                 );
             if (!result.success) {
-              // O create já persiste status/lastError no próprio catch; aqui é
-              // só observabilidade, igual ao branch da Shopee.
+              // TETO DE TENTATIVAS.
+              //
+              // Diferente do branch da Shopee, createOlxListing e
+              // createFacebookListing NÃO lançam: devolvem { success:false } e o
+              // catch deles regrava `retryEnabled: true` com nextRetryAt de 60s.
+              // Sem o bloco abaixo, uma recusa DEFINITIVA (preço suspeito, sem
+              // vaga no plano, imagem pequena) voltaria a ser publicada a cada
+              // 60 segundos, para sempre — ~1.440 chamadas/dia por anúncio.
+              //
+              // Classifica com o mesmo vocabulário já usado na remoção, para
+              // erro permanente sair da fila na primeira vez.
+              const msg = result.error ?? "Erro desconhecido";
+              const classificacao = ehOlx
+                ? classifyOlxRemoveError(new Error(msg))
+                : classifyFacebookRemoveError(new Error(msg));
+              const ehPermanente = classificacao.kind === "permanent";
+              const attempts = (cand.retryAttempts || 0) + 1;
+              const shouldRetry = !ehPermanente && attempts < MAX_ATTEMPTS;
+              const nextDelay =
+                BACKOFF_SECONDS[
+                  Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+                ];
+              await ListingRepository.incrementRetryAttempts(cand.id, {
+                lastError:
+                  (ehPermanente ? "[TERMINAL] " : "") + msg.substring(0, 490),
+                nextRetryAt: shouldRetry
+                  ? new Date(Date.now() + nextDelay * 1000)
+                  : null,
+                retryEnabled: shouldRetry,
+              });
               console.warn(
-                `[ListingRetryService] retry ${nome} falhou para ${cand.id}: ${result.error}`,
+                `[ListingRetryService] retry ${nome} falhou para ${cand.id} (tentativa ${attempts}/${MAX_ATTEMPTS}${ehPermanente ? ", TERMINAL" : ""}): ${msg}`,
               );
             }
           } catch (err) {

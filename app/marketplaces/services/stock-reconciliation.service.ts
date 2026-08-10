@@ -83,7 +83,18 @@ export class StockReconciliationService {
         // status exatamente "pending". Sem este filtro, admitir "pending"
         // acima passaria a enfileirar job de sync para anúncio que não existe
         // do outro lado — regressão direta em ML e Shopee.
-        NOT: { externalListingId: { startsWith: "PENDING_" } },
+        //
+        // PAREADO com o status de propósito: excluir todo `PENDING_*` de forma
+        // ampla também removeria da varredura uma linha legítima — o create da
+        // Magalu sem SKU grava `PENDING_<ts>` com status "active" e entrava na
+        // reconciliação antes desta entrega. Assim o ramo do kill-switch fica
+        // de fato byte-idêntico ao anterior, como o comentário acima promete.
+        NOT: {
+          AND: [
+            { status: { in: ["pending", "PENDING"] } },
+            { externalListingId: { startsWith: "PENDING_" } },
+          ],
+        },
       },
       select: {
         id: true,

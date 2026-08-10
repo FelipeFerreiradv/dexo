@@ -411,7 +411,6 @@ export class SyncUseCase {
             status: true,
             permalink: true,
             productId: true,
-            fbCatalogItemId: true,
           },
         }),
     );
@@ -964,6 +963,10 @@ export class SyncUseCase {
       status: true,
       permalink: true,
       productId: true,
+      // Necessário para o write-on-change abaixo: sem a coluna aqui, a
+      // comparação `existingListing.fbCatalogItemId !== catalogItemId` seria
+      // sempre verdadeira e TODA importação gravaria um UPDATE por item.
+      fbCatalogItemId: true,
     } as const;
     const existingListings = [
       ...new Map(
@@ -1023,7 +1026,19 @@ export class SyncUseCase {
     //
     // Só roda para o que não casou pelo caminho normal: com SKUs limpos o
     // conjunto é vazio e nada é consultado.
-    const naoCasados = normalizedSkus.filter((s) => !productsMap.has(s));
+    // Guarda dupla. O `!productsMap.has(s)` sozinho quase nunca segura: basta UM
+    // item do catálogo que não exista no ERP — o caso normal — para o conjunto
+    // ficar não vazio e o `regexp_replace` (não indexável) varrer os produtos do
+    // tenant inteiro.
+    //
+    // O `includes("_")` é exato, não heurístico: `buildRetailerId` só produz `_`
+    // ONDE houve substituição. Um retailer_id sem `_` não sofreu sanitização
+    // alguma, logo o `skuNormalized` que ele casaria seria idêntico a ele — e
+    // esse produto já teria sido encontrado pelo findMany exato acima, com o
+    // mesmo filtro de userId. Conjunto de resultado idêntico, varredura evitada.
+    const naoCasados = normalizedSkus.filter(
+      (s) => !productsMap.has(s) && s.includes("_"),
+    );
     if (naoCasados.length > 0) {
       try {
         const repescados = await prisma.$queryRaw<
@@ -1121,8 +1136,7 @@ export class SyncUseCase {
           const catalogItemId = item.id ? String(item.id) : null;
           const needsCatalogItemId =
             !!catalogItemId &&
-            (existingListing as { fbCatalogItemId?: string | null })
-              .fbCatalogItemId !== catalogItemId;
+            existingListing.fbCatalogItemId !== catalogItemId;
           if (
             needsIdUpgrade ||
             needsStatusUpdate ||
