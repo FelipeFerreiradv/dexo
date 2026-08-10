@@ -21,6 +21,7 @@ import {
   type UploadBgJobRef,
 } from "@/lib/upload-image";
 import {
+  bgJobProgressLabel,
   isImageBgJobTerminal,
   retryImageBgJob,
   type ImageBgJobStatus,
@@ -143,7 +144,7 @@ export function MultiImageUpload({
   }, [hasActiveBgJobs]);
 
   const handleJobsUpdate = useCallback(
-    (jobs: ImageBgJobStatus[]) => {
+    (jobs: ImageBgJobStatus[], missingIds: string[] = []) => {
       const completed = jobs.filter(
         (j) => j.status === "COMPLETED" && j.resultUrl,
       );
@@ -177,6 +178,29 @@ export function MultiImageUpload({
           const entry = prev[job.webpUrl];
           if (!entry || entry.status === job.status) return prev;
           return { ...prev, [job.webpUrl]: { ...entry, status: job.status } };
+        });
+      }
+
+      // Terminal por AUSÊNCIA. Estes dois casos não têm `webpUrl` utilizável
+      // (o primeiro nem linha tem), então são resolvidos pelo `jobId`; sem
+      // isto o overlay gira para sempre porque `activeJobIds` nunca esvazia.
+      const lost = new Set(missingIds);
+      for (const j of jobs) {
+        // COMPLETED sem `resultUrl` não entra no swap acima E o loop de status
+        // pula todo COMPLETED — ficaria preso em PENDING. Hoje o worker sempre
+        // grava status+resultado na MESMA escrita, então isto é defesa.
+        if (j.status === "COMPLETED" && !j.resultUrl) lost.add(j.id);
+      }
+      if (lost.size > 0) {
+        setBgJobs((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [url, entry] of Object.entries(prev)) {
+            if (!lost.has(entry.jobId) || entry.status === "FAILED") continue;
+            next[url] = { ...entry, status: "FAILED" };
+            changed = true;
+          }
+          return changed ? next : prev;
         });
       }
     },
@@ -446,13 +470,15 @@ export function MultiImageUpload({
                     </div>
                   );
                 }
+                const progress = bgJobProgressLabel(Date.now() - job.startedAt);
                 return (
-                  <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-background/85 px-1.5 py-1 backdrop-blur-[2px]">
+                  <div
+                    className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-background/85 px-1.5 py-1 backdrop-blur-[2px]"
+                    title={progress.full}
+                  >
                     <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
                     <span className="truncate text-[10px] text-muted-foreground">
-                      {Date.now() - job.startedAt > 60_000
-                        ? "Ainda recortando — pode salvar normalmente"
-                        : "Recortando fundo…"}
+                      {progress.short}
                     </span>
                   </div>
                 );
