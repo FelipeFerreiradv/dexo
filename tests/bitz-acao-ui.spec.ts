@@ -128,8 +128,55 @@ describe("⭐ a decisão sobrevive ao fechar e reabrir o painel", () => {
   });
 
   it("e sobe a decisão assim que ela acontece", () => {
-    expect(hook).toContain("opts?.aoDecidir?.(acaoId, decidido)");
+    expect(hook).toContain("opts?.aoDecidir?.(acaoId, decidido");
     expect(mensagem).toContain("aoDecidir={aoDecidirAcao}");
+  });
+});
+
+describe("⭐ o cartão de LOTE (Fase 10)", () => {
+  it("desenha uma TABELA quando o preview tem itens", () => {
+    expect(cartao).toContain("acao.preview.itens");
+    expect(cartao).toContain("<table");
+  });
+
+  it("⭐ a tabela tem rolagem e teto de altura", () => {
+    // 25 linhas empurrariam a conversa para fora da tela.
+    expect(cartao).toMatch(/max-h-\d+ overflow-y-auto/);
+  });
+
+  it("o aviso de homônimo aparece POR LINHA", () => {
+    expect(cartao).toContain("it.aviso");
+  });
+
+  it("⭐ o relatório mostra o que ENTROU e o que FALTOU, com os dois números", () => {
+    // ⚠️ Conserto de um achado: a asserção antiga passava com
+    // "{total} de {total}" — ou seja, "25 de 25" num lote em que 3 falharam.
+    expect(cartao).toMatch(
+      /\{acao\.relatorio\.criadas\}\s*de\s*\{acao\.relatorio\.total\}/,
+    );
+    expect(cartao).toContain("acao.relatorio.falhas.map");
+    expect(cartao).toContain("f.motivo");
+  });
+
+  it("⭐ cada linha do lote mostra os campos que vão ao banco", () => {
+    // `categoria` e `partNumber` só existem por item; sem esta linha eles iam
+    // para uma coluna indexada sem passar pelos olhos de ninguém.
+    expect(cartao).toContain("it.detalhe");
+  });
+
+  it("⭐⭐ retry SEM relatório não afirma sucesso pleno", () => {
+    // A primeira resposta pode ter se perdido (4G, timeout de proxy). No retry
+    // o servidor devolve `jaEstava` sem as falhas — e um "Feito." liso afirmaria
+    // sucesso completo sobre um lote que pode ter falhado em parte.
+    expect(hook).toContain("data.jaEstava && !data.relatorio");
+    expect(hook).toMatch(/Confira o resultado na tela/i);
+  });
+
+  it("⭐ o relatório também sobrevive ao fechar e reabrir", () => {
+    // Mesma razão da decisão: "28 de 30 cadastradas" é justamente o que o
+    // lojista precisa reler depois.
+    expect(hook).toContain("relatorio?: BitzAcaoRelatorio");
+    expect(chat).toContain("...(relatorio ? { relatorio } : {})");
   });
 });
 

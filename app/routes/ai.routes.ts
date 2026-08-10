@@ -601,6 +601,8 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
         status: r.status,
         resultId: r.resultId,
         jaEstava: r.jaEstava,
+        // Só em lote: o que entrou e o que faltou.
+        ...(r.relatorio ? { relatorio: r.relatorio } : {}),
       });
     },
   );

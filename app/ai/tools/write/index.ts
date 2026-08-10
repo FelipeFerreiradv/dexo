@@ -18,11 +18,13 @@ import { cadastrarCliente } from "./clientes";
 import {
   ajustarEstoqueDoProduto,
   alterarPrecoDoProduto,
+  cadastrarPecasEmMassa,
   cadastrarProduto,
 } from "./produtos";
 
 export const WRITE_TOOLS: AiTool[] = [
   cadastrarProduto,
+  cadastrarPecasEmMassa,
   alterarPrecoDoProduto,
   ajustarEstoqueDoProduto,
   cadastrarCliente,

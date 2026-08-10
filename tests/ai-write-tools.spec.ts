@@ -134,6 +134,194 @@ describe("⭐ nenhuma tool de escrita ESCREVE", () => {
   });
 });
 
+describe("⭐ o LOTE (Fase 10)", () => {
+  const LOTE = {
+    pecas: [
+      { nome: "Farol dianteiro esquerdo", preco: 320, estoque: 1 },
+      { nome: "Lanterna traseira direita", preco: 180, estoque: 1 },
+      { nome: "Retrovisor elétrico", preco: 90, estoque: 2 },
+    ],
+    marcaComum: "VW",
+    modeloComum: "Gol",
+    anoComum: "2012",
+  };
+
+  it("⭐ propõe o lote inteiro e NÃO cria nada", async () => {
+    const r = await chamar("cadastrar_pecas_em_massa", LOTE);
+
+    expect(r.ok).toBe(true);
+    expect(criarProdutoMock).not.toHaveBeenCalled();
+    expect(proporMock).toHaveBeenCalledTimes(1);
+    expect(proporMock.mock.calls[0][0].tipo).toBe("produto.criar-lote");
+    expect(proporMock.mock.calls[0][0].payload.itens).toHaveLength(3);
+  });
+
+  it("⭐ o cartão recebe uma LINHA por peça, não 9 campos soltos", () => {
+    // `campos` é "o que muda neste registro"; um lote é uma TABELA. Espremer 3
+    // peças em `campos` daria 9 linhas soltas e ninguém conferiria nada.
+    return chamar("cadastrar_pecas_em_massa", LOTE).then(() => {
+      const preview = proporMock.mock.calls[0][0].preview;
+      expect(preview.itens).toHaveLength(3);
+      expect(preview.itens[0]).toMatchObject({
+        nome: "Farol dianteiro esquerdo",
+        estoque: "1",
+      });
+      // E o resumo em `campos` continua curto: quantas e quanto.
+      expect(preview.campos.map((c: any) => c.campo)).toEqual([
+        "Peças",
+        "Valor somado",
+      ]);
+    });
+  });
+
+  it("⭐⭐ o payload de CADA linha é exatamente o que o lojista ditou", async () => {
+    // ⚠️ Conserto de um achado: nada na suíte prendia isto, e trocar
+    // `price: p.preco` por `price: p.estoque` sobrevivia à suíte INTEIRA — com
+    // o cartão mostrando fielmente "R$ 320,00 / 1 un" e o banco recebendo
+    // preço 1 e estoque 320.
+    await chamar("cadastrar_pecas_em_massa", {
+      pecas: [
+        {
+          nome: "Farol dianteiro esquerdo",
+          preco: 320,
+          estoque: 1,
+          marca: "Fiat",
+          modelo: "Palio",
+          ano: "2015",
+          categoria: "Iluminação",
+          partNumber: "5U0945095",
+        },
+      ],
+      marcaComum: "VW",
+    });
+
+    expect(proporMock.mock.calls[0][0].payload.itens[0]).toEqual({
+      name: "Farol dianteiro esquerdo",
+      price: 320,
+      stock: 1,
+      // O campo POR LINHA vence o comum.
+      brand: "Fiat",
+      model: "Palio",
+      year: "2015",
+      category: "Iluminação",
+      partNumber: "5U0945095",
+    });
+  });
+
+  it("⭐ TODO campo que vai ao banco aparece na linha do cartão", async () => {
+    // `categoria` e `partNumber` só existem POR ITEM — não há campo comum para
+    // eles. Sem `detalhe`, 100% do que o modelo pusesse ali ia para uma coluna
+    // indexada sem ninguém poder conferir.
+    await chamar("cadastrar_pecas_em_massa", {
+      pecas: [
+        {
+          nome: "Farol",
+          preco: 320,
+          estoque: 1,
+          categoria: "Iluminação",
+          partNumber: "5U0945095",
+        },
+      ],
+      marcaComum: "VW",
+      modeloComum: "Gol",
+    });
+
+    const linha = proporMock.mock.calls[0][0].preview.itens[0];
+    expect(linha.detalhe).toContain("VW");
+    expect(linha.detalhe).toContain("Gol");
+    expect(linha.detalhe).toContain("Iluminação");
+    expect(linha.detalhe).toContain("5U0945095");
+  });
+
+  it("⭐ linha NÃO conferida contra o catálogo é DECLARADA", async () => {
+    // A conferência para no décimo nome distinto. Calar faria a ausência de
+    // aviso parecer "conferi e não achei nada" — o contrário da verdade.
+    const r = await chamar("cadastrar_pecas_em_massa", {
+      pecas: Array.from({ length: 14 }, (_, i) => ({
+        nome: `Peca ${i}`,
+        preco: 10,
+        estoque: 1,
+      })),
+    });
+
+    expect(r.ok).toBe(true);
+    const itens = proporMock.mock.calls[0][0].preview.itens;
+    expect(itens[9].aviso).toBeUndefined();
+    expect(itens[10].aviso).toMatch(/não conferida/i);
+    expect(itens[13].aviso).toMatch(/não conferida/i);
+  });
+
+  it("plural do aviso de homônimo em português", async () => {
+    listarProdutosMock.mockResolvedValue({
+      products: [{ name: "Farol" }, { name: "Farol" }],
+    });
+    await chamar("cadastrar_pecas_em_massa", {
+      pecas: [{ nome: "Farol", preco: 1, estoque: 1 }],
+    });
+    const aviso = proporMock.mock.calls[0][0].preview.itens[0].aviso as string;
+    expect(aviso).toContain("2 iguais");
+    expect(aviso).not.toContain("iguals");
+  });
+
+  it("os campos COMUNS descem para cada linha do payload", async () => {
+    // Poupam o modelo de repetir 25 vezes "Gol 2012" — que é a fonte mais
+    // provável de divergência entre as linhas.
+    await chamar("cadastrar_pecas_em_massa", LOTE);
+    for (const item of proporMock.mock.calls[0][0].payload.itens) {
+      expect(item).toMatchObject({ brand: "VW", model: "Gol", year: "2012" });
+    }
+  });
+
+  it("⭐ homônimo vira AVISO na linha, nunca bloqueio", async () => {
+    // Um desmonte tem mesmo dois faróis dianteiros esquerdos iguais, de dois
+    // carros — e cada um é uma peça com SKU próprio.
+    listarProdutosMock.mockResolvedValue({
+      products: [
+        { name: "Farol dianteiro esquerdo" },
+        { name: "Farol dianteiro esquerdo" },
+        { name: "Outra coisa" },
+      ],
+    });
+
+    await chamar("cadastrar_pecas_em_massa", {
+      pecas: [{ nome: "Farol dianteiro esquerdo", preco: 320, estoque: 1 }],
+    });
+
+    const itens = proporMock.mock.calls[0][0].preview.itens;
+    expect(itens[0].aviso).toMatch(/já existe 2/i);
+    // E a peça CONTINUA no payload — o aviso informa, não barra.
+    expect(proporMock.mock.calls[0][0].payload.itens).toHaveLength(1);
+  });
+
+  it("⚠️ a busca de homônimos que falha NÃO derruba o lote", async () => {
+    listarProdutosMock.mockRejectedValue(new Error("db fora"));
+    const r = await chamar("cadastrar_pecas_em_massa", LOTE);
+    expect(r.ok).toBe(true);
+    expect(proporMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("mais de 25 peças é rejeitado no schema", async () => {
+    const r = await chamar("cadastrar_pecas_em_massa", {
+      pecas: Array.from({ length: 26 }, (_, i) => ({
+        nome: `Peca ${i}`,
+        preco: 10,
+        estoque: 1,
+      })),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.failure).toBe("argumentos_invalidos");
+    expect(proporMock).not.toHaveBeenCalled();
+  });
+
+  it("⭐ a descrição PROÍBE completar a lista com peças típicas do carro", () => {
+    // O lojista pode dizer o carro sem dizer as peças. Completar a lista com o
+    // que "costuma sair" de um Gol seria cadastrar peça que não existe no pátio.
+    const tool = WRITE_TOOLS.find((t) => t.name === "cadastrar_pecas_em_massa")!;
+    expect(tool.description).toMatch(/NUNCA complete a lista/i);
+    expect(tool.description).toMatch(/PERGUNTE quais peças/i);
+  });
+});
+
 describe("⭐ a proposta não viaja para o modelo", () => {
   it("o `content` que vai ao provedor NÃO carrega o preview nem o payload", async () => {
     const r = await chamar("alterar_preco_produto", { sku: "4821", preco: 240 });

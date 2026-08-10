@@ -17,6 +17,7 @@
 /** As ações que o Bitz pode propor. String livre no banco — ver o schema. */
 export type AiAcaoTipo =
   | "produto.criar"
+  | "produto.criar-lote"
   | "produto.preco"
   | "produto.estoque"
   | "cliente.criar";
@@ -54,10 +55,36 @@ export type AiAcaoStatus =
  */
 export const ACAO_EXIGE_PERMISSAO = {
   "produto.criar": "bitz.criar-produto",
+  "produto.criar-lote": "bitz.criar-produto-lote",
   "produto.preco": "bitz.atualizar-preco",
   "produto.estoque": "bitz.ajustar-estoque",
   "cliente.criar": "bitz.criar-cliente",
 } as const satisfies Record<AiAcaoTipo, string>;
+
+/**
+ * ⭐ AÇÕES QUE DISPUTAM O MESMO ASSUNTO. Uma proposta nova aposenta as pendentes
+ * da mesma família, na mesma conversa.
+ *
+ * ⚠️ Conserto de um achado: aposentar só o MESMO tipo deixava dois cartões vivos
+ * quando o lojista emendava — "cadastra o farol" (peça única) e logo depois "na
+ * verdade são 3" (lote, com o farol dentro). Confirmar os dois criava o farol
+ * duas vezes.
+ */
+export const FAMILIA_DA_ACAO: Record<AiAcaoTipo, string> = {
+  "produto.criar": "produto.cadastro",
+  "produto.criar-lote": "produto.cadastro",
+  "produto.preco": "produto.preco",
+  "produto.estoque": "produto.estoque",
+  "cliente.criar": "cliente.cadastro",
+};
+
+/** Os tipos que dividem a família de um tipo dado. */
+export function tiposDaMesmaFamilia(tipo: AiAcaoTipo): AiAcaoTipo[] {
+  const familia = FAMILIA_DA_ACAO[tipo];
+  return (Object.keys(FAMILIA_DA_ACAO) as AiAcaoTipo[]).filter(
+    (t) => FAMILIA_DA_ACAO[t] === familia,
+  );
+}
 
 /** Uma linha do cartão: o que muda, de quê para quê. */
 export interface AiAcaoCampo {
@@ -87,6 +114,51 @@ export interface AiAcaoPreview {
    * disso na hora de decidir, não depois.
    */
   aviso?: string;
+  /**
+   * ⭐ AS LINHAS DE UM LOTE (Fase 10). Presente só em `produto.criar-lote`.
+   *
+   * Por que não reusar `campos`: `campos` é "o que muda neste registro", uma
+   * lista de pares. Um lote é uma TABELA — 25 peças, cada uma com nome, preço e
+   * estoque. Espremer isso em `campos` daria 75 linhas soltas e ninguém
+   * conferiria nada.
+   *
+   * ⚠️ E conferir é o ponto: a chave de permissão do lote é separada da de peça
+   * única justamente porque ler 25 linhas cansa, e confirmar sem ler é o risco
+   * real desta fase.
+   */
+  itens?: AiAcaoItem[];
+}
+
+/** Uma linha do lote, como o cartão a desenha. */
+export interface AiAcaoItem {
+  nome: string;
+  preco: string;
+  estoque: string;
+  /**
+   * Os demais campos de negócio da linha (marca, modelo, ano, categoria, part
+   * number), já formatados.
+   *
+   * ⚠️ Existe porque sem ele havia campo indo para o banco sem passar pelos
+   * olhos de ninguém — e `categoria`/`partNumber` só podem vir POR ITEM, então
+   * era 100% do que o modelo pusesse ali.
+   */
+  detalhe?: string;
+  /** "já existe 1 igual no catálogo". Aviso, nunca bloqueio — ver a Fase 10. */
+  aviso?: string;
+}
+
+/**
+ * O que aconteceu num lote, depois de confirmado.
+ *
+ * ⭐ MELHOR-ESFORÇO COM RELATÓRIO, e não tudo-ou-nada (decisão do dono em
+ * 10/08/2026, seguindo o precedente de `LocationUseCase.createBulk`): uma linha
+ * ruim não pode invalidar as 28 boas. O lojista vê o que entrou e o que faltou,
+ * e corrige só o que faltou.
+ */
+export interface AiAcaoRelatorioDeLote {
+  criadas: number;
+  total: number;
+  falhas: Array<{ nome: string; motivo: string }>;
 }
 
 /** O que a UI recebe para desenhar o cartão. NUNCA contém o payload. */
@@ -110,6 +182,8 @@ export type AiAcaoResultado =
       status: "confirmada" | "cancelada";
       resultId: string | null;
       jaEstava: boolean;
+      /** Só em lote: o que entrou e o que faltou. Ver `AiAcaoRelatorioDeLote`. */
+      relatorio?: AiAcaoRelatorioDeLote;
     }
   | { ok: false; motivo: AiAcaoFalha; mensagem: string };
 

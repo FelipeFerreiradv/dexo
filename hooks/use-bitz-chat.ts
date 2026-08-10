@@ -97,14 +97,24 @@ export function useBitzChat() {
    * ativo.
    */
   const decidirAcao = React.useCallback(
-    (acaoId: string, status: "confirmada" | "cancelada") => {
+    (
+      acaoId: string,
+      status: "confirmada" | "cancelada",
+      relatorio?: BitzAcao["relatorio"],
+    ) => {
       setMessages((prev) =>
         prev.map((m) =>
           m.acoes?.some((a) => a.id === acaoId)
             ? {
                 ...m,
                 acoes: m.acoes.map((a) =>
-                  a.id === acaoId ? { ...a, decidida: status } : a,
+                  a.id === acaoId
+                    ? {
+                        ...a,
+                        decidida: status,
+                        ...(relatorio ? { relatorio } : {}),
+                      }
+                    : a,
                 ),
               }
             : m,

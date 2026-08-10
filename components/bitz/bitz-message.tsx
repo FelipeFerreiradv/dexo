@@ -7,6 +7,7 @@ import { FileText, ImageIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { BitzChatMessage } from "@/hooks/use-bitz-chat";
+import type { BitzAcao } from "@/hooks/use-bitz-acao";
 import { BitzAcaoCard } from "./bitz-acao";
 import { BitzMascot } from "./bitz-mascot";
 import { BitzSources } from "./bitz-sources";
@@ -116,7 +117,11 @@ export function BitzMessage({
   aoDecidirAcao,
 }: {
   message: BitzChatMessage;
-  aoDecidirAcao?: (id: string, status: "confirmada" | "cancelada") => void;
+  aoDecidirAcao?: (
+    id: string,
+    status: "confirmada" | "cancelada",
+    relatorio?: BitzAcao["relatorio"],
+  ) => void;
 }) {
   const isUser = message.role === "user";
 

@@ -85,7 +85,11 @@ function montarDb(): Espiao {
       // Aposentar a proposta anterior do mesmo tipo (ver `proporAcao`).
       updateMany: async ({ where, data }: any) => {
         const alvos = acoesGravadas.filter((l) =>
-          Object.entries(where).every(([k, v]) => (l as any)[k] === v),
+          Object.entries(where).every(([k, v]: [string, any]) =>
+            v && typeof v === "object" && Array.isArray(v.in)
+              ? v.in.includes((l as any)[k])
+              : (l as any)[k] === v,
+          ),
         );
         for (const l of alvos) Object.assign(l, data);
         return { count: alvos.length };
@@ -309,6 +313,8 @@ describe("⭐⭐ seleção: as frases REAIS do lojista", () => {
     ["cadastra um cliente novo, Maria Souza", "cadastrar_cliente"],
     ["cria o cliente oficina do joao", "cadastrar_cliente"],
     ["ajusta o estoque dessa peca pra 7", "ajustar_estoque_produto"],
+    ["cadastra essas pecas: farol, lanterna, retrovisor", "cadastrar_pecas_em_massa"],
+    ["cria os produtos que eu tirei do gol", "cadastrar_pecas_em_massa"],
     ["corrige a quantidade em estoque", "ajustar_estoque_produto"],
     ["chegou mais 3 unidades no estoque", "ajustar_estoque_produto"],
   ];
@@ -332,6 +338,12 @@ describe("⭐⭐ seleção: as frases REAIS do lojista", () => {
     "quais pecas estao com estoque baixo",
     "me mostra os anuncios pausados",
     "quanto custa o cubo de roda dianteiro",
+    // ⚠️ Estas três a revisão adversarial reproduziu com o registry de produção:
+    // as chaves do LOTE eram vocabulário de consulta (`lista`, `todas`,
+    // `desmont`, `pecas`) e a tool de ESCRITA EM MASSA liderava o cardápio.
+    "lista todas as pecas com estoque baixo",
+    "me mostra todas as pecas do gol",
+    "quais lotes ainda nao foram desmontados",
   ];
 
   it.each(SO_CONSULTA)("'%s' NÃO oferece tool de escrita nenhuma", (frase) => {

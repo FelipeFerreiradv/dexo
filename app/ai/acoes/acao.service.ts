@@ -19,7 +19,9 @@ import {
   type AiAcaoFalha,
   type AiAcaoPreview,
   type AiAcaoProposta,
+  type AiAcaoRelatorioDeLote,
   type AiAcaoResultado,
+  tiposDaMesmaFamilia,
   type AiAcaoTipo,
 } from "./acao.types";
 import { executarAcao } from "./executores";
@@ -61,7 +63,7 @@ export async function proporAcao(input: {
         conversationId: input.conversationId,
         dataOwnerId: input.scope.dataOwnerId,
         actorUserId: input.scope.actorId,
-        action: input.tipo,
+        action: { in: tiposDaMesmaFamilia(input.tipo) },
         status: "pendente",
       },
       data: {
@@ -190,8 +192,9 @@ export async function confirmarAcao(input: {
   }
 
   let resultId: string | null = null;
+  let relatorio: AiAcaoRelatorioDeLote | undefined;
   try {
-    ({ resultId } = await executarAcao(
+    ({ resultId, relatorio } = await executarAcao(
       linha.action as AiAcaoTipo,
       linha.payload,
       scope,
@@ -246,9 +249,20 @@ export async function confirmarAcao(input: {
     tipo: linha.action,
     status: "confirmada",
     resultId: resultId ?? undefined,
+    // Em lote, o que importa na trilha é a CONTA — "28 de 30" responde a
+    // pergunta que o suporte faz, e um id sozinho não responde.
+    ...(relatorio
+      ? { resumo: `${relatorio.criadas}/${relatorio.total} criadas` }
+      : {}),
   });
 
-  return { ok: true, status: "confirmada", resultId, jaEstava: false };
+  return {
+    ok: true,
+    status: "confirmada",
+    resultId,
+    jaEstava: false,
+    ...(relatorio ? { relatorio } : {}),
+  };
 }
 
 /**

@@ -26,7 +26,11 @@ export function BitzAcaoCard({
   aoDecidir,
 }: {
   acao: BitzAcao;
-  aoDecidir?: (id: string, status: "confirmada" | "cancelada") => void;
+  aoDecidir?: (
+    id: string,
+    status: "confirmada" | "cancelada",
+    relatorio?: BitzAcao["relatorio"],
+  ) => void;
 }) {
   const { estado, erro, confirmar, cancelar } = useBitzAcao(acao.id, {
     decidida: acao.decidida,
@@ -83,6 +87,78 @@ export function BitzAcaoCard({
           </div>
         ))}
       </dl>
+
+      {/* ⭐ AS LINHAS DO LOTE (Fase 10). Conferir 25 linhas cansa — e confirmar
+          sem ler é o risco real desta fase —, então a tabela vem em fonte de
+          leitura, com rolagem própria e um teto de altura que não empurra a
+          conversa para fora da tela. */}
+      {acao.preview.itens?.length ? (
+        <div className="border-border/60 max-h-56 overflow-y-auto border-t">
+          <table className="w-full text-[11px]">
+            <thead className="bg-muted/50 sticky top-0">
+              <tr className="text-muted-foreground">
+                <th className="px-3 py-1 text-left font-medium">Peça</th>
+                <th className="px-2 py-1 text-right font-medium">Preço</th>
+                <th className="px-3 py-1 text-right font-medium">Qtd</th>
+              </tr>
+            </thead>
+            <tbody>
+              {acao.preview.itens.map((it, i) => (
+                <tr
+                  key={`${it.nome}-${i}`}
+                  className="border-border/40 border-t align-top"
+                >
+                  <td className="text-foreground px-3 py-1">
+                    {it.nome}
+                    {/* Marca, modelo, ano, categoria e part number: campos que
+                        VÃO PARA O BANCO e que, sem esta linha, o lojista não
+                        teria como conferir. */}
+                    {it.detalhe && (
+                      <span className="text-muted-foreground block text-[10px]">
+                        {it.detalhe}
+                      </span>
+                    )}
+                    {/* Aviso de homônimo por LINHA: um desmonte tem mesmo dois
+                        faróis iguais de dois carros, então isto informa — nunca
+                        bloqueia. */}
+                    {it.aviso && (
+                      <span className="text-muted-foreground block text-[10px]">
+                        {it.aviso}
+                      </span>
+                    )}
+                  </td>
+                  <td className="text-foreground px-2 py-1 text-right whitespace-nowrap">
+                    {it.preco}
+                  </td>
+                  <td className="text-foreground px-3 py-1 text-right">
+                    {it.estoque}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {/* O relatório do lote, depois de confirmado. Melhor-esforço: uma linha
+          ruim não invalida as boas, e o lojista precisa saber QUAIS faltaram. */}
+      {acao.relatorio && (
+        <div className="border-border/60 border-t px-3.5 py-2 text-[11px]">
+          <p className="text-foreground font-medium">
+            {acao.relatorio.criadas} de {acao.relatorio.total} peças
+            cadastradas.
+          </p>
+          {acao.relatorio.falhas.length > 0 && (
+            <ul className="text-muted-foreground mt-1 space-y-0.5">
+              {acao.relatorio.falhas.map((f, i) => (
+                <li key={`${f.nome}-${i}`}>
+                  <b className="text-foreground">{f.nome}</b> — {f.motivo}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {acao.preview.aviso && (
         <p className="border-border/60 text-foreground flex items-start gap-2 border-t px-3.5 py-2 text-[11px] leading-snug">

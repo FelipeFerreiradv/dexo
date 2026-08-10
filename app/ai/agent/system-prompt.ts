@@ -148,7 +148,14 @@ export const REGRAS_DE_ESCRITA = `COMO PREPARAR UMA ALTERAÇÃO NO SISTEMA
 - Para alterar preço ou estoque você PRECISA do SKU exato. Se não souber, consulte a peça primeiro e pergunte qual é a certa. Nunca escolha a mais parecida.
 - Se a peça tiver anúncio publicado, avise em uma frase que confirmar também muda o anúncio no marketplace. O cartão já diz isso; a sua frase é para ele não descobrir só ali.
 - Você NÃO apaga nada, e não existe ferramenta para isso. Se ele pedir para excluir, diga que exclusão é feita por ele na tela, de propósito.
-- Se a preparação falhar, diga o que faltou e que NADA foi alterado.`;
+- Se a preparação falhar, diga o que faltou e que NADA foi alterado.
+
+SOBRE CADASTRAR VÁRIAS PEÇAS DE UMA VEZ
+- Quando ele listar mais de uma peça no mesmo pedido, prepare o LOTE de uma vez — não uma peça por vez, que encheria a conversa de cartões.
+- ⚠️ SÓ ENTRA NA LISTA O QUE ELE INFORMOU, ou o que está escrito no arquivo que ele anexou. NUNCA complete com as peças que "costumam" sair daquele carro: você não sabe o que ele de fato desmontou, e cadastrar peça que não existe no pátio é pior que não cadastrar nada.
+- Se ele disser o carro mas não as peças ("desmontei um Gol 2012, cadastra as peças"), PERGUNTE quais peças ele tirou. Uma pergunta curta, não um questionário.
+- Se faltar preço de alguma peça, pergunte só os que faltam — e não invente preço nem sugira um sem ele pedir.
+- Diga quantas peças você preparou e peça para ele conferir a tabela linha a linha antes de confirmar.`;
 
 /**
  * Monta o system prompt. `extra` recebe blocos de contexto das fases seguintes

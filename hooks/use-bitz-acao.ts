@@ -29,11 +29,29 @@ export interface BitzAcaoCampo {
   para: string;
 }
 
+export interface BitzAcaoItem {
+  nome: string;
+  preco: string;
+  estoque: string;
+  /** Marca, modelo, ano, categoria, part number — tudo que também vai ao banco. */
+  detalhe?: string;
+  aviso?: string;
+}
+
 export interface BitzAcaoPreview {
   titulo: string;
   alvo?: string;
   campos: BitzAcaoCampo[];
   aviso?: string;
+  /** As linhas de um LOTE (Fase 10). Ausente nas ações de um registro só. */
+  itens?: BitzAcaoItem[];
+}
+
+/** O que aconteceu num lote confirmado. Melhor-esforço com relatório. */
+export interface BitzAcaoRelatorio {
+  criadas: number;
+  total: number;
+  falhas: Array<{ nome: string; motivo: string }>;
 }
 
 export interface BitzAcao {
@@ -55,6 +73,12 @@ export interface BitzAcao {
    * um nível acima. É lá que a decisão passa a morar.
    */
   decidida?: "confirmada" | "cancelada";
+  /**
+   * ⭐ O RELATÓRIO DO LOTE, depois de confirmado. Guardado na MENSAGEM pelo
+   * mesmo motivo da decisão: o cartão desmonta quando o painel fecha, e
+   * "28 de 30 cadastradas" é justamente o que o lojista precisa reler.
+   */
+  relatorio?: BitzAcaoRelatorio;
 }
 
 /** Aceita só o que tem a forma certa — o resto some sem quebrar o chat. */
@@ -77,7 +101,11 @@ export function useBitzAcao(
     /** Decisão já registrada na mensagem — sobrevive ao fechar/reabrir. */
     decidida?: "confirmada" | "cancelada";
     /** Sobe a decisão para a mensagem, que é quem sobrevive à remontagem. */
-    aoDecidir?: (id: string, status: "confirmada" | "cancelada") => void;
+    aoDecidir?: (
+      id: string,
+      status: "confirmada" | "cancelada",
+      relatorio?: BitzAcaoRelatorio,
+    ) => void;
   },
 ) {
   const [estado, setEstado] = React.useState<EstadoDaAcao>(
@@ -115,9 +143,19 @@ export function useBitzAcao(
         }
 
         const decidido = caminho === "confirmar" ? "confirmada" : "cancelada";
+        // ⚠️ CONFIRMAÇÃO QUE JÁ TINHA ACONTECIDO, sem relatório para mostrar.
+        // Acontece quando a PRIMEIRA resposta se perdeu (4G caindo, timeout do
+        // proxy) e o lojista clicou de novo. Num LOTE isso importa: as peças
+        // que falharam não vêm no retry, e um "Feito." liso afirmaria sucesso
+        // pleno sobre um lote que pode ter falhado em parte.
+        if (caminho === "confirmar" && data.jaEstava && !data.relatorio) {
+          setErro(
+            "Esta ação já tinha sido executada antes — a resposta anterior se perdeu no caminho. Confira o resultado na tela do sistema.",
+          );
+        }
         setEstado(decidido);
         // Sobe para a mensagem ANTES de qualquer remontagem possível.
-        opts?.aoDecidir?.(acaoId, decidido);
+        opts?.aoDecidir?.(acaoId, decidido, data?.relatorio);
       } catch {
         // ⚠️ Rede caiu DEPOIS de o servidor ter executado? Pode ter acontecido.
         // Por isso a mensagem não afirma que nada mudou: ela manda conferir. A

@@ -185,6 +185,8 @@ export function auditAiAction(
     status: "confirmada" | "falhou";
     resultId?: string;
     erro?: string;
+    /** Em lote: "28/30 criadas". Ver o executor de `produto.criar-lote`. */
+    resumo?: string;
   },
 ): void {
   void SystemLogService.logWarning(
@@ -199,6 +201,7 @@ export function auditAiAction(
         acao: input.tipo,
         status: input.status,
         resultId: input.resultId,
+        resumo: input.resumo,
         erro: snippet(input.erro),
       }),
     },

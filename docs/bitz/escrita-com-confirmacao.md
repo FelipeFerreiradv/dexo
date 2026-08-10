@@ -26,6 +26,7 @@ servidor obedeceria, porque "o usuário confirmou".
 | Ação | Efeito colateral | Permissão |
 |---|---|---|
 | Cadastrar peça | nenhum — `ProductUseCase.create` não dispara nada | `bitz.criar-produto` |
+| **Cadastrar VÁRIAS peças** (Fase 10) | nenhum | `bitz.criar-produto-lote` |
 | Cadastrar cliente | nenhum | `bitz.criar-cliente` |
 | Alterar preço | ⚠️ **sincroniza com o marketplace na hora** | `bitz.atualizar-preco` |
 | Ajustar estoque | ⚠️ **sincroniza com o marketplace na hora** | `bitz.ajustar-estoque` |
@@ -33,7 +34,7 @@ servidor obedeceria, porque "o usuário confirmou".
 **⛔ E nada de exclusão.** Não há tool de apagar e não vai haver — regra do dono
 do produto. A ausência é mais forte que qualquer validação: não existe caminho
 para o modelo pedir, porque não existe a ferramenta. Há teste varrendo os nomes
-de todas as 24 tools atrás de qualquer coisa que soe como exclusão.
+de todas as 25 tools atrás de qualquer coisa que soe como exclusão.
 
 ---
 
@@ -162,6 +163,40 @@ exige, para cada uma, `CREATE TABLE` no SQL de setup **e** numa migração lida 
 índice do git.
 
 O `SELECT` de conferência agora espera **1, 1, 1, 1, 1, 1, 0, 1**.
+
+---
+
+## Fase 10 — o lote
+
+O caso real: o lojista desmontou um carro e quer cadastrar as peças de uma vez.
+Ele dita a lista no chat, **ou** anexa uma foto/XML e o Bitz monta as linhas a
+partir da leitura (Fase 8) — sem caminho novo de extração: a leitura já chega ao
+modelo como `<dados_do_sistema>`, e o lojista confere linha a linha no cartão.
+
+⭐ **A descrição da ferramenta PROÍBE completar a lista.** "desmontei um Gol 2012,
+cadastra as peças" não vira 15 peças típicas de um Gol: o Bitz não sabe o que ele
+de fato tirou do carro, e cadastrar peça que não existe no pátio é pior que não
+cadastrar nada. A regra manda **perguntar quais peças**.
+
+⭐ **Chave de permissão SEPARADA da de peça única** (`bitz.criar-produto-lote`).
+O risco é diferente: conferir 25 linhas cansa, e confirmar sem ler é o risco real
+da fase. O administrador pode liberar uma e não a outra.
+
+| Decisão | Escolha do dono (10/08/2026) |
+| --- | --- |
+| Falha parcial | **As que deram certo ficam**, e o cartão lista as que faltaram — precedente de `LocationUseCase.createBulk`. Uma linha ruim não invalida as 28 boas. |
+| Peça já existente | **Cadastra e avisa na linha.** Um desmonte tem mesmo dois faróis dianteiros esquerdos iguais, de dois carros — cada um é uma peça com SKU próprio. Barrar erraria o negócio. |
+| Teto | **25 peças** por lote. |
+
+⚠️ **O lote é SEQUENCIAL e sem `$transaction`.** `createWithAutoSku` reserva o SKU
+com um `UPDATE ... RETURNING` atômico na linha do `User`; 25 reservas em paralelo
+disputariam a mesma linha, e o ganho de tempo viraria contenção de lock. E prender
+o lote a uma transação longa não daria atomicidade real — os números de SKU não
+voltam num rollback.
+
+O relatório (`28 de 30 cadastradas`, com o motivo de cada falha) vai para o
+cartão, para a mensagem — sobrevive a fechar e reabrir o painel — e para o
+`SystemLog` como `AI_ACTION`.
 
 ---
 

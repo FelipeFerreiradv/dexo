@@ -26,6 +26,7 @@ export type ActionId =
   | "pdv.cancelar-venda"
   // Fase 9 do Bitz — o que o AGENTE pode propor escrever. Ver o bloco abaixo.
   | "bitz.criar-produto"
+  | "bitz.criar-produto-lote"
   | "bitz.atualizar-preco"
   | "bitz.ajustar-estoque"
   | "bitz.criar-cliente";
@@ -66,6 +67,11 @@ export const ACTION_DEFS: ActionDef[] = [
     id: "bitz.criar-produto",
     label: "Bitz: cadastrar peça",
     hint: "Deixa o Bitz preparar o cadastro de uma peça nova. Nada é salvo sem o clique de confirmação.",
+  },
+  {
+    id: "bitz.criar-produto-lote",
+    label: "Bitz: cadastrar VÁRIAS peças de uma vez",
+    hint: "Deixa o Bitz preparar o cadastro de um lote de peças (um carro desmontado, por exemplo). Chave separada da de peça única de propósito: conferir 25 linhas cansa, e confirmar sem ler é o risco real.",
   },
   {
     id: "bitz.atualizar-preco",

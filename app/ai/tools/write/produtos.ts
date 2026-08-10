@@ -156,10 +156,11 @@ export const cadastrarProduto: AiTool = {
   //
   // ⚠️ Pares como "criar produto" eram linha morta: qualquer palavra no meio
   // ("cria um produto") quebrava o casamento, em silêncio.
+  // ⚠️ SEM CHAVES QUE SE SOBREPÕEM. `cria` já casa "criar" por substring — ter
+  // as duas dava DOIS pontos por UMA palavra e furava o piso de escrita.
   keywords: [
     "cadastr",
     "cria",
-    "criar",
     "inclui",
     "adicion",
     "nova",
@@ -216,6 +217,256 @@ export const cadastrarProduto: AiTool = {
     };
   },
 };
+
+// ---------------------------------------------------------------------------
+
+/** Teto de peças por lote. Ver o comentário da tool. */
+const MAX_ITENS_NO_LOTE = 25;
+
+/**
+ * Quantos NOMES DISTINTOS são conferidos contra o catálogo.
+ *
+ * ⚠️ Cada conferência é uma busca completa (`listProducts` com `search`), e num
+ * lote de 25 nomes distintos isso seriam 25 buscas dentro do turno de chat, com
+ * o lojista esperando. Dez é o meio-termo — e o que passa disso é DECLARADO na
+ * linha ("não conferida contra o catálogo"), nunca calado.
+ */
+const MAX_NOMES_CONFERIDOS = 10;
+
+/**
+ * Os campos de negócio da linha que NÃO são nome/preço/estoque, prontos para o
+ * cartão. Sem isto eles iam para o banco sem passar pelos olhos de ninguém.
+ */
+function detalheDaLinha(p: any, args: any): string | undefined {
+  const partes = [
+    p.marca ?? args.marcaComum,
+    p.modelo ?? args.modeloComum,
+    p.ano ?? args.anoComum,
+    p.categoria,
+    p.partNumber ? `PN ${p.partNumber}` : null,
+  ].filter(Boolean);
+  return partes.length ? partes.join(" · ") : undefined;
+}
+
+export const cadastrarPecasEmMassa: AiTool = {
+  name: "cadastrar_pecas_em_massa",
+  description:
+    "PREPARA o cadastro de VÁRIAS peças de uma vez — o caso do carro desmontado. NÃO cadastra: devolve uma proposta em tabela que o usuário confere linha a linha e confirma na tela. " +
+    "Use quando ele listar mais de uma peça no mesmo pedido, ou quando a lista vier de um arquivo que ele anexou. " +
+    `Máximo de ${MAX_ITENS_NO_LOTE} peças por vez. ` +
+    "⚠️ SÓ inclua peças que o USUÁRIO informou, ou que estejam escritas no arquivo que ele anexou. " +
+    "NUNCA complete a lista com peças que 'costumam' sair daquele carro: você não sabe o que ele de fato desmontou, e cadastrar peça que não existe no pátio é pior que não cadastrar nada. " +
+    "Se ele der o carro mas não as peças, PERGUNTE quais peças ele tirou.",
+  args: z
+    .object({
+      pecas: z
+        .array(
+          z
+            .object({
+              nome: z.string().min(2).max(120),
+              preco: z.number().min(0).max(MAX_PRECO),
+              estoque: z.number().int().min(0).max(MAX_ESTOQUE),
+              marca: z.string().max(60).optional(),
+              modelo: z.string().max(60).optional(),
+              ano: z.string().max(20).optional(),
+              categoria: z.string().max(60).optional(),
+              partNumber: z.string().max(60).optional(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(MAX_ITENS_NO_LOTE)
+        .describe("As peças, como o usuário informou. Nunca inventadas."),
+      // Campos comuns a todas — poupam o modelo de repetir 25 vezes o mesmo
+      // "Gol 2012", que é a fonte mais provável de divergência entre as linhas.
+      marcaComum: z
+        .string()
+        .max(60)
+        .optional()
+        .describe("Marca que vale para TODAS as peças, se houver uma."),
+      modeloComum: z.string().max(60).optional(),
+      anoComum: z.string().max(20).optional(),
+    })
+    .strict(),
+  kind: "write",
+  page: "produtos",
+  action: ACAO_EXIGE_PERMISSAO["produto.criar-lote"],
+  // ⚠️⚠️ AQUI ESTAVA O PIOR ERRO DE SELEÇÃO DA FASE, e a revisão adversarial o
+  // reproduziu com o registry de produção: `lista`, `todas`, `desmont` e `pecas`
+  // são VOCABULÁRIO DE CONSULTA. Com eles, "lista todas as pecas com estoque
+  // baixo" somava 3 pontos e a tool de ESCRITA EM MASSA liderava o cardápio de
+  // um turno em que ninguém pediu nada — junto com as regras de escrita.
+  //
+  // Sobraram verbo de criação + objeto no PLURAL. E `pecas` sem `peca` ao lado:
+  // as duas casariam a mesma palavra e dariam dois pontos por um conceito só.
+  keywords: [
+    "cadastr",
+    "cria",
+    "inclui",
+    "adicion",
+    "pecas",
+    "produtos",
+    "itens",
+    "lote",
+  ],
+  sourceLabel: "Cadastro de peças em lote",
+  async handler(args, scope, ctx?: AiToolContext) {
+    const comuns = {
+      brand: args.marcaComum ?? null,
+      model: args.modeloComum ?? null,
+      year: args.anoComum ?? null,
+    };
+
+    /**
+     * ⚠️ UMA CONSULTA PARA O LOTE INTEIRO, e não uma por linha.
+     *
+     * O aviso de "já existe uma igual" é conveniência; 25 buscas seriam 25
+     * viagens ao banco para desenhar 25 rótulos. Uma busca por nome exato de
+     * cada peça sairia caro — então a checagem é feita sobre os nomes que o
+     * catálogo já devolve para o termo mais genérico da lista.
+     */
+    const jaTem = await contarHomonimos(
+      args.pecas.map((p: any) => p.nome),
+      scope,
+    );
+
+    const conferidos = new Set(
+      [...new Set(args.pecas.map((p: any) => p.nome.trim().toLowerCase()))].slice(
+        0,
+        MAX_NOMES_CONFERIDOS,
+      ),
+    );
+
+    const itens = args.pecas.map((p: any) => {
+      const chave = p.nome.trim().toLowerCase();
+      const n = jaTem.get(chave) ?? 0;
+      return {
+        nome: p.nome,
+        preco: brl(p.preco),
+        estoque: String(p.estoque),
+        // ⭐ TODO CAMPO DE NEGÓCIO QUE VAI PARA O BANCO APARECE NA LINHA.
+        //
+        // ⚠️ Conserto de um achado: `categoria` e `partNumber` só existem POR
+        // ITEM (não há campo comum para eles), então tudo que o modelo pusesse
+        // ali era gravado sem o lojista ter como conferir. Num lote extraído de
+        // foto, dígito trocado num part number é o erro mais provável — e ele ia
+        // direto para uma coluna indexada, usada na busca e no anúncio.
+        ...(detalheDaLinha(p, args) ? { detalhe: detalheDaLinha(p, args) } : {}),
+        // ⭐ AVISO, NUNCA BLOQUEIO (decisão do dono em 10/08/2026). Um desmonte
+        // tem mesmo dois faróis dianteiros esquerdos iguais, vindos de dois
+        // carros — e cada um é uma peça com SKU próprio. Barrar seria errar o
+        // negócio; calar seria esconder a duplicata acidental.
+        ...(n > 0
+          ? { aviso: `já existe ${n === 1 ? "1 igual" : `${n} iguais`} no catálogo` }
+          : conferidos.has(chave)
+            ? {}
+            : // ⚠️ CORTE DECLARADO. A conferência para no décimo nome distinto
+              // (custo: cada uma é uma busca completa no catálogo). Calar sobre
+              // as linhas não conferidas faria a ausência de aviso parecer
+              // "conferi e não achei nada" — que é exatamente o contrário.
+              { aviso: "não conferida contra o catálogo" }),
+      };
+    });
+
+    const total = args.pecas.reduce(
+      (s: number, p: any) => s + p.preco * p.estoque,
+      0,
+    );
+
+    const preview: AiAcaoPreview = {
+      titulo: `Cadastrar ${args.pecas.length} peça${args.pecas.length > 1 ? "s" : ""}`,
+      alvo:
+        [args.marcaComum, args.modeloComum, args.anoComum]
+          .filter(Boolean)
+          .join(" ") || undefined,
+      campos: [
+        { campo: "Peças", para: String(args.pecas.length) },
+        { campo: "Valor somado", para: brl(total) },
+      ],
+      itens,
+      aviso:
+        "Confira linha a linha antes de confirmar. Os SKUs são gerados pelo sistema, e as peças nascem SEM anúncio. " +
+        "Se alguma linha falhar, as outras entram assim mesmo e o cartão mostra quais faltaram.",
+    };
+
+    const acao = await proporAcao({
+      scope,
+      tipo: "produto.criar-lote",
+      payload: {
+        itens: args.pecas.map((p: any) => ({
+          name: p.nome,
+          price: p.preco,
+          stock: p.estoque,
+          brand: p.marca ?? comuns.brand,
+          model: p.modelo ?? comuns.model,
+          year: p.ano ?? comuns.year,
+          category: p.categoria ?? null,
+          partNumber: p.partNumber ?? null,
+        })),
+      },
+      preview,
+      conversationId: ctx?.conversationId,
+    });
+
+    return {
+      acao,
+      paraOModelo: paraOModelo(
+        acao.id,
+        `Preparei o cadastro de ${args.pecas.length} peças.`,
+      ),
+    };
+  },
+};
+
+/**
+ * Quantas peças com CADA nome já existem no catálogo.
+ *
+ * Devolve mapa vazio quando a busca falha: o aviso é conveniência, e trocar um
+ * lote inteiro por um erro de busca seria péssimo negócio. O que não pode falhar
+ * em silêncio é a escrita — e ela nem aconteceu ainda.
+ */
+async function contarHomonimos(
+  nomes: string[],
+  scope: AiScope,
+): Promise<Map<string, number>> {
+  const mapa = new Map<string, number>();
+  try {
+    const usecase = new ProductUseCase();
+    // Uma consulta por nome DISTINTO, com teto: um lote de 25 linhas quase
+    // sempre tem menos de 25 nomes distintos, e o teto impede que um lote
+    // patológico vire 25 viagens ao banco.
+    const distintos = [...new Set(nomes.map((n) => n.trim()))].slice(
+      0,
+      MAX_NOMES_CONFERIDOS,
+    );
+
+    // ⭐ EM PARALELO, e aqui é seguro — ao contrário da CRIAÇÃO, que é
+    // sequencial porque disputa a linha do User na reserva de SKU. Isto são
+    // LEITURAS independentes; em série, o lojista esperava dez buscas enfileiradas
+    // antes de o cartão aparecer.
+    const contagens = await Promise.all(
+      distintos.map(async (nome) => {
+        const r: any = await usecase.listProducts({
+          userId: scope.dataOwnerId,
+          search: nome,
+          limit: 20,
+        } as any);
+        const itens: any[] = Array.isArray(r) ? r : (r?.products ?? []);
+        const alvo = nome.toLowerCase();
+        return [
+          alvo,
+          itens.filter(
+            (p) => String(p?.name ?? "").trim().toLowerCase() === alvo,
+          ).length,
+        ] as const;
+      }),
+    );
+    for (const [alvo, n] of contagens) if (n > 0) mapa.set(alvo, n);
+  } catch {
+    // Sem aviso de homônimo. O lote segue.
+  }
+  return mapa;
+}
 
 // ---------------------------------------------------------------------------
 

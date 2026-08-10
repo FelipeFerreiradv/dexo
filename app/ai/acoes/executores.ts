@@ -13,10 +13,14 @@
 import { CustomerUseCase } from "../../usecases/customer.usecase";
 import { ProductUseCase } from "../../usecases/product.usercase";
 import type { AiScope } from "../core/scope";
-import type { AiAcaoTipo } from "./acao.types";
+import type { AiAcaoRelatorioDeLote, AiAcaoTipo } from "./acao.types";
 
 /** O que um executor devolve: o id da entidade criada ou alterada. */
-export type ResultadoDaExecucao = { resultId: string | null };
+export type ResultadoDaExecucao = {
+  resultId: string | null;
+  /** Só em lote (Fase 10): o que entrou e o que faltou. */
+  relatorio?: AiAcaoRelatorioDeLote;
+};
 
 type Executor = (
   payload: any,
@@ -66,6 +70,59 @@ const EXECUTORES: Record<AiAcaoTipo, Executor> = {
     return { resultId: (produto as any)?.id ?? null };
   },
 
+  /**
+   * ⭐ O LOTE (Fase 10) — MELHOR-ESFORÇO COM RELATÓRIO, não tudo-ou-nada.
+   *
+   * Decisão do dono em 10/08/2026, seguindo o precedente da casa
+   * (`LocationUseCase.createBulk`): uma linha ruim não pode invalidar as 28
+   * boas. Um desmonte cadastra trinta peças de uma vez; se duas falharem por
+   * nome repetido, ele corrige as duas — refazer o pedido inteiro seria pior.
+   *
+   * ⚠️ SEQUENCIAL, e de propósito. `createWithAutoSku` reserva o SKU com um
+   * `UPDATE ... RETURNING` atômico na linha do User; trinta reservas em paralelo
+   * disputariam a MESMA linha, e o ganho de tempo viraria contenção de lock.
+   *
+   * ⚠️ E SEM `$transaction`. A reserva de SKU é atômica por fora da transação de
+   * propósito (product.usercase.ts:72-77) — prender o lote inteiro a uma
+   * transação longa aumentaria a janela de lock sem dar atomicidade real, já que
+   * os números de SKU não voltariam num rollback.
+   */
+  "produto.criar-lote": async (payload, scope) => {
+    const usecase = new ProductUseCase();
+    const itens: any[] = Array.isArray(payload?.itens) ? payload.itens : [];
+
+    const falhas: AiAcaoRelatorioDeLote["falhas"] = [];
+    let primeiroId: string | null = null;
+    let criadas = 0;
+
+    for (const item of itens) {
+      try {
+        const produto = await usecase.create({
+          ...item,
+          userId: scope.dataOwnerId,
+          createdByUserId: scope.actorId,
+          autoSku: true,
+        } as any);
+        criadas++;
+        primeiroId ??= (produto as any)?.id ?? null;
+      } catch (err) {
+        // O motivo vai para o cartão e para a auditoria. Curto e sem SQL: o
+        // lojista precisa saber POR QUE aquela linha não entrou.
+        falhas.push({
+          nome: String(item?.name ?? "sem nome").slice(0, 80),
+          motivo: motivoLegivel(err),
+        });
+      }
+    }
+
+    return {
+      // O id da PRIMEIRA peça criada. Não existe "o id do lote", e inventar um
+      // seria um número que não abre nada em tela nenhuma.
+      resultId: primeiroId,
+      relatorio: { criadas, total: itens.length, falhas },
+    };
+  },
+
   "produto.preco": async (payload, scope) =>
     atualizarProduto({ price: payload.preco }, payload, scope),
 
@@ -81,6 +138,33 @@ const EXECUTORES: Record<AiAcaoTipo, Executor> = {
     return { resultId: (cliente as any)?.id ?? null };
   },
 };
+
+/**
+ * ⭐ O MOTIVO QUE O LOJISTA LÊ — e ele NUNCA é o erro cru.
+ *
+ * ⚠️ Conserto de um achado: o motivo ia direto para o cartão e para o corpo
+ * HTTP. Um erro de validação do Prisma despejava
+ * "Invalid `prisma.product.create()` invocation: { data: { name: …" na tela de
+ * um lojista, que não tem o que fazer com isso — e o dump carrega o nome das
+ * colunas e pedaços do dado.
+ *
+ * As mensagens dos usecases da casa (`Produto com esse sku já existe`) são
+ * escritas para humano e passam. Qualquer coisa que cheire a stack ou a dump de
+ * ORM vira uma frase genérica, e o erro completo fica no log do servidor.
+ */
+function motivoLegivel(err: unknown): string {
+  const bruto =
+    err instanceof Error ? err.message.replace(/\s+/g, " ").trim() : "";
+
+  const cheiroDeOrm =
+    /prisma|invocation|\bP\d{4}\b|at\s+\w+\s*\(|select\s|insert\s|\{\s*data:/i;
+
+  if (!bruto || cheiroDeOrm.test(bruto) || bruto.length > 160) {
+    console.error("[bitz-acao] falha de item no lote:", err);
+    return "não consegui cadastrar esta peça";
+  }
+  return bruto.slice(0, 120);
+}
 
 /**
  * Executa a ação. LANÇA quando o usecase lança — quem chama transforma em

@@ -57,8 +57,17 @@ function montarDb() {
   const linhas: any[] = [];
   let seq = 0;
 
+  /**
+   * Casa o `where` do Prisma. Entende `{ in: [...] }` além do valor direto —
+   * a proposta nova aposenta a família inteira, e sem isto o dublê nunca
+   * casaria o `action: { in: [...] }` e o teste passaria vazio.
+   */
   const casa = (l: any, w: any) =>
-    Object.entries(w).every(([k, v]) => l[k] === v);
+    Object.entries(w).every(([k, v]: [string, any]) =>
+      v && typeof v === "object" && Array.isArray(v.in)
+        ? v.in.includes(l[k])
+        : l[k] === v,
+    );
 
   return {
     linhas,
@@ -150,6 +159,22 @@ describe("⭐ propor NÃO escreve", () => {
     expect(linhaA.status).toBe("cancelada");
     expect(linhaA.errorCode).toBe("substituida");
     expect(linhaB.status).toBe("pendente");
+  });
+
+  it("⭐⭐ o LOTE aposenta a proposta de peça ÚNICA (mesma família)", async () => {
+    // ⚠️ Conserto de um achado: "cadastra o farol" (peça única) e logo depois
+    // "na verdade são 3" (lote, com o farol dentro) deixava DOIS cartões vivos.
+    // Confirmar os dois criava o farol duas vezes.
+    const db = montarDb();
+    const base = { scope: escopo(), preview: PREVIEW, payload: {}, conversationId: "c1", db, now: AGORA };
+
+    const unica = await proporAcao({ ...base, tipo: "produto.criar" });
+    const lote = await proporAcao({ ...base, tipo: "produto.criar-lote" });
+
+    expect(db.linhas.find((l: any) => l.id === unica.id).status).toBe(
+      "cancelada",
+    );
+    expect(db.linhas.find((l: any) => l.id === lote.id).status).toBe("pendente");
   });
 
   it("⚠️ não aposenta proposta de OUTRO tipo, nem de outra conversa", async () => {
