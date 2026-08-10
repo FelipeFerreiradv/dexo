@@ -340,6 +340,34 @@ export function extractUnsupportedDomain(mensagem: string): string | null {
 }
 
 /**
+ * A recusa é DEFINITIVA para este anúncio? (não adianta outra forma de corpo,
+ * outro endpoint, nem tentar ID por ID)
+ *
+ * Duas mensagens do ML significam "esta categoria/domínio não aceita
+ * compatibilidade", e ambas foram vistas em produção no MESMO produto:
+ *   1. "The user product domain X does not have active compatibilities."
+ *   2. "There is no compatibility between X and Y and the category Z"
+ *
+ * ⚠️ SÓ recusa SEMÂNTICA entra aqui. `Maximum quota has been exceeded` e
+ * `local_rate_limited` também vêm em 4xx mas são TRANSITÓRIOS — tratá-los como
+ * permanentes descartaria compatibilidade legítima em pico de uso.
+ *
+ * Motivação (10/08/2026): sem este predicado a escada só olhava o STATUS HTTP,
+ * então um 400 semântico permanente era indistinguível de um 400 de corpo mal
+ * formado. Resultado medido em produção: 204 chamadas por produto por
+ * invocação, todas garantidas de falhar, 52.130 linhas de log e 4.062
+ * `Maximum quota has been exceeded` — a cota do ML é compartilhada com
+ * anúncio, estoque e pedidos.
+ */
+export function isPermanentCompatRejection(mensagem: string): boolean {
+  const texto = mensagem || "";
+  if (extractUnsupportedDomain(texto)) return true;
+  return /there is no compatibility between\s+[A-Z0-9_-]+\s+and\s+[A-Z0-9_-]+/i.test(
+    texto,
+  );
+}
+
+/**
  * Traduz a falha de uma LEITURA de compatibilidade em causa acionável.
  *
  * Antes, os dois getters tinham `catch { return { available: false, ... } }`:
@@ -2052,6 +2080,13 @@ export class MLApiService {
             `[ML Compat] PUT ${url} (${variant.label}) FAIL — status=${status} ids=${ids.length} body=${logResumo(body)} response=${logResumo(data)}`,
           );
           lastErr = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
+          // Recusa SEMÂNTICA permanente: as outras variantes vão falhar igual
+          // e — pior — a próxima SOBRESCREVERIA esta mensagem, que é a única
+          // acionável e a única que `dominioRecusado()` sabe ler. Era por isso
+          // que o guard de domínio nunca disparava: a variante 1 dizia "domain
+          // does not have active compatibilities", a 2 trocava por "attributes:
+          // must not be empty" e a 3 por "Invalid request body".
+          if (isPermanentCompatRejection(lastErr)) break;
           // Só tenta próximas variantes se foi 400 (body mal formado).
           // Para 401/403/404/5xx, é problema distinto — para de tentar.
           if (status !== 400) break;
@@ -2112,8 +2147,20 @@ export class MLApiService {
       if (userProductId) {
         const viaUp = await putUserProduct(ids);
         if (viaUp.ok) return viaUp;
+        // Recusa permanente já cravada pelo user-product: o /items devolve a
+        // MESMA recusa noutra roupagem. Não gasta a chamada.
+        if (viaUp.error && isPermanentCompatRejection(viaUp.error)) {
+          return viaUp;
+        }
         const viaItem = await postItem(ids);
-        return viaItem.ok ? viaItem : viaUp;
+        if (viaItem.ok) return viaItem;
+        // Preserva a mensagem ACIONÁVEL: quando só o /items soube dizer que a
+        // recusa é permanente, é ela que precisa chegar em `errors` (antes
+        // `viaItem.error` era sempre descartado em favor de `viaUp`).
+        if (viaItem.error && isPermanentCompatRejection(viaItem.error)) {
+          return viaItem;
+        }
+        return viaUp;
       }
       return postItem(ids);
     };
@@ -2183,14 +2230,26 @@ export class MLApiService {
       return finish(unique.length, true);
     }
 
-    // Fallback: chamadas individuais — isola qual ID o ML rejeita sem perder
-    // os demais.
-    for (const id of unique) {
-      const single = await postBatch([id]);
-      if (single.ok) {
-        createdCount += 1;
-      } else if (single.error) {
-        errors.push(`${id}: ${single.error}`);
+    // Recusa permanente do LOTE: a rejeição é do domínio/categoria do anúncio,
+    // não "deste ID". Isolar ID por ID faria 50× as mesmas 4 chamadas, todas
+    // garantidas de falhar. `batch.error` era DESCARTADO aqui — registrá-lo é
+    // o que permite `dominioRecusado()` enxergar a causa e pular os degraus 2
+    // e 3 lá em `applyCompatibilitiesVerified`.
+    if (batch.error && isPermanentCompatRejection(batch.error)) {
+      errors.push(batch.error);
+    } else {
+      // Fallback: chamadas individuais — isola qual ID o ML rejeita sem perder
+      // os demais.
+      for (const id of unique) {
+        const single = await postBatch([id]);
+        if (single.ok) {
+          createdCount += 1;
+        } else if (single.error) {
+          errors.push(`${id}: ${single.error}`);
+          // Recusa permanente só aparece no individual (ex.: o lote falhou por
+          // outro motivo): idem — não é "este ID é ruim", é o anúncio inteiro.
+          if (isPermanentCompatRejection(single.error)) break;
+        }
       }
     }
 
