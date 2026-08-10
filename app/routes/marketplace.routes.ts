@@ -139,26 +139,51 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   // Kill-switch de runtime: bloqueia todas as rotas /marketplace/olx/* e
   // /marketplace/facebook/* quando OLX_INTEGRATION_DISABLED / FACEBOOK_INTEGRATION_DISABLED=1.
   // Encapsulado neste plugin (prefixo /marketplace), então só afeta estas rotas.
+  //
+  // ESCOPO: o kill-switch bloqueia o que FALA COM O CANAL, não a tela inteira.
+  //
+  // Bloquear tudo sob /marketplace/olx/* deixava a integração pausada
+  // indistinguível de quebrada: a aba de Integrações não conseguia nem LER quais
+  // contas existem (`GET /olx/accounts` toca só o banco local), e o operador não
+  // conseguia preencher telefone/CEP do vendedor enquanto a integração estivesse
+  // pausada — justamente a configuração que se quer fazer ANTES de ligar.
+  //
+  // Continuam bloqueados: OAuth (`/auth`, `/callback`, que chamam a OLX/Meta) e
+  // todo método mutante (POST/PUT/DELETE: publicar, sincronizar, importar,
+  // desconectar). Liberados: os GET de leitura local e o PATCH de dados do
+  // vendedor, que não geram uma única chamada externa.
+  const ehLeituraOuConfigLocal = (metodo: string, path: string): boolean => {
+    // OAuth conversa com o canal mesmo sendo GET.
+    if (path.endsWith("/auth") || path.endsWith("/callback")) return false;
+    if (metodo === "GET") return true;
+    // Dados do vendedor por conta: escrita puramente local.
+    if (metodo === "PATCH" && /\/accounts\/[^/]+$/.test(path)) return true;
+    return false;
+  };
+
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
+    const metodo = request.method.toUpperCase();
+
+    const ehOlx =
+      path === "/marketplace/olx" || path.startsWith("/marketplace/olx/");
+    const ehFacebook =
+      path === "/marketplace/facebook" ||
+      path.startsWith("/marketplace/facebook/");
+
     if (
-      isOlxDisabled() &&
-      (path === "/marketplace/olx" || path.startsWith("/marketplace/olx/"))
+      (isOlxDisabled() && ehOlx) ||
+      (isFacebookDisabled() && ehFacebook)
     ) {
+      if (ehLeituraOuConfigLocal(metodo, path)) return;
+
+      const nome = ehOlx ? "OLX" : "Facebook";
+      const flag = ehOlx
+        ? "OLX_INTEGRATION_DISABLED"
+        : "FACEBOOK_INTEGRATION_DISABLED";
       return reply.code(503).send({
-        error: "Integração desativada",
-        message: "OLX desativado por kill-switch (OLX_INTEGRATION_DISABLED)",
-      });
-    }
-    if (
-      isFacebookDisabled() &&
-      (path === "/marketplace/facebook" ||
-        path.startsWith("/marketplace/facebook/"))
-    ) {
-      return reply.code(503).send({
-        error: "Integração desativada",
-        message:
-          "Facebook desativado por kill-switch (FACEBOOK_INTEGRATION_DISABLED)",
+        error: "Integração pausada",
+        message: `${nome} pausado por kill-switch (${flag}). Leitura e configuração seguem disponíveis; publicação e sincronização estão suspensas.`,
       });
     }
   });

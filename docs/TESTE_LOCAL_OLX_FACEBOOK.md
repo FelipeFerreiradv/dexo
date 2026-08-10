@@ -144,8 +144,11 @@ Marque conforme for passando.
       `http://localhost:3000/integracoes/olx` e `/integracoes/facebook` abrem (não dão 404).
 - [ ] **T2** — Mercado Livre, Shopee e Magalu continuam **exatamente** como antes:
       abas, listagens e sincronizações intactas. *É o teste mais importante da lista.*
-- [ ] **T3** — Aba de conexão da OLX tem os campos **Telefone** e **CEP do vendedor**.
-      Preencha e salve; recarregue e confirme que persistiu.
+- [ ] **T3** — Aba de conexão da OLX **abre e lista o status**, sem banner vermelho de
+      kill-switch. Com uma conta conectada, os campos **Telefone** e **CEP do vendedor**
+      aparecem, salvam e persistem após recarregar.
+      *Sem conta OLX conectada, o esperado é o card "Conecte sua conta" — o botão
+      **Conectar à OLX** continua bloqueado em modo seguro (o OAuth fala com a OLX).*
 
 ### Produtos e anúncios
 
@@ -199,6 +202,8 @@ Marque conforme for passando.
 | `/integracoes/olx` dá 404 | subiu o front sem o script (as flags `NEXT_PUBLIC_*` são inlinadas no start) |
 | Toda ação OLX/FB responde "desativado por kill-switch" | é o modo seguro funcionando — use `-Publicar` |
 | Erro de coluna inexistente | faltou algum passo do §1; rode o **Passo 4** para ver o que falta |
+| Mudei o código e a API responde igual | processo antigo pendurado na 3333. `Get-NetTCPConnection -LocalPort 3333 -State Listen` e `Stop-Process -Id <PID> -Force` |
+| Banner "Integração pausada" ao publicar | correto em modo seguro: leitura e configuração passam, publicação e OAuth não |
 | `invalid input value for enum "Platform"` | o **Passo 1** não commitou; rode-o sozinho de novo |
 | Front chama produção | subiu o Next sem o script (`API_URL` do `.env` tem prioridade no server-side) |
 
