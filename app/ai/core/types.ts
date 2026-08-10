@@ -95,6 +95,24 @@ export type AiFailureReason =
   | "provedor_desconhecido"
   | "timeout"
   | "rate_limit_provedor"
+  /**
+   * ⭐ O PROVEDOR RECUSOU ANTES DE TRABALHAR: chave inválida, sem saldo, API
+   * não habilitada (HTTP 401/402/403).
+   *
+   * Separado de `erro_provedor` por duas razões concretas, as duas descobertas
+   * com um `402 Insufficient Balance` real em 10/08/2026:
+   *
+   *  1. **"Tenta de novo em instantes" é conselho que nunca vai funcionar.**
+   *     Um 500 passa sozinho; saldo zerado não passa até alguém pagar. Dizer a
+   *     mesma frase nos dois casos manda o lojista repetir para sempre.
+   *
+   *  2. ⭐ **NADA FOI COBRADO.** A requisição foi recusada antes de qualquer
+   *     token, e é isso que torna a devolução de cota correta — ver
+   *     `falhaSemCobranca`. Sem esta distinção, o áudio e o anexo consumiam um
+   *     slot do cliente por uma falha de configuração NOSSA, que ele não tem
+   *     como consertar nem como perceber.
+   */
+  | "credencial_ou_saldo"
   | "erro_provedor"
   | "resposta_invalida";
 

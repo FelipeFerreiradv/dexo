@@ -40,6 +40,7 @@ import {
   reserveAiAnexo,
   reserveAiTranscription,
 } from "../ai/quota/ai-usage.service";
+import { falhaSemCobranca } from "../ai/core/provider";
 import { scopeFromRequest } from "../ai/core/scope";
 import { abrirNdjson, querNdjson } from "../ai/stream/ndjson";
 import prisma from "../lib/prisma";
@@ -228,7 +229,14 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       if (!r.ok) {
         // Nada foi cobrado quando o provedor nem chegou a ser chamado — e "não
         // consegui enxergar" também não gasta: o lojista vai tirar outra foto.
-        if (classe.pago && r.motivo !== "erro_provedor") {
+        //
+        // ⭐ E `falhaSemCobranca` cobre o caso que faltava: chave inválida ou
+        // sem saldo é recusa ANTES de qualquer token. Cobrar por isso tirava do
+        // lojista um dos 15 anexos do dia por um problema de configuração nosso.
+        if (
+          classe.pago &&
+          (r.motivo !== "erro_provedor" || falhaSemCobranca(r.detalhe))
+        ) {
           await refundAiAnexo({ dataOwnerId });
         }
         return reply.send({
@@ -352,7 +360,10 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       if (!r.ok) {
         // Nada foi cobrado quando o provedor nem chegou a ser chamado — e
         // "sem fala" também não gasta: o lojista vai regravar.
-        if (r.motivo !== "erro_provedor") {
+        //
+        // ⭐ Idem ao anexo: recusa por chave ou saldo não custou nada, e queimar
+        // um áudio do dia por causa dela é cobrar do cliente um erro nosso.
+        if (r.motivo !== "erro_provedor" || falhaSemCobranca(r.detalhe)) {
           await refundAiTranscription({ dataOwnerId });
         }
         return reply.send({ ok: false, error: mensagemDeFalha(r.motivo) });

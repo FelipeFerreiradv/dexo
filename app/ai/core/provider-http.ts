@@ -118,6 +118,12 @@ export function classifyAxiosError(err: unknown): {
   if (status === 429) {
     return { reason: "rate_limit_provedor", detail: "HTTP 429" };
   }
+  // ⭐ Recusa ANTES do trabalho: chave inválida (401), sem saldo (402), API não
+  // habilitada ou chave sem permissão (403). Não é falha transitória e não
+  // custou nada — ver o comentário longo em `AiFailureReason`.
+  if (status === 401 || status === 402 || status === 403) {
+    return { reason: "credencial_ou_saldo", detail: `HTTP ${status}` };
+  }
   if (typeof status === "number") {
     // Só o status. O corpo pode ecoar trecho do prompt — que carrega dado do
     // cliente — e a URL carrega a chave na query string.

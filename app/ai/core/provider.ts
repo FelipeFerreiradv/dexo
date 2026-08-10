@@ -85,6 +85,13 @@ export function userFacingFailureMessage(reason: AiFailureReason): string {
     case "sem_api_key":
     case "sem_modelo":
     case "provedor_desconhecido":
+    // ⭐ Mesma frase de `sem_api_key`, e de propósito: para quem está do outro
+    // lado da tela os dois casos são idênticos — o Bitz não vai responder e não
+    // há nada que ELE possa fazer. Mandar "tenta de novo em instantes" seria
+    // pedir que repetisse para sempre uma chamada que só volta quando alguém
+    // aqui paga a conta ou troca a chave. O que distingue os dois é o `detail`
+    // no `SystemLog` (`HTTP 402`), que é onde o operador precisa da diferença.
+    case "credencial_ou_saldo":
       return "O Bitz está indisponível no momento. Avise o suporte do Dexo.";
     case "timeout":
       return "Demorei demais para responder. Tenta de novo?";
@@ -95,6 +102,28 @@ export function userFacingFailureMessage(reason: AiFailureReason): string {
     default:
       return "Não consegui responder agora. Tenta de novo em instantes.";
   }
+}
+
+/**
+ * ⭐ A CHAMADA FALHOU SEM CUSTAR NADA? Então a cota do cliente tem de voltar.
+ *
+ * O turno de chat já resolve isso sozinho, e melhor: ele soma tokens de todas
+ * as chamadas e só devolve quando NENHUMA reportou uso (`uso.houve`). O áudio e
+ * o anexo não têm esse sinal — são uma chamada só, e o serviço colapsa qualquer
+ * falha do provedor em `erro_provedor` —, então eles precisavam de um
+ * discriminador, e usavam o único que tinham: "foi erro do provedor ⇒ deve ter
+ * sido cobrado ⇒ não devolve".
+ *
+ * ⚠️ ISSO ESTAVA ERRADO NO CASO QUE MAIS IMPORTA. Um `402 Insufficient Balance`
+ * é recusado antes de qualquer token — não custou nada — e mesmo assim queimava
+ * um dos 15 áudios do dia do lojista. Ele perdia cota por uma falha de
+ * configuração NOSSA, que não tem como consertar e nem como perceber; e a cada
+ * regravação perdia mais uma.
+ *
+ * Recebe o `detalhe` que os serviços propagam (`completion.reason`).
+ */
+export function falhaSemCobranca(detalhe?: string): boolean {
+  return detalhe === "credencial_ou_saldo";
 }
 
 export { describeAiConfigProblem };
