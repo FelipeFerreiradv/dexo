@@ -592,6 +592,53 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         resolvedMagaluCategoryChosenAt = new Date();
       }
 
+      // OLX e Facebook: mesma memória de categoria das outras três. O modal de
+      // criação manda a categoria APENAS dentro de listings[].categoryId, nunca
+      // no topo do body — por isso a busca no array (idêntica à do Magalu).
+      // Sem isto a escolha do operador valia para UMA publicação e sumia: ao
+      // republicar ou publicar numa segunda conta, a categoria era recalculada.
+      let resolvedOlxCategoryId: string | undefined;
+      let resolvedOlxCategorySource:
+        | "auto"
+        | "manual"
+        | "imported"
+        | undefined;
+      let resolvedOlxCategoryChosenAt: Date | undefined;
+      const olxCategoryToPersist =
+        (sanitized as any).olxCategory ||
+        (sanitized.listings?.length
+          ? sanitized.listings.find(
+              (l: any) => l.platform === "OLX" && !!l.categoryId,
+            )?.categoryId
+          : undefined);
+      if (olxCategoryToPersist) {
+        resolvedOlxCategoryId = String(olxCategoryToPersist);
+        resolvedOlxCategorySource =
+          ((sanitized as any).olxCategorySource as any) || "manual";
+        resolvedOlxCategoryChosenAt = new Date();
+      }
+
+      let resolvedFbCategoryId: string | undefined;
+      let resolvedFbCategorySource:
+        | "auto"
+        | "manual"
+        | "imported"
+        | undefined;
+      let resolvedFbCategoryChosenAt: Date | undefined;
+      const fbCategoryToPersist =
+        (sanitized as any).fbCategory ||
+        (sanitized.listings?.length
+          ? sanitized.listings.find(
+              (l: any) => l.platform === "FACEBOOK" && !!l.categoryId,
+            )?.categoryId
+          : undefined);
+      if (fbCategoryToPersist) {
+        resolvedFbCategoryId = String(fbCategoryToPersist);
+        resolvedFbCategorySource =
+          ((sanitized as any).fbCategorySource as any) || "manual";
+        resolvedFbCategoryChosenAt = new Date();
+      }
+
       const requiresShopeeCategory = Boolean(
         sanitized.listings?.some((l: any) => l.platform === "SHOPEE"),
       );
@@ -794,6 +841,12 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           magaluCategoryId: resolvedMagaluCategoryId,
           magaluCategorySource: resolvedMagaluCategorySource,
           magaluCategoryChosenAt: resolvedMagaluCategoryChosenAt,
+          olxCategoryId: resolvedOlxCategoryId,
+          olxCategorySource: resolvedOlxCategorySource,
+          olxCategoryChosenAt: resolvedOlxCategoryChosenAt,
+          fbCategoryId: resolvedFbCategoryId,
+          fbCategorySource: resolvedFbCategorySource,
+          fbCategoryChosenAt: resolvedFbCategoryChosenAt,
 
           // Medidas / peso
           heightCm: sanitized.heightCm,

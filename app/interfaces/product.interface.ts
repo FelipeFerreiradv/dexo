@@ -124,6 +124,16 @@ export interface Product {
   magaluCategorySource?: "auto" | "manual" | "imported";
   magaluCategoryChosenAt?: Date;
 
+  // Categoria OLX (código de VEÍCULO do autoupload) e Facebook
+  // (google_product_category). Mesmo trio das demais plataformas.
+  olxCategoryId?: string;
+  olxCategorySource?: "auto" | "manual" | "imported";
+  olxCategoryChosenAt?: Date;
+
+  fbCategoryId?: string;
+  fbCategorySource?: "auto" | "manual" | "imported";
+  fbCategoryChosenAt?: Date;
+
   heightCm?: number;
   widthCm?: number;
   lengthCm?: number;
@@ -207,6 +217,16 @@ export interface ProductCreate {
   magaluCategoryId?: string;
   magaluCategorySource?: "auto" | "manual" | "imported";
   magaluCategoryChosenAt?: Date;
+
+  // Categoria OLX (código de VEÍCULO do autoupload) e Facebook
+  // (google_product_category). Mesmo trio das demais plataformas.
+  olxCategoryId?: string;
+  olxCategorySource?: "auto" | "manual" | "imported";
+  olxCategoryChosenAt?: Date;
+
+  fbCategoryId?: string;
+  fbCategorySource?: "auto" | "manual" | "imported";
+  fbCategoryChosenAt?: Date;
 
   heightCm?: number;
   widthCm?: number;
@@ -311,6 +331,16 @@ export interface ProductUpdate {
   magaluCategoryId?: string;
   magaluCategorySource?: "auto" | "manual" | "imported";
   magaluCategoryChosenAt?: Date;
+
+  // Categoria OLX (código de VEÍCULO do autoupload) e Facebook
+  // (google_product_category). Mesmo trio das demais plataformas.
+  olxCategoryId?: string;
+  olxCategorySource?: "auto" | "manual" | "imported";
+  olxCategoryChosenAt?: Date;
+
+  fbCategoryId?: string;
+  fbCategorySource?: "auto" | "manual" | "imported";
+  fbCategoryChosenAt?: Date;
 
   heightCm?: number;
   widthCm?: number;

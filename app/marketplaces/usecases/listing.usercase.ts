@@ -12,6 +12,7 @@ import { OlxPayloadBuilderService } from "../services/olx-payload-builder.servic
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
 import { OlxRepublishService } from "../services/olx-republish.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
+import { formatMarketplaceError } from "../services/olx-facebook-error-message.service";
 import {
   OLX_CONSTANTS,
   resolveOlxSellerContact,
@@ -4089,7 +4090,9 @@ export class ListingUseCase {
             externalListingId: OlxPayloadBuilderService.buildId(product),
             externalSku: product.sku,
             status: "error",
-            lastError: message.slice(0, 490),
+            // Mensagem acionável em vez do enum cru da OLX (o original fica
+            // preservado entre parênteses para quem for investigar).
+            lastError: formatMarketplaceError("OLX", message).slice(0, 490),
             // Retry habilitado: o ListingRetryService tem branch OLX que
             // delega para createOlxListing (nunca toca a API do ML). Sem
             // isto uma instabilidade transitória da OLX matava o anúncio na
@@ -6730,7 +6733,8 @@ export class ListingUseCase {
               FacebookPayloadBuilderService.buildRetailerId(product),
             externalSku: product.sku,
             status: "error",
-            lastError: message.slice(0, 490),
+            // Idem OLX: traduz o JSON cru da Graph API.
+            lastError: formatMarketplaceError("FACEBOOK", message).slice(0, 490),
             // Retry habilitado: branch FACEBOOK no ListingRetryService delega
             // para createFacebookListing. Cobre rate limit e 5xx da Meta.
             retryEnabled: true,

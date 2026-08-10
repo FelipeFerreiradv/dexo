@@ -11,13 +11,18 @@ import {
  * categoria consultável por API; o google_product_category é o sinal padrão.
  *
  * Ordem de confiança:
- *  1. product.fbCategory / product.googleProductCategory explícito — vence.
+ *  1. product.fbCategoryId / fbCategory / googleProductCategory — vence.
+ *     (`fbCategoryId` é a coluna de memória, no padrão mlCategoryId; os outros
+ *     dois nomes são aceitos por compatibilidade com chamadores existentes.)
  *  2. DE-PARA de veículo por palavra no nome (facebook-category-map).
  *  3. FACEBOOK_DEFAULT_CATEGORY (Motor Vehicle Parts — o grosso da Jotabê).
  */
 export class FacebookCategoryResolutionService {
   static resolveCategory(product: any): string {
-    const explicit = product?.fbCategory ?? product?.googleProductCategory;
+    const explicit =
+      product?.fbCategoryId ??
+      product?.fbCategory ??
+      product?.googleProductCategory;
     if (typeof explicit === "string" && explicit.trim()) {
       return explicit.trim();
     }

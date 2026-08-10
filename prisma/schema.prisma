@@ -134,6 +134,17 @@ model Product {
   magaluCategoryId       String?
   magaluCategorySource   String?
   magaluCategoryChosenAt DateTime?
+  // Categoria OLX (código de VEÍCULO do autoupload: 2101 carros, 2103 motos —
+  // o tipo de peça viaja em `params`, não aqui). Mesmo trio das demais: a
+  // escolha do operador vira memória do produto, e não some ao republicar nem
+  // ao publicar numa segunda conta.
+  olxCategoryId          String?
+  olxCategorySource      String?
+  olxCategoryChosenAt    DateTime?
+  // Categoria Facebook (google_product_category do Commerce Catalog).
+  fbCategoryId           String?
+  fbCategorySource       String?
+  fbCategoryChosenAt     DateTime?
   locationId             String?
   scrapId                String?
   attributes             Json?

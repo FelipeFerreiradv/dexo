@@ -291,6 +291,12 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     magaluCategoryId: (item as any).magaluCategoryId ?? undefined,
     magaluCategorySource: (item as any).magaluCategorySource ?? undefined,
     magaluCategoryChosenAt: (item as any).magaluCategoryChosenAt ?? undefined,
+    olxCategoryId: (item as any).olxCategoryId ?? undefined,
+    olxCategorySource: (item as any).olxCategorySource ?? undefined,
+    olxCategoryChosenAt: (item as any).olxCategoryChosenAt ?? undefined,
+    fbCategoryId: (item as any).fbCategoryId ?? undefined,
+    fbCategorySource: (item as any).fbCategorySource ?? undefined,
+    fbCategoryChosenAt: (item as any).fbCategoryChosenAt ?? undefined,
     heightCm: item.heightCm ?? undefined,
     widthCm: item.widthCm ?? undefined,
     lengthCm: item.lengthCm ?? undefined,
@@ -1051,6 +1057,12 @@ class ProductRepositoryPrisma implements ProductRepository {
           magaluCategoryId: data.magaluCategoryId ?? null,
           magaluCategorySource: data.magaluCategorySource ?? null,
           magaluCategoryChosenAt: data.magaluCategoryChosenAt ?? null,
+          olxCategoryId: data.olxCategoryId ?? null,
+          olxCategorySource: data.olxCategorySource ?? null,
+          olxCategoryChosenAt: data.olxCategoryChosenAt ?? null,
+          fbCategoryId: data.fbCategoryId ?? null,
+          fbCategorySource: data.fbCategorySource ?? null,
+          fbCategoryChosenAt: data.fbCategoryChosenAt ?? null,
           heightCm: data.heightCm ?? null,
           widthCm: data.widthCm ?? null,
           lengthCm: data.lengthCm ?? null,
@@ -2052,6 +2064,24 @@ class ProductRepositoryPrisma implements ProductRepository {
         }),
         ...(data.magaluCategoryChosenAt !== undefined && {
           magaluCategoryChosenAt: data.magaluCategoryChosenAt as any,
+        }),
+        ...(data.olxCategoryId !== undefined && {
+          olxCategoryId: data.olxCategoryId,
+        }),
+        ...(data.olxCategorySource !== undefined && {
+          olxCategorySource: data.olxCategorySource,
+        }),
+        ...(data.olxCategoryChosenAt !== undefined && {
+          olxCategoryChosenAt: data.olxCategoryChosenAt as any,
+        }),
+        ...(data.fbCategoryId !== undefined && {
+          fbCategoryId: data.fbCategoryId,
+        }),
+        ...(data.fbCategorySource !== undefined && {
+          fbCategorySource: data.fbCategorySource,
+        }),
+        ...(data.fbCategoryChosenAt !== undefined && {
+          fbCategoryChosenAt: data.fbCategoryChosenAt as any,
         }),
         ...(data.heightCm !== undefined && { heightCm: data.heightCm }),
         ...(data.widthCm !== undefined && { widthCm: data.widthCm }),
