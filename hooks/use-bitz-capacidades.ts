@@ -5,7 +5,7 @@ import * as React from "react";
 import { getApiBaseUrl } from "@/lib/api";
 
 /**
- * O que o Bitz PODE FAZER neste servidor — hoje, só `audio`.
+ * O que o Bitz PODE FAZER neste servidor: gravar voz e anexar arquivo.
  *
  * ⭐ POR QUE NÃO ENTROU NO `/ai/entitlement`. Aquela sonda roda em TODA página,
  * para todo usuário, só para decidir se o mascote aparece. Esta informação só
@@ -18,10 +18,25 @@ import { getApiBaseUrl } from "@/lib/api";
  * a capacidade do servidor não muda entre um clique e outro. Um `useState` por
  * instância refaria a chamada a cada abertura.
  *
- * Falha é FECHADA: sem resposta, `audio` fica `false` e o microfone não
- * aparece. Melhor não oferecer do que oferecer um botão que erra.
+ * Falha é FECHADA: sem resposta, `audio` fica `false` e `anexos` fica vazio —
+ * nem microfone nem clipe aparecem. Melhor não oferecer do que oferecer um botão
+ * que erra.
+ *
+ * ⭐ `anexos` é a lista de EXTENSÕES, e vem do servidor. Ele é quem sabe se há
+ * modelo de visão configurado: `.xml` sempre cabe (ler NF-e não depende de
+ * provedor), a foto só quando alguém puder enxergá-la. Uma lista chumbada aqui
+ * divergiria da realidade no dia em que o cliente trocasse a rota de imagem, e o
+ * lojista escolheria uma foto para receber erro.
  */
-let cache: { audio: boolean } | null = null;
+export interface BitzCapacidades {
+  audio: boolean;
+  /** Extensões aceitas pelo clipe (`[".jpg", ".png", …]`). Vazio ⇒ sem clipe. */
+  anexos: string[];
+}
+
+const NENHUMA: BitzCapacidades = { audio: false, anexos: [] };
+
+let cache: BitzCapacidades | null = null;
 let emVoo: Promise<void> | null = null;
 
 /** Só para teste: esquece o que foi respondido nesta página. */
@@ -30,8 +45,8 @@ export function __resetCapacidadesCache() {
   emVoo = null;
 }
 
-export function useBitzCapacidades(ativo: boolean) {
-  const [capacidades, setCapacidades] = React.useState(cache ?? { audio: false });
+export function useBitzCapacidades(ativo: boolean): BitzCapacidades {
+  const [capacidades, setCapacidades] = React.useState(cache ?? NENHUMA);
 
   React.useEffect(() => {
     // Só busca quando o painel está aberto — antes disso ninguém precisa.
@@ -49,9 +64,20 @@ export function useBitzCapacidades(ativo: boolean) {
         const res = await fetch(`${getApiBaseUrl()}/ai/capacidades`);
         if (!res.ok) return;
         const data = await res.json();
-        cache = { audio: Boolean(data?.audio) };
+        cache = {
+          audio: Boolean(data?.audio),
+          // Só string, e só o que parece extensão. O `accept` do seletor de
+          // arquivo é montado com isto, e lixo ali faz o navegador ignorar a
+          // lista INTEIRA — o lojista veria "todos os arquivos".
+          anexos: Array.isArray(data?.anexos)
+            ? data.anexos.filter(
+                (e: unknown): e is string =>
+                  typeof e === "string" && /^\.[a-z0-9]{1,8}$/i.test(e),
+              )
+            : [],
+        };
       } catch {
-        // Falha fechada: segue sem microfone, e o chat inteiro continua.
+        // Falha fechada: segue sem microfone e sem clipe, e o chat continua.
       } finally {
         emVoo = null;
       }

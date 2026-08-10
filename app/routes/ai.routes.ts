@@ -3,17 +3,32 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { isAiEnabledFor } from "../ai/entitlement/ai-entitlement.service";
 import { requireAiEnabled } from "../ai/entitlement/require-ai-enabled";
-import { MAX_USER_MESSAGE_CHARS, runTurn } from "../ai/agent/orchestrator";
+import {
+  MAX_ANEXOS_POR_TURNO,
+  MAX_USER_MESSAGE_CHARS,
+  runTurn,
+  type AiTurnAnexo,
+} from "../ai/agent/orchestrator";
 import { AI_CONSTANTS } from "../ai/core/ai-constants";
 import { detectarFormatoDeAudio } from "../ai/audio/audio-formato";
+import { nomeDeAnexoSeguro } from "../ai/anexo/anexo-formato";
+import {
+  anexosDisponiveis,
+  classificarAnexo,
+  lerAnexo,
+  mensagemDeFalhaDeAnexo,
+} from "../ai/anexo/leitura.service";
 import {
   audioDisponivel,
   mensagemDeFalha,
   transcreverAudio,
 } from "../ai/audio/transcricao.service";
 import {
+  anexoQuotaMessage,
   audioQuotaMessage,
+  refundAiAnexo,
   refundAiTranscription,
+  reserveAiAnexo,
   reserveAiTranscription,
 } from "../ai/quota/ai-usage.service";
 import { scopeFromRequest } from "../ai/core/scope";
@@ -79,9 +94,13 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
    * modelo de texto — e o DeepSeek não tem áudio — recebe `false`, e o chat
    * segue inteiro sem o microfone.
    *
-   * Devolve BOOLEANO, nunca o nome do provedor: o front não sabe (nem precisa
-   * saber) qual modelo está por trás. Objeto pensado para crescer com as fases
-   * seguintes (`anexos` na Fase 8).
+   * `anexos` é a LISTA DE EXTENSÕES que o clipe deve oferecer, e ela sai daqui
+   * pela mesma razão. `.xml` está sempre nela (ler NF-e não depende de provedor
+   * nenhum); `.jpg`/`.png`/`.webp` só entram quando há modelo de visão
+   * configurado. Lista vazia ⇒ o clipe não aparece.
+   *
+   * Nunca o nome do provedor nem do modelo: o front não sabe (nem precisa saber)
+   * o que está por trás — só o que ele pode oferecer ao lojista.
    */
   fastify.get(
     "/capacidades",
@@ -90,7 +109,130 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       if (!request.user?.dataOwnerId) {
         return reply.status(401).send({ error: "Não autenticado" });
       }
-      return reply.send({ audio: audioDisponivel() });
+      return reply.send({
+        audio: audioDisponivel(),
+        anexos: anexosDisponiveis(),
+      });
+    },
+  );
+
+  /**
+   * POST /ai/anexo — o lojista anexa um arquivo, isto devolve a LEITURA dele.
+   *
+   * ⭐ NÃO RESPONDE À PERGUNTA, mesma decisão central da Fase 7. A leitura volta
+   * para o navegador, aparece num cartão acima do campo de escrita, o lojista
+   * confere — e corrige o código da peça que o modelo leu errado — e só então
+   * pergunta pelo `/ai/chat` de sempre.
+   *
+   * O arquivo vive na memória pelo tempo da chamada e some. Nada em disco, nada
+   * em banco: foi decisão explícita do dono, e ela apaga de uma vez três riscos
+   * do mapa — anexo servido sem auth, o GC de órfãos apagando arquivo de tabela
+   * nova, e retenção de documento do cliente.
+   *
+   * DOIS CAMINHOS, e a diferença entre eles é DINHEIRO:
+   *   - imagem  → modelo de visão (`AI_ROUTE_IMAGEM`). Custa, então reserva cota.
+   *   - XML NF-e → `parseNfeXml`, puro e local. NÃO custa nada, então NÃO
+   *     reserva cota: cobrar por uma leitura que a plataforma não pagou faria um
+   *     desmonte com vinte notas no dia bater num teto sem motivo.
+   *
+   * Mesmo gate, mesmo rate limit e mesmo bucket-próprio do `/ai/chat`.
+   */
+  fastify.post(
+    "/anexo",
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: "1 minute",
+          hook: "preHandler",
+          keyGenerator: (req: any) => req.user?.id ?? req.ip,
+        },
+      },
+      preHandler: [authMiddleware, requireAiEnabled],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user;
+      if (!user?.dataOwnerId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const dataOwnerId = user.dataOwnerId;
+
+      // ⚠️ Teto POR REQUISIÇÃO, que vence o global de 20 MB do registro do
+      // multipart. O global não é tocado — a regra da casa é que a rota que
+      // precisa de limite diferente o declare aqui, nunca lá.
+      let parte: any;
+      try {
+        parte = await (request as any).file({
+          limits: { fileSize: AI_CONSTANTS.MAX_ANEXO_BYTES, files: 1 },
+        });
+      } catch {
+        return reply
+          .status(400)
+          .send({ error: mensagemDeFalhaDeAnexo("formato_invalido") });
+      }
+      if (!parte) {
+        return reply
+          .status(400)
+          .send({ error: mensagemDeFalhaDeAnexo("vazio") });
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = await parte.toBuffer();
+      } catch {
+        // `toBuffer` estoura quando o arquivo passa do `fileSize` acima.
+        return reply
+          .status(400)
+          .send({ error: mensagemDeFalhaDeAnexo("grande_demais") });
+      }
+
+      // A classificação é por BYTES e vem ANTES de qualquer reserva: arquivo
+      // inválido não pode consumir a cota de ninguém, e é ela que diz se este
+      // caminho custa dinheiro.
+      const classe = classificarAnexo(buffer, parte.mimetype);
+      if (!classe.ok) {
+        return reply
+          .status(400)
+          .send({ error: mensagemDeFalhaDeAnexo(classe.motivo) });
+      }
+
+      if (classe.pago) {
+        const quota = await reserveAiAnexo({ dataOwnerId });
+        if (!quota.ok) {
+          // 200 e não 4xx: teto batido é estado de negócio, e o front mostra a
+          // mensagem no chat como faz com o teto de mensagens.
+          return reply.send({
+            ok: false,
+            error: anexoQuotaMessage(quota.denied ?? "tenant"),
+          });
+        }
+      }
+
+      const r = await lerAnexo({ buffer, formato: classe.formato });
+
+      if (!r.ok) {
+        // Nada foi cobrado quando o provedor nem chegou a ser chamado — e "não
+        // consegui enxergar" também não gasta: o lojista vai tirar outra foto.
+        if (classe.pago && r.motivo !== "erro_provedor") {
+          await refundAiAnexo({ dataOwnerId });
+        }
+        return reply.send({
+          ok: false,
+          error: mensagemDeFalhaDeAnexo(r.motivo, r.detalhe),
+        });
+      }
+
+      return reply.send({
+        ok: true,
+        anexo: {
+          // O nome vem do disco do cliente e vai parar no rótulo do envelope do
+          // prompt. Saneado aqui, na fronteira, e não lá adiante.
+          nome: nomeDeAnexoSeguro(parte.filename),
+          tipo: r.tipo,
+          leitura: r.leitura,
+          resumo: r.resumo,
+        },
+      });
     },
   );
 
@@ -245,6 +387,7 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       const body = (request.body ?? {}) as {
         message?: unknown;
         conversationId?: unknown;
+        anexos?: unknown;
       };
 
       const message =
@@ -264,6 +407,8 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
         typeof body.conversationId === "string" && body.conversationId
           ? body.conversationId
           : undefined;
+
+      const anexos = lerAnexosDoCorpo(body.anexos);
 
       // -----------------------------------------------------------------
       // Streaming por NEGOCIAÇÃO DE CONTEÚDO, e não numa rota separada.
@@ -288,6 +433,7 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
             actorUserId: user.id,
             message,
             conversationId,
+            ...(anexos.length ? { anexos } : {}),
             scope: scopeFromRequest(request) ?? undefined,
             onEvent: saida.escrever,
           });
@@ -334,6 +480,7 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
           actorUserId: user.id,
           message,
           conversationId,
+          ...(anexos.length ? { anexos } : {}),
           // ⭐ O escopo das consultas sai DAQUI e de nenhum outro lugar: tenant
           // e permissões vêm da sessão já autenticada. `scopeFromRequest` é a
           // única fábrica que existe (ai/core/scope.ts), e sem ela o turno roda
@@ -464,3 +611,34 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
     },
   );
 };
+
+/**
+ * As leituras de anexo que vieram no corpo do `/ai/chat`. Fase 8.
+ *
+ * ⚠️ POR QUE O CLIENTE PODE MANDAR A LEITURA DE VOLTA, E POR QUE ISSO ESTÁ
+ * CERTO. Alguém vai olhar isto e perguntar se um `curl` não poderia inventar
+ * uma "leitura" que o servidor nunca produziu. Poderia — e não muda nada. O
+ * dono da requisição é o próprio usuário autenticado, e ele SEMPRE pôde escrever
+ * o que quisesse no campo `message`. Mandar texto pela via do anexo é
+ * estritamente MENOS poderoso: ali o conteúdo entra embrulhado em
+ * `<dados_do_sistema>`, que é a fronteira que impede dado de virar instrução.
+ *
+ * O que precisa mesmo de guarda é o TAMANHO — a leitura é gravada e volta no
+ * histórico de todo turno seguinte — e o formato, que vem de fora e não pode
+ * chegar torto no orquestrador. É o que esta função faz, e nada além disso.
+ */
+function lerAnexosDoCorpo(bruto: unknown): AiTurnAnexo[] {
+  if (!Array.isArray(bruto)) return [];
+
+  return bruto
+    .slice(0, MAX_ANEXOS_POR_TURNO)
+    .map((item: any): AiTurnAnexo | null => {
+      const leitura =
+        typeof item?.leitura === "string"
+          ? item.leitura.slice(0, AI_CONSTANTS.MAX_ANEXO_LEITURA_CHARS).trim()
+          : "";
+      if (!leitura) return null;
+      return { nome: nomeDeAnexoSeguro(item?.nome), leitura };
+    })
+    .filter((a): a is AiTurnAnexo => a !== null);
+}

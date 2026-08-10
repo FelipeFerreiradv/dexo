@@ -157,5 +157,19 @@ export interface AiProvider {
     onDelta: (texto: string) => void,
   ): Promise<AiCompletion>;
   transcribe?(audio: Buffer, mimeType: string): Promise<AiCompletion>;
+  /**
+   * Descreve uma IMAGEM em texto. Fase 8.
+   *
+   * OPCIONAL pelo mesmo motivo de `transcribe`: o DeepSeek não tem visão na API
+   * (só no chat.deepseek.com), então um provedor sem este método é um caso
+   * normal e não uma falha — a UI simplesmente não oferece foto.
+   *
+   * ⚠️ O QUE VOLTA DAQUI É DADO, JAMAIS INSTRUÇÃO. A imagem pode conter texto
+   * escrito de propósito para o modelo ler ("ignore as instruções anteriores"),
+   * e o modelo vai transcrevê-lo obedientemente. Quem embrulha em
+   * `<dados_do_sistema>` é o orquestrador; a implementação aqui só precisa
+   * DESCREVER e nunca obedecer.
+   */
+  describeImage?(imagem: Buffer, mimeType: string): Promise<AiCompletion>;
   embed?(texts: string[]): Promise<number[][] | null>;
 }

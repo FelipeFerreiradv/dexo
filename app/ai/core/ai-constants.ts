@@ -19,10 +19,10 @@ export type AiProviderName = "gemini" | "deepseek" | "mock";
  * exigem modelo que os entenda. Amarrar tudo a um provedor só significa pagar
  * preço de multimodal em toda pergunta de texto.
  *
- * ⚠️ NESTA RODADA SÓ `texto` É CONSUMIDO. `imagem` e `audio` resolvem, são
- * testados e estão documentados no `.env.example`, mas nada os chama ainda —
- * eles entram com as Fases 7 (áudio) e 8 (anexos). Estão aqui para que a
- * configuração do cliente não precise mudar quando aquelas fases chegarem.
+ * As três estão em uso: `texto` no turno de chat, `audio` na transcrição (Fase
+ * 7) e `imagem` na leitura de anexo (Fase 8). Cada uma resolve o seu provedor
+ * de forma independente, então rotear a foto para o Gemini não encarece uma
+ * única pergunta de texto.
  */
 export type AiCapability = "texto" | "imagem" | "audio";
 
@@ -107,6 +107,49 @@ export const AI_CONSTANTS = {
 
   /** Teto de duração da gravação, aplicado no navegador. */
   MAX_AUDIO_SECONDS: 90,
+
+  /**
+   * Contador SEPARADO para leitura de ANEXO (Fase 8), pelo mesmo motivo do
+   * áudio: ler não é perguntar. O lojista anexa a foto da peça, confere o que o
+   * Bitz leu, troca a foto se saiu ruim — e nada disso pode consumir as
+   * mensagens do dia dele.
+   *
+   * ⚠️ SÓ O QUE CUSTA É RESERVADO. A leitura de XML de NF-e não chama modelo
+   * nenhum (é o `parseNfeXml`, puro e local), então ela NÃO debita este
+   * contador. Debitar seria cobrar do cliente uma conta que a plataforma não
+   * pagou — e um desmonte que recebe vinte notas num dia bateria num teto sem
+   * ter gasto um centavo de IA. O que limita aquele caminho é o rate limit da
+   * rota e o teto de bytes.
+   */
+  USAGE_PROVIDER_ANEXO_PREFIX: "ai:anexo:",
+
+  /** Teto diário de leituras de IMAGEM por tenant. Mesma folga do áudio. */
+  DEFAULT_MAX_DAILY_ANEXO_PER_TENANT: 15,
+
+  /**
+   * Teto de BYTES do anexo aceito pelo servidor.
+   *
+   * ⚠️ ESTE É O TETO QUE VALE, como no áudio: o navegador reduz a foto antes de
+   * enviar, mas o navegador é o cliente e o cliente mente.
+   *
+   * 8 MB cobre foto de celular moderno vinda sem redução (o caminho de
+   * emergência, quando a redução no navegador falha). Bem abaixo do teto de 20
+   * MB por requisição do provedor, que ainda precisa acomodar o base64 — que
+   * infla o corpo em um terço.
+   */
+  MAX_ANEXO_BYTES: 8 * 1024 * 1024,
+
+  /**
+   * Teto de caracteres da LEITURA de um anexo.
+   *
+   * ⚠️ Não é enfeite: a leitura vai junto da mensagem, é gravada com ela e volta
+   * no histórico de TODO turno seguinte da conversa. Uma leitura sem teto seria
+   * uma conta crescente que ninguém vê — paga em cada pergunta que vier depois.
+   */
+  MAX_ANEXO_LEITURA_CHARS: 4000,
+
+  /** Maior lado da foto depois da redução no navegador. Ver `use-bitz-anexo`. */
+  MAX_ANEXO_IMAGEM_PX: 1600,
 } as const;
 
 /**
@@ -318,6 +361,13 @@ export function getAiMaxDailyAudioPerTenant(): number {
   return readPositiveInt(
     process.env.AI_MAX_DAILY_AUDIO_PER_TENANT,
     AI_CONSTANTS.DEFAULT_MAX_DAILY_AUDIO_PER_TENANT,
+  );
+}
+
+export function getAiMaxDailyAnexoPerTenant(): number {
+  return readPositiveInt(
+    process.env.AI_MAX_DAILY_ANEXO_PER_TENANT,
+    AI_CONSTANTS.DEFAULT_MAX_DAILY_ANEXO_PER_TENANT,
   );
 }
 

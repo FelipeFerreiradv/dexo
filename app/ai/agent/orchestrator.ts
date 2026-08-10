@@ -20,7 +20,7 @@ import {
   auditQuotaExceeded,
 } from "../audit/ai-audit";
 import { resolveAiProvider, userFacingFailureMessage } from "../core/provider";
-import { describeAiConfigProblem } from "../core/ai-constants";
+import { AI_CONSTANTS, describeAiConfigProblem } from "../core/ai-constants";
 import type { AiFailureReason, AiMessage, AiSource } from "../core/types";
 import {
   formatKnowledgeForPrompt,
@@ -44,6 +44,7 @@ import {
   REGRAS_DE_RECOMENDACAO,
   blocoDeHoje,
   buildSystemPrompt,
+  neutralizarEnvelope,
   wrapSystemData,
 } from "./system-prompt";
 import { runTool, type ToolRunResult } from "./tool-runner";
@@ -86,11 +87,40 @@ export type AiTurnEvent =
   /** O texto transmitido até agora era preâmbulo de uma consulta: descarte. */
   | { type: "reinicio" };
 
+/**
+ * A LEITURA de um arquivo que o lojista anexou. Fase 8.
+ *
+ * ⭐ NÃO É O ARQUIVO. O arquivo já morreu em `POST /ai/anexo`: foi lido, virou
+ * texto e nunca tocou disco nem banco. O que chega aqui é o texto que o LOJISTA
+ * CONFERIU na tela antes de mandar — nenhum byte de imagem passa pelo turno, e
+ * nenhum provedor de texto precisa saber que existiu uma foto.
+ */
+export interface AiTurnAnexo {
+  /** Nome do arquivo, para o lojista se situar. Já saneado na rota. */
+  nome: string;
+  /** O que foi lido do arquivo. DADO — nunca instrução. */
+  leitura: string;
+}
+
+/**
+ * Teto de anexos por turno.
+ *
+ * A UI manda um. Isto é o cinto para o `curl`: sem teto, uma requisição com
+ * cinquenta leituras de 4.000 caracteres entraria no prompt e no histórico, e a
+ * conta seria paga em todo turno seguinte da conversa.
+ */
+export const MAX_ANEXOS_POR_TURNO = 3;
+
 export interface AiTurnInput {
   dataOwnerId: string;
   actorUserId: string;
   message: string;
   conversationId?: string;
+  /**
+   * Leituras de anexo desta mensagem. Ausente ⇒ turno byte a byte idêntico ao
+   * de antes da Fase 8 existir.
+   */
+  anexos?: AiTurnAnexo[];
   /**
    * Recebe o progresso do turno. Ausente ⇒ turno silencioso, byte a byte
    * idêntico ao de antes do streaming existir.
@@ -264,6 +294,71 @@ export interface AiTurnResult {
   usage: { inputTokens: number | null; outputTokens: number | null };
 }
 
+/**
+ * ⭐ O CONTEÚDO GRAVADO DA MENSAGEM DO USUÁRIO — com as leituras de anexo
+ * embrulhadas na frente do que ele digitou.
+ *
+ * TRÊS DECISÕES MORAM AQUI:
+ *
+ * 1. **Embrulhado em `<dados_do_sistema>`, sempre.** A leitura de uma foto é
+ *    escrita por um modelo de visão olhando uma imagem que qualquer pessoa pode
+ *    ter produzido, e o `xProd` de uma NF-e é campo livre do fornecedor. São
+ *    superfícies de injeção de verdade, e o envelope é o que as fecha. Não é
+ *    zelo excessivo: é a mesma regra que já vale para a base de conhecimento e
+ *    para todo resultado de tool.
+ *
+ * 2. **Gravado JUNTO da mensagem, e não descartado depois do turno.** O
+ *    histórico é relido do banco a cada turno (`historyRows`, mais abaixo), e é
+ *    daí que sai o contexto. Se a leitura não ficasse gravada, a segunda
+ *    pergunta sobre a mesma foto — "e serve em qual carro?" — chegaria ao modelo
+ *    sem a foto e sem a leitura dela. O lojista veria o Bitz esquecer o que
+ *    acabou de ler.
+ *
+ * 3. ⭐ **A PERGUNTA VEM PRIMEIRO, o envelope depois.** Isto parece detalhe de
+ *    formatação e não é — a primeira versão fazia o contrário e a revisão
+ *    adversarial mostrou o estrago.
+ *
+ *    `buildContextWindow` monta o resumo dos turnos antigos com
+ *    `firstLine(m.content)` (context-window.ts:39-43). Com o envelope na frente,
+ *    a primeira linha da mensagem é a MARCA DE ABERTURA do envelope e nada mais.
+ *    Duas consequências, as duas ruins:
+ *
+ *      a) o resumo gravado vira `Usuário: <dados_do_sistema>` — a pergunta real
+ *         do lojista SOME da memória da conversa;
+ *      b) esse resumo volta CRU para o system prompt no turno seguinte (é o
+ *         único bloco de contexto que não passa pelo envelope), plantando ali
+ *         uma ABERTURA SEM FECHAMENTO. Tudo que vem depois — inclusive as
+ *         regras anti-invenção — passa a estar, para o modelo, dentro de um
+ *         bloco que a persona manda tratar como dado e nunca obedecer. E
+ *         acumula: cada anexo que sai da janela acrescenta mais uma marca órfã.
+ *
+ *    Com a pergunta na frente, `firstLine` volta a pegar a pergunta e nada disso
+ *    acontece. (O envelope do resumo também é neutralizado mais abaixo, como
+ *    segunda camada — ver o `push` do RESUMO.)
+ *
+ * ⚠️ Sem anexo, devolve a mensagem INTOCADA — é o que garante que uma conversa
+ * de hoje continue byte a byte idêntica.
+ */
+function montarConteudoDoUsuario(
+  message: string,
+  anexos: AiTurnAnexo[] | undefined,
+): string {
+  if (!anexos?.length) return message;
+
+  const blocos = anexos
+    .slice(0, MAX_ANEXOS_POR_TURNO)
+    .filter((a) => a && typeof a.leitura === "string" && a.leitura.trim())
+    .map((a) =>
+      wrapSystemData(
+        `anexo enviado pelo lojista: ${String(a.nome || "arquivo").slice(0, 80)}`,
+        a.leitura.slice(0, AI_CONSTANTS.MAX_ANEXO_LEITURA_CHARS),
+      ),
+    );
+
+  if (!blocos.length) return message;
+  return [message, ...blocos].join("\n\n");
+}
+
 /** Título derivado da primeira pergunta — dá nome à conversa na listagem. */
 function deriveTitle(message: string): string {
   const clean = message.replace(/\s+/g, " ").trim();
@@ -341,8 +436,18 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
 
   // Persiste a pergunta ANTES de chamar o provedor: se o modelo falhar, a
   // conversa continua coerente e o usuário não perde o que digitou.
+  //
+  // ⭐ `message` continua sendo O QUE ELE DIGITOU, e é ele — não o conteúdo
+  // gravado — que decide intenção, cardápio de tools, RAG e título da conversa.
+  // Misturar a leitura do anexo ali faria as palavras da leitura ("Mercado
+  // Livre", "nota fiscal", "estoque") acionarem busca e ferramenta que ninguém
+  // pediu, encarecendo o turno e trocando o assunto.
   await db.aiMessage.create({
-    data: { conversationId, role: "user", content: message },
+    data: {
+      conversationId,
+      role: "user",
+      content: montarConteudoDoUsuario(message, input.anexos),
+    },
   });
 
   const degrade = async (
@@ -429,8 +534,22 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   // pelo que sobrou do treinamento, e responde com confiança sobre o ano errado.
   const extraSystem: string[] = [blocoDeHoje(input.now)];
   if (conversation.summary) {
+    // ⚠️ NEUTRALIZADO, e este é o ÚNICO bloco de contexto que entra no system
+    // prompt sem envelope — por desenho, porque ele é memória nossa e não dado
+    // de terceiro.
+    //
+    // Só que ele é EXTRAÍDO das mensagens (`firstLine` em context-window.ts), e
+    // mensagem é texto que o usuário escreve. Bastava alguém começar uma
+    // pergunta com `<dados_do_sistema>` para plantar uma abertura sem
+    // fechamento aqui dentro, e daí para baixo as regras do próprio prompt
+    // passariam a estar num bloco que a persona manda ignorar. O buraco é
+    // ANTERIOR aos anexos; a Fase 8 só o tornou fácil de acontecer sem
+    // intenção nenhuma.
+    //
+    // Neutralizar mantém o formato byte a byte para todo resumo que não contém
+    // as marcas — que é o caso de todos os resumos que existem hoje.
     extraSystem.push(
-      `RESUMO DO QUE JÁ FOI CONVERSADO (turnos antigos, fora da janela):\n${conversation.summary}`,
+      `RESUMO DO QUE JÁ FOI CONVERSADO (turnos antigos, fora da janela):\n${neutralizarEnvelope(conversation.summary)}`,
     );
   }
 

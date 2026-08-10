@@ -189,8 +189,32 @@ auditorias independentes revisaram este diff linha a linha e classificaram a
 mudança como endurecimento. Reverter significaria devolver o mass assignment de
 `pagePermissions` em `PUT /users/me/settings` — o remédio seria pior.
 
-**É a única exceção da entrega inteira.** Todo o resto de `tests/` alterado
-nesta branch são arquivos novos ou `ai-*.spec.ts` desta mesma entrega.
+**É a única exceção FORA do módulo.** Todo o resto de `tests/` alterado nesta
+branch são arquivos novos ou `ai-*.spec.ts` desta mesma entrega.
+
+### ⚠️ A segunda alteração — 2 asserções do `/ai/capacidades` na Fase 8
+
+Também é spec desta entrega (`tests/ai-audio-route.spec.ts`, escrito por mim na
+Fase 7), mas merece o mesmo registro, porque o efeito é o de um teste que **eu
+mesmo escrevi apertado demais e tive que mexer para a fase seguinte caber**.
+
+A rota `GET /ai/capacidades` nasceu na Fase 7 com o comentário explícito de que
+seria o lugar onde as capacidades das fases seguintes cresceriam — e no mesmo
+commit ganhou dois testes com `toEqual({ audio: true })`. O comentário prometia
+crescimento; a asserção proibia. Na Fase 8, ao acrescentar `anexos`, os dois
+quebraram.
+
+**O que mudou:** `toEqual({ audio: true })` → `toEqual({ audio: true, anexos: [".xml"] })`.
+
+**A igualdade estrita foi mantida** — o teste continua exigindo o objeto INTEIRO,
+campo a campo, e continua falhando se aparecer qualquer coisa que não foi
+declarada. Não houve afrouxamento: houve atualização do contrato para a forma
+nova, no mesmo grau de rigor. E o bloco ganhou um teste a mais, que prende a
+regra nova (sem modelo de visão, sobra `.xml` — e o clipe continua útil).
+
+**A lição, para não repetir:** contrato que a própria documentação declara
+extensível não deve ser fixado com igualdade estrita sobre o objeto todo. O certo
+teria sido asserção por campo. Fica registrado.
 
 ### Os 9 arquivos pré-existentes tocados — e nada além deles
 

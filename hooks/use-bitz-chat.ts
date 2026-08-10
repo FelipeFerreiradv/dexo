@@ -9,6 +9,12 @@ import {
   type BitzStreamEvent,
 } from "@/lib/ndjson-stream";
 
+/** O que foi anexado a uma pergunta. Só o rótulo — a leitura já foi ao servidor. */
+export interface BitzMensagemAnexo {
+  nome: string;
+  tipo: "imagem" | "xml-nfe";
+}
+
 export interface BitzChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -16,6 +22,21 @@ export interface BitzChatMessage {
   sources?: unknown[];
   /** Preenchido quando a resposta veio degradada (provedor fora, cota, erro). */
   errorCode?: string | null;
+  /**
+   * Anexos que acompanharam ESTA pergunta, para a bolha mostrar o clipe.
+   *
+   * ⚠️ Só nome e tipo. A leitura já viajou no corpo da requisição e está gravada
+   * junto da mensagem no servidor; repeti-la na bolha encheria a conversa de
+   * texto que o lojista acabou de conferir no cartão.
+   */
+  anexos?: BitzMensagemAnexo[];
+}
+
+/** O que o composer entrega junto da pergunta. */
+export interface BitzAnexoParaEnviar {
+  nome: string;
+  tipo: "imagem" | "xml-nfe";
+  leitura: string;
 }
 
 /** O que está sendo escrito agora. `null` quando não há turno em andamento. */
@@ -64,11 +85,27 @@ export function useBitzChat() {
   }, []);
 
   const send = React.useCallback(
-    async (text: string) => {
+    async (text: string, anexos?: BitzAnexoParaEnviar[]) => {
       const content = text.trim();
       if (!content || pending) return;
 
-      setMessages((prev) => [...prev, { id: nextId(), role: "user", content }]);
+      // Só o que TEM leitura viaja. Um anexo que falhou não pode ir junto
+      // fingindo que o Bitz leu alguma coisa.
+      const comLeitura = (anexos ?? []).filter((a) => a?.leitura?.trim());
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "user",
+          content,
+          ...(comLeitura.length
+            ? {
+                anexos: comLeitura.map((a) => ({ nome: a.nome, tipo: a.tipo })),
+              }
+            : {}),
+        },
+      ]);
       setPending(true);
       setStreaming(null);
 
@@ -101,6 +138,16 @@ export function useBitzChat() {
           body: JSON.stringify({
             message: content,
             conversationId: conversationId.current ?? undefined,
+            // Ausente quando não há anexo: o corpo volta a ser byte a byte o
+            // mesmo de antes da Fase 8.
+            ...(comLeitura.length
+              ? {
+                  anexos: comLeitura.map((a) => ({
+                    nome: a.nome,
+                    leitura: a.leitura,
+                  })),
+                }
+              : {}),
           }),
         });
 

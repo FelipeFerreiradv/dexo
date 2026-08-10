@@ -258,6 +258,12 @@ describe("GET /ai/capacidades", () => {
     audioDisponivelMock.mockReset().mockReturnValue(true);
     clearAiEntitlementCache();
     vi.stubEnv("NEXT_PUBLIC_AI_MODULE_ENABLED", "true");
+    // ⚠️ `anexosDisponiveis()` lê a configuração de verdade, e o `.env` do
+    // worktree tem provedor configurado. Sem fixar isto, a lista de extensões
+    // mudaria conforme a máquina — e o teste provaria outra coisa. Com o mock,
+    // que não tem `describeImage`, sobra só o `.xml`: ler NF-e não depende de
+    // provedor nenhum.
+    vi.stubEnv("AI_PROVIDER", "mock");
 
     app = fastify();
     await app.register(aiRoutes, { prefix: "/ai" });
@@ -271,13 +277,24 @@ describe("GET /ai/capacidades", () => {
   it("diz se o microfone deve aparecer", async () => {
     const res = await app.inject({ method: "GET", url: "/ai/capacidades" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ audio: true });
+    expect(res.json()).toEqual({ audio: true, anexos: [".xml"] });
   });
 
   it("⭐ áudio indisponível => false, e o chat segue inteiro", async () => {
     audioDisponivelMock.mockReturnValue(false);
     const res = await app.inject({ method: "GET", url: "/ai/capacidades" });
-    expect(res.json()).toEqual({ audio: false });
+    expect(res.json()).toEqual({ audio: false, anexos: [".xml"] });
+  });
+
+  it("⭐ sem modelo de visão, o clipe ainda oferece XML de NF-e — e só ele", async () => {
+    // A regra que isto prende: `anexos` NÃO é booleano. Um servidor sem visão
+    // continua sabendo ler nota fiscal, porque quem lê é o `parseNfeXml`, local
+    // e puro. Fazer a capacidade ser "sim/não" apagaria essa metade.
+    const res = await app.inject({ method: "GET", url: "/ai/capacidades" });
+    const anexos = res.json().anexos as string[];
+    expect(anexos).toContain(".xml");
+    expect(anexos).not.toContain(".jpg");
+    expect(anexos).not.toContain(".png");
   });
 
   it("⭐ NÃO revela provedor, modelo nem chave", async () => {

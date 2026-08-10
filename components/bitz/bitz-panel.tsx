@@ -6,8 +6,10 @@ import { Maximize2, Minimize2, PenSquare, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useBitzChat } from "@/hooks/use-bitz-chat";
+import { useBitzAnexo } from "@/hooks/use-bitz-anexo";
 import { useBitzAudio } from "@/hooks/use-bitz-audio";
 import { useBitzCapacidades } from "@/hooks/use-bitz-capacidades";
+import { BitzAnexo } from "./bitz-anexo";
 import { BitzApresentacao } from "./bitz-apresentacao";
 import { BitzComposer } from "./bitz-composer";
 import { BitzEscuta } from "./bitz-escuta";
@@ -63,8 +65,18 @@ export function BitzPanel({
   const { messages, pending, streaming, send, reset } = useBitzChat();
   const [draft, setDraft] = React.useState("");
 
-  // O microfone só existe se o servidor disser que sabe transcrever.
-  const { audio: audioDisponivel } = useBitzCapacidades(open);
+  // Microfone e clipe só existem se o servidor disser que sabe fazer aquilo.
+  const { audio: audioDisponivel, anexos: extensoesAceitas } =
+    useBitzCapacidades(open);
+
+  /**
+   * ⭐ A LEITURA DO ANEXO CAI NUM CARTÃO, NÃO NA CONVERSA — e é o mesmo motivo
+   * da transcrição. O lojista vê o que o Bitz entendeu da foto ANTES de
+   * perguntar, e corrige o código que veio errado. Mandar direto pouparia um
+   * toque e custaria caro: uma leitura errada viraria uma resposta certa sobre a
+   * peça errada.
+   */
+  const anexo = useBitzAnexo();
 
   /**
    * ⭐ A TRANSCRIÇÃO CAI NO CAMPO, NÃO NA CONVERSA.
@@ -161,7 +173,25 @@ export function BitzPanel({
     // A primeira mensagem encerra a apresentação para sempre — inclusive quando
     // ela é enviada direto do composer, sem passar pelo botão da tela.
     if (apresentar) encerrarApresentacao();
-    void send(texto);
+
+    // O anexo vai JUNTO desta pergunta e sai da mesa. Deixá-lo grudado colaria
+    // a mesma foto em toda pergunta seguinte da conversa — e o lojista pagaria
+    // o contexto dela sem nunca ter pedido.
+    const enviado = anexo.anexo;
+    anexo.remover();
+
+    void send(
+      texto,
+      enviado
+        ? [
+            {
+              nome: enviado.nome,
+              tipo: enviado.tipo,
+              leitura: enviado.leitura,
+            },
+          ]
+        : undefined,
+    );
   };
 
   return (
@@ -344,26 +374,23 @@ export function BitzPanel({
           </div>
 
           <div className={cn("mx-auto w-full shrink-0", isFull && "max-w-3xl")}>
-            {/* O erro do microfone vive AQUI, colado no composer, e não num
-                toast: o caminho de saída ("pode escrever a pergunta") é o campo
-                logo abaixo. Um toast some antes de o lojista ler. */}
-            {voz.erro && (
-              <div className="px-3 pt-3">
-                <p
-                  role="alert"
-                  className="border-destructive/40 bg-destructive/10 text-foreground flex items-start gap-2 rounded-2xl border px-3 py-2 text-xs"
-                >
-                  <span className="flex-1">{voz.erro}</span>
-                  <button
-                    type="button"
-                    onClick={voz.limparErro}
-                    className="text-muted-foreground hover:text-foreground shrink-0 underline"
-                  >
-                    ok
-                  </button>
-                </p>
-              </div>
+            {/* Os erros do microfone e do clipe vivem AQUI, colados no
+                composer, e não num toast: o caminho de saída ("pode escrever a
+                pergunta") é o campo logo abaixo. Um toast some antes de o
+                lojista ler. */}
+            {voz.erro && <Aviso texto={voz.erro} onOk={voz.limparErro} />}
+            {anexo.erro && (
+              <Aviso texto={anexo.erro} onOk={anexo.limparErro} />
             )}
+
+            {/* O que o Bitz leu do arquivo, para conferência, entre a conversa
+                e o campo de escrita. */}
+            <BitzAnexo
+              anexo={anexo.anexo}
+              lendo={anexo.estado === "lendo"}
+              onRemover={anexo.remover}
+            />
+
             <BitzComposer
               value={draft}
               onValueChange={setDraft}
@@ -371,6 +398,10 @@ export function BitzPanel({
               disabled={pending}
               autoFocus={open}
               onMicrofone={audioDisponivel ? voz.gravar : undefined}
+              onArquivo={anexo.escolher}
+              aceita={extensoesAceitas}
+              temAnexo={!!anexo.anexo}
+              aguardandoAnexo={anexo.estado === "lendo"}
             />
           </div>
 
@@ -387,6 +418,31 @@ export function BitzPanel({
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
+  );
+}
+
+/**
+ * Aviso colado no composer. `role="alert"` para o leitor de tela anunciar sem
+ * o usuário precisar procurar — quem grava um áudio ou anexa uma foto está
+ * olhando para o painel, não para o canto da tela.
+ */
+function Aviso({ texto, onOk }: { texto: string; onOk: () => void }) {
+  return (
+    <div className="px-3 pt-3">
+      <p
+        role="alert"
+        className="border-destructive/40 bg-destructive/10 text-foreground flex items-start gap-2 rounded-2xl border px-3 py-2 text-xs"
+      >
+        <span className="flex-1">{texto}</span>
+        <button
+          type="button"
+          onClick={onOk}
+          className="text-muted-foreground hover:text-foreground shrink-0 underline"
+        >
+          ok
+        </button>
+      </p>
+    </div>
   );
 }
 

@@ -28,15 +28,42 @@ interface BitzComposerProps {
    * pior que botão nenhum: o lojista grava, espera e leva um erro.
    */
   onMicrofone?: () => void;
+  /**
+   * Recebe o arquivo escolhido no clipe (Fase 8).
+   *
+   * ⭐ `undefined` — ou `aceita` vazio — mantém o clipe como placeholder "em
+   * breve", pela mesma regra do microfone: botão que sempre falha é pior que
+   * botão nenhum. Quem não tem modelo de visão configurado ainda recebe `.xml`,
+   * porque ler NF-e não depende de provedor.
+   */
+  onArquivo?: (arquivo: File) => void;
+  /** Extensões que o seletor oferece. Vem do SERVIDOR, via /ai/capacidades. */
+  aceita?: string[];
+  /** Já existe um anexo em cima da mesa — muda o convite do campo. */
+  temAnexo?: boolean;
+  /**
+   * Uma leitura de anexo está em andamento: o ENVIO espera, a digitação não.
+   *
+   * ⚠️ Não é preciosismo. Sem isto, mandar a pergunta enquanto o cartão dizia
+   * "Lendo o arquivo…" fazia a pergunta subir SEM o anexo, em silêncio — e a
+   * leitura, que já tinha custado uma das 15 do dia, ia para o lixo. O lojista
+   * levava um "não vi foto nenhuma" sem entender por quê, e repetir quinze
+   * vezes zerava a cota sem uma única resposta útil.
+   *
+   * O campo continua liberado de propósito: travar o texto no meio da digitação
+   * seria trocar um problema por outro.
+   */
+  aguardandoAnexo?: boolean;
 }
 
 /**
  * Composer do painel — o rodapé da referência: clipe à esquerda, campo no
  * meio, microfone à direita.
  *
- * Anexo e microfone já ocupam o lugar, DESABILITADOS com tooltip "em breve".
- * É deliberado: as Fases 7 (áudio) e 8 (anexos) entram sem mexer no layout, e
- * o usuário não descobre o botão do nada depois.
+ * Os dois botões nasceram na Fase 1 como placeholder "em breve", e as Fases 7
+ * (áudio) e 8 (anexos) só os ligaram — o layout nunca mudou, e o lojista não
+ * descobriu botão do nada. Cada um continua caindo no placeholder quando o
+ * servidor não sabe fazer aquilo.
  *
  * Enter envia, Shift+Enter quebra linha — mesma convenção do
  * app/mensagens/components/reply-composer.tsx, para não haver dois
@@ -49,8 +76,14 @@ export function BitzComposer({
   onValueChange,
   autoFocus,
   onMicrofone,
+  onArquivo,
+  aceita,
+  temAnexo,
+  aguardandoAnexo,
 }: BitzComposerProps) {
   const ref = React.useRef<HTMLTextAreaElement>(null);
+  const arquivoRef = React.useRef<HTMLInputElement>(null);
+  const podeAnexar = !!onArquivo && !!aceita?.length;
 
   React.useEffect(() => {
     if (autoFocus) ref.current?.focus();
@@ -58,7 +91,9 @@ export function BitzComposer({
 
   const submit = () => {
     const texto = value.trim();
-    if (!texto || disabled) return;
+    // `aguardandoAnexo` barra o envio aqui TAMBÉM, e não só no botão: o Enter
+    // não passa pelo botão.
+    if (!texto || disabled || aguardandoAnexo) return;
     onSend(texto);
     onValueChange("");
   };
@@ -77,9 +112,56 @@ export function BitzComposer({
           "shadow-sm transition motion-reduce:transition-none",
         )}
       >
-        <EmBreve label="Anexar arquivo (em breve)">
-          <Paperclip className="size-4" />
-        </EmBreve>
+        {podeAnexar ? (
+          <>
+            {/* O <input type="file"> fica escondido e o botão o aciona: o
+                controle nativo não aceita estilo, e um <label> estilizado
+                perderia o foco por teclado. `sr-only` e não `display:none` —
+                escondido de verdade, o input sai da ordem de tabulação e
+                leitores de tela deixam de anunciá-lo. */}
+            <input
+              ref={arquivoRef}
+              type="file"
+              accept={aceita!.join(",")}
+              className="sr-only"
+              tabIndex={-1}
+              aria-hidden="true"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                // ⚠️ Zerar o valor é obrigatório: sem isso, escolher O MESMO
+                // arquivo duas vezes seguidas (trocar a foto, se arrepender e
+                // voltar) não dispara `change` de novo, e o clipe fica mudo.
+                e.target.value = "";
+                if (f) onArquivo!(f);
+              }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => arquivoRef.current?.click()}
+                  disabled={disabled}
+                  aria-label="Anexar arquivo"
+                  className={cn(
+                    "text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 shrink-0",
+                    "items-center justify-center rounded-xl transition disabled:opacity-50",
+                    "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                    "motion-reduce:transition-none",
+                  )}
+                >
+                  <Paperclip className="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                Anexar foto da peça ou XML de NF-e
+              </TooltipContent>
+            </Tooltip>
+          </>
+        ) : (
+          <EmBreve label="Anexar arquivo (em breve)">
+            <Paperclip className="size-4" />
+          </EmBreve>
+        )}
 
         <Textarea
           ref={ref}
@@ -94,7 +176,9 @@ export function BitzComposer({
             }
           }}
           rows={1}
-          placeholder="Pergunte alguma coisa…"
+          placeholder={
+            temAnexo ? "Pergunte sobre o arquivo…" : "Pergunte alguma coisa…"
+          }
           disabled={disabled}
           aria-label="Mensagem para o Bitz"
           className={cn(
@@ -107,8 +191,13 @@ export function BitzComposer({
           <button
             type="button"
             onClick={submit}
-            disabled={disabled}
-            aria-label="Enviar"
+            disabled={disabled || aguardandoAnexo}
+            aria-label={
+              aguardandoAnexo ? "Aguardando a leitura do arquivo" : "Enviar"
+            }
+            title={
+              aguardandoAnexo ? "Espere o Bitz terminar de ler o arquivo" : undefined
+            }
             className={cn(
               "bg-primary text-primary-foreground inline-flex size-9 shrink-0 items-center justify-center rounded-full",
               "hover:bg-primary/90 disabled:opacity-50 shadow-sm transition",

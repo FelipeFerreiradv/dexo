@@ -3,6 +3,7 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { FileText, ImageIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { BitzChatMessage } from "@/hooks/use-bitz-chat";
@@ -123,6 +124,28 @@ export function BitzMessage({ message }: { message: BitzChatMessage }) {
             "leading-relaxed break-words whitespace-pre-wrap md:max-w-[75%]",
           )}
         >
+          {/* O que foi anexado a ESTA pergunta. Só o rótulo: a leitura já foi
+              conferida no cartão acima do campo e viajou junto — repeti-la aqui
+              encheria a conversa de texto que o lojista acabou de ler.
+              `whitespace-normal` porque a bolha inteira é `pre-wrap`, e sem
+              isto o nome do arquivo herdaria a quebra literal. */}
+          {message.anexos?.length ? (
+            <span className="mb-1.5 flex flex-col gap-1 whitespace-normal">
+              {message.anexos.map((a) => (
+                <span
+                  key={a.nome}
+                  className="bg-primary-foreground/15 inline-flex items-center gap-1.5 self-start rounded-full px-2 py-0.5 text-[11px]"
+                >
+                  {a.tipo === "xml-nfe" ? (
+                    <FileText className="size-3 shrink-0" />
+                  ) : (
+                    <ImageIcon className="size-3 shrink-0" />
+                  )}
+                  <span className="max-w-[14rem] truncate">{a.nome}</span>
+                </span>
+              ))}
+            </span>
+          ) : null}
           {message.content}
         </div>
       </div>

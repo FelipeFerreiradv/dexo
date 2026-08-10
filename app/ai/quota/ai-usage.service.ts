@@ -23,6 +23,7 @@ import {
 } from "../../marketplaces/services/rembg-provider-usage";
 import {
   AI_CONSTANTS,
+  getAiMaxDailyAnexoPerTenant,
   getAiMaxDailyAudioPerTenant,
   getAiMaxDailyGlobal,
   getAiMaxDailyPerTenant,
@@ -207,6 +208,99 @@ export async function refundAiTranscription(input: {
     db: input.db,
     now: input.now,
   });
+}
+
+/** Linha de quota da leitura de ANEXO daquele tenant. */
+export function anexoUsageProvider(dataOwnerId: string): string {
+  return `${AI_CONSTANTS.USAGE_PROVIDER_ANEXO_PREFIX}${dataOwnerId}`;
+}
+
+/**
+ * Reserva uma leitura de ANEXO. Contador próprio, teto próprio.
+ *
+ * ⭐ SÓ É CHAMADA NO CAMINHO PAGO. Ler um XML de NF-e não passa por aqui, porque
+ * não chama modelo nenhum — quem lê é o `parseNfeXml`, puro e local. Debitar
+ * uma leitura gratuita seria cobrar do cliente uma conta que a plataforma não
+ * pagou, e um desmonte que recebe vinte notas num dia bateria num teto sem ter
+ * gasto um centavo. Aquele caminho é contido pelo rate limit da rota e pelo teto
+ * de bytes.
+ *
+ * O teto GLOBAL é o mesmo do resto, e de propósito: ele protege a carteira da
+ * plataforma, e imagem custa igual ou mais que texto.
+ */
+export async function reserveAiAnexo(input: {
+  dataOwnerId: string;
+  db?: any;
+  now?: Date;
+  maxPerTenant?: number;
+  maxGlobal?: number;
+}): Promise<AiQuotaResult> {
+  const { dataOwnerId, db, now } = input;
+  if (!dataOwnerId) return { ok: false, denied: "tenant" };
+
+  const maxTenant = input.maxPerTenant ?? getAiMaxDailyAnexoPerTenant();
+  const maxGlobal = input.maxGlobal ?? getAiMaxDailyGlobal();
+  const provider = anexoUsageProvider(dataOwnerId);
+
+  let tenantOk = false;
+  try {
+    tenantOk = await tryReserveDailySlot({
+      provider,
+      maxPerDay: maxTenant,
+      db,
+      now,
+    });
+  } catch {
+    // Fail-closed: erro de banco NEGA em vez de deixar passar sem contar.
+    return { ok: false, denied: "tenant" };
+  }
+  if (!tenantOk) return { ok: false, denied: "tenant" };
+
+  let globalOk = false;
+  try {
+    globalOk = await tryReserveDailySlot({
+      provider: AI_CONSTANTS.USAGE_PROVIDER_GLOBAL,
+      maxPerDay: maxGlobal,
+      db,
+      now,
+    });
+  } catch {
+    globalOk = false;
+  }
+
+  if (!globalOk) {
+    // Mesmo `now` da reserva: sem isso, uma virada de meia-noite UTC entre
+    // reservar e devolver decrementaria o contador do dia NOVO.
+    await refundDailySlot({ provider, db, now });
+    return { ok: false, denied: "global" };
+  }
+
+  return { ok: true };
+}
+
+/** Devolve uma leitura de anexo reservada que NÃO chegou a custar nada. */
+export async function refundAiAnexo(input: {
+  dataOwnerId: string;
+  db?: any;
+  now?: Date;
+}): Promise<void> {
+  await refundDailySlot({
+    provider: anexoUsageProvider(input.dataOwnerId),
+    db: input.db,
+    now: input.now,
+  });
+  await refundDailySlot({
+    provider: AI_CONSTANTS.USAGE_PROVIDER_GLOBAL,
+    db: input.db,
+    now: input.now,
+  });
+}
+
+/** Mensagem que o usuário lê quando o teto de ANEXO bate. */
+export function anexoQuotaMessage(denied: AiQuotaDenial): string {
+  return denied === "tenant"
+    ? "Você atingiu o limite de fotos por hoje. Pode escrever a pergunta — isso continua liberado."
+    : "O Bitz está com muita demanda agora. Tenta de novo mais tarde.";
 }
 
 /** Mensagem que o usuário lê quando o teto de TRANSCRIÇÃO bate. */

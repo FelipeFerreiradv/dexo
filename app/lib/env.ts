@@ -180,6 +180,12 @@ const envSchema = z.object({
   AI_MAX_DAILY_AUDIO_PER_TENANT: positiveIntString(
     "AI_MAX_DAILY_AUDIO_PER_TENANT",
   ),
+  // Teto diário de leituras de FOTO por tenant (Fase 8). Também com contador
+  // próprio, e pelo mesmo motivo. Só o caminho pago conta: ler XML de NF-e não
+  // chama modelo nenhum e não debita nada.
+  AI_MAX_DAILY_ANEXO_PER_TENANT: positiveIntString(
+    "AI_MAX_DAILY_ANEXO_PER_TENANT",
+  ),
   AI_MAX_DAILY_GLOBAL: positiveIntString("AI_MAX_DAILY_GLOBAL"),
   AI_TEMPERATURE: z
     .string()
