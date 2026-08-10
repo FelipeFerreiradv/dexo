@@ -233,6 +233,51 @@ async function runShopeeCatalogForAccount(accountId: string): Promise<void> {
   }
 }
 
+/**
+ * Auto-detecção de itens novos no Catálogo Meta de UMA conta.
+ *
+ * Opt-in duplo: só roda com FACEBOOK_AUTODETECT_ENABLED=1 (verificado dentro do
+ * usecase) e com a conta tendo catálogo próprio. O gate de "novos" é por
+ * IDENTIDADE, não por data — a borda /products da Meta não expõe created_at
+ * confiável (ver comentário em importNewFacebookItemsForAccount).
+ */
+async function runFacebookCatalogForAccount(accountId: string): Promise<void> {
+  try {
+    const full = await prisma.marketplaceAccount.findUnique({
+      where: { id: accountId },
+      // EGRESS: só os campos que o poller usa.
+      select: {
+        id: true,
+        userId: true,
+        accessToken: true,
+        fbCatalogId: true,
+        autoImportListingsSince: true,
+      },
+    });
+    if (full && full.accessToken) {
+      const r = await SyncUseCase.importNewFacebookItemsForAccount({
+        id: full.id,
+        userId: full.userId,
+        accessToken: full.accessToken,
+        fbCatalogId: full.fbCatalogId,
+        autoImportListingsSince: full.autoImportListingsSince,
+      });
+      // Só loga quando houve trabalho: com a flag desligada o retorno é zerado
+      // e o loop não deve virar ruído.
+      if (r.created || r.linked || r.errors) {
+        console.log(
+          `[sync-loop] Facebook auto-detect conta ${accountId}: criados=${r.created} vinculados=${r.linked} ignorados=${r.skipped} erros=${r.errors}`,
+        );
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[sync-loop] Falha na auto-detecção de itens Facebook (conta ${accountId}):`,
+      err,
+    );
+  }
+}
+
 /** Auto-detecção de anúncios + conversas da Magalu de UMA conta. */
 async function runMagaluCatalogForAccount(accountId: string): Promise<void> {
   // Auto-detecção de anúncios novos da Magalu (polling incremental). Try/catch
@@ -315,6 +360,9 @@ async function runOnce() {
     if (account.platform === Platform.MAGALU) {
       await runMagaluCatalogForAccount(account.id);
     }
+    if (account.platform === Platform.FACEBOOK) {
+      await runFacebookCatalogForAccount(account.id);
+    }
   }
 
   await runListingsMetrics();
@@ -339,6 +387,9 @@ async function runCatalogPass(): Promise<{ accounts: number; elapsedMs: number }
     }
     if (account.platform === Platform.MAGALU) {
       await runMagaluCatalogForAccount(account.id);
+    }
+    if (account.platform === Platform.FACEBOOK) {
+      await runFacebookCatalogForAccount(account.id);
     }
   }
 

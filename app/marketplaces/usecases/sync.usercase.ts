@@ -17,6 +17,7 @@ import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
 import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import type { FacebookCatalogProduct } from "../types/facebook-api.types";
 import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
@@ -3270,6 +3271,120 @@ export class SyncUseCase {
         summary.errors++;
         console.error(
           `[AUTODETECT][Magalu] Falha no sku ${sku.sku ?? sku.id} (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Auto-detecção contínua de itens novos no Catálogo Meta (cron).
+   *
+   * ⚠️ O gate "só novos" da Shopee/Magalu é POR DATA e aqui seria impossível:
+   * a borda `GET /{catalog_id}/products` não expõe um `created_at` confiável, e
+   * `normalizeFacebookItem` preenche `createdAt` com a hora atual. Copiar o
+   * gate do Magalu faria `createdMs >= baselineMs` ser SEMPRE verdadeiro e o
+   * cron reimportaria o catálogo inteiro a cada rodada.
+   *
+   * Por isso o gate é POR IDENTIDADE: pré-carrega os `retailer_id` que já têm
+   * vínculo NESTA conta e pula todos. Mesmo pré-filtro `linkedSkus` da Magalu,
+   * só que por `externalListingId` (= retailer_id) em vez de por data.
+   *
+   * Consequência honesta: na PRIMEIRA passada, tudo o que existe no catálogo e
+   * ainda não está vinculado é importado — não há "linha do tempo" para separar
+   * antigos de novos. Por isso é opt-in explícito (FACEBOOK_AUTODETECT_ENABLED)
+   * e deve ser ligado numa conta piloto.
+   */
+  static async importNewFacebookItemsForAccount(account: {
+    id: string;
+    userId: string;
+    accessToken: string;
+    fbCatalogId?: string | null;
+    autoImportListingsSince: Date | null;
+  }): Promise<{
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: number;
+  }> {
+    const summary = { created: 0, linked: 0, skipped: 0, errors: 0 };
+
+    // Opt-in explícito + kill-switch de runtime já existente.
+    if (process.env.FACEBOOK_AUTODETECT_ENABLED !== "1") return summary;
+    if (isPlatformDisabled(Platform.FACEBOOK)) return summary;
+    // Fail-safe idêntico ao da Magalu: sem baseline, não importa.
+    if (!account.autoImportListingsSince) return summary;
+    // Catálogo por conta, sem fallback global (mesma regra do resto do Facebook).
+    if (!account.fbCatalogId) return summary;
+
+    let items: FacebookCatalogProduct[];
+    try {
+      items = await FacebookApiService.listCatalogItems(account.accessToken, {
+        catalogId: account.fbCatalogId,
+      });
+    } catch (err) {
+      console.error(
+        `[autodetect][facebook] listCatalogItems falhou (conta ${account.id}):`,
+        err instanceof Error ? err.message : err,
+      );
+      return summary;
+    }
+    if (items.length === 0) return summary;
+
+    // Gate por IDENTIDADE: retailer_id já vinculado nesta conta = nada a fazer.
+    const retailerIds = items
+      .map((i) =>
+        typeof i.retailer_id === "string" && i.retailer_id.trim()
+          ? i.retailer_id
+          : null,
+      )
+      .filter((x): x is string => Boolean(x));
+    const jaVinculados = new Set<string>(
+      (
+        await findManyInChunks(retailerIds, (ids) =>
+          prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              externalListingId: { in: ids },
+            },
+            select: { externalListingId: true },
+          }),
+        )
+      ).map((l) => l.externalListingId),
+    );
+
+    for (const item of items) {
+      try {
+        const normalized = ListingAutodetectUseCase.normalizeFacebookItem(
+          { id: account.id, userId: account.userId },
+          item,
+        );
+        if (
+          !normalized.externalListingId ||
+          jaVinculados.has(normalized.externalListingId)
+        ) {
+          summary.skipped++;
+          continue;
+        }
+
+        const res =
+          await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+            normalized,
+          );
+        if (res.action === "created_product") {
+          summary.created++;
+        } else if (
+          res.action === "linked_existing_product" ||
+          res.action === "raced"
+        ) {
+          summary.linked++;
+        }
+      } catch (err) {
+        summary.errors++;
+        console.error(
+          `[AUTODETECT][Facebook] Falha no item ${item.retailer_id ?? item.id} (conta ${account.id}):`,
           err instanceof Error ? err.message : err,
         );
       }
