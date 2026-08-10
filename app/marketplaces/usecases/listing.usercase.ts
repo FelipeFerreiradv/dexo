@@ -10,6 +10,7 @@ import { MagaluCategoryResolutionService } from "../services/magalu-category-res
 import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
+import { OlxRepublishService } from "../services/olx-republish.service";
 import { OLX_CONSTANTS } from "../olx/olx-constants";
 import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
@@ -5905,42 +5906,34 @@ export class ListingUseCase {
           await ListingRepository.updateStatus(listingId, status);
           return { success: true };
         }
-        // Reativar: re-insere com o MESMO id (edição p/ preservar o anúncio).
-        const product = listing.product;
-        const category =
-          OlxCategoryResolutionService.resolveCategoryId(product);
-        // Multi-tenant: contato do vendedor vem da conta; env global só fallback.
-        const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-        const zipcode = account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
-        if (category == null || !phone || !zipcode) {
-          return {
-            success: false,
-            error:
-              "Reativação OLX requer categoria resolvida + telefone/CEP do vendedor (conta ou OLX_SELLER_PHONE/ZIPCODE).",
-          };
-        }
-        const ad = OlxPayloadBuilderService.build(product, {
-          categoryId: category,
-          phone,
-          zipcode,
-          params: OlxCategoryResolutionService.buildAdParams(product, category),
+        // Reativar = recriar o anúncio inteiro (a OLX não tem pausa). Este é o
+        // caminho do CANCELAMENTO DE PEDIDO: o estoque volta e o anúncio precisa
+        // voltar ao ar exatamente como estava — com os overrides do anúncio, a
+        // categoria escolhida pelo operador e a confirmação da OLX.
+        // `findById` (sem leanProduct) já trouxe o Product completo e as colunas
+        // *Override, então não há reload a fazer aqui.
+        const rep = await OlxRepublishService.republish({
+          accessToken: account.accessToken,
+          olxId,
+          product: listing.product,
+          listingOverrides: listing,
+          sellerPhone: account.olxSellerPhone,
+          sellerZipcode: account.olxSellerZipcode,
         });
-        // Garante o mesmo id do anúncio já publicado (idempotência da edição).
-        ad.id = olxId;
-        const resp = await OlxApiService.submitImport(account.accessToken, [
-          ad,
-        ]);
-        if (resp.statusCode !== 0) {
-          const detail =
-            resp.statusMessage ||
-            (resp.errors && resp.errors.join("; ")) ||
-            `statusCode ${resp.statusCode}`;
+        if (!rep.success) {
           return {
             success: false,
-            error: `OLX recusou a reativação: ${detail}`,
+            error: rep.error ?? "Falha ao reativar o anúncio na OLX",
           };
         }
-        await ListingRepository.updateStatus(listingId, status);
+        // Repopula os identificadores REAIS devolvidos pela OLX. Sem isto o
+        // link do anúncio continua apontando para o `list_id` antigo, que morreu
+        // junto com a despublicação.
+        await ListingRepository.updateListing(listingId, {
+          status,
+          ...(rep.olxListId ? { olxListId: rep.olxListId } : {}),
+          ...(rep.permalink ? { permalink: rep.permalink } : {}),
+        });
         return { success: true };
       }
 

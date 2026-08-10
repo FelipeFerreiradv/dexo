@@ -3974,6 +3974,7 @@ export class SyncUseCase {
     product: any,
     externalListingId: string,
     account: any,
+    knownListingId?: string | null,
   ): Promise<SyncResult> {
     const result: SyncResult = {
       success: false,
@@ -3994,6 +3995,14 @@ export class SyncUseCase {
           externalListingId,
         );
         if (resp.statusCode !== 0) throw this.olxRespError(resp);
+        // O anúncio saiu do ar na OLX: o status local TEM que acompanhar.
+        // Sem isto o Dexo segue mostrando "Ativo" e, quando o estoque voltar
+        // por um caminho sem forceRemote (estorno de venda balcão, botão
+        // Reativar), o fast-path de idempotência faz no-op e o anúncio nunca
+        // mais volta. É o que `syncOlxProductStock` já faz no ramo gêmeo.
+        if (knownListingId) {
+          await ListingRepository.updateStatus(knownListingId, "paused");
+        }
       } else {
         const category =
           OlxCategoryResolutionService.resolveCategoryId(product);
@@ -4853,6 +4862,9 @@ export class SyncUseCase {
             effectiveProduct,
             externalListingId,
             account,
+            // Mesmo padrão do ML: o listing já está carregado, e a despublicação
+            // por estoque zerado precisa do id para gravar o status "paused".
+            listingForOverrides?.id ?? null,
           );
         case Platform.FACEBOOK:
           return await this.syncFacebookProductData(
