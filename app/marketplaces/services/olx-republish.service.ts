@@ -2,7 +2,10 @@ import { OlxApiService } from "./olx-api.service";
 import { OlxPayloadBuilderService } from "./olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "./olx-category-resolution.service";
 import { applyOverridesToProduct } from "./listing-overrides.service";
-import { OLX_CONSTANTS } from "../olx/olx-constants";
+import {
+  OLX_CONSTANTS,
+  resolveOlxSellerContact,
+} from "../olx/olx-constants";
 
 export interface OlxRepublishInput {
   accessToken: string;
@@ -105,8 +108,11 @@ export class OlxRepublishService {
         OlxCategoryResolutionService.resolveCategoryId(effectiveProduct);
 
       // 4. Contato do vendedor pela CONTA; env é só fallback (multi-tenant).
-      const phone = input.sellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-      const zipcode = input.sellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+      const { phone, zipcode } = resolveOlxSellerContact({
+        id: (listingOverrides as any)?.marketplaceAccountId,
+        olxSellerPhone: input.sellerPhone,
+        olxSellerZipcode: input.sellerZipcode,
+      });
       if (category == null || !phone || !zipcode) {
         return {
           success: false,

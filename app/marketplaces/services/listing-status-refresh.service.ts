@@ -10,6 +10,7 @@ import { normalizeListingStatus } from "../lib/listing-status";
 import { isPlatformDisabled } from "@/app/lib/integration-flags";
 import {
   FACEBOOK_CONSTANTS,
+  facebookAppSecretProof,
   facebookGraphBase,
 } from "../facebook/facebook-constants";
 
@@ -151,6 +152,21 @@ const parseShopeeItemId = (externalListingId: string): number | null => {
  * (rejected/pending) tem prioridade sobre availability no espelho: um item
  * barrado/em revisão importa mais que a disponibilidade. Item ausente ⇒ omitido.
  */
+/**
+ * Conta FACEBOOK com token já vencido. A Meta não expõe refresh do long-lived
+ * token (~60 dias): passada a validade, toda chamada é 401 certo. Sem esta
+ * guarda o sweep horário queima egress e enche o log com o mesmo erro.
+ * Só se aplica ao Facebook — ML e Shopee renovam o token no caminho.
+ */
+function isExpiredFacebookAccount(account: {
+  platform: string;
+  expiresAt: Date | null;
+}): boolean {
+  if (account.platform !== "FACEBOOK") return false;
+  if (!account.expiresAt) return false;
+  return new Date(account.expiresAt).getTime() <= Date.now();
+}
+
 async function getFacebookItemStatuses(
   accessToken: string,
   retailerIds: string[],
@@ -166,6 +182,12 @@ async function getFacebookItemStatuses(
   url.searchParams.set("fields", "retailer_id,availability,review_status");
   url.searchParams.set("filter", filter);
   url.searchParams.set("limit", String(retailerIds.length));
+  // appsecret_proof: obrigatório quando o app Meta tem "Require App Secret"
+  // ligado (hardening padrão). Todas as outras chamadas Graph do projeto já o
+  // enviam; esta era a única sem — e como o 401 resultante é engolido pelo
+  // try/catch por conta, o espelhamento de status inteiro falharia em silêncio.
+  const proof = facebookAppSecretProof(accessToken);
+  if (proof) url.searchParams.set("appsecret_proof", proof);
 
   const response = await axios.get<{
     data?: Array<{
@@ -220,7 +242,11 @@ export class ListingStatusRefreshService {
         row.marketplaceAccount.accessToken &&
         // Kill-switch: não consulta status ao vivo de plataforma desligada
         // (cobre o live=1 do dialog, que escapava do kill-switch).
-        !isPlatformDisabled(row.marketplaceAccount.platform),
+        !isPlatformDisabled(row.marketplaceAccount.platform) &&
+        // Facebook não tem refresh de token: o long-lived expira em ~60 dias e
+        // depois disso cada rodada do sweep é um 401 garantido. ML e Shopee
+        // ficam de fora desta guarda porque renovam o token adiante.
+        !isExpiredFacebookAccount(row.marketplaceAccount),
     );
     if (eligible.length === 0) return changed;
 

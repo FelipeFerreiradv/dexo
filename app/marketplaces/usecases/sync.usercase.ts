@@ -20,7 +20,10 @@ import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
-import { OLX_CONSTANTS } from "../olx/olx-constants";
+import {
+  OLX_CONSTANTS,
+  resolveOlxSellerContact,
+} from "../olx/olx-constants";
 import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
 import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
@@ -901,9 +904,20 @@ export class SyncUseCase {
       throw new Error("Conta do Facebook não conectada ou sem credenciais");
     }
 
+    // Catálogo POR CONTA, sem fallback para o global do .env — a mesma regra
+    // que a publicação, a despublicação e o espelhamento de status já aplicam.
+    // Cair no catálogo global aqui é pior do que na publicação: em vez de
+    // escrever no lugar errado, o Dexo LERIA o catálogo de outro tenant e
+    // criaria produtos a partir dele.
+    if (!account.fbCatalogId) {
+      throw new Error(
+        "Catálogo Meta não configurado nesta conta (fbCatalogId ausente). Configure o catálogo do Facebook antes de importar.",
+      );
+    }
+
     // A paginação (cursor `after`) é resolvida dentro de listCatalogItems: aqui
-    // já chega o portfólio inteiro. Usa o catálogo da conta (fallback env).
-    const catalogId = account.fbCatalogId ?? undefined;
+    // já chega o portfólio inteiro.
+    const catalogId = account.fbCatalogId;
     const items = await FacebookApiService.listCatalogItems(
       account.accessToken,
       { catalogId },
@@ -3852,9 +3866,7 @@ export class SyncUseCase {
         // Contato do vendedor por conta (env só fallback) p/ não vazar entre tenants.
         const category =
           OlxCategoryResolutionService.resolveCategoryId(effectiveProduct);
-        const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-        const zipcode =
-          account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+        const { phone, zipcode } = resolveOlxSellerContact(account);
         if (category == null || !phone || !zipcode) {
           throw new Error(
             "Publicação OLX requer categoria resolvida + telefone/CEP do vendedor (conta ou OLX_SELLER_PHONE/ZIPCODE).",
@@ -4008,8 +4020,7 @@ export class SyncUseCase {
           OlxCategoryResolutionService.resolveCategoryId(product);
         // Contato do vendedor por conta (env só fallback) p/ não vazar entre
         // tenants — mesmo desenho de syncOlxProductStock/updateOlxListingFields.
-        const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-        const zipcode = account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+        const { phone, zipcode } = resolveOlxSellerContact(account);
         if (category == null || !phone || !zipcode) {
           throw new Error(
             "Sincronização OLX requer categoria resolvida + OLX_SELLER_PHONE/ZIPCODE.",

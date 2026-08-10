@@ -102,3 +102,45 @@ export function validateOlxConfig(): void {
     }
   }
 }
+
+// Contas para as quais já avisamos que o contato veio do .env. Evita repetir o
+// aviso a cada publicação/sync do mesmo vendedor.
+const avisoContatoGlobal = new Set<string>();
+
+/**
+ * Resolve telefone/CEP do vendedor OLX, preferindo os dados DA CONTA e caindo
+ * no `.env` só como último recurso.
+ *
+ * O fallback global é um furo de multi-tenant conhecido: hoje ele funciona
+ * porque existe um único vendedor OLX conectado, mas um segundo cliente que não
+ * preencha os campos publicaria com o telefone e o CEP do primeiro — e o
+ * comprador ligaria para o vendedor errado.
+ *
+ * A semântica do `??` é preservada de propósito: remover o fallback sem antes
+ * fazer o backfill das contas existentes pararia TODA publicação OLX em
+ * produção. O que muda aqui é que o uso do global deixa de ser silencioso.
+ */
+export function resolveOlxSellerContact(account: {
+  id?: string | null;
+  olxSellerPhone?: string | null;
+  olxSellerZipcode?: string | null;
+}): { phone?: string; zipcode?: string; usouFallbackGlobal: boolean } {
+  const phone = account?.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
+  const zipcode = account?.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+  const usouFallbackGlobal =
+    !account?.olxSellerPhone || !account?.olxSellerZipcode;
+
+  if (usouFallbackGlobal) {
+    const chave = String(account?.id ?? "sem-id");
+    if (!avisoContatoGlobal.has(chave)) {
+      avisoContatoGlobal.add(chave);
+      console.warn(
+        `[OLX] Conta ${chave} sem telefone/CEP próprios: usando OLX_SELLER_PHONE/ZIPCODE do .env. ` +
+          `Preencha os dados do vendedor na aba de conexão da OLX — com mais de um vendedor ` +
+          `conectado, o contato de um cliente vaza para os anúncios do outro.`,
+      );
+    }
+  }
+
+  return { phone, zipcode, usouFallbackGlobal };
+}

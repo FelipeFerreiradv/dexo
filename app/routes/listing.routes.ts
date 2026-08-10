@@ -15,7 +15,10 @@ import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.
 import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { isPlatformDisabled } from "../lib/integration-flags";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
-import { OLX_CONSTANTS } from "../marketplaces/olx/olx-constants";
+import {
+  OLX_CONSTANTS,
+  resolveOlxSellerContact,
+} from "../marketplaces/olx/olx-constants";
 import { ListingStatusRefreshService } from "../marketplaces/services/listing-status-refresh.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
@@ -1155,8 +1158,7 @@ export async function listingRoutes(app: FastifyInstance) {
                 "Conta OLX não encontrada ou sem credenciais para preflight",
             });
           }
-          const phone = acc.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-          const zipcode = acc.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+          const { phone, zipcode } = resolveOlxSellerContact(acc);
           if (!phone || !zipcode) {
             return reply.status(400).send({
               error: "Conta OLX sem dados do vendedor",

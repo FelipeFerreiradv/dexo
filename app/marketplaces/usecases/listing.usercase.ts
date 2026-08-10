@@ -11,7 +11,11 @@ import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
 import { OlxRepublishService } from "../services/olx-republish.service";
-import { OLX_CONSTANTS } from "../olx/olx-constants";
+import { MarketplaceAccountService } from "../services/marketplace-account.service";
+import {
+  OLX_CONSTANTS,
+  resolveOlxSellerContact,
+} from "../olx/olx-constants";
 import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
 import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
@@ -3968,8 +3972,7 @@ export class ListingUseCase {
       }
 
       // Contato do vendedor por conta (env só fallback) p/ não vazar entre tenants.
-      const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-      const zipcode = account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+      const { phone, zipcode } = resolveOlxSellerContact(account);
       if (!phone || !zipcode) {
         return {
           success: false,
@@ -4065,6 +4068,15 @@ export class ListingUseCase {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Erro ao criar anúncio na OLX";
+      // Credencial morta marca a conta como ERROR (no-op para erro comum):
+      // sem isto a conta seguia verde na tela de Integrações enquanto toda
+      // publicação falhava.
+      if (account?.id) {
+        await MarketplaceAccountService.handleAuthFailure(account.id, error, {
+          userId,
+          context: "AUTH_REFRESH",
+        });
+      }
       if (product?.sku && account?.id) {
         try {
           await ListingRepository.upsertListing({
@@ -4077,6 +4089,10 @@ export class ListingUseCase {
             // Sem retry: o ListingRetryService é ML-only e enviaria o token OLX p/ o ML.
             retryEnabled: false,
             nextRetryAt: null,
+            // "Criado por" também no caminho de erro: a linha NASCE aqui quando
+            // a primeira tentativa falha, e o ramo `update` do upsert nunca mais
+            // preenche o autor — ficaria null para sempre.
+            createdByUserId: actorId ?? null,
           });
         } catch (persistErr) {
           console.warn(
@@ -6465,8 +6481,7 @@ export class ListingUseCase {
       };
     }
 
-    const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
-    const zipcode = account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+    const { phone, zipcode } = resolveOlxSellerContact(account);
     if (!phone || !zipcode) {
       return {
         success: false,
@@ -6686,6 +6701,14 @@ export class ListingUseCase {
         error instanceof Error
           ? error.message
           : "Erro ao criar anúncio no Facebook";
+      // Token da Meta revogado/expirado marca a conta como ERROR. No-op quando
+      // o erro é comum (categoria inválida, imagem pequena etc.).
+      if (account?.id) {
+        await MarketplaceAccountService.handleAuthFailure(account.id, error, {
+          userId,
+          context: "AUTH_REFRESH",
+        });
+      }
       if (product?.sku && account?.id) {
         try {
           await ListingRepository.upsertListing({
@@ -6699,6 +6722,9 @@ export class ListingUseCase {
             // Sem retry: o ListingRetryService é ML-only e enviaria o token Meta p/ o ML.
             retryEnabled: false,
             nextRetryAt: null,
+            // Idem OLX: a linha nasce aqui no caminho de erro, e o ramo
+            // `update` do upsert nunca preencheria o autor depois.
+            createdByUserId: actorId ?? null,
           });
         } catch (persistErr) {
           console.warn(

@@ -30,6 +30,18 @@ export class MarketplaceAccountService {
       "refresh failed",
       "token expired",
       "invalid_refresh_token",
+      // Vocabulário da Graph API (Meta). O long-lived token expira em ~60 dias
+      // e não tem refresh: sem estas chaves a conta ficava ACTIVE para sempre,
+      // verde na tela de Integrações, falhando toda publicação em silêncio.
+      // São expressões específicas da Meta — não colidem com ML/Shopee/Magalu.
+      "oauthexception",
+      "error validating access token",
+      "session has expired",
+      "invalid oauth access token",
+      // OLX: o autoupload devolve 200 com o erro no corpo; a mensagem já chega
+      // aqui achatada por olxRespError.
+      "invalid_token",
+      "token revoked",
     ].some((k) => msg.toLowerCase().includes(k));
 
     if (isAuthFailure) {
