@@ -591,7 +591,15 @@ export function BulkListingWizard({
   const runPreflight = async (
     categoryOverrides?: Record<string, string>,
   ): Promise<Array<{ productId: string; code: string; message: string }>> => {
-    if (selectedShopeeIds.size === 0) {
+    // O early-return olhava só a Shopee, então um lote 100% OLX ou 100%
+    // Facebook não rodava preflight NENHUM — a rota já validava as duas
+    // plataformas, mas o front nunca a chamava. Conta OLX sem telefone/CEP ou
+    // conta Facebook sem catálogo só falhava item a item dentro do job.
+    if (
+      selectedShopeeIds.size === 0 &&
+      selectedOlxIds.size === 0 &&
+      selectedFacebookIds.size === 0
+    ) {
       setPreflightIssues([]);
       return [];
     }
@@ -600,11 +608,19 @@ export function BulkListingWizard({
       const firstShopee = selectedShopeeIds.values().next().value as
         | string
         | undefined;
+      const firstOlx = selectedOlxIds.values().next().value as
+        | string
+        | undefined;
+      const firstFacebook = selectedFacebookIds.values().next().value as
+        | string
+        | undefined;
       const res = await fetch(`${getApiBaseUrl()}/listings/bulk/preflight`, {
         method: "POST",
         headers: { "Content-Type": "application/json", email },
         body: JSON.stringify({
-          shopeeAccountId: firstShopee,
+          ...(firstShopee ? { shopeeAccountId: firstShopee } : {}),
+          ...(firstOlx ? { olxAccountId: firstOlx } : {}),
+          ...(firstFacebook ? { facebookAccountId: firstFacebook } : {}),
           productIds: selectedProducts.map((p) => p.id),
           ...(categoryOverrides && Object.keys(categoryOverrides).length > 0
             ? { categoryOverrides }

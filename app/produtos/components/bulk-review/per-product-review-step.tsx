@@ -298,6 +298,8 @@ function LivePreview({
     mlListingPrice: values.mlListingPrice,
     shopeeListingPrice: values.shopeeListingPrice,
     magaluListingPrice: values.magaluListingPrice,
+    olxListingPrice: values.olxListingPrice,
+    facebookListingPrice: values.facebookListingPrice,
     mlItemCondition: values.mlItemCondition,
     mlFreeShipping: values.mlFreeShipping,
     mlHasWarranty: values.mlHasWarranty,

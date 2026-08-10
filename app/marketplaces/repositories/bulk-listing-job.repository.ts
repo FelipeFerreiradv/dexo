@@ -62,10 +62,18 @@ export interface PerProductMagaluOverride {
 
 export interface PerProductOlxOverride {
   categoryId?: string;
+  /**
+   * "Valor do Anúncio" — preço deste anúncio, como ML/Shopee/Magalu já têm.
+   * Na OLX aplicar o preço reenvia o anúncio inteiro (editar = insert com o
+   * mesmo id), então ele volta para a fila de revisão da OLX.
+   */
+  listingPrice?: number;
 }
 
 export interface PerProductFacebookOverride {
   categoryId?: string;
+  /** "Valor do Anúncio" — aplicado via UPDATE no items_batch. */
+  listingPrice?: number;
 }
 
 export interface PerProductOverrideEntry {

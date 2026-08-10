@@ -10,6 +10,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import type {
   PerProductListingConfig,
@@ -224,6 +225,26 @@ export function OlxListingFields({
             />
             <p className="text-[11px] text-muted-foreground">
               Em branco, a categoria é resolvida automaticamente no envio.
+            </p>
+          </div>
+
+          {/* Mesmo campo, rótulo e helper text do ML/Magalu. */}
+          <div className="space-y-2">
+            <Label htmlFor="pp-olxListingPrice">Valor do Anúncio (R$)</Label>
+            <Controller
+              name="olxListingPrice"
+              control={control}
+              render={({ field }) => (
+                <CurrencyInput
+                  id="pp-olxListingPrice"
+                  placeholder="Usar preço de venda do produto"
+                  value={field.value}
+                  onChange={field.onChange}
+                />
+              )}
+            />
+            <p className="text-xs text-muted-foreground">
+              Se não informado, será usado o preço de venda do produto.
             </p>
           </div>
         </div>

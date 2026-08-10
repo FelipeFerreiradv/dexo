@@ -885,10 +885,11 @@ export class ListingDispatcher {
         }
       }
 
-      // Preço por anúncio nas 3 plataformas. O motor já existia por inteiro
+      // Preço por anúncio nas 5 plataformas. O motor já existia por inteiro
       // (updateShopeeListingFields aplica via update_price;
-      // updateMagaluListingFields via setPrice) — só o gate de plataforma
-      // impedia Shopee e Magalu de usá-lo.
+      // updateMagaluListingFields via setPrice; updateOlxListingFields
+      // re-insere com o mesmo id; updateFacebookListingFields via items_batch)
+      // — só o gate de plataforma impedia cada uma de usá-lo.
       const perProductPrice =
         req.platform === "MERCADO_LIVRE"
           ? ppm?.listingPrice
@@ -896,7 +897,11 @@ export class ListingDispatcher {
             ? ov?.shopee?.listingPrice
             : req.platform === "MAGALU"
               ? ov?.magalu?.listingPrice
-              : undefined;
+              : req.platform === "OLX"
+                ? ov?.olx?.listingPrice
+                : req.platform === "FACEBOOK"
+                  ? ov?.facebook?.listingPrice
+                  : undefined;
       if (typeof perProductPrice === "number" && perProductPrice > 0) {
         fields = { ...(fields ?? {}), priceOverride: perProductPrice };
       }
@@ -908,9 +913,31 @@ export class ListingDispatcher {
           fields as ListingFullEditInput,
         );
         if (!upd.success) {
-          console.warn(
-            `[ListingDispatcher] override apply falhou (listing=${listingId}): ${upd.error}`,
+          // O anúncio foi criado, mas o override (preço do anúncio, título,
+          // categoria) NÃO foi aplicado — o cliente vê na prévia um preço e no
+          // canal outro. Antes isso morria num console.warn.
+          //
+          // Deliberadamente NÃO derruba o item do lote: o job é compartilhado
+          // com ML/Shopee/Magalu e mudar o critério de sucesso aqui alteraria o
+          // resultado de plataformas que já estão em produção.
+          console.error(
+            `[ListingDispatcher] override apply falhou (listing=${listingId}, plataforma=${req.platform}): ${upd.error}`,
           );
+          void SystemLogService.logError(
+            "STOCK_SYNC_FAILED",
+            `Anúncio ${listingId} (${req.platform}) publicado, mas o override não foi aplicado: ${upd.error}`,
+            {
+              userId,
+              resource: "ProductListing",
+              resourceId: listingId,
+              details: {
+                productId,
+                platform: req.platform,
+                error: upd.error,
+                camposTentados: Object.keys(fields ?? {}),
+              },
+            },
+          ).catch(() => {});
         }
       }
     } catch (overrideErr) {

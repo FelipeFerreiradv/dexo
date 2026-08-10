@@ -86,6 +86,8 @@ export const perProductListingSchema = z.object({
    */
   shopeeListingPrice: z.number().min(0).nullable().optional(),
   magaluListingPrice: z.number().min(0).nullable().optional(),
+  olxListingPrice: z.number().min(0).nullable().optional(),
+  facebookListingPrice: z.number().min(0).nullable().optional(),
 });
 
 export type PerProductListingConfig = z.infer<typeof perProductListingSchema>;
@@ -161,10 +163,18 @@ export interface PerProductMagaluOverride {
 
 export interface PerProductOlxOverride {
   categoryId?: string;
+  /**
+   * "Valor do Anúncio" — preço específico deste anúncio, como ML/Shopee/Magalu
+   * já têm. Atenção: na OLX editar é re-inserir com o mesmo id, então aplicar o
+   * preço reenvia o anúncio inteiro e ele volta para a fila de revisão.
+   */
+  listingPrice?: number;
 }
 
 export interface PerProductFacebookOverride {
   categoryId?: string;
+  /** "Valor do Anúncio" — aplicado via UPDATE no items_batch. */
+  listingPrice?: number;
 }
 
 export interface PerProductOverrideEntry {
@@ -229,6 +239,8 @@ export function configFromDefaults(
     mlListingPrice: null,
     shopeeListingPrice: null,
     magaluListingPrice: null,
+    olxListingPrice: null,
+    facebookListingPrice: null,
   };
 }
 
@@ -329,6 +341,7 @@ export function buildPerProductOverrides(
       if (cfg.includeOlx) {
         const olx = pruneUndefined({
           categoryId: cfg.olxCategoryOverride || undefined,
+          listingPrice: cfg.olxListingPrice ?? undefined,
         }) as PerProductOlxOverride;
         if (Object.keys(olx).length > 0) entry.olx = olx;
         const disabled = globalOlxIds.filter(
@@ -344,6 +357,7 @@ export function buildPerProductOverrides(
       if (cfg.includeFacebook) {
         const facebook = pruneUndefined({
           categoryId: cfg.fbCategoryOverride || undefined,
+          listingPrice: cfg.facebookListingPrice ?? undefined,
         }) as PerProductFacebookOverride;
         if (Object.keys(facebook).length > 0) entry.facebook = facebook;
         const disabled = globalFacebookIds.filter(

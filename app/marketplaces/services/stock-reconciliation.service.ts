@@ -53,9 +53,14 @@ export class StockReconciliationService {
     // publicado: a OLX confirma na fila de revisão e o Dexo não espelha esse
     // status, então o anúncio fica pending indefinidamente e ficava invisível
     // para a rede de segurança de drift.
+    //
+    // Só no ramo COM espelhamento (o que roda em produção — a flag é vazia no
+    // .env). O ramo do kill-switch fica byte-idêntico ao anterior de propósito:
+    // ele existe para voltar ao filtro base, e há teste travando isso
+    // (listing-status-mirror-interactions.spec.ts).
     const reconcilableStatuses =
       process.env.LISTING_STATUS_SYNC_DISABLED === "1"
-        ? ["ACTIVE", "active", "paused", "PAUSED", "pending", "PENDING"]
+        ? ["ACTIVE", "active", "paused", "PAUSED"]
         : [
             "ACTIVE",
             "active",

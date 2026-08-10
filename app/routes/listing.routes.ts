@@ -1315,7 +1315,13 @@ export async function listingRoutes(app: FastifyInstance) {
                     ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
                     : r.platform === "MAGALU"
                       ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
-                      : false;
+                      : r.platform === "OLX"
+                        ? ov?.disabledOlxAccountIds?.includes(r.accountId)
+                        : r.platform === "FACEBOOK"
+                          ? ov?.disabledFacebookAccountIds?.includes(
+                              r.accountId,
+                            )
+                          : false;
               if (!skipped) effectiveTotal++;
             }
           }
@@ -1542,7 +1548,13 @@ export async function listingRoutes(app: FastifyInstance) {
                     ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
                     : r.platform === "MAGALU"
                       ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
-                      : false;
+                      : r.platform === "OLX"
+                        ? ov?.disabledOlxAccountIds?.includes(r.accountId)
+                        : r.platform === "FACEBOOK"
+                          ? ov?.disabledFacebookAccountIds?.includes(
+                              r.accountId,
+                            )
+                          : false;
               if (!skipped) retryTotal++;
             }
           }

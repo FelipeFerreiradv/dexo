@@ -25,6 +25,8 @@ export interface PreviewFormValues {
   mlListingPrice?: number | null;
   shopeeListingPrice?: number | null;
   magaluListingPrice?: number | null;
+  olxListingPrice?: number | null;
+  facebookListingPrice?: number | null;
   mlItemCondition?: string;
   mlFreeShipping?: boolean;
   mlHasWarranty?: boolean;
@@ -343,9 +345,12 @@ export function buildPreviewViewModel(
     magaluPriceFormatted: formatCurrency(
       values.magaluListingPrice ?? values.price,
     ),
-    // OLX/Facebook não têm "Valor do Anúncio" próprio — usam o preço-base.
-    olxPriceFormatted: formatCurrency(values.price),
-    facebookPriceFormatted: formatCurrency(values.price),
+    // OLX/Facebook também têm "Valor do Anúncio" próprio; sem ele, herdam o
+    // preço-base do produto — mesma regra de ML/Shopee/Magalu.
+    olxPriceFormatted: formatCurrency(values.olxListingPrice ?? values.price),
+    facebookPriceFormatted: formatCurrency(
+      values.facebookListingPrice ?? values.price,
+    ),
 
     freeShipping: !!values.mlFreeShipping,
     warranty: buildWarranty(values),
