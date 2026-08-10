@@ -47,6 +47,21 @@ export interface AiScope {
   /** Quem digitou (colaborador ou o próprio admin). Trilha de auditoria. */
   readonly actorId: string;
 
+  /**
+   * ⭐ O ATOR É O DONO DA CONTA? (Fase 11)
+   *
+   * `hasActionAccess` não responde a isto: ele devolve `true` para o admin E
+   * para o colaborador cujo administrador não desligou a chave — que é o default
+   * da casa. Para a memória da loja isso não basta. O que o administrador ensina
+   * vale para TODA a equipe, em todo turno de todo mundo; deixar o balconista
+   * gravar seria deixá-lo reescrever a regra do dono para o dono.
+   *
+   * A definição é a MESMA do resto do sistema (`parentUserId` ausente ⇒ admin ou
+   * superadmin), lida do mesmo `request.user`. Não há segundo conceito de admin
+   * aqui — haveria dois lugares para divergir.
+   */
+  readonly isAdmin: boolean;
+
   /** O ator tem acesso a esta página? Delega para a regra real do sistema. */
   can(page: PageId): boolean;
 
@@ -88,6 +103,9 @@ export function scopeFromRequest(request: FastifyRequest): AiScope | null {
   const scope = {
     dataOwnerId,
     actorId,
+    // Mesma regra do `hasPageAccess`/`hasActionAccess`: sem `parentUserId`, é o
+    // dono da conta. Lido do mesmo objeto de sessão, e não recalculado.
+    isAdmin: !user.parentUserId,
     can: (page: PageId) => hasPageAccess(user, page),
     canAction: (action: ActionId) => hasActionAccess(user, action),
   };

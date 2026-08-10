@@ -20,7 +20,17 @@ export type AiAcaoTipo =
   | "produto.criar-lote"
   | "produto.preco"
   | "produto.estoque"
-  | "cliente.criar";
+  | "cliente.criar"
+  /**
+   * ⭐ ENSINAR UMA REGRA DA LOJA (Fase 11). A única ação que NÃO escreve em
+   * tabela de negócio — o que ela grava é uma anotação do próprio agente.
+   *
+   * Passa pelo mesmo cartão mesmo assim, e de propósito: o que o administrador
+   * ensina entra no prompt de TODA a equipe, para sempre, até alguém apagar.
+   * Uma frase mal transcrita virando regra permanente da loja é exatamente o
+   * tipo de coisa que se conserta lendo antes de clicar.
+   */
+  | "memoria.criar";
 
 export type AiAcaoStatus =
   | "pendente"
@@ -59,7 +69,23 @@ export const ACAO_EXIGE_PERMISSAO = {
   "produto.preco": "bitz.atualizar-preco",
   "produto.estoque": "bitz.ajustar-estoque",
   "cliente.criar": "bitz.criar-cliente",
+  "memoria.criar": "bitz.lembrar",
 } as const satisfies Record<AiAcaoTipo, string>;
+
+/**
+ * ⭐ AÇÕES PRIVATIVAS DO ADMINISTRADOR (Fase 11). Declaração ÚNICA, como a de
+ * cima e pelo mesmo motivo: ela é consultada quando a tool PROPÕE e de novo
+ * quando a rota CONFIRMA, porque entre um e outro o vínculo do usuário pode ter
+ * mudado.
+ *
+ * A permissão por ação NÃO cobre este caso: `hasActionAccess` devolve `true`
+ * para o colaborador cuja chave o administrador não desligou — que é o default
+ * da casa. "Só o dono ensina" é uma afirmação mais forte, e precisa de um lugar
+ * próprio para ser dita.
+ */
+export const ACAO_EXIGE_ADMIN: ReadonlySet<AiAcaoTipo> = new Set<AiAcaoTipo>([
+  "memoria.criar",
+]);
 
 /**
  * ⭐ AÇÕES QUE DISPUTAM O MESMO ASSUNTO. Uma proposta nova aposenta as pendentes
@@ -76,6 +102,7 @@ export const FAMILIA_DA_ACAO: Record<AiAcaoTipo, string> = {
   "produto.preco": "produto.preco",
   "produto.estoque": "produto.estoque",
   "cliente.criar": "cliente.cadastro",
+  "memoria.criar": "memoria.cadastro",
 };
 
 /** Os tipos que dividem a família de um tipo dado. */

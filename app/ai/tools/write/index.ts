@@ -15,6 +15,7 @@
 
 import type { AiTool } from "../registry";
 import { cadastrarCliente } from "./clientes";
+import { lembrarPreferencia } from "./memoria";
 import {
   ajustarEstoqueDoProduto,
   alterarPrecoDoProduto,
@@ -28,4 +29,8 @@ export const WRITE_TOOLS: AiTool[] = [
   alterarPrecoDoProduto,
   ajustarEstoqueDoProduto,
   cadastrarCliente,
+  // ⭐ A única que não escreve em tabela de negócio: ela ensina uma REGRA ao
+  // agente. Passa pelo mesmo cartão porque o alcance é maior, não menor — o que
+  // se ensina vale para a equipe inteira, em todo turno, até alguém apagar.
+  lembrarPreferencia,
 ];

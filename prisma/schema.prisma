@@ -211,6 +211,43 @@ model AiAction {
   @@index([conversationId])
 }
 
+// ⭐ O QUE A LOJA ENSINOU AO BITZ (Fase 11) — uma REGRA do negócio, escrita pelo
+// administrador e confirmada por ele no cartão.
+//
+// A distinção que governa esta tabela inteira: aqui mora REGRA, nunca FATO.
+// "meu markup padrão é 2,2x" é regra — vale hoje e vale daqui a seis meses.
+// "o farol custa 180" é fato: muda sozinho, e guardado aqui viraria uma mentira
+// que o Bitz repetiria com confiança em vez de consultar o banco. É por isso que
+// `verificarConteudo` (app/ai/memoria/memoria.types.ts) barra estoque, saldo e
+// SKU na entrada — e é por isso que NÃO existe cache de dado aqui.
+//
+// ESCOPO: `dataOwnerId` e nada mais. A memória é da LOJA — todo mundo da equipe
+// recebe as mesmas regras no prompt —, mas só o administrador grava e apaga
+// (decisão do dono em 10/08/2026). `createdByUserId` é trilha: a memória é da
+// casa, quem ensinou tem nome.
+//
+// ⚠️ SEM `updatedAt` DE PROPÓSITO: memória não se edita. Regra que mudou é
+// memória nova; a antiga o administrador apaga na tela. Editar no lugar
+// apagaria, sem trilha, o texto que alguém leu e confirmou.
+model AiMemory {
+  id              String   @id @default(cuid())
+  dataOwnerId     String
+  // Quem ensinou. Sempre um administrador — ver o guard das rotas e da tool.
+  createdByUserId String
+  // Vocabulário FECHADO (z.enum na tool): "preco" | "anuncio" | "operacao" |
+  // "vocabulario" | "geral". Fechado para o modelo não inventar gaveta.
+  topico          String
+  // A regra, em uma frase. Entra no prompt de TODO turno de TODO usuário do
+  // tenant — daí o teto curto em MAX_CONTEUDO_CHARS.
+  conteudo        String
+  // Conversa em que nasceu. Só trilha; a memória não pertence à conversa e
+  // sobrevive ao apagar dela (sem FK, portanto sem cascade).
+  conversationId  String?
+  createdAt       DateTime @default(now())
+
+  @@index([dataOwnerId, createdAt])
+}
+
 // Base de conhecimento do Bitz — um pedaço de um documento sobre COMO O DEXO
 // FUNCIONA.
 //

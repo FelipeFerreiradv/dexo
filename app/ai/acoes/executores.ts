@@ -13,6 +13,13 @@
 import { CustomerUseCase } from "../../usecases/customer.usecase";
 import { ProductUseCase } from "../../usecases/product.usercase";
 import type { AiScope } from "../core/scope";
+import { contarMemorias, criarMemoria } from "../memoria/memoria.service";
+import {
+  ehTopico,
+  MAX_MEMORIAS_POR_TENANT,
+  MENSAGEM_DE_LOTADA,
+  verificarConteudo,
+} from "../memoria/memoria.types";
 import type { AiAcaoRelatorioDeLote, AiAcaoTipo } from "./acao.types";
 
 /** O que um executor devolve: o id da entidade criada ou alterada. */
@@ -136,6 +143,44 @@ const EXECUTORES: Record<AiAcaoTipo, Executor> = {
       userId: scope.dataOwnerId,
     } as any);
     return { resultId: (cliente as any)?.id ?? null };
+  },
+
+  /**
+   * ⭐ ENSINAR UMA REGRA (Fase 11) — e as três travas são REFEITAS aqui.
+   *
+   * ⚠️ NÃO É PARANOIA, É A JANELA DE 30 MINUTOS. Entre a proposta e o clique
+   * passa até meia hora (`PROPOSTA_VALIDA_POR_MS`), e nesse intervalo o
+   * administrador pode ter virado colaborador de outra conta, a loja pode ter
+   * chegado ao teto por outro caminho, e um deploy pode ter apertado a guarda de
+   * conteúdo. O que grava tem de validar o que grava, com o estado de AGORA.
+   *
+   * Lançar aqui é o comportamento certo: a linha vira `falhou`, com o motivo na
+   * coluna de erro, e o lojista lê que nada foi alterado — que é a verdade.
+   */
+  "memoria.criar": async (payload, scope) => {
+    if (!scope.isAdmin) {
+      throw new Error("só o administrador da conta ensina o Bitz");
+    }
+
+    const topico = ehTopico(payload?.topico) ? payload.topico : "geral";
+    const verificado = verificarConteudo(payload?.conteudo);
+    if (!verificado.ok) throw new Error(verificado.mensagem);
+
+    const quantas = await contarMemorias({ dataOwnerId: scope.dataOwnerId });
+    if (quantas >= MAX_MEMORIAS_POR_TENANT) {
+      throw new Error(MENSAGEM_DE_LOTADA);
+    }
+
+    const { id } = await criarMemoria({
+      // ⭐ O tenant vem do ESCOPO. O payload nunca o carrega.
+      dataOwnerId: scope.dataOwnerId,
+      // Quem ensinou tem nome, mesmo a memória sendo da casa.
+      createdByUserId: scope.actorId,
+      topico,
+      conteudo: verificado.conteudo,
+      conversationId: payload?.conversationId ?? null,
+    });
+    return { resultId: id };
   },
 };
 

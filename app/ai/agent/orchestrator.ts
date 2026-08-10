@@ -45,10 +45,15 @@ import {
   REGRAS_DE_ESCRITA,
   REGRAS_DE_RECOMENDACAO,
   blocoDeHoje,
+  blocoDeMemoria,
   buildSystemPrompt,
   neutralizarEnvelope,
   wrapSystemData,
 } from "./system-prompt";
+import {
+  formatarMemoriasParaPrompt,
+  listarMemorias,
+} from "../memoria/memoria.service";
 import { runTool, type ToolRunResult } from "./tool-runner";
 
 /** Teto de caracteres de UMA mensagem do usuário. */
@@ -563,6 +568,37 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     extraSystem.push(
       `RESUMO DO QUE JÁ FOI CONVERSADO (turnos antigos, fora da janela):\n${neutralizarEnvelope(conversation.summary)}`,
     );
+  }
+
+  // ⭐ A MEMÓRIA DA LOJA (Fase 11) — o que o administrador ensinou.
+  //
+  // ⚠️ ENTRA EM TODO TURNO, e não só quando alguma palavra casa. Uma regra que
+  // só vale quando o texto do lojista a menciona é uma regra que falha
+  // exatamente quando importa: "eu anuncio tudo como usado" precisa valer na
+  // pergunta em que ele NÃO repetiu isso. O preço dessa escolha está medido em
+  // `MAX_MEMORIAS_POR_TENANT` — 25 linhas curtas, ~1.250 tokens no pior caso.
+  //
+  // ⚠️ A LEITURA É BEST-EFFORT, de propósito. O invariante do módulo é que
+  // `runTurn` nunca lança; uma tabela ausente (código no ar antes do DDL) ou um
+  // pool estourado não podem derrubar a conversa por causa de um bloco que é
+  // enriquecimento. Sem memória, o Bitz é o de antes desta fase.
+  //
+  // A moldura vem de `blocoDeMemoria`: texto NOSSO fora do envelope, conteúdo do
+  // lojista dentro dele, neutralizado. Ver o comentário longo em system-prompt.
+  // ⚠️ O `db?.aiMemory` é conferido ANTES de chamar, e a distinção importa:
+  // cliente Prisma sem o model (deploy sem `prisma generate`, dublê de teste
+  // antigo) é "esta fase não existe aqui" e sai em silêncio; um ERRO de verdade
+  // (tabela ausente no banco, pool estourado) é anotado no log, porque aí há o
+  // que consertar. Engolir os dois igual esconderia o segundo.
+  if (db?.aiMemory) {
+    try {
+      const memorias = await listarMemorias({ dataOwnerId, db });
+      if (memorias.length > 0) {
+        extraSystem.push(blocoDeMemoria(formatarMemoriasParaPrompt(memorias)));
+      }
+    } catch (err) {
+      console.error("[bitz] não consegui ler a memória da loja:", err);
+    }
   }
 
   // Base de conhecimento sobre o Dexo — só quando a intenção é dúvida.

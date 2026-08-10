@@ -12,10 +12,13 @@ import {
 import { AI_CONSTANTS } from "../ai/core/ai-constants";
 import { cancelarAcao, confirmarAcao } from "../ai/acoes/acao.service";
 import {
+  ACAO_EXIGE_ADMIN,
   ACAO_EXIGE_PERMISSAO,
   mensagemDeFalhaDeAcao,
   type AiAcaoTipo,
 } from "../ai/acoes/acao.types";
+import { apagarMemoria, listarMemorias } from "../ai/memoria/memoria.service";
+import { ROTULO_DO_TOPICO } from "../ai/memoria/memoria.types";
 import { detectarFormatoDeAudio } from "../ai/audio/audio-formato";
 import { nomeDeAnexoSeguro } from "../ai/anexo/anexo-formato";
 import {
@@ -118,6 +121,12 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       return reply.send({
         audio: audioDisponivel(),
         anexos: anexosDisponiveis(),
+        // ⭐ `memorias` diz se o BOTÃO "o que eu sei da sua loja" DEVE APARECER
+        // (Fase 11). Vem do servidor pela mesma razão do microfone e do clipe:
+        // esconder no cliente nunca foi permissão, e o botão que sempre dá 403
+        // é pior que botão nenhum. A permissão de verdade continua nas rotas
+        // `/ai/memorias`, que conferem `isAdmin` por conta própria.
+        memorias: !request.user.parentUserId,
       });
     },
   );
@@ -589,6 +598,22 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
           .send({ error: mensagemDeFalhaDeAcao("sem_permissao") });
       }
 
+      // ⭐ E a trava de ADMINISTRADOR, para as ações que a exigem (Fase 11).
+      //
+      // ⚠️ SEPARADA DA PERMISSÃO POR AÇÃO, e não redundante com ela: a permissão
+      // por ação nasce LIGADA para o colaborador (default da casa), então
+      // `canAction` acima devolve `true` para ele. "Só o dono ensina" precisa da
+      // sua própria conferência — e precisa dela AQUI, no momento do clique,
+      // porque entre propor e confirmar passam até 30 minutos.
+      if (
+        ACAO_EXIGE_ADMIN.has(pendente.action as AiAcaoTipo) &&
+        !scope.isAdmin
+      ) {
+        return reply
+          .status(403)
+          .send({ error: mensagemDeFalhaDeAcao("sem_permissao") });
+      }
+
       const r = await confirmarAcao({ id, scope });
 
       if (!r.ok) {
@@ -701,6 +726,87 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       });
 
       return reply.send({ conversation, messages });
+    },
+  );
+
+  /**
+   * GET /ai/memorias — o que o Bitz sabe sobre esta loja. Fase 11.
+   *
+   * ⭐ SÓ O ADMINISTRADOR, e a decisão é a mesma de quem grava. A lista é o
+   * conteúdo integral das regras da casa — markup, política de desconto, o que
+   * a loja faz e não faz. Ela já influencia a RESPOSTA que o colaborador recebe;
+   * abrir o texto cru para ele é outra coisa, e ninguém pediu.
+   *
+   * Escopo por `dataOwnerId` — memória é da LOJA, não de quem digitou. É por
+   * isso que ela não usa `actorUserId`, ao contrário das conversas.
+   */
+  fastify.get(
+    "/memorias",
+    { preHandler: [authMiddleware, requireAiEnabled] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const scope = scopeFromRequest(request);
+      if (!scope) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      if (!scope.isAdmin) {
+        return reply.status(403).send({
+          error: "Só o administrador da conta vê e edita a memória do Bitz.",
+        });
+      }
+
+      const memorias = await listarMemorias({
+        dataOwnerId: scope.dataOwnerId,
+      });
+
+      return reply.send({
+        memorias: memorias.map((m) => ({
+          id: m.id,
+          topico: m.topico,
+          // O rótulo vai pronto: a tela não precisa carregar a tabela de
+          // tópicos, e um tópico desconhecido já virou "geral" na leitura.
+          topicoLabel: ROTULO_DO_TOPICO[m.topico],
+          conteudo: m.conteudo,
+          createdAt: m.createdAt,
+        })),
+      });
+    },
+  );
+
+  /**
+   * DELETE /ai/memorias/:id — o administrador esqueceu uma regra. Fase 11.
+   *
+   * ⛔ ISTO NÃO FURA A REGRA "O BITZ NÃO APAGA". O que o Bitz não apaga é DADO
+   * DE NEGÓCIO — peça, pedido, cliente —, e não existe ferramenta para ele
+   * fazer isso. Aqui quem apaga é o administrador, na tela, com o dedo dele, e o
+   * que some é uma anotação do próprio agente. Não há tool de esquecer, e pedir
+   * por escrito no chat não apaga nada.
+   */
+  fastify.delete(
+    "/memorias/:id",
+    { preHandler: [authMiddleware, requireAiEnabled] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const scope = scopeFromRequest(request);
+      if (!scope) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      if (!scope.isAdmin) {
+        return reply.status(403).send({
+          error: "Só o administrador da conta vê e edita a memória do Bitz.",
+        });
+      }
+      const { id } = request.params as { id: string };
+
+      // `deleteMany` COM o tenant no `where`, dentro do serviço: id de outra
+      // loja não apaga nada e devolve 404.
+      const apagou = await apagarMemoria({
+        id,
+        dataOwnerId: scope.dataOwnerId,
+      });
+      if (!apagou) {
+        return reply.status(404).send({ error: "Memória não encontrada" });
+      }
+
+      return reply.status(204).send();
     },
   );
 

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Maximize2, Minimize2, PenSquare, X } from "lucide-react";
+import { Brain, Maximize2, Minimize2, PenSquare, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useBitzChat } from "@/hooks/use-bitz-chat";
@@ -15,6 +15,7 @@ import { BitzComposer } from "./bitz-composer";
 import { BitzEscuta } from "./bitz-escuta";
 import { BitzEmptyState } from "./bitz-empty-state";
 import { BitzMascot } from "./bitz-mascot";
+import { BitzMemorias } from "./bitz-memorias";
 import { BitzMessage, BitzStreaming, BitzThinking } from "./bitz-message";
 import { jaPassou, marcarPassou } from "./bitz-onboarding";
 import type { BitzPanelMode } from "./bitz-constants";
@@ -66,9 +67,23 @@ export function BitzPanel({
     useBitzChat();
   const [draft, setDraft] = React.useState("");
 
-  // Microfone e clipe só existem se o servidor disser que sabe fazer aquilo.
-  const { audio: audioDisponivel, anexos: extensoesAceitas } =
-    useBitzCapacidades(open);
+  // Microfone, clipe e memória só existem se o servidor disser que sim.
+  const {
+    audio: audioDisponivel,
+    anexos: extensoesAceitas,
+    memorias: podeVerMemorias,
+  } = useBitzCapacidades(open);
+
+  /**
+   * A tela da memória (Fase 11), sobreposta ao painel.
+   *
+   * ⚠️ FECHA JUNTO COM O PAINEL. Sem isto, reabrir o Bitz cairia na memória em
+   * vez da conversa — e quem clicou no mascote queria conversar.
+   */
+  const [vendoMemorias, setVendoMemorias] = React.useState(false);
+  React.useEffect(() => {
+    if (!open) setVendoMemorias(false);
+  }, [open]);
 
   /**
    * ⭐ A LEITURA DO ANEXO CAI NUM CARTÃO, NÃO NA CONVERSA — e é o mesmo motivo
@@ -281,6 +296,17 @@ export function BitzPanel({
                 </p>
               </div>
 
+              {/* ⭐ Só para o administrador, e quem decide é o servidor. Um
+                  botão que sempre responde 403 é pior que botão nenhum. */}
+              {podeVerMemorias && (
+                <IconBtn
+                  label="O que eu sei da sua loja"
+                  onClick={() => setVendoMemorias(true)}
+                >
+                  <Brain className="size-4" />
+                </IconBtn>
+              )}
+
               {!vazio && (
                 <IconBtn
                   label="Nova conversa"
@@ -409,6 +435,13 @@ export function BitzPanel({
               aguardandoAnexo={anexo.estado === "lendo"}
             />
           </div>
+
+          {/* A memória cobre o painel, como a escuta. Montada só quando aberta:
+              desmontar é o que garante que a lista seja relida na próxima vez —
+              o lojista pode ter ensinado outra regra no meio. */}
+          {vendoMemorias && (
+            <BitzMemorias onFechar={() => setVendoMemorias(false)} />
+          )}
 
           {/* Enquanto grava, a escuta cobre o painel inteiro. Ver bitz-escuta. */}
           {escutando && (

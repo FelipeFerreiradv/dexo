@@ -29,7 +29,9 @@ export type ActionId =
   | "bitz.criar-produto-lote"
   | "bitz.atualizar-preco"
   | "bitz.ajustar-estoque"
-  | "bitz.criar-cliente";
+  | "bitz.criar-cliente"
+  // Fase 11 — ensinar uma regra da loja ao Bitz. Ver a nota em ACTION_DEFS.
+  | "bitz.lembrar";
 
 export interface ActionDef {
   id: ActionId;
@@ -87,6 +89,21 @@ export const ACTION_DEFS: ActionDef[] = [
     id: "bitz.criar-cliente",
     label: "Bitz: cadastrar cliente",
     hint: "Deixa o Bitz preparar o cadastro de um cliente novo. Nada é salvo sem o clique de confirmação.",
+  },
+  // ⚠️ ESTA CHAVE NÃO LIBERA COLABORADOR, e a nota está aqui para ninguém achar
+  // que libera. Ensinar uma regra é privativo do ADMINISTRADOR (decisão do dono
+  // em 10/08/2026): o que se ensina vale para a equipe inteira, em todo turno de
+  // todo mundo, e o balconista reescreveria a regra do dono para o dono. A trava
+  // real é `scope.isAdmin`, dentro da tool.
+  //
+  // A chave existe porque TODA tool de escrita declara a sua permissão — o
+  // tool-runner barra `kind: "write"` sem `action`, e um teste de contrato exige
+  // que a declarada esteja aqui. Ela também é o encaixe pronto para o dia em que
+  // um cliente quiser deixar o gerente ensinar.
+  {
+    id: "bitz.lembrar",
+    label: "Bitz: ensinar uma regra da loja",
+    hint: "Ensinar o Bitz é do administrador da conta — esta chave não libera colaborador. As regras ensinadas valem para toda a equipe.",
   },
 ];
 

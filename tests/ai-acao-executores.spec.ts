@@ -270,6 +270,9 @@ describe("contrato", () => {
   it("os tipos executáveis são exatamente os cinco declarados", () => {
     expect([...TIPOS_EXECUTAVEIS].sort()).toEqual([
       "cliente.criar",
+      // Fase 11 — a única que não escreve em tabela de negócio. O executor dela
+      // é exercido em `ai-memoria.spec.ts`, com a memória mockada.
+      "memoria.criar",
       "produto.criar",
       "produto.criar-lote",
       "produto.estoque",

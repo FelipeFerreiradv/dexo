@@ -244,6 +244,48 @@ do `schema.prisma`. Nada foi alterado ali.
 **Nenhuma asserção foi afrouxada nos três.** Duas ficaram mais específicas e o
 resto é acréscimo.
 
+### ⚠️ A quarta — 1 número na Fase 10 (lote)
+
+`tests/ai-tools-registry.spec.ts`: `toHaveLength(24)` → `25`. Mesma classe das
+anteriores — afirmação sobre o **tamanho** do catálogo, que cresceu com
+`cadastrar_pecas_em_massa`. Nenhuma asserção afrouxada.
+
+A fase também acrescentou `tests/ai-acao-executores.spec.ts`, arquivo **novo**,
+que fecha uma lacuna apontada pela revisão da Fase 9: até ali o `executarAcao`
+estava mockado em **todos** os specs, então o código que de fato toca o banco de
+negócio nunca era exercido.
+
+### ⚠️ A quinta — 3 asserções na Fase 11 (memória)
+
+**1. `tests/ai-tools-registry.spec.ts`** — `WRITE_TOOLS` 5 → 6 e o registry 25 →
+26. Tamanho do catálogo, de novo.
+
+**2. `tests/ai-audio-route.spec.ts`** — as duas asserções `toEqual` do
+`/ai/capacidades` cresceram para incluir `memorias: true`. **Mesma classe da
+alteração da Fase 8**, e a igualdade continua **estrita**: o contrato ganhou um
+campo, e é justamente por ser estrita que a asserção acusa quando isso acontece.
+
+**3. `tests/ai-acao-executores.spec.ts`** — a enumeração de `TIPOS_EXECUTAVEIS`
+ganhou `"memoria.criar"`. Lista fechada que cresceu, por desenho: ela existe para
+falhar quando alguém acrescenta uma ação executável sem declarar a permissão.
+
+**Nenhuma asserção foi afrouxada.** E as travas da fase foram verificadas por
+**mutação deliberada** — quebrei as quatro (a checagem de admin no executor, a
+checagem de admin na rota, a moldura fora do envelope e o escopo por `tenant`) e
+confirmei que cada uma derruba o teste que a protege, cada uma no teste certo.
+
+**Dois contratos existentes pegaram a fase, e os dois estavam certos — nenhum
+deles exigiu tocar no teste:**
+
+- `ai-privacy.spec.ts` varre o **código** das tools atrás de `costPrice|markup`
+  (comentários ele ignora, de propósito). A descrição da tool nova usava a
+  palavra como exemplo de regra de margem. Foi trocada por uma perífrase: a
+  trava existe para pegar um `...produto` distraído no lugar da projeção, e
+  furá-la por conveniência é como ela deixa de pegar o que importa.
+- `ai-tools-registry.spec.ts` exige que toda tool de escrita **diga ao modelo**
+  que não executa. "NÃO grava" era verdade e não bastava; a descrição passou a
+  dizer "NÃO grava e NÃO altera nada agora".
+
 ### Os 9 arquivos pré-existentes tocados — e nada além deles
 
 | Arquivo                                  | Δ       | Natureza                                                   |
@@ -289,7 +331,7 @@ existente**, então merece verificação própria.
 
 | Verificação                   | Resultado                                                                 |
 | ----------------------------- | ------------------------------------------------------------------------- |
-| `npx vitest run --pool=forks` | **5.226 / 27 skipped / 0 failed** (621 são do Bitz, em 27 specs)          |
+| `npx vitest run --pool=forks` | **5.853 / 27 skipped / 0 failed** (473 arquivos) — era 5.226 quando esta linha foi escrita, na rodada do streaming |
 | `npx tsc --noEmit`            | **100** — a mesma baseline pré-existente; **0** nos arquivos do Bitz      |
 | `npm run build`               | ✅ verde                                                                  |
 | Migrations                    | 3, todas `IF NOT EXISTS`, todas com o rollback escrito no próprio arquivo |

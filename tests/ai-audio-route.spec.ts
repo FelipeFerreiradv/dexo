@@ -277,13 +277,24 @@ describe("GET /ai/capacidades", () => {
   it("diz se o microfone deve aparecer", async () => {
     const res = await app.inject({ method: "GET", url: "/ai/capacidades" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ audio: true, anexos: [".xml"] });
+    // `memorias` entrou na Fase 11: o botão "o que eu sei da sua loja" só
+    // aparece para o administrador, e quem decide é o servidor. O `currentUser`
+    // deste arquivo não tem `parentUserId`, logo é administrador.
+    expect(res.json()).toEqual({
+      audio: true,
+      anexos: [".xml"],
+      memorias: true,
+    });
   });
 
   it("⭐ áudio indisponível => false, e o chat segue inteiro", async () => {
     audioDisponivelMock.mockReturnValue(false);
     const res = await app.inject({ method: "GET", url: "/ai/capacidades" });
-    expect(res.json()).toEqual({ audio: false, anexos: [".xml"] });
+    expect(res.json()).toEqual({
+      audio: false,
+      anexos: [".xml"],
+      memorias: true,
+    });
   });
 
   it("⭐ sem modelo de visão, o clipe ainda oferece XML de NF-e — e só ele", async () => {

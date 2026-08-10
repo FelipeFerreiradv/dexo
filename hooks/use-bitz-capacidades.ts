@@ -32,9 +32,22 @@ export interface BitzCapacidades {
   audio: boolean;
   /** Extensões aceitas pelo clipe (`[".jpg", ".png", …]`). Vazio ⇒ sem clipe. */
   anexos: string[];
+  /**
+   * O botão "o que eu sei da sua loja" deve aparecer? (Fase 11)
+   *
+   * ⭐ Só para o ADMINISTRADOR, e quem decide é o SERVIDOR — a mesma regra do
+   * microfone e do clipe. Esconder no cliente nunca foi permissão: as rotas
+   * `/ai/memorias` conferem `isAdmin` por conta própria e respondem 403 para
+   * quem não é, independentemente do que este campo diga.
+   */
+  memorias: boolean;
 }
 
-const NENHUMA: BitzCapacidades = { audio: false, anexos: [] };
+const NENHUMA: BitzCapacidades = {
+  audio: false,
+  anexos: [],
+  memorias: false,
+};
 
 let cache: BitzCapacidades | null = null;
 let emVoo: Promise<void> | null = null;
@@ -75,6 +88,7 @@ export function useBitzCapacidades(ativo: boolean): BitzCapacidades {
                   typeof e === "string" && /^\.[a-z0-9]{1,8}$/i.test(e),
               )
             : [],
+          memorias: Boolean(data?.memorias),
         };
       } catch {
         // Falha fechada: segue sem microfone e sem clipe, e o chat continua.

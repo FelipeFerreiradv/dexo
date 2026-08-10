@@ -10,7 +10,7 @@
 --   • 2 colunas novas em "User", nullable, sem default → NULL em 100% das
 --     linhas existentes. NULL em "aiEnabledAt" = sem concessão individual;
 --     NULL em "aiDailyLimit" = usa o teto padrão da plataforma.
---   • 3 tabelas novas, vazias.
+--   • 5 tabelas novas, vazias.
 --   • Nenhuma tabela existente alterada, nenhum índice existente tocado,
 --     nenhum enum existente mudado, NENHUMA extensão nova no Postgres.
 --
@@ -148,7 +148,7 @@ CREATE INDEX IF NOT EXISTS "AiKnowledgeChunk_docId_idx"
   ON "AiKnowledgeChunk"("docId");
 
 -- ---------------------------------------------------------------------------
--- 4/5 — A AÇÃO DE ESCRITA PROPOSTA (Fase 9)
+-- 4/6 — A AÇÃO DE ESCRITA PROPOSTA (Fase 9)
 --
 -- ⭐ ESTA TABELA É A CONFIRMAÇÃO HUMANA. O Bitz nunca escreve: ele grava aqui
 -- uma proposta com status 'pendente' e devolve o id. Só o clique do lojista em
@@ -187,7 +187,41 @@ CREATE INDEX IF NOT EXISTS "AiAction_conversationId_idx"
   ON "AiAction" ("conversationId");
 
 -- ---------------------------------------------------------------------------
--- 5/5 — LIBERE O SEU USUÁRIO
+-- 5/6 — A MEMÓRIA DA LOJA (Fase 11)
+--
+-- ⭐ O que o ADMINISTRADOR ensinou ao Bitz: "meu markup padrão é 2,2x", "eu
+-- anuncio tudo como usado", "peça boa aqui quer dizer peça testada". Entra no
+-- prompt de todo turno de todo usuário da loja.
+--
+-- ⭐ GUARDA REGRA, NUNCA FATO. Preço de peça, estoque, saldo e SKU são barrados
+-- na entrada, de propósito: são números que mudam sozinhos, e guardados aqui
+-- virariam uma resposta desatualizada dita com confiança em vez de uma consulta.
+--
+-- Só o administrador grava e apaga (sem `parentUserId`); a memória é da LOJA e
+-- por isso o escopo é `dataOwnerId` — não `actorUserId`, como nas conversas.
+--
+-- Fica VAZIA até alguém ensinar alguma coisa. Vazia, o Bitz é exatamente o de
+-- antes desta fase existir.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "AiMemory" (
+    "id"              TEXT NOT NULL,
+    "dataOwnerId"     TEXT NOT NULL,
+    "createdByUserId" TEXT NOT NULL,
+    "topico"          TEXT NOT NULL,
+    "conteudo"        TEXT NOT NULL,
+    "conversationId"  TEXT,
+    "createdAt"       TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "AiMemory_pkey" PRIMARY KEY ("id")
+);
+
+-- Toda leitura é (tenant, ordem de criação): o prompt lê as mais recentes, e a
+-- tela lista na mesma ordem.
+CREATE INDEX IF NOT EXISTS "AiMemory_dataOwnerId_createdAt_idx"
+  ON "AiMemory" ("dataOwnerId", "createdAt");
+
+-- ---------------------------------------------------------------------------
+-- 6/6 — LIBERE O SEU USUÁRIO
 --
 -- ⚠️ TROQUE O E-MAIL ABAIXO PELO SEU e rode esta linha. Sem ela, o mascote não
 -- aparece e /ai/chat responde 403 — que é exatamente o comportamento correto
@@ -222,15 +256,22 @@ SELECT
     WHERE table_name = 'AiKnowledgeChunk')                            AS tabela_knowledge,
   (SELECT count(*) FROM information_schema.tables
     WHERE table_name = 'AiAction')                                    AS tabela_action,
+  (SELECT count(*) FROM information_schema.tables
+    WHERE table_name = 'AiMemory')                                    AS tabela_memory,
   (SELECT count(*) FROM "AiKnowledgeChunk")                           AS pedacos_indexados,
   (SELECT count(*) FROM "User" WHERE "aiEnabledAt" IS NOT NULL)       AS usuarios_liberados;
 
--- Esperado depois deste script: 1, 1, 1, 1, 1, 1, 0, 1
+-- Esperado depois deste script: 1, 1, 1, 1, 1, 1, 1, 0, 1
 -- `pedacos_indexados` vira 85 depois do `npm run ai:index -- --apply`.
 --
 -- ⚠️ `tabela_action` = 0 significa que a Fase 9 (escrita com confirmação) não
 -- sobe: o Bitz continua conversando e consultando, mas toda proposta de escrita
 -- falha. O resto do sistema NÃO é afetado — nenhuma outra tabela a referencia.
+--
+-- ⚠️ `tabela_memory` = 0 significa que a Fase 11 (memória da loja) não sobe. E
+-- aqui a degradação é MAIS MANSA de propósito: a leitura da memória no
+-- orquestrador é best-effort e engole o erro, então o chat continua inteiro,
+-- só sem lembrar de nada. Quem falha é a tela "o que eu sei da sua loja".
 
 -- Não achou o seu usuário no passo 4? Veja como o e-mail está gravado:
 -- SELECT "id", "email", "aiEnabledAt" FROM "User" ORDER BY "createdAt" LIMIT 20;
@@ -245,10 +286,11 @@ SELECT
 --   DROP TABLE IF EXISTS "AiConversation";
 --   DROP TABLE IF EXISTS "AiKnowledgeChunk";
 --   DROP TABLE IF EXISTS "AiAction";
+--   DROP TABLE IF EXISTS "AiMemory";
 --   ALTER TABLE "User" DROP COLUMN IF EXISTS "aiEnabledAt";
 --   ALTER TABLE "User" DROP COLUMN IF EXISTS "aiDailyLimit";
 --
--- Nenhuma outra tabela aponta para estas quatro, e as duas colunas só guardam a
+-- Nenhuma outra tabela aponta para estas cinco, e as duas colunas só guardam a
 -- data de concessão do plano e o teto diário do cliente. Reversível sem perda
 -- para o resto do sistema.
 --
