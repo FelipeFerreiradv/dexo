@@ -14,6 +14,13 @@ import { SystemLogService } from "../../../services/system-log.service";
  * Contexto: o cron selecionava candidatos por `retryEnabled: true`
  * sem filtrar plataforma, e o ramo default chamava getSellerItemIds enviando
  * token OLX/Meta para api.mercadolibre.com (vazamento + falha garantida).
+ *
+ * MUDANÇA DE COMPORTAMENTO (item D-1 do plano de paridade): OLX e FACEBOOK
+ * passaram a ter retry PRÓPRIO, delegando ao create da própria plataforma —
+ * mesmo desenho do branch da Shopee. Antes o retry deles era desabilitado, e
+ * uma falha transitória (5xx da OLX, rate limit da Meta) matava o anúncio na
+ * primeira tentativa. O invariante de não vazar token para o ML permanece e
+ * continua travado aqui; o MAGALU segue sem retry (não tem branch próprio).
  */
 
 const makeAccount = (platform: Platform) => ({
@@ -48,7 +55,7 @@ afterEach(() => {
 });
 
 describe("ListingRetryService — guard de plataforma", () => {
-  it("não chama MLApiService e DESABILITA o retry de listing OLX com retryEnabled=true", async () => {
+  it("não chama MLApiService e DELEGA o retry de listing OLX ao create da OLX", async () => {
     vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
       makeListing(Platform.OLX),
     ] as any);
@@ -62,17 +69,21 @@ describe("ListingRetryService — guard de plataforma", () => {
     const incSpy = vi
       .spyOn(ListingRepository, "incrementRetryAttempts")
       .mockResolvedValue(undefined as any);
+    const { ListingUseCase } = await import("../../usecases/listing.usercase");
+    const createSpy = vi
+      .spyOn(ListingUseCase, "createOlxListing")
+      .mockResolvedValue({ success: true } as any);
 
     await ListingRetryService.runOnce();
 
+    // Invariante que NÃO muda: token da OLX nunca vai para o ML.
     expect(mlSpy).not.toHaveBeenCalled();
-    expect(incSpy).toHaveBeenCalledWith(
-      "listing-1",
-      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
-    );
+    expect(createSpy).toHaveBeenCalledWith("user-1", "prod-1", undefined, "acc-1");
+    // O create cuida do próprio estado — o retry não desabilita mais nada aqui.
+    expect(incSpy).not.toHaveBeenCalled();
   });
 
-  it("não chama MLApiService e DESABILITA o retry de listing FACEBOOK com retryEnabled=true", async () => {
+  it("não chama MLApiService e DELEGA o retry de listing FACEBOOK ao create do Facebook", async () => {
     vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
       makeListing(Platform.FACEBOOK),
     ] as any);
@@ -86,14 +97,16 @@ describe("ListingRetryService — guard de plataforma", () => {
     const incSpy = vi
       .spyOn(ListingRepository, "incrementRetryAttempts")
       .mockResolvedValue(undefined as any);
+    const { ListingUseCase } = await import("../../usecases/listing.usercase");
+    const createSpy = vi
+      .spyOn(ListingUseCase, "createFacebookListing")
+      .mockResolvedValue({ success: true } as any);
 
     await ListingRetryService.runOnce();
 
     expect(mlSpy).not.toHaveBeenCalled();
-    expect(incSpy).toHaveBeenCalledWith(
-      "listing-1",
-      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
-    );
+    expect(createSpy).toHaveBeenCalledWith("user-1", "prod-1", undefined, "acc-1");
+    expect(incSpy).not.toHaveBeenCalled();
   });
 
   it("DESABILITA o retry de listing MAGALU (regressão: reivindicava a cada ciclo p/ sempre)", async () => {

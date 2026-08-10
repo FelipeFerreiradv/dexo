@@ -161,8 +161,67 @@ export class ListingRetryService {
           }
           continue;
         }
-        // Só MERCADO_LIVRE segue no caminho ML: OLX/Facebook não podem enviar
-        // seus tokens para api.mercadolibre.com (vazamento de token).
+        // OLX e Facebook: delegar ao create da própria plataforma, no mesmo
+        // desenho do branch da Shopee acima. Antes destes ramos, os dois caíam
+        // no guard abaixo e tinham o retry DESLIGADO — ou seja, uma falha
+        // transitória (5xx da OLX, rate limit da Meta) matava o anúncio na
+        // primeira tentativa e ele nunca mais era republicado.
+        // Não replicar a condição `startsWith("PENDING_")`: OLX/Facebook não
+        // usam placeholder — o externalListingId deles já é o SKU.
+        if (
+          account?.platform === Platform.OLX ||
+          account?.platform === Platform.FACEBOOK
+        ) {
+          const ehOlx = account.platform === Platform.OLX;
+          const nome = ehOlx ? "OLX" : "Facebook";
+          try {
+            const { ListingUseCase } =
+              await import("../usecases/listing.usercase");
+            const result = ehOlx
+              ? await ListingUseCase.createOlxListing(
+                  account?.userId || "",
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account?.id,
+                )
+              : await ListingUseCase.createFacebookListing(
+                  account?.userId || "",
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account?.id,
+                );
+            if (!result.success) {
+              // O create já persiste status/lastError no próprio catch; aqui é
+              // só observabilidade, igual ao branch da Shopee.
+              console.warn(
+                `[ListingRetryService] retry ${nome} falhou para ${cand.id}: ${result.error}`,
+              );
+            }
+          } catch (err) {
+            const msg = errMsg(err);
+            console.error(
+              `[ListingRetryService] exceção no retry ${nome} para ${cand.id}:`,
+              msg,
+            );
+            const attempts = (cand.retryAttempts || 0) + 1;
+            const shouldRetry = attempts < MAX_ATTEMPTS;
+            const nextDelay =
+              BACKOFF_SECONDS[
+                Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+              ];
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              lastError: msg.substring(0, 490),
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
+              retryEnabled: shouldRetry,
+            });
+          }
+          continue;
+        }
+
+        // Só MERCADO_LIVRE segue no caminho ML: Magalu não pode enviar
+        // seu token para api.mercadolibre.com (vazamento de token).
         // DESABILITA o retry ao pular: este é o único publish-retry e
         // claimRetryCandidate é agnóstico de plataforma — sem desligar, um
         // candidato Magalu/OLX/FB é reivindicado (write no banco) a cada ciclo,

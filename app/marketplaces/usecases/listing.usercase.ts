@@ -4090,9 +4090,12 @@ export class ListingUseCase {
             externalSku: product.sku,
             status: "error",
             lastError: message.slice(0, 490),
-            // Sem retry: o ListingRetryService é ML-only e enviaria o token OLX p/ o ML.
-            retryEnabled: false,
-            nextRetryAt: null,
+            // Retry habilitado: o ListingRetryService tem branch OLX que
+            // delega para createOlxListing (nunca toca a API do ML). Sem
+            // isto uma instabilidade transitória da OLX matava o anúncio na
+            // primeira tentativa.
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + 60 * 1000),
             // "Criado por" também no caminho de erro: a linha NASCE aqui quando
             // a primeira tentativa falha, e o ramo `update` do upsert nunca mais
             // preenche o autor — ficaria null para sempre.
@@ -6728,9 +6731,10 @@ export class ListingUseCase {
             externalSku: product.sku,
             status: "error",
             lastError: message.slice(0, 490),
-            // Sem retry: o ListingRetryService é ML-only e enviaria o token Meta p/ o ML.
-            retryEnabled: false,
-            nextRetryAt: null,
+            // Retry habilitado: branch FACEBOOK no ListingRetryService delega
+            // para createFacebookListing. Cobre rate limit e 5xx da Meta.
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + 60 * 1000),
             // Idem OLX: a linha nasce aqui no caminho de erro, e o ramo
             // `update` do upsert nunca preencheria o autor depois.
             createdByUserId: actorId ?? null,
