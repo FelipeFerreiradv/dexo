@@ -4,6 +4,10 @@ import "./lib/load-env";
 import prisma from "../app/lib/prisma";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
+import {
+  criarCacheDeToken,
+  type MLTokenSnapshot,
+} from "./lib/ml-token-cache";
 
 /**
  * Reenvia as compatibilidades veiculares (brand/model/year) cadastradas
@@ -170,40 +174,32 @@ async function resolveTargetAccountIds(): Promise<{
   };
 }
 
-interface AccountTokenLite {
-  id: string;
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: Date;
-}
+type AccountTokenLite = MLTokenSnapshot;
 
-const tokenCache = new Map<string, string>();
-
-async function getValidToken(account: AccountTokenLite): Promise<string> {
-  const cached = tokenCache.get(account.id);
-  if (cached) return cached;
-
-  const now = Date.now();
-  if (new Date(account.expiresAt).getTime() > now + 60_000) {
-    tokenCache.set(account.id, account.accessToken);
-    return account.accessToken;
-  }
-
-  const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
-    account.id,
-    account.refreshToken,
-  );
-  await prisma.marketplaceAccount.update({
-    where: { id: account.id },
-    data: {
-      accessToken: refreshed.accessToken,
-      refreshToken: refreshed.refreshToken,
-      expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
-    },
-  });
-  tokenCache.set(account.id, refreshed.accessToken);
-  return refreshed.accessToken;
-}
+/**
+ * Renovação de token durante a corrida. Ver `scripts/lib/ml-token-cache` para o
+ * motivo: o cache anterior não tinha validade e o token morria no meio do
+ * backfill, derrubando todo o resto com 401.
+ */
+const getValidToken = criarCacheDeToken({
+  refresh: (accountId, refreshToken) =>
+    MLOAuthService.refreshAccessTokenForAccount(accountId, refreshToken),
+  persist: async (accountId, dados) => {
+    await prisma.marketplaceAccount.update({
+      where: { id: accountId },
+      data: {
+        accessToken: dados.accessToken,
+        refreshToken: dados.refreshToken,
+        expiresAt: dados.expiresAt,
+      },
+    });
+  },
+  onRenew: (accountId, expiresInSec) => {
+    console.log(
+      `[backfill-compat] token da conta ${accountId} renovado — vale por ${Math.round(expiresInSec / 60)} min`,
+    );
+  },
+});
 
 /**
  * Verifica se o item ML já tem HAS_COMPATIBILITIES="Sim" — usado pelo
