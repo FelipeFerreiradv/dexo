@@ -77,6 +77,21 @@ export function useBitzAudio(opts: { onTexto: (texto: string) => void }) {
   const [erro, setErro] = React.useState<string | null>(null);
   const [segundos, setSegundos] = React.useState(0);
 
+  /**
+   * ⭐ O STREAM VIVO, exposto para o ESPECTRO da tela de escuta desenhar.
+   *
+   * Estado, e não só o ref: a tela precisa re-renderizar UMA vez, quando o
+   * microfone abre, para o `<canvas>` receber o stream e começar a ler. Depois
+   * disso não há mais render nenhum — o desenho roda em `requestAnimationFrame`
+   * fora do React (ver `bitz-espectro.tsx`).
+   *
+   * ⚠️ É o MESMO stream que o `MediaRecorder` está gravando, e isso é seguro:
+   * vários nós podem consumir a mesma trilha. O que não pode é o espectro
+   * segurá-la depois do fim — por isso ele volta a `null` em `soltarMicrofone`,
+   * junto com o `stop()` das trilhas.
+   */
+  const [stream, setStream] = React.useState<MediaStream | null>(null);
+
   const streamRef = React.useRef<MediaStream | null>(null);
   const recorderRef = React.useRef<MediaRecorder | null>(null);
   const pedacosRef = React.useRef<BlobPart[]>([]);
@@ -101,6 +116,8 @@ export function useBitzAudio(opts: { onTexto: (texto: string) => void }) {
     }
     streamRef.current = null;
     recorderRef.current = null;
+    // O espectro para de desenhar assim que a trilha morre — nunca depois.
+    setStream(null);
   }, []);
 
   // Desmontar o painel no meio de uma gravação não pode deixar o microfone
@@ -179,6 +196,7 @@ export function useBitzAudio(opts: { onTexto: (texto: string) => void }) {
       return;
     }
     streamRef.current = stream;
+    setStream(stream);
 
     let recorder: MediaRecorder;
     try {
@@ -240,6 +258,8 @@ export function useBitzAudio(opts: { onTexto: (texto: string) => void }) {
     estado,
     erro,
     segundos,
+    /** Para o espectro da tela de escuta. `null` fora de uma gravação. */
+    stream,
     maxSegundos: MAX_SEGUNDOS,
     gravar,
     parar,

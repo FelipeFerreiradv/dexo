@@ -449,6 +449,10 @@ export function BitzPanel({
               estado={voz.estado}
               segundos={voz.segundos}
               maxSegundos={voz.maxSegundos}
+              // O stream vivo alimenta o espectro. Ele volta a `null` no mesmo
+              // instante em que as trilhas param — a onda nunca sobrevive ao
+              // microfone.
+              stream={voz.stream}
               onParar={voz.parar}
               onCancelar={voz.cancelar}
             />
