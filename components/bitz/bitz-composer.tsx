@@ -19,6 +19,15 @@ interface BitzComposerProps {
   value: string;
   onValueChange: (v: string) => void;
   autoFocus?: boolean;
+  /**
+   * Abre a gravação de voz (Fase 7).
+   *
+   * ⭐ `undefined` mantém o microfone como placeholder "em breve", e é assim
+   * que o botão SOME para quem não tem áudio disponível — quem roteou o áudio
+   * para um modelo que não transcreve, por exemplo. Botão que sempre falha é
+   * pior que botão nenhum: o lojista grava, espera e leva um erro.
+   */
+  onMicrofone?: () => void;
 }
 
 /**
@@ -39,6 +48,7 @@ export function BitzComposer({
   value,
   onValueChange,
   autoFocus,
+  onMicrofone,
 }: BitzComposerProps) {
   const ref = React.useRef<HTMLTextAreaElement>(null);
 
@@ -108,6 +118,26 @@ export function BitzComposer({
           >
             <SendHorizontal className="size-4" />
           </button>
+        ) : onMicrofone ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onMicrofone}
+                disabled={disabled}
+                aria-label="Falar com o Bitz"
+                className={cn(
+                  "text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-9 shrink-0",
+                  "items-center justify-center rounded-full transition disabled:opacity-50",
+                  "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                  "motion-reduce:transition-none",
+                )}
+              >
+                <Mic className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Falar com o Bitz</TooltipContent>
+          </Tooltip>
         ) : (
           <EmBreve label="Falar com o Bitz (em breve)">
             <Mic className="size-4" />

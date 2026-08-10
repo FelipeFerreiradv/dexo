@@ -452,3 +452,18 @@
     transform: translateY(-2px);
   }
 }
+
+/* A aura da tela de escuta (Fase 7). Ela PULSA enquanto o microfone está
+   aberto e fica parada enquanto transcreve — é o sinal, sem legenda, de que
+   ainda está gravando. Só transform e opacity: a GPU compõe sem repintar. */
+@keyframes bitz-escuta-aura {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.06);
+  }
+}

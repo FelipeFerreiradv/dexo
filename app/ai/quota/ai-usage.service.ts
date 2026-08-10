@@ -23,6 +23,7 @@ import {
 } from "../../marketplaces/services/rembg-provider-usage";
 import {
   AI_CONSTANTS,
+  getAiMaxDailyAudioPerTenant,
   getAiMaxDailyGlobal,
   getAiMaxDailyPerTenant,
 } from "../core/ai-constants";
@@ -120,6 +121,99 @@ export async function refundAiTurn(input: {
     db: input.db,
     now: input.now,
   });
+}
+
+/** Linha de quota da TRANSCRIÇÃO daquele tenant. */
+export function audioUsageProvider(dataOwnerId: string): string {
+  return `${AI_CONSTANTS.USAGE_PROVIDER_AUDIO_PREFIX}${dataOwnerId}`;
+}
+
+/**
+ * Reserva uma TRANSCRIÇÃO. Contador próprio, teto próprio.
+ *
+ * ⭐ POR QUE NÃO REUSAR O CONTADOR DE MENSAGENS: transcrever não é enviar. O
+ * lojista fala, lê o que saiu, corrige e só então manda — e gravar duas ou três
+ * vezes até sair direito é o comportamento normal, não abuso. Debitar uma
+ * mensagem por tentativa gastaria a cota do dia sem ele ter perguntado nada.
+ *
+ * Mas o teto GLOBAL é o mesmo, e de propósito: ele é a proteção da carteira da
+ * plataforma, e áudio custa igual (ou mais) que texto. Transcrição sem teto
+ * global seria uma porta aberta ao lado de uma porta trancada.
+ */
+export async function reserveAiTranscription(input: {
+  dataOwnerId: string;
+  db?: any;
+  now?: Date;
+  maxPerTenant?: number;
+  maxGlobal?: number;
+}): Promise<AiQuotaResult> {
+  const { dataOwnerId, db, now } = input;
+  if (!dataOwnerId) return { ok: false, denied: "tenant" };
+
+  const maxTenant = input.maxPerTenant ?? getAiMaxDailyAudioPerTenant();
+  const maxGlobal = input.maxGlobal ?? getAiMaxDailyGlobal();
+  const provider = audioUsageProvider(dataOwnerId);
+
+  let tenantOk = false;
+  try {
+    tenantOk = await tryReserveDailySlot({
+      provider,
+      maxPerDay: maxTenant,
+      db,
+      now,
+    });
+  } catch {
+    // Fail-closed, igual ao turno: erro de banco NEGA em vez de deixar passar
+    // sem contar.
+    return { ok: false, denied: "tenant" };
+  }
+  if (!tenantOk) return { ok: false, denied: "tenant" };
+
+  let globalOk = false;
+  try {
+    globalOk = await tryReserveDailySlot({
+      provider: AI_CONSTANTS.USAGE_PROVIDER_GLOBAL,
+      maxPerDay: maxGlobal,
+      db,
+      now,
+    });
+  } catch {
+    globalOk = false;
+  }
+
+  if (!globalOk) {
+    // Mesmo `now` da reserva: sem isso, uma virada de meia-noite UTC entre
+    // reservar e devolver decrementaria o contador do dia NOVO.
+    await refundDailySlot({ provider, db, now });
+    return { ok: false, denied: "global" };
+  }
+
+  return { ok: true };
+}
+
+/** Devolve uma transcrição reservada que NÃO chegou a custar nada. */
+export async function refundAiTranscription(input: {
+  dataOwnerId: string;
+  db?: any;
+  now?: Date;
+}): Promise<void> {
+  await refundDailySlot({
+    provider: audioUsageProvider(input.dataOwnerId),
+    db: input.db,
+    now: input.now,
+  });
+  await refundDailySlot({
+    provider: AI_CONSTANTS.USAGE_PROVIDER_GLOBAL,
+    db: input.db,
+    now: input.now,
+  });
+}
+
+/** Mensagem que o usuário lê quando o teto de TRANSCRIÇÃO bate. */
+export function audioQuotaMessage(denied: AiQuotaDenial): string {
+  return denied === "tenant"
+    ? "Você atingiu o limite de áudios por hoje. Pode escrever a pergunta — isso continua liberado."
+    : "O Bitz está com muita demanda agora. Tenta de novo mais tarde.";
 }
 
 /** Mensagem que o usuário lê quando o teto bate. */

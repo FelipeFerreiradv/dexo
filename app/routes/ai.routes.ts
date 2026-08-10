@@ -4,6 +4,18 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { isAiEnabledFor } from "../ai/entitlement/ai-entitlement.service";
 import { requireAiEnabled } from "../ai/entitlement/require-ai-enabled";
 import { MAX_USER_MESSAGE_CHARS, runTurn } from "../ai/agent/orchestrator";
+import { AI_CONSTANTS } from "../ai/core/ai-constants";
+import { detectarFormatoDeAudio } from "../ai/audio/audio-formato";
+import {
+  audioDisponivel,
+  mensagemDeFalha,
+  transcreverAudio,
+} from "../ai/audio/transcricao.service";
+import {
+  audioQuotaMessage,
+  refundAiTranscription,
+  reserveAiTranscription,
+} from "../ai/quota/ai-usage.service";
 import { scopeFromRequest } from "../ai/core/scope";
 import { abrirNdjson, querNdjson } from "../ai/stream/ndjson";
 import prisma from "../lib/prisma";
@@ -46,6 +58,150 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
       }
       const enabled = await isAiEnabledFor(dataOwnerId);
       return reply.send({ enabled });
+    },
+  );
+
+  /**
+   * GET /ai/capacidades — o que este cliente pode FAZER dentro do chat.
+   *
+   * ⭐ ROTA SEPARADA DA SONDA, de propósito. `/ai/entitlement` roda em TODA
+   * página, para todo usuário, só para decidir se o mascote aparece — e o
+   * contrato dele é verificado por teste com igualdade estrita. Crescer aquele
+   * objeto sairia caro nos dois sentidos: quebraria o teste e mandaria bytes a
+   * mais em toda navegação, para uma informação que só interessa a quem ABRIU
+   * o chat.
+   *
+   * Aqui é o oposto: só é chamada quando o painel monta, e o front guarda a
+   * resposta pela sessão.
+   *
+   * `audio` diz se o MICROFONE DEVE APARECER. Botão que sempre falha é pior que
+   * botão nenhum: o lojista grava, espera e leva um erro. Quem configurou só o
+   * modelo de texto — e o DeepSeek não tem áudio — recebe `false`, e o chat
+   * segue inteiro sem o microfone.
+   *
+   * Devolve BOOLEANO, nunca o nome do provedor: o front não sabe (nem precisa
+   * saber) qual modelo está por trás. Objeto pensado para crescer com as fases
+   * seguintes (`anexos` na Fase 8).
+   */
+  fastify.get(
+    "/capacidades",
+    { preHandler: [authMiddleware, requireAiEnabled] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user?.dataOwnerId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      return reply.send({ audio: audioDisponivel() });
+    },
+  );
+
+  /**
+   * POST /ai/audio — o lojista fala, isto devolve o TEXTO.
+   *
+   * ⭐ NÃO RESPONDE À PERGUNTA, e essa é a decisão central da Fase 7. O texto
+   * volta para o navegador, entra no campo de escrita, o lojista lê e corrige
+   * se a transcrição errou o nome da peça — e só então envia pelo `/ai/chat`
+   * de sempre. Assim:
+   *   - transcrição ruim não vira pergunta errada gastando a cota dele;
+   *   - o orquestrador NÃO MUDA: nenhuma linha dele sabe que existe áudio.
+   *
+   * O arquivo vive na memória pelo tempo da chamada e some. Nada em disco,
+   * nada em banco: voz é dado sensível e não guardar é a única garantia real.
+   *
+   * Mesmo gate, mesmo rate limit e mesmo bucket-próprio do `/ai/chat`. A cota
+   * DIÁRIA é separada (ver `reserveAiTranscription`): gravar duas ou três vezes
+   * até sair direito é normal e não pode consumir mensagens.
+   */
+  fastify.post(
+    "/audio",
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: "1 minute",
+          hook: "preHandler",
+          keyGenerator: (req: any) => req.user?.id ?? req.ip,
+        },
+      },
+      preHandler: [authMiddleware, requireAiEnabled],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user;
+      if (!user?.dataOwnerId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const dataOwnerId = user.dataOwnerId;
+
+      // ⚠️ Teto POR REQUISIÇÃO, que vence o global de 20 MB do registro do
+      // multipart (deepmergeAll). O global não é tocado — a regra da casa é
+      // que rota que precisa de limite diferente o declare aqui, nunca lá.
+      let parte: any;
+      try {
+        parte = await (request as any).file({
+          limits: { fileSize: AI_CONSTANTS.MAX_AUDIO_BYTES, files: 1 },
+        });
+      } catch {
+        return reply
+          .status(400)
+          .send({ error: mensagemDeFalha("formato_invalido") });
+      }
+      if (!parte) {
+        return reply.status(400).send({ error: mensagemDeFalha("vazio") });
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = await parte.toBuffer();
+      } catch {
+        // `toBuffer` estoura quando o arquivo passa do `fileSize` acima.
+        return reply
+          .status(400)
+          .send({ error: mensagemDeFalha("grande_demais") });
+      }
+
+      // A cota é reservada DEPOIS da validação de bytes e ANTES da chamada
+      // externa: arquivo inválido não pode consumir a cota de ninguém, e
+      // chamada paga não pode acontecer sem reserva.
+      const formatoOk =
+        buffer.length > 0 &&
+        buffer.length <= AI_CONSTANTS.MAX_AUDIO_BYTES &&
+        detectarFormatoDeAudio(buffer) !== null;
+      if (!formatoOk) {
+        return reply.status(400).send({
+          error: mensagemDeFalha(
+            buffer.length > AI_CONSTANTS.MAX_AUDIO_BYTES
+              ? "grande_demais"
+              : buffer.length === 0
+                ? "vazio"
+                : "formato_invalido",
+          ),
+        });
+      }
+
+      const quota = await reserveAiTranscription({ dataOwnerId });
+      if (!quota.ok) {
+        // 200 e não 4xx: teto batido é estado de negócio, e o front mostra a
+        // mensagem no chat como faz com o teto de mensagens.
+        return reply.send({
+          ok: false,
+          error: audioQuotaMessage(quota.denied ?? "tenant"),
+        });
+      }
+
+      const r = await transcreverAudio({
+        buffer,
+        mimeDeclarado: parte.mimetype,
+      });
+
+      if (!r.ok) {
+        // Nada foi cobrado quando o provedor nem chegou a ser chamado — e
+        // "sem fala" também não gasta: o lojista vai regravar.
+        if (r.motivo !== "erro_provedor") {
+          await refundAiTranscription({ dataOwnerId });
+        }
+        return reply.send({ ok: false, error: mensagemDeFalha(r.motivo) });
+      }
+
+      return reply.send({ ok: true, texto: r.texto });
     },
   );
 

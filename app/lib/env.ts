@@ -175,6 +175,11 @@ const envSchema = z.object({
   AI_TIMEOUT_MS: positiveIntString("AI_TIMEOUT_MS"),
   AI_MAX_TOKENS: positiveIntString("AI_MAX_TOKENS"),
   AI_MAX_DAILY_PER_TENANT: positiveIntString("AI_MAX_DAILY_PER_TENANT"),
+  // Teto diário de TRANSCRIÇÕES por tenant (Fase 7). Contador próprio: gravar
+  // duas ou três vezes até sair direito é normal e não pode gastar mensagens.
+  AI_MAX_DAILY_AUDIO_PER_TENANT: positiveIntString(
+    "AI_MAX_DAILY_AUDIO_PER_TENANT",
+  ),
   AI_MAX_DAILY_GLOBAL: positiveIntString("AI_MAX_DAILY_GLOBAL"),
   AI_TEMPERATURE: z
     .string()

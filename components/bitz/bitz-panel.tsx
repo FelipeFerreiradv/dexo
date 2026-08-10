@@ -6,8 +6,11 @@ import { Maximize2, Minimize2, PenSquare, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useBitzChat } from "@/hooks/use-bitz-chat";
+import { useBitzAudio } from "@/hooks/use-bitz-audio";
+import { useBitzCapacidades } from "@/hooks/use-bitz-capacidades";
 import { BitzApresentacao } from "./bitz-apresentacao";
 import { BitzComposer } from "./bitz-composer";
+import { BitzEscuta } from "./bitz-escuta";
 import { BitzEmptyState } from "./bitz-empty-state";
 import { BitzMascot } from "./bitz-mascot";
 import { BitzMessage, BitzStreaming, BitzThinking } from "./bitz-message";
@@ -59,6 +62,22 @@ export function BitzPanel({
 }: BitzPanelProps) {
   const { messages, pending, streaming, send, reset } = useBitzChat();
   const [draft, setDraft] = React.useState("");
+
+  // O microfone só existe se o servidor disser que sabe transcrever.
+  const { audio: audioDisponivel } = useBitzCapacidades(open);
+
+  /**
+   * ⭐ A TRANSCRIÇÃO CAI NO CAMPO, NÃO NA CONVERSA.
+   *
+   * O lojista lê o que saiu, corrige "cubo de roda" que virou "cubo de rodas",
+   * e só então envia. Mandar direto pouparia um toque e custaria caro: uma
+   * transcrição errada viraria uma pergunta que ele não fez, gastando uma
+   * mensagem da cota do dia dele.
+   */
+  const voz = useBitzAudio({
+    onTexto: (texto) => setDraft((atual) => (atual ? `${atual} ${texto}` : texto)),
+  });
+  const escutando = voz.estado === "gravando" || voz.estado === "enviando";
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
 
   /**
@@ -325,14 +344,46 @@ export function BitzPanel({
           </div>
 
           <div className={cn("mx-auto w-full shrink-0", isFull && "max-w-3xl")}>
+            {/* O erro do microfone vive AQUI, colado no composer, e não num
+                toast: o caminho de saída ("pode escrever a pergunta") é o campo
+                logo abaixo. Um toast some antes de o lojista ler. */}
+            {voz.erro && (
+              <div className="px-3 pt-3">
+                <p
+                  role="alert"
+                  className="border-destructive/40 bg-destructive/10 text-foreground flex items-start gap-2 rounded-2xl border px-3 py-2 text-xs"
+                >
+                  <span className="flex-1">{voz.erro}</span>
+                  <button
+                    type="button"
+                    onClick={voz.limparErro}
+                    className="text-muted-foreground hover:text-foreground shrink-0 underline"
+                  >
+                    ok
+                  </button>
+                </p>
+              </div>
+            )}
             <BitzComposer
               value={draft}
               onValueChange={setDraft}
               onSend={perguntar}
               disabled={pending}
               autoFocus={open}
+              onMicrofone={audioDisponivel ? voz.gravar : undefined}
             />
           </div>
+
+          {/* Enquanto grava, a escuta cobre o painel inteiro. Ver bitz-escuta. */}
+          {escutando && (
+            <BitzEscuta
+              estado={voz.estado}
+              segundos={voz.segundos}
+              maxSegundos={voz.maxSegundos}
+              onParar={voz.parar}
+              onCancelar={voz.cancelar}
+            />
+          )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
