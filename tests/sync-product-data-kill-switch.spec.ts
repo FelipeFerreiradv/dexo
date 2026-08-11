@@ -106,7 +106,9 @@ function prepara(platform: Platform) {
 const passouDoGuard = () =>
   vi.mocked(prisma.productListing.findUnique).mock.calls.length > 0;
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("⭐ syncProductData respeita o kill-switch de runtime", () => {
   it("OLX desligada: devolve skip explícito e NÃO segue para a chamada externa", async () => {

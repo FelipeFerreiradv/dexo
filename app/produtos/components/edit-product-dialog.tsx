@@ -73,6 +73,7 @@ import {
   ML_CATEGORY_OPTIONS,
 } from "../../lib/product-parser"; // ML_CATALOG + ML_CATEGORIES (top-level) + ML_CATEGORY_OPTIONS (detailed)
 import { getMeasurementsForCategory } from "../../lib/ml-measurements";
+import { resumirSync, type SyncResultItem } from "../lib/sync-summary";
 
 // Category suggestion centralized in `suggestCategoryFromTitle` in app/lib/product-parser.ts
 // Schema de validação com campos de autopeças
@@ -2516,40 +2517,22 @@ export function EditProductDialog({
 
       // Sumário do re-sync de anúncios EXISTENTES feito dentro do PUT
       // /products/:id (ProductUseCase.update → syncProductListings).
-      // Mostra ao usuário quantos anúncios ML/Shopee receberam a alteração
-      // e quais falharam, para que ele saiba que a edição se propagou.
-      const syncResults: Array<{
-        success?: boolean;
-        externalListingId?: string;
-        error?: string;
-      }> = Array.isArray(result?.syncResults) ? result.syncResults : [];
-      const synced = syncResults.filter((r) => r?.success).length;
-      const failedItems = syncResults.filter((r) => !r?.success);
-      const failedSummary = failedItems
-        .slice(0, 3)
-        .map(
-          (r) =>
-            `${r?.externalListingId || "?"}${
-              r?.error ? `: ${r.error.slice(0, 80)}` : ""
-            }`,
-        )
-        .join("; ");
-      const moreFailed =
-        failedItems.length > 3 ? ` (+${failedItems.length - 3})` : "";
+      // Mostra ao usuário quantos anúncios receberam a alteração, quais
+      // falharam e quais ficaram de fora — em qualquer um dos cinco canais —,
+      // para que ele saiba se a edição se propagou.
+      const syncResults: SyncResultItem[] = Array.isArray(result?.syncResults)
+        ? result.syncResults
+        : [];
 
-      let summaryMsg = "Produto atualizado com sucesso!";
-      let summaryType: "success" | "warning" | "error" = "success";
-      if (syncResults.length > 0) {
-        if (failedItems.length === 0) {
-          summaryMsg = `Produto atualizado e ${synced} anúncio(s) sincronizado(s).`;
-        } else if (synced > 0) {
-          summaryMsg = `Produto atualizado. ${synced} anúncio(s) sincronizado(s); ${failedItems.length} falhou(aram): ${failedSummary}${moreFailed}.`;
-          summaryType = "warning";
-        } else {
-          summaryMsg = `Produto atualizado, mas ${failedItems.length} anúncio(s) falhou(aram): ${failedSummary}${moreFailed}.`;
-          summaryType = "warning";
-        }
-      }
+      // ⚠️ A regra saiu daqui para `lib/sync-summary` e não é só arrumação: um
+      // anúncio PULADO volta com `success: true` (o kill-switch do canal não é
+      // falha da edição), e a contagem antiga — `filter(r => r.success)` — o
+      // somava como "sincronizado". Com a OLX pausada, a tela afirmava que o
+      // anúncio dela tinha recebido a alteração.
+      const resumo = resumirSync(syncResults);
+      let summaryMsg = resumo.mensagem;
+      const summaryType: "success" | "warning" | "error" = resumo.tipo;
+
       if (dispatched > 0) {
         summaryMsg += ` ${dispatched} novo(s) anúncio(s) em processamento — acompanhe na aba Anúncios.`;
       }
