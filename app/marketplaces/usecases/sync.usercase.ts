@@ -4994,6 +4994,31 @@ export class SyncUseCase {
         );
       }
 
+      // ⭐ Kill-switch de runtime. Era o ÚLTIMO caminho de saída que não o
+      // respeitava: `syncProductStock` (:3457) e `syncAllStock` (:4786) já
+      // paravam com OLX/FACEBOOK_INTEGRATION_DISABLED=1, mas este não — e é por
+      // ele que passa TODA edição de produto (product.usercase.ts:1045, único
+      // chamador). Na prática, "pausar a integração" pausava a baixa por venda e
+      // deixava a edição de preço/título continuar publicando na OLX. O Bitz
+      // (alterar_preco / ajustar_estoque) entra exatamente por aqui.
+      //
+      // ZERO EFEITO nos três canais maduros: `isPlatformDisabled` devolve
+      // `false` incondicionalmente para tudo que não é OLX ou FACEBOOK.
+      //
+      // Sai como sucesso PULADO, no mesmo formato de `syncProductStock`: quem
+      // chama conta `r.success` para decidir se a edição deu certo, e uma
+      // integração pausada de propósito não é falha da edição.
+      if (isPlatformDisabled(account.platform)) {
+        return {
+          success: true,
+          productId,
+          externalListingId,
+          platform: account.platform,
+          skipped: true,
+          skipReason: "integration_disabled",
+        };
+      }
+
       // 2.1 Buscar listing especifico desta conta para aplicar overrides
       // antes de enviar para o marketplace. Quando o anuncio tem campos
       // personalizados (titleOverride, priceOverride, etc.), precisamos
