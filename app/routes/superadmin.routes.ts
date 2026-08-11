@@ -6,6 +6,17 @@ import { UserRepositoryPrisma } from "../repositories/user.repository";
 import { UserUseCase } from "../usecases/user.usercase";
 import { toPublicUser } from "../lib/user-serializer";
 import { SystemLogService } from "../services/system-log.service";
+import { clearAiEntitlementCache } from "../ai/entitlement/ai-entitlement.service";
+
+/**
+ * Teto de sanidade para o campo de teto diário do Bitz.
+ *
+ * Não é regra de negócio — é anteparo contra dedo pesado. Cada mensagem custa
+ * dinheiro real, e um `999999` digitado sem querer viraria uma conta de milhares
+ * de reais em um dia. Quem realmente precisar de mais que isto mexe na env
+ * global, que é uma decisão consciente de infraestrutura.
+ */
+const LIMITE_DIARIO_MAXIMO = 2000;
 
 const userRepository = new UserRepositoryPrisma();
 const userUseCase = new UserUseCase();
@@ -182,6 +193,10 @@ export const superadminRoutes = async (fastify: FastifyInstance) => {
       defaultStock?: number | null;
       isActive?: boolean;
       pagePermissions?: Record<string, boolean> | null;
+      /** Bitz: concede (true) ou revoga (false) o acesso deste tenant. */
+      aiEnabled?: boolean;
+      /** Bitz: teto diário próprio. `null` volta ao padrão da plataforma. */
+      aiDailyLimit?: number | null;
     };
   }>(
     "/users/:id",
@@ -198,9 +213,22 @@ export const superadminRoutes = async (fastify: FastifyInstance) => {
           name?: string;
           defaultCostPrice?: number | null;
           defaultStock?: number | null;
+        } = {};
+
+        // Controle de acesso vai por método estreito, fora do patch largo —
+        // `update()` recebe `UserUpdate`, o corpo cru das rotas de
+        // autoatendimento. Ver `UserAccessControlUpdate`.
+        const patchAcesso: {
           isActive?: boolean;
           pagePermissions?: Record<string, boolean> | null;
         } = {};
+
+        // ⭐ Patch SEPARADO para o Bitz, gravado por um método próprio do
+        // repositório. Ver `UserAiAccessUpdate`: estes campos ficam fora de
+        // `UserUpdate` justamente porque `PUT /users/me/settings` repassa aquele
+        // tipo cru, e ali qualquer usuário se auto-concederia acesso e cota.
+        const patchAi: { aiEnabledAt?: Date | null; aiDailyLimit?: number | null } =
+          {};
 
         if (typeof request.body?.name === "string") {
           const name = request.body.name.trim();
@@ -216,14 +244,62 @@ export const superadminRoutes = async (fastify: FastifyInstance) => {
           patch.defaultStock = request.body.defaultStock;
         }
         if (typeof request.body?.isActive === "boolean") {
-          patch.isActive = request.body.isActive;
+          patchAcesso.isActive = request.body.isActive;
         }
         const pp = sanitizePagePermissions(request.body?.pagePermissions);
         if (pp !== undefined) {
-          patch.pagePermissions = pp;
+          patchAcesso.pagePermissions = pp;
         }
 
-        const data = await userUseCase.updateSettings(id, patch);
+        // ⭐ BITZ. A API recebe um BOOLEANO (`aiEnabled`) e o servidor decide o
+        // timestamp — o cliente nunca escolhe a data. Além de ser o padrão do
+        // resto do sistema, evita que um relógio errado no navegador grave uma
+        // concessão no futuro (que ficaria valendo do mesmo jeito, porque o
+        // gate só testa `!= null`) ou no passado.
+        //
+        // Concessão que já existe NÃO é reescrita: `aiEnabledAt` é a data em
+        // que o cliente ganhou acesso, e um clique repetido no mesmo botão não
+        // pode apagar esse histórico.
+        if (typeof request.body?.aiEnabled === "boolean") {
+          if (request.body.aiEnabled) {
+            if (!target.aiEnabledAt) patchAi.aiEnabledAt = new Date();
+          } else {
+            patchAi.aiEnabledAt = null;
+          }
+        }
+
+        if (request.body?.aiDailyLimit !== undefined) {
+          const bruto = request.body.aiDailyLimit;
+          if (bruto === null) {
+            // Volta ao padrão da plataforma (a prévia gratuita).
+            patchAi.aiDailyLimit = null;
+          } else if (
+            typeof bruto !== "number" ||
+            !Number.isInteger(bruto) ||
+            bruto < 0 ||
+            bruto > LIMITE_DIARIO_MAXIMO
+          ) {
+            return reply.status(400).send({
+              message: `Teto diário inválido: informe um inteiro entre 0 e ${LIMITE_DIARIO_MAXIMO}, ou null para usar o padrão.`,
+            });
+          } else {
+            patchAi.aiDailyLimit = bruto;
+          }
+        }
+
+        let data = await userUseCase.updateSettings(id, patch);
+
+        if (Object.keys(patchAcesso).length > 0) {
+          data = await userRepository.updateAccessControl(id, patchAcesso);
+        }
+
+        if (Object.keys(patchAi).length > 0) {
+          data = await userRepository.updateAiAccess(id, patchAi);
+          // O gate e o teto ficam 60 s em cache no processo da API. Sem limpar,
+          // o Superadmin liberaria o acesso e o cliente continuaria barrado por
+          // até um minuto — e ele estaria olhando a tela naquele instante.
+          clearAiEntitlementCache();
+        }
 
         await SystemLogService.logUserActivity(
           id,

@@ -830,14 +830,31 @@ export class ProductUseCase {
         return undefined;
       } catch (error) {
         console.error("Erro ao sincronizar anúncios do produto:", error);
+        // ⚠️ SEM `marketplace` NO LOG, e isso é o conserto — não um esquecimento.
+        //
+        // Este catch está ACIMA do laço por anúncio: `syncProductListings`
+        // captura a falha de cada anúncio e a devolve como resultado, então o
+        // que chega aqui é a etapa de sincronização inteira quebrando, para
+        // TODOS os canais do produto de uma vez. Não existe um marketplace a
+        // nomear.
+        //
+        // Antes ficava `"MercadoLivre"` fixo. Uma falha de OLX, Shopee ou
+        // Magalu era registrada como falha do Mercado Livre — e quem fosse
+        // investigar um incidente de canal começaria pelo canal errado.
+        //
+        // Trocar por `productId` não mexe em relatório nenhum: a produtividade
+        // da equipe lê `details->>'marketplace'` só de CREATE_PRODUCT e
+        // CREATE_LISTING com `level = INFO` (team-productivity.query.ts:23-38),
+        // e esta linha é SYNC_STOCK com level ERROR.
         await SystemLogService.logError(
           "SYNC_STOCK",
-          `Erro na sincronização: PRODUCT_UPDATE_SYNC - MercadoLivre`,
+          `Erro na sincronização: PRODUCT_UPDATE_SYNC — produto ${id}`,
           {
             resource: "Sync",
+            resourceId: id,
             details: {
               syncType: "PRODUCT_UPDATE_SYNC",
-              marketplace: "MercadoLivre",
+              productId: id,
               error: error instanceof Error ? error.message : error,
             },
           },

@@ -14,6 +14,7 @@ import {
   Package,
   Printer,
   Loader2,
+  Info,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -79,6 +80,15 @@ interface Toast {
   message: string;
   type: "success" | "error" | "warning";
 }
+
+// OLX (autoupload) e Facebook (Commerce Catalog) não têm API de pedido/checkout
+// no Brasil: vendas nesses canais nunca chegam a esta tela. Só avisamos quando
+// pelo menos uma das integrações está ligada.
+const OLX_ENABLED =
+  process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+const FACEBOOK_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
+const SHOW_MANUAL_SALE_NOTE = OLX_ENABLED || FACEBOOK_ENABLED;
 
 export function OrdersList() {
   const { data: session, status } = useSession();
@@ -489,6 +499,20 @@ export function OrdersList() {
 
   return (
     <div className="space-y-6">
+      {SHOW_MANUAL_SALE_NOTE && (
+        <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Vendas feitas {OLX_ENABLED && "na OLX"}
+            {OLX_ENABLED && FACEBOOK_ENABLED && " e "}
+            {FACEBOOK_ENABLED && "no Facebook"} não aparecem aqui: essas
+            plataformas não têm API de pedido no Brasil. Registre-as manualmente
+            como venda de balcão — o anúncio sai do ar sozinho quando o estoque
+            zera.
+          </span>
+        </div>
+      )}
+
       {/* Statistics Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">

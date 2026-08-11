@@ -1,6 +1,8 @@
 import { Prisma, Role, User as PrismaUser } from "@prisma/client";
 import {
   User,
+  UserAccessControlUpdate,
+  UserAiAccessUpdate,
   UserCreate,
   UserRepository,
   UserUpdate,
@@ -50,6 +52,12 @@ class UserRepositoryPrisma implements UserRepository {
       // Permissões por página (colaboradores). null = acesso total.
       pagePermissions:
         (u.pagePermissions as Record<string, boolean> | null) ?? null,
+
+      // Bitz: concessão e teto diário. Nenhum dos dois é segredo — são o
+      // próprio direito de acesso do usuário —, e é o que permite ao painel do
+      // Superadmin mostrar o estado atual sem uma segunda consulta.
+      aiEnabledAt: u.aiEnabledAt ?? null,
+      aiDailyLimit: u.aiDailyLimit ?? null,
 
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
@@ -197,6 +205,8 @@ class UserRepositoryPrisma implements UserRepository {
       defaultCostPrice: number | null;
       defaultStock: number | null;
       pagePermissions: Record<string, boolean> | null;
+      aiEnabledAt: Date | null;
+      aiDailyLimit: number | null;
       createdAt: Date;
     }[]
   > {
@@ -213,6 +223,8 @@ class UserRepositoryPrisma implements UserRepository {
           defaultCostPrice: true,
           defaultStock: true,
           pagePermissions: true,
+          aiEnabledAt: true,
+          aiDailyLimit: true,
           createdAt: true,
         },
       });
@@ -224,6 +236,68 @@ class UserRepositoryPrisma implements UserRepository {
         pagePermissions:
           (u.pagePermissions as Record<string, boolean> | null) ?? null,
       }));
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Concessão e teto do Bitz — o ÚNICO caminho que escreve estas duas colunas.
+   *
+   * ⭐ Método separado por SEGURANÇA, não por organização. `update()` acima
+   * recebe `UserUpdate`, que é literalmente o corpo cru de
+   * `PUT /users/me/settings`. Se estes campos estivessem lá, qualquer usuário
+   * autenticado se auto-concederia o Bitz com cota ilimitada num único PUT.
+   * Aqui o tipo é outro e a rota de settings não alcança.
+   *
+   * `null` é VALOR (revogar / voltar ao padrão), não "não mexer" — por isso
+   * `!== undefined`.
+   */
+  async updateAiAccess(id: string, data: UserAiAccessUpdate): Promise<User> {
+    try {
+      const result = await prisma.user.update({
+        where: { id },
+        data: {
+          ...(data.aiEnabledAt !== undefined && {
+            aiEnabledAt: data.aiEnabledAt,
+          }),
+          ...(data.aiDailyLimit !== undefined && {
+            aiDailyLimit: data.aiDailyLimit,
+          }),
+        },
+      });
+      return this.mapUser(result);
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Controle de acesso — o ÚNICO caminho que escreve `isActive` e
+   * `pagePermissions`.
+   *
+   * ⭐ Método separado por SEGURANÇA. Ver `UserAccessControlUpdate`: as rotas de
+   * autoatendimento repassam `UserUpdate` cru, e enquanto estes campos moravam
+   * lá qualquer colaborador se auto-liberava as páginas bloqueadas.
+   *
+   * Quem chama já checou posse (admin sobre o próprio colaborador) ou role
+   * (Superadmin). Este método NÃO checa nada — ele é a fechadura, não a porta.
+   */
+  async updateAccessControl(
+    id: string,
+    data: UserAccessControlUpdate,
+  ): Promise<User> {
+    try {
+      const result = await prisma.user.update({
+        where: { id },
+        data: {
+          ...(data.isActive !== undefined && { isActive: data.isActive }),
+          ...(data.pagePermissions !== undefined && {
+            pagePermissions: data.pagePermissions ?? undefined,
+          }),
+        },
+      });
+      return this.mapUser(result);
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
@@ -289,13 +363,12 @@ class UserRepositoryPrisma implements UserRepository {
               data.crossAccountPriceIncreasePercent,
           }),
 
-          // Acesso liberado/bloqueado (somente se fornecido)
-          ...(data.isActive !== undefined && { isActive: data.isActive }),
-
-          // Permissões por página (somente se fornecido; undefined → não altera)
-          ...(data.pagePermissions !== undefined && {
-            pagePermissions: data.pagePermissions ?? undefined,
-          }),
+          // ⚠️ NADA DE CONTROLE DE ACESSO AQUI — nem `isActive`, nem
+          // `pagePermissions`, nem `aiEnabledAt`/`aiDailyLimit`. Este método
+          // recebe `UserUpdate`, que é o corpo CRU de `PUT /users/me/settings` e
+          // de `PUT /users/:id/settings`. Enquanto esses campos estavam nesta
+          // lista, um colaborador se auto-liberava as páginas com um PUT.
+          // Ver `updateAccessControl` e `updateAiAccess`.
         },
       });
       return this.mapUser(result);

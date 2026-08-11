@@ -22,6 +22,60 @@ const optionalUrlIsh = z
     message: "deve começar com http:// ou https://",
   });
 
+/** Provedores de IA aceitos. Espelha `AiProviderName` de ai-constants.ts. */
+const PROVEDORES_DE_IA = ["gemini", "deepseek", "mock"] as const;
+
+/**
+ * Rota de capacidade do Bitz: `"provedor:modelo"`, opcional.
+ *
+ * ⭐ VALIDA O PROVEDOR NO BOOT, e essa é a razão de existir. A casa já barra
+ * `AI_PROVIDER` desconhecido aqui — há teste chamado "typo não vira mock
+ * silencioso". A superfície de rota é nova e precisa da MESMA barreira: no
+ * runtime, nome não reconhecido cai no provedor mock, e um mock em produção
+ * responde `Bitz (mock): recebi "..."` com `ok:true`, debita a cota do dia e
+ * não escreve nada em lugar nenhum. Falha aberta e silenciosa, para um cliente
+ * pagante.
+ *
+ * O MODELO não é validado: é string livre por natureza, e nomes mudam com
+ * frequência (o `deepseek-chat` foi descontinuado em 24/07/2026). Modelo
+ * ausente já é tratado em runtime, com `sem_modelo`.
+ */
+function rotaDeCapacidade(nome: string) {
+  return z
+    .string()
+    .optional()
+    .refine(
+      (v) => {
+        if (v === undefined || v.trim() === "") return true;
+        const provedor = v.split(":")[0].trim().toLowerCase();
+        return (PROVEDORES_DE_IA as readonly string[]).includes(provedor);
+      },
+      {
+        message: `${nome} deve ser "provedor:modelo" com provedor em ${PROVEDORES_DE_IA.join("|")}`,
+      },
+    );
+}
+
+/**
+ * Inteiro positivo opcional que permanece STRING no tipo de saída.
+ *
+ * Diferente de RATE_LIMIT_MAX/PORT (que usam `.transform(Number)`), aqui não
+ * transformamos de propósito: quem consome estes valores lê `process.env`
+ * diretamente por função (ai-constants.ts), para que um `.env` editado +
+ * `pm2 restart` valha sem rebuild. O papel do schema é só barrar lixo no boot.
+ */
+const positiveIntString = (name: string) =>
+  z
+    .string()
+    .optional()
+    .refine(
+      (v) =>
+        v === undefined ||
+        v === "" ||
+        (Number.isInteger(Number(v)) && Number(v) > 0),
+      { message: `${name} deve ser inteiro positivo` },
+    );
+
 const envSchema = z.object({
   // Database
   DATABASE_URL: z.string().min(1, "DATABASE_URL é obrigatória"),
@@ -70,6 +124,50 @@ const envSchema = z.object({
   MAGALU_WEBHOOK_SECRET: z.string().optional(),
   MAGALU_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
 
+  // OLX (autoupload / anúncios). TODAS opcionais de propósito, mesmo padrão do
+  // bloco Magalu: a integração fica atrás da flag NEXT_PUBLIC_OLX_INTEGRATION_ENABLED
+  // e env.ts é exit-on-error — vars obrigatórias ausentes derrubariam o boot.
+  // Os serviços olx-* validam a presença em runtime (validateOlxConfig).
+  // Credenciais vêm por email (suporteintegrador@olxbr.com), não self-service.
+  OLX_CLIENT_ID: z.string().optional(),
+  OLX_CLIENT_SECRET: z.string().optional(),
+  OLX_AUTH_URL: optionalUrlIsh,
+  OLX_API_URL: optionalUrlIsh,
+  OLX_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por espaço. Sem valor → usa o default das constantes.
+  OLX_SCOPES: z.string().optional(),
+  OLX_CATEGORY_ROOT_HINT: z.string().optional(),
+  // Contato do vendedor exigido em cada anúncio OLX (telefone DDD+número, CEP).
+  OLX_SELLER_PHONE: z.string().optional(),
+  OLX_SELLER_ZIPCODE: z.string().optional(),
+  OLX_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
+  // Sem OLX_WEBHOOK_SECRET: OLX não tem webhook de venda na fase 1.
+
+  // Facebook/Meta (Commerce Catalog via Graph API). TODAS opcionais de propósito,
+  // mesmo padrão dos blocos Magalu/OLX: a integração fica atrás da flag
+  // NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED e env.ts é exit-on-error. Os
+  // serviços facebook-* validam a presença em runtime (validateFacebookConfig).
+  FACEBOOK_APP_ID: z.string().optional(),
+  FACEBOOK_APP_SECRET: z.string().optional(),
+  // ID do Catálogo (Commerce Manager) — alvo do items_batch.
+  FACEBOOK_CATALOG_ID: z.string().optional(),
+  FACEBOOK_GRAPH_BASE_URL: optionalUrlIsh,
+  FACEBOOK_DIALOG_BASE_URL: optionalUrlIsh,
+  FACEBOOK_API_VERSION: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === "" || /^v\d+\.\d+$/.test(v), {
+      message: "FACEBOOK_API_VERSION deve ter o formato vNN.N (ex.: v25.0)",
+    }),
+  FACEBOOK_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por vírgula. Vazio → default das constantes.
+  FACEBOOK_SCOPES: z.string().optional(),
+  FACEBOOK_CURRENCY: z.string().optional(),
+  // URL base da página de produto (item de catálogo EXIGE `link`). Pendente de
+  // decisão do cliente — sem ela o build de payload falha com erro claro.
+  FB_PRODUCT_URL_BASE: optionalUrlIsh,
+  // Sem FACEBOOK_WEBHOOK_SECRET: checkout fora da plataforma, sem webhook de venda.
+
   // WhatsApp (Cloud API oficial da Meta). TODAS opcionais de propósito, mesmo
   // padrão do bloco Magalu acima: o módulo fica atrás da flag
   // NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED + gate por usuário, e env.ts é
@@ -89,6 +187,60 @@ const envSchema = z.object({
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
   // Configuration ID do Embedded Signup (fase futura; MVP é onboarding manual).
   WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: z.string().optional(),
+
+  // Bitz (agente de IA). TODAS opcionais de propósito, mesmo padrão dos blocos
+  // Magalu e WhatsApp acima: o módulo fica atrás da flag
+  // NEXT_PUBLIC_AI_MODULE_ENABLED + gate por usuário (User.aiEnabledAt), e
+  // env.ts é exit-on-error. Sem AI_API_KEY a API sobe NORMALMENTE e todo o
+  // resto do sistema funciona igual — só o Bitz reporta indisponibilidade.
+  // A validação de runtime é describeAiConfigProblem() (ai-constants.ts), que
+  // DEVOLVE o motivo em vez de lançar: quem chama precisa degradar, não quebrar.
+  AI_PROVIDER: z.enum(["gemini", "deepseek", "mock"]).optional(),
+  AI_MODEL: z.string().optional(),
+  // NUNCA em NEXT_PUBLIC_*: a chave só existe no servidor.
+  AI_API_KEY: z.string().optional(),
+  // Chaves POR PROVEDOR — é o que permite dois provedores ao mesmo tempo.
+  // ⚠️ Um provedor NUNCA herda a chave de outro: `AI_API_KEY` só vale para o
+  // provedor nomeado em `AI_PROVIDER` (ver getAiApiKeyFor em ai-constants.ts).
+  AI_GEMINI_API_KEY: z.string().optional(),
+  AI_DEEPSEEK_API_KEY: z.string().optional(),
+  // ⭐ ROTA POR CAPACIDADE, no formato "provedor:modelo".
+  //
+  // Validadas AQUI, no boot, pelo mesmo motivo que `AI_PROVIDER` é: typo não
+  // pode virar mock silencioso. Sem esta barreira,
+  // `AI_ROUTE_TEXTO="deepsek:v4"` sobe a API, o cliente pergunta, recebe
+  // `Bitz (mock): recebi "..."` como se fosse resposta de verdade, e ainda tem
+  // a cota do dia debitada — falha ABERTA, sem nada no log.
+  AI_ROUTE_TEXTO: rotaDeCapacidade("AI_ROUTE_TEXTO"),
+  AI_ROUTE_IMAGEM: rotaDeCapacidade("AI_ROUTE_IMAGEM"),
+  AI_ROUTE_AUDIO: rotaDeCapacidade("AI_ROUTE_AUDIO"),
+  AI_GEMINI_BASE_URL: optionalUrlIsh,
+  AI_DEEPSEEK_BASE_URL: optionalUrlIsh,
+  AI_TIMEOUT_MS: positiveIntString("AI_TIMEOUT_MS"),
+  AI_MAX_TOKENS: positiveIntString("AI_MAX_TOKENS"),
+  AI_MAX_DAILY_PER_TENANT: positiveIntString("AI_MAX_DAILY_PER_TENANT"),
+  // Teto diário de TRANSCRIÇÕES por tenant (Fase 7). Contador próprio: gravar
+  // duas ou três vezes até sair direito é normal e não pode gastar mensagens.
+  AI_MAX_DAILY_AUDIO_PER_TENANT: positiveIntString(
+    "AI_MAX_DAILY_AUDIO_PER_TENANT",
+  ),
+  // Teto diário de leituras de FOTO por tenant (Fase 8). Também com contador
+  // próprio, e pelo mesmo motivo. Só o caminho pago conta: ler XML de NF-e não
+  // chama modelo nenhum e não debita nada.
+  AI_MAX_DAILY_ANEXO_PER_TENANT: positiveIntString(
+    "AI_MAX_DAILY_ANEXO_PER_TENANT",
+  ),
+  AI_MAX_DAILY_GLOBAL: positiveIntString("AI_MAX_DAILY_GLOBAL"),
+  AI_TEMPERATURE: z
+    .string()
+    .optional()
+    .refine(
+      (v) =>
+        v === undefined ||
+        v === "" ||
+        (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 2),
+      { message: "AI_TEMPERATURE deve ser um número entre 0 e 2" },
+    ),
 
   // URLs
   APP_BACKEND_URL: urlIsh,

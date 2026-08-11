@@ -49,6 +49,15 @@ export class StockReconciliationService {
     // marketplace e volta a vender) — antes do espelho essas linhas ficavam
     // stale em active/paused e ENTRAVAM aqui; a ampliação preserva a
     // cobertura de drift que elas sempre tiveram.
+    // "pending"/"PENDING" entram porque é o estado ESTÁVEL de um anúncio OLX
+    // publicado: a OLX confirma na fila de revisão e o Dexo não espelha esse
+    // status, então o anúncio fica pending indefinidamente e ficava invisível
+    // para a rede de segurança de drift.
+    //
+    // Só no ramo COM espelhamento (o que roda em produção — a flag é vazia no
+    // .env). O ramo do kill-switch fica byte-idêntico ao anterior de propósito:
+    // ele existe para voltar ao filtro base, e há teste travando isso
+    // (listing-status-mirror-interactions.spec.ts).
     const reconcilableStatuses =
       process.env.LISTING_STATUS_SYNC_DISABLED === "1"
         ? ["ACTIVE", "active", "paused", "PAUSED"]
@@ -57,6 +66,8 @@ export class StockReconciliationService {
             "active",
             "paused",
             "PAUSED",
+            "pending",
+            "PENDING",
             "under_review",
             "reviewing",
             "unlist",
@@ -67,6 +78,23 @@ export class StockReconciliationService {
       where: {
         productId: { in: productIds },
         status: { in: reconcilableStatuses },
+        // Placeholders locais NUNCA existiram no canal: ML, Shopee e o
+        // republish do ML criam linhas com externalListingId `PENDING_*` e
+        // status exatamente "pending". Sem este filtro, admitir "pending"
+        // acima passaria a enfileirar job de sync para anúncio que não existe
+        // do outro lado — regressão direta em ML e Shopee.
+        //
+        // PAREADO com o status de propósito: excluir todo `PENDING_*` de forma
+        // ampla também removeria da varredura uma linha legítima — o create da
+        // Magalu sem SKU grava `PENDING_<ts>` com status "active" e entrava na
+        // reconciliação antes desta entrega. Assim o ramo do kill-switch fica
+        // de fato byte-idêntico ao anterior, como o comentário acima promete.
+        NOT: {
+          AND: [
+            { status: { in: ["pending", "PENDING"] } },
+            { externalListingId: { startsWith: "PENDING_" } },
+          ],
+        },
       },
       select: {
         id: true,

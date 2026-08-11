@@ -21,6 +21,8 @@ import type { PreviewFormValues } from "../listing-preview/preview-utils";
 import { MlListingFields } from "./ml-listing-fields";
 import { ShopeeListingFields } from "./shopee-listing-fields";
 import { MagaluListingFields } from "./magalu-listing-fields";
+import { OlxListingFields } from "./olx-listing-fields";
+import { FacebookListingFields } from "./facebook-listing-fields";
 import type { UsePerProductListingReturn } from "./use-per-product-listing";
 import type {
   PerProductListingConfig,
@@ -60,6 +62,8 @@ export interface PerProductReviewStepProps {
   globalMlAccounts: ReviewAccountLite[];
   globalShopeeAccounts: ReviewAccountLite[];
   globalMagaluAccounts: ReviewAccountLite[];
+  globalOlxAccounts?: ReviewAccountLite[];
+  globalFacebookAccounts?: ReviewAccountLite[];
   mlOptions: ReviewCategoryOption[];
   shopeeOptions: ReviewCategoryOption[];
   magaluOptions: ReviewCategoryOption[];
@@ -72,6 +76,8 @@ export function PerProductReviewStep({
   globalMlAccounts,
   globalShopeeAccounts,
   globalMagaluAccounts,
+  globalOlxAccounts = [],
+  globalFacebookAccounts = [],
   mlOptions,
   shopeeOptions,
   magaluOptions,
@@ -97,6 +103,8 @@ export function PerProductReviewStep({
   const showMl = globalMlAccounts.length > 0;
   const showShopee = globalShopeeAccounts.length > 0;
   const showMagalu = globalMagaluAccounts.length > 0;
+  const showOlx = globalOlxAccounts.length > 0;
+  const showFacebook = globalFacebookAccounts.length > 0;
 
   return (
     <div className="space-y-4">
@@ -170,6 +178,28 @@ export function PerProductReviewStep({
           setValue={form.setValue}
           watch={form.watch}
           magaluAccounts={globalMagaluAccounts}
+          email={email}
+        />
+      )}
+
+      {showOlx && (
+        <OlxListingFields
+          key={`olx-${current.id}`}
+          control={form.control}
+          setValue={form.setValue}
+          watch={form.watch}
+          olxAccounts={globalOlxAccounts}
+          email={email}
+        />
+      )}
+
+      {showFacebook && (
+        <FacebookListingFields
+          key={`facebook-${current.id}`}
+          control={form.control}
+          setValue={form.setValue}
+          watch={form.watch}
+          facebookAccounts={globalFacebookAccounts}
           email={email}
         />
       )}
@@ -268,6 +298,8 @@ function LivePreview({
     mlListingPrice: values.mlListingPrice,
     shopeeListingPrice: values.shopeeListingPrice,
     magaluListingPrice: values.magaluListingPrice,
+    olxListingPrice: values.olxListingPrice,
+    facebookListingPrice: values.facebookListingPrice,
     mlItemCondition: values.mlItemCondition,
     mlFreeShipping: values.mlFreeShipping,
     mlHasWarranty: values.mlHasWarranty,

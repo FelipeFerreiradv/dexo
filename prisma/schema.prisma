@@ -53,6 +53,21 @@ model User {
   // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
   whatsappEnabledAt DateTime?
 
+  // Gate do módulo Bitz (agente de IA, plano pago superior). Mesmo padrão do
+  // whatsappEnabledAt acima, deliberadamente: NULL = sem acesso (estado de
+  // TODOS os usuários existentes — zero regressão); timestamp = habilitado.
+  // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
+  // Migração: ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "aiEnabledAt" TIMESTAMP(3);
+  aiEnabledAt DateTime?
+
+  // Teto DIÁRIO de mensagens do Bitz para este tenant. NULL = usa o padrão
+  // global (AI_MAX_DAILY_PER_TENANT), que é o teto da prévia gratuita. Um
+  // número aqui SOBRESCREVE o padrão — é assim que um cliente de plano maior
+  // ganha cota cheia sem mexer em env de servidor.
+  // Configurável pelo Superadmin em /colaboradores.
+  // Migração: ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "aiDailyLimit" INTEGER;
+  aiDailyLimit Int?
+
   // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
   // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
   // bloqueado. Só afeta colaboradores; admin/superadmin sempre têm acesso total.
@@ -82,8 +97,191 @@ model User {
   bulkListingJobs     BulkListingJob[]
   unidades            Unidade[]
   whatsAppAccounts    WhatsAppAccount[]
+  aiConversations     AiConversation[]
 
   @@index([parentUserId])
+}
+
+// Conversa com o Bitz (agente de IA).
+//
+// DOIS ids, de propósito:
+//  - dataOwnerId: o TENANT. É o escopo de tudo que o agente consulta.
+//  - actorUserId: QUEM digitou. É o dono da conversa e a trilha de auditoria.
+// Um colaborador escreve no tenant do admin pai, mas a conversa é dele: a
+// listagem filtra por actorUserId para o histórico de um não aparecer no do
+// outro. A relação FK é com o ator (quem tem a conversa), não com o tenant.
+//
+// Migração: ver prisma/migrations/20260807110000_add_ai_conversation.
+model AiConversation {
+  id          String   @id @default(cuid())
+  dataOwnerId String
+  actorUserId String
+  title       String?
+  // Resumo EXTRATIVO do que saiu da janela de contexto. Não é gerado por LLM:
+  // isso custaria uma segunda chamada ao modelo por turno.
+  summary     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  actor    User        @relation(fields: [actorUserId], references: [id])
+  messages AiMessage[]
+
+  @@index([dataOwnerId, updatedAt])
+  @@index([actorUserId, updatedAt])
+}
+
+// Uma mensagem da conversa.
+//
+// Guarda tokens/provedor/modelo/latência POR MENSAGEM — é o que permite medir
+// o custo real por cliente em vez de estimar. `role` e `errorCode` são String
+// livre (não enum) para acrescentar valor novo não exigir migração, mesma
+// decisão de ImageBgJob.status e SystemLog.action.
+model AiMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String // "user" | "assistant" | "tool"
+  content        String
+  // [{ name, ok, ms }] — argumentos NÃO entram aqui crus (contêm dado do
+  // cliente); o que interessa para auditoria é qual tool rodou e se deu certo.
+  toolCalls      Json?
+  // [{ kind, ... }] — a explicabilidade das recomendações (Fase 6).
+  sources        Json?
+  provider       String?
+  model          String?
+  inputTokens    Int?
+  outputTokens   Int?
+  latencyMs      Int?
+  errorCode      String?
+  createdAt      DateTime @default(now())
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+// Uma AÇÃO DE ESCRITA proposta pelo Bitz e ainda não executada. Fase 9.
+//
+// ⭐ ESTA TABELA É A CONFIRMAÇÃO HUMANA. O agente NUNCA escreve: ele grava aqui
+// uma PROPOSTA com status "pendente" e devolve o id. Só o clique do lojista em
+// `POST /ai/acoes/:id/confirmar` executa — e a execução lê o `payload` DESTA
+// LINHA, nunca o que o navegador mandou de volta. É o que impede que a volta
+// pelo cliente vire uma porta de escrita.
+//
+// TRÊS COISAS QUE SÓ EXISTEM PORQUE ELA EXISTE:
+//
+//  1. IDEMPOTÊNCIA REAL. A confirmação é um `updateMany` condicional
+//     (`where status = "pendente"`), atômico no Postgres. Clique duplo, retry de
+//     rede ou dois navegadores abertos executam UMA vez — o segundo encontra 0
+//     linhas e devolve o resultado já registrado. Sem tabela, "criar produto"
+//     viraria dois produtos.
+//
+//  2. AUDITORIA. Responde "quem mandou o Bitz mexer no preço dessa peça, e
+//     quando" sem depender do `SystemLog`, que é genérico e já chegou a 1,86 GB.
+//
+//  3. A PROPOSTA É DO SERVIDOR. `payload` é o que a tool VALIDOU, com o alvo já
+//     resolvido pelo tenant. O cliente devolve só o id.
+//
+// `action` e `status` são String livre (não enum) — ação nova não exige
+// migração, mesma decisão de SystemLog.action e AiMessage.role.
+model AiAction {
+  id             String    @id @default(cuid())
+  dataOwnerId    String
+  // Quem PEDIU. É por ele que a confirmação é conferida: a proposta de um
+  // colaborador não pode ser confirmada por outro.
+  actorUserId    String
+  conversationId String?
+  action         String // "produto.criar" | "produto.preco" | "produto.estoque" | "cliente.criar"
+  status         String // "pendente" | "confirmada" | "cancelada" | "falhou"
+  // Os campos JÁ VALIDADOS pela tool, com o alvo resolvido dentro do tenant.
+  payload        Json
+  // O que o CARTÃO mostra: [{ campo, de, para }] + o aviso de marketplace.
+  // Separado do payload de propósito — o que o lojista viu na hora de decidir
+  // fica registrado, mesmo que o formato do payload mude depois.
+  preview        Json
+  // Id da entidade criada ou alterada. Preenchido só quando dá certo.
+  resultId       String?
+  errorCode      String?
+  createdAt      DateTime  @default(now())
+  decidedAt      DateTime?
+  // Proposta velha não executa. O catálogo muda, o preço muda, e confirmar
+  // amanhã uma proposta de ontem aplicaria um "de X para Y" cujo X não é mais X.
+  expiresAt      DateTime
+
+  @@index([dataOwnerId, actorUserId, status])
+  @@index([conversationId])
+}
+
+// ⭐ O QUE A LOJA ENSINOU AO BITZ (Fase 11) — uma REGRA do negócio, escrita pelo
+// administrador e confirmada por ele no cartão.
+//
+// A distinção que governa esta tabela inteira: aqui mora REGRA, nunca FATO.
+// "meu markup padrão é 2,2x" é regra — vale hoje e vale daqui a seis meses.
+// "o farol custa 180" é fato: muda sozinho, e guardado aqui viraria uma mentira
+// que o Bitz repetiria com confiança em vez de consultar o banco. É por isso que
+// `verificarConteudo` (app/ai/memoria/memoria.types.ts) barra estoque, saldo e
+// SKU na entrada — e é por isso que NÃO existe cache de dado aqui.
+//
+// ESCOPO: `dataOwnerId` e nada mais. A memória é da LOJA — todo mundo da equipe
+// recebe as mesmas regras no prompt —, mas só o administrador grava e apaga
+// (decisão do dono em 10/08/2026). `createdByUserId` é trilha: a memória é da
+// casa, quem ensinou tem nome.
+//
+// ⚠️ SEM `updatedAt` DE PROPÓSITO: memória não se edita. Regra que mudou é
+// memória nova; a antiga o administrador apaga na tela. Editar no lugar
+// apagaria, sem trilha, o texto que alguém leu e confirmou.
+model AiMemory {
+  id              String   @id @default(cuid())
+  dataOwnerId     String
+  // Quem ensinou. Sempre um administrador — ver o guard das rotas e da tool.
+  createdByUserId String
+  // Vocabulário FECHADO (z.enum na tool): "preco" | "anuncio" | "operacao" |
+  // "vocabulario" | "geral". Fechado para o modelo não inventar gaveta.
+  topico          String
+  // A regra, em uma frase. Entra no prompt de TODO turno de TODO usuário do
+  // tenant — daí o teto curto em MAX_CONTEUDO_CHARS.
+  conteudo        String
+  // Conversa em que nasceu. Só trilha; a memória não pertence à conversa e
+  // sobrevive ao apagar dela (sem FK, portanto sem cascade).
+  conversationId  String?
+  createdAt       DateTime @default(now())
+
+  @@index([dataOwnerId, createdAt])
+}
+
+// Base de conhecimento do Bitz — um pedaço de um documento sobre COMO O DEXO
+// FUNCIONA.
+//
+// É GLOBAL, e isso é a decisão central deste modelo: não existe coluna de
+// tenant aqui, nem `userId`, nem `dataOwnerId`. O conteúdo é sobre o produto
+// (como cadastrar peça, o que significa um anúncio pausado), nunca sobre o
+// cliente. Não ter a coluna é mais forte que filtrar por ela: não há query que
+// possa esquecer o `where`, e o retriever não recebe o tenant nem por
+// engano — `tests/ai-retriever.spec.ts` prova as duas coisas.
+//
+// Conteúdo em app/ai/knowledge/content/*.md; indexado por
+// `npm run ai:index` (scripts/build-ai-knowledge.ts), que reindexa SOMENTE o
+// que mudou comparando `checksum` e poda o que sumiu do documento.
+//
+// `search` é o conteúdo já normalizado em JS (sem acento, minúsculo,
+// heading + corpo). Existe para a busca ser um LIKE puro, sem depender de
+// `immutable_unaccent` no banco; o `similarity()` do pg_trgm entra só como
+// desempate e é tolerado falhar. 84 linhas hoje (13 documentos, medido em
+// 07/08/2026) — volume em que seq scan é mais rápido que qualquer índice,
+// então não há um aqui.
+//
+// Migração: prisma/migrations/20260807120000_add_ai_knowledge_chunk.
+model AiKnowledgeChunk {
+  id        String   @id @default(cuid())
+  docId     String
+  ord       Int
+  heading   String?
+  content   String
+  search    String
+  checksum  String
+  updatedAt DateTime @updatedAt
+
+  @@unique([docId, ord])
+  @@index([docId])
 }
 
 model Product {
@@ -134,6 +332,17 @@ model Product {
   magaluCategoryId       String?
   magaluCategorySource   String?
   magaluCategoryChosenAt DateTime?
+  // Categoria OLX (código de VEÍCULO do autoupload: 2101 carros, 2103 motos —
+  // o tipo de peça viaja em `params`, não aqui). Mesmo trio das demais: a
+  // escolha do operador vira memória do produto, e não some ao republicar nem
+  // ao publicar numa segunda conta.
+  olxCategoryId          String?
+  olxCategorySource      String?
+  olxCategoryChosenAt    DateTime?
+  // Categoria Facebook (google_product_category do Commerce Catalog).
+  fbCategoryId           String?
+  fbCategorySource       String?
+  fbCategoryChosenAt     DateTime?
   locationId             String?
   scrapId                String?
   attributes             Json?
@@ -301,6 +510,13 @@ model MarketplaceAccount {
   // Multi-CNPJ: CNPJ emissor vinculado a esta conta (CompanyFiscalConfig.id,
   // scalar sem FK — padrão do módulo fiscal). NULL = usa o CNPJ padrão do tenant.
   companyFiscalConfigId       String?
+  // Dados de vendedor POR CONTA (multi-tenant). NULL = usa o fallback do .env,
+  // então é aditivo e não muda nada para contas existentes. OLX exige telefone/CEP
+  // do vendedor em cada anúncio; Facebook precisa do catálogo e da URL base do item.
+  olxSellerPhone              String?
+  olxSellerZipcode            String?
+  fbCatalogId                 String?
+  fbProductUrlBase            String?
   user                        User                  @relation(fields: [userId], references: [id])
   orders                      Order[]
   listings                    ProductListing[]
@@ -412,6 +628,21 @@ model ProductListing {
   compatSyncedAt       DateTime?
   compatDiagnostics    Json?
 
+  // OLX autoupload: `list_id` é o id REAL do anúncio na OLX (≠ externalListingId,
+  // que guardamos como o SKU/`id` estável enviado no ad_list). Devolvido só na
+  // consulta de status quando status="accepted". A `url`/permalink vai em
+  // `permalink`. Só populado para listings da plataforma OLX.
+  olxListId            String?
+
+  // Facebook/Meta Commerce Catalog: id numérico do item no catálogo.
+  // ATENÇÃO: NÃO vem no items_batch — a publicação recebe apenas `handles`.
+  // O id só aparece na LEITURA (GET /{catalog_id}/products), então quem preenche
+  // esta coluna é o import de anúncios, não o create.
+  // O `retailer_id` enviado ao catálogo = o SKU, guardado em
+  // `externalListingId`; o permalink (quando houver) vai em `permalink`. Só
+  // populado para listings da plataforma FACEBOOK.
+  fbCatalogItemId      String?
+
   // Override fields: quando preenchidos, sobrescrevem o valor do produto
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é
@@ -426,6 +657,8 @@ model ProductListing {
   categoryOverride        String?
   mlCategoryOverride      String?
   shopeeCategoryOverride  String?
+  olxCategoryOverride     String?
+  fbCategoryOverride      String?
   partNumberOverride      String?
   qualityOverride         String?
   heightCmOverride        Int?
@@ -821,6 +1054,8 @@ enum Platform {
   MERCADO_LIVRE
   SHOPEE
   MAGALU
+  OLX
+  FACEBOOK
 }
 
 enum AccountStatus {

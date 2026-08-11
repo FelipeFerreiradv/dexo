@@ -92,6 +92,15 @@ export class ListingRepository {
     // Autor real da criação. Só entra no branch `create` — autoria = quem
     // criou a linha pela primeira vez; retries/updates nunca sobrescrevem.
     createdByUserId?: string | null;
+    // OLX: id REAL do anúncio (list_id), separado do externalListingId=SKU.
+    olxListId?: string | null;
+    // Meta: id numérico do item no Catálogo. Não vem no items_batch (só handles)
+    // — é capturado no import, que lê GET /{catalog_id}/products.
+    fbCatalogItemId?: string | null;
+    // Categoria efetivamente pedida na publicação. Alimenta o filtro
+    // "Categoria publicada" da tela de Produtos, que para OLX/Facebook nascia
+    // vazio porque nenhum dos dois gravava o campo.
+    requestedCategoryId?: string | null;
   }) {
     return prisma.productListing.upsert({
       where: {
@@ -112,6 +121,9 @@ export class ListingRepository {
         nextRetryAt: data.nextRetryAt ?? null,
         retryAttempts: data.retryAttempts ?? 0,
         createdByUserId: data.createdByUserId ?? null,
+        olxListId: data.olxListId ?? null,
+        fbCatalogItemId: data.fbCatalogItemId ?? null,
+        requestedCategoryId: data.requestedCategoryId ?? null,
       },
       update: {
         status: data.status,
@@ -123,6 +135,18 @@ export class ListingRepository {
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
         retryAttempts: data.retryAttempts ?? undefined,
+        // Não sobrescreve o list_id já capturado quando o novo valor é null
+        // (poll inconclusivo devolve null): só grava quando há valor real.
+        olxListId: data.olxListId == null ? undefined : data.olxListId,
+        // Mesma guarda anti-null do olxListId: o id do catálogo só aparece no
+        // import, então os caminhos de publicação passam undefined e não podem
+        // zerar o que o import já capturou.
+        fbCatalogItemId:
+          data.fbCatalogItemId == null ? undefined : data.fbCatalogItemId,
+        requestedCategoryId:
+          data.requestedCategoryId == null
+            ? undefined
+            : data.requestedCategoryId,
       },
     });
   }
@@ -597,10 +621,7 @@ export class ListingRepository {
    * houver outro listing local para o mesmo externalId nessa conta-destino,
    * o que indicaria duplicação prévia (raro; deixar o erro propagar).
    */
-  static async reassignAccount(
-    listingId: string,
-    newAccountId: string,
-  ) {
+  static async reassignAccount(listingId: string, newAccountId: string) {
     return prisma.productListing.update({
       where: { id: listingId },
       data: { marketplaceAccountId: newAccountId },
@@ -669,6 +690,10 @@ export class ListingRepository {
       externalSku?: string;
       permalink?: string | null;
       status?: string;
+      // OLX: id REAL do anúncio (list_id), repopulado na republicação.
+      olxListId?: string | null;
+      // Meta: id numérico do item no Catálogo, capturado no import.
+      fbCatalogItemId?: string | null;
       // retry metadata updates
       retryAttempts?: number;
       nextRetryAt?: Date | null;
@@ -697,6 +722,8 @@ export class ListingRepository {
       categoryOverride?: string | null;
       mlCategoryOverride?: string | null;
       shopeeCategoryOverride?: string | null;
+      olxCategoryOverride?: string | null;
+      fbCategoryOverride?: string | null;
       partNumberOverride?: string | null;
       qualityOverride?: string | null;
       heightCmOverride?: number | null;
@@ -719,6 +746,11 @@ export class ListingRepository {
         externalSku: data.externalSku || undefined,
         permalink: data.permalink === undefined ? undefined : data.permalink,
         status: data.status || undefined,
+        // Não zera o list_id já gravado quando o novo valor é null.
+        olxListId: data.olxListId == null ? undefined : data.olxListId,
+        // Mesma guarda anti-null: só grava quando o import trouxe o id real.
+        fbCatalogItemId:
+          data.fbCatalogItemId == null ? undefined : data.fbCatalogItemId,
         retryAttempts: data.retryAttempts ?? undefined,
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
@@ -786,6 +818,14 @@ export class ListingRepository {
           data.shopeeCategoryOverride === undefined
             ? undefined
             : data.shopeeCategoryOverride,
+        olxCategoryOverride:
+          data.olxCategoryOverride === undefined
+            ? undefined
+            : data.olxCategoryOverride,
+        fbCategoryOverride:
+          data.fbCategoryOverride === undefined
+            ? undefined
+            : data.fbCategoryOverride,
         partNumberOverride:
           data.partNumberOverride === undefined
             ? undefined

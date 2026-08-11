@@ -101,9 +101,19 @@ const securityHeaders = [
   {
     // camera=(self): o scanner de código de barras (/scan, @zxing/browser) usa
     // a câmera na PRÓPRIA origem. camera=() (allowlist vazia) bloquearia o
-    // getUserMedia e quebraria o scanner. Mantém microphone/geolocation off.
+    // getUserMedia e quebraria o scanner.
+    //
+    // microphone=(self): mesma razão, para o ditado do Bitz (agente de IA).
+    // Com a allowlist VAZIA o navegador rejeita getUserMedia({audio}) e a Web
+    // Speech API com NotAllowedError ANTES de sequer mostrar o pedido de
+    // permissão — não há como contornar isso do lado do JavaScript.
+    // `(self)` não concede nada sozinho: o usuário continua tendo que aprovar
+    // o microfone no navegador, e só na própria origem. Nenhum iframe de
+    // terceiro herda a permissão.
+    //
+    // geolocation segue DESLIGADA — nada no produto usa localização.
     key: "Permissions-Policy",
-    value: "geolocation=(), microphone=(), camera=(self)",
+    value: "geolocation=(), microphone=(self), camera=(self)",
   },
   // Report-Only: não bloqueia nada ainda (ver comentário acima).
   { key: "Content-Security-Policy-Report-Only", value: csp },

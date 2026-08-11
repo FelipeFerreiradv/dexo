@@ -37,6 +37,7 @@
     "shopee:recategorize": "tsx scripts/recategorize-shopee-products.ts",
     "import:scraps": "tsx scripts/import-scraps-from-xlsx.ts",
     "stats:catalog": "tsx scripts/build-catalog-stats.ts",
+    "ai:index": "tsx scripts/build-ai-knowledge.ts",
     "map:part-type-categories": "tsx scripts/build-part-type-category-map.ts",
     "migracao:vaapt": "tsx scripts/migracao-vaapt.ts",
     "migracao:ibr": "tsx scripts/migracao-ibr.ts"
@@ -97,7 +98,9 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.71.1",
+    "react-markdown": "^9.1.0",
     "recharts": "3.8.1",
+    "remark-gfm": "^4.0.1",
     "sharp": "^0.34.5",
     "tailwind-merge": "^3.4.0",
     "xlsx": "^0.18.5",

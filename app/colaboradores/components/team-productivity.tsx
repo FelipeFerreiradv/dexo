@@ -39,6 +39,8 @@ import { SectionHeading } from "@/components/section-heading";
 const ML_COLOR = "var(--color-primary)";
 const SHOPEE_COLOR = "var(--color-accent)";
 const MAGALU_COLOR = "#2563eb"; // azul da marca Magalu (série de gráfico)
+const OLX_COLOR = "#6e0ad6"; // roxo da marca OLX (série de gráfico)
+const FACEBOOK_COLOR = "#1877f2"; // azul da marca Facebook (série de gráfico)
 const PRODUTO_COLOR = "var(--color-muted-foreground)";
 
 // Magalu (3º marketplace) atrás da flag — KPI/legenda só aparecem com a flag
@@ -46,6 +48,11 @@ const PRODUTO_COLOR = "var(--color-muted-foreground)";
 // para nunca esconder contagem de Magalu já existente.
 const MAGALU_ENABLED =
   process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+// OLX/Facebook seguem o mesmo padrão de flag (off = tela idêntica).
+const OLX_ENABLED =
+  process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+const FACEBOOK_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
 
 const nf = new Intl.NumberFormat("pt-BR");
 const brlFmt = new Intl.NumberFormat("pt-BR", {
@@ -61,6 +68,8 @@ type Anuncios = {
   ml: number;
   shopee: number;
   magalu: number;
+  olx?: number;
+  facebook?: number;
   outro: number;
 };
 
@@ -82,6 +91,8 @@ type ProductivityResponse = {
     ml: number;
     shopee: number;
     magalu: number;
+    olx?: number;
+    facebook?: number;
   }>;
   // Orçamentos por vendedor (BLOCO 1). Opcional (compat com respostas antigas).
   budgetsByVendedor?: Array<{
@@ -372,6 +383,22 @@ export function TeamProductivity({
                   dotColor={MAGALU_COLOR}
                 />
               )}
+              {OLX_ENABLED && (
+                <KpiCard
+                  title="Anúncios OLX"
+                  value={totals!.anuncios.olx ?? 0}
+                  icon={StoreIcon}
+                  dotColor={OLX_COLOR}
+                />
+              )}
+              {FACEBOOK_ENABLED && (
+                <KpiCard
+                  title="Anúncios Facebook"
+                  value={totals!.anuncios.facebook ?? 0}
+                  icon={StoreIcon}
+                  dotColor={FACEBOOK_COLOR}
+                />
+              )}
             </div>
 
             {!hasActivity ? (
@@ -410,7 +437,18 @@ export function TeamProductivity({
                         c.anuncios.total > 0
                           ? (c.anuncios.magalu / c.anuncios.total) * 100
                           : 0;
-                      const outroW = Math.max(0, 100 - mlW - shopeeW - magaluW);
+                      const olxW =
+                        c.anuncios.total > 0
+                          ? ((c.anuncios.olx ?? 0) / c.anuncios.total) * 100
+                          : 0;
+                      const facebookW =
+                        c.anuncios.total > 0
+                          ? ((c.anuncios.facebook ?? 0) / c.anuncios.total) * 100
+                          : 0;
+                      const outroW = Math.max(
+                        0,
+                        100 - mlW - shopeeW - magaluW - olxW - facebookW,
+                      );
                       return (
                         <div
                           key={c.id}
@@ -443,6 +481,15 @@ export function TeamProductivity({
                                   {MAGALU_ENABLED && (
                                     <> · MG {nf.format(c.anuncios.magalu)}</>
                                   )}
+                                  {OLX_ENABLED && (
+                                    <> · OLX {nf.format(c.anuncios.olx ?? 0)}</>
+                                  )}
+                                  {FACEBOOK_ENABLED && (
+                                    <>
+                                      {" "}
+                                      · FB {nf.format(c.anuncios.facebook ?? 0)}
+                                    </>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -471,6 +518,20 @@ export function TeamProductivity({
                                   style={{
                                     width: `${magaluW}%`,
                                     backgroundColor: MAGALU_COLOR,
+                                  }}
+                                />
+                                <span
+                                  className="h-full"
+                                  style={{
+                                    width: `${olxW}%`,
+                                    backgroundColor: OLX_COLOR,
+                                  }}
+                                />
+                                <span
+                                  className="h-full"
+                                  style={{
+                                    width: `${facebookW}%`,
+                                    backgroundColor: FACEBOOK_COLOR,
                                   }}
                                 />
                                 <span
@@ -555,6 +616,42 @@ export function TeamProductivity({
                               stopOpacity={0.03}
                             />
                           </linearGradient>
+                          <linearGradient
+                            id="tp-olx"
+                            x1="0"
+                            x2="0"
+                            y1="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor={OLX_COLOR}
+                              stopOpacity={0.45}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor={OLX_COLOR}
+                              stopOpacity={0.03}
+                            />
+                          </linearGradient>
+                          <linearGradient
+                            id="tp-facebook"
+                            x1="0"
+                            x2="0"
+                            y1="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor={FACEBOOK_COLOR}
+                              stopOpacity={0.45}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor={FACEBOOK_COLOR}
+                              stopOpacity={0.03}
+                            />
+                          </linearGradient>
                         </defs>
                         <CartesianGrid
                           stroke="color-mix(in srgb, var(--color-border) 68%, transparent)"
@@ -626,6 +723,26 @@ export function TeamProductivity({
                           // esconde contagem real), mas some da legenda → tela
                           // idêntica quando não há Magalu.
                           legendType={MAGALU_ENABLED ? "line" : "none"}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="olx"
+                          name="OLX"
+                          stackId="anuncios"
+                          stroke={OLX_COLOR}
+                          strokeWidth={2}
+                          fill="url(#tp-olx)"
+                          legendType={OLX_ENABLED ? "line" : "none"}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="facebook"
+                          name="Facebook"
+                          stackId="anuncios"
+                          stroke={FACEBOOK_COLOR}
+                          strokeWidth={2}
+                          fill="url(#tp-facebook)"
+                          legendType={FACEBOOK_ENABLED ? "line" : "none"}
                         />
                         <Line
                           type="monotone"
@@ -816,6 +933,24 @@ function Legendinha() {
             style={{ backgroundColor: MAGALU_COLOR }}
           />
           Magalu
+        </span>
+      )}
+      {OLX_ENABLED && (
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="inline-block size-2 rounded-full"
+            style={{ backgroundColor: OLX_COLOR }}
+          />
+          OLX
+        </span>
+      )}
+      {FACEBOOK_ENABLED && (
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="inline-block size-2 rounded-full"
+            style={{ backgroundColor: FACEBOOK_COLOR }}
+          />
+          Facebook
         </span>
       )}
     </div>

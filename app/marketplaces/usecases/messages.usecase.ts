@@ -68,6 +68,21 @@ async function resolveAccountForUser(
   const account = await MarketplaceRepository.findByIdAndUser(accountId, userId);
   if (!account) return null;
 
+  // OLX (autoupload) e Facebook (Commerce Catalog) não têm API de mensagens/
+  // perguntas no Brasil. Sem o guard, uma conta dessas cairia no ramo legado do
+  // Mercado Livre e o token OLX/Meta seria enviado p/ api.mercadolibre.com.
+  if (
+    account.platform === Platform.OLX ||
+    account.platform === Platform.FACEBOOK
+  ) {
+    throw Object.assign(
+      new Error(
+        `${account.platform === Platform.OLX ? "A OLX" : "O Facebook"} não tem API de mensagens ou perguntas: a plataforma não expõe conversas no Brasil.`,
+      ),
+      { statusCode: 400 },
+    );
+  }
+
   const accessToken = await ensureFreshTokenForAccount(account);
   if (!accessToken) return null;
   return { account, accessToken };

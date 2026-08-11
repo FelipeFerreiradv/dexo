@@ -43,6 +43,11 @@ export type LogAction =
   | "USER_ACTIVITY"
   | "OVERSELL_DETECTED"
   | "STOCK_SYNC_FAILED"
+  // Baixa de estoque represada há mais de 24h porque o kill-switch da
+  // integração (OLX/FACEBOOK_INTEGRATION_DISABLED) segue ligado. O job NÃO foi
+  // perdido — continua PENDING e reprocessa quando o operador religar. Este
+  // registro existe só para o adiamento deixar de ser silencioso.
+  | "STOCK_SYNC_DEFERRED_TOO_LONG"
   // Um único movimento levou um produto MULTI-UNIDADE (previousStock > 1) a
   // estoque zero. A aritmética de venda é decremental e nunca faz isso quando
   // a quantidade vendida é menor que o estoque; então este registro aponta ou
@@ -101,7 +106,28 @@ export type LogAction =
   // Não usar `ProductListing.lastError` para isto: aquele campo é o canal de
   // retry (prefixo [TERMINAL]) e é zerado a cada sucesso de sync, o que
   // apagaria o aviso. Mesma razão de `compatDiagnostics` existir separado.
-  | "ML_UP_REPUBLISH_ORPHAN";
+  | "ML_UP_REPUBLISH_ORPHAN"
+  // ---------------------------------------------------------------------
+  // Bitz (agente de IA). ADITIVO: a coluna `action` no banco é String livre
+  // (schema.prisma:783), então acrescentar aqui é mudança só de TypeScript —
+  // sem migração. A UI de /logs faz fallback gracioso para a string crua
+  // (logs-view.tsx:212), então nenhuma tela quebra com um valor novo.
+  //
+  // Todas gravadas com a COLUNA userId nula e o tenant em
+  // `details.tenantUserId` — convenção de rembg-telemetry.ts:112-117, para
+  // telemetria interna não poluir o /logs do cliente (que filtra por userId)
+  // e ainda assim ser contável globalmente.
+  // ---------------------------------------------------------------------
+  | "AI_CHAT_TURN"
+  | "AI_TOOL_CALL"
+  | "AI_TOOL_DENIED"
+  | "AI_QUOTA_EXCEEDED"
+  | "AI_PROVIDER_ERROR"
+  // ⭐ A única ação do Bitz que ALTERA alguma coisa (Fase 9), e por isso a única
+  // que fica no log geral como WARNING mesmo quando dá certo: é aqui que o
+  // suporte procura ao responder "quem mexeu no preço dessa peça?". A trilha
+  // detalhada vive em `AiAction`, que tem escopo de tenant.
+  | "AI_ACTION";
 
 export interface SystemLog {
   id: string;

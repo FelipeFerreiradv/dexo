@@ -33,6 +33,8 @@ export type PageId =
   | "mercado-livre"
   | "shopee"
   | "magalu"
+  | "olx"
+  | "facebook"
   | "logs"
   | "fiscal";
 
@@ -84,6 +86,18 @@ export const PAGE_DEFS: PageDef[] = [
     label: "Magalu",
     href: "/integracoes/magalu",
     flagEnv: "NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED",
+  },
+  {
+    id: "olx",
+    label: "OLX",
+    href: "/integracoes/olx",
+    flagEnv: "NEXT_PUBLIC_OLX_INTEGRATION_ENABLED",
+  },
+  {
+    id: "facebook",
+    label: "Facebook",
+    href: "/integracoes/facebook",
+    flagEnv: "NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED",
   },
   { id: "logs", label: "Logs", href: "/logs" },
   {

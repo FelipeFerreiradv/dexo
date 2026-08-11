@@ -17,7 +17,9 @@ export type ProductFilterQuality =
 export type ProductPublishedCategoryPlatform =
   | "MERCADO_LIVRE"
   | "SHOPEE"
-  | "MAGALU";
+  | "MAGALU"
+  | "OLX"
+  | "FACEBOOK";
 // "BOTH" = ML+Shopee (semântica histórica de 2 canais); Magalu entra como um
 // filtro de canal único (igual a ML/SHOPEE), não no "BOTH".
 export type ProductFilterMarketplace = ProductPublishedCategoryPlatform | "BOTH";

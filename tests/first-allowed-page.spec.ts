@@ -153,6 +153,41 @@ describe("firstAllowedPage", () => {
     });
   });
 
+  describe("F6.9 — flags OLX/Facebook desligadas escondem as páginas", () => {
+    // Prova, sem jsdom, a garantia central do "com as flags off a UI é
+    // idêntica": as páginas OLX/Facebook não existem no build e o redirect
+    // nunca manda um colaborador para elas (o que daria 404). O gating de
+    // build-time (`NEXT_PUBLIC_*`) é exatamente este `isPageRoutable`.
+    const olxDef = PAGE_DEFS.find((p) => p.id === "olx")!;
+    const fbDef = PAGE_DEFS.find((p) => p.id === "facebook")!;
+    const COM_OLX_FB: Record<string, string | undefined> = {
+      NEXT_PUBLIC_OLX_INTEGRATION_ENABLED: "true",
+      NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED: "true",
+    };
+
+    it("OLX/Facebook não são roteáveis sem as flags; passam a ser com elas", () => {
+      expect(isPageRoutable(olxDef, SEM_FLAGS)).toBe(false);
+      expect(isPageRoutable(fbDef, SEM_FLAGS)).toBe(false);
+      expect(isPageRoutable(olxDef, COM_OLX_FB)).toBe(true);
+      expect(isPageRoutable(fbDef, COM_OLX_FB)).toBe(true);
+    });
+
+    it("colaborador só com OLX/Facebook liberado → null quando as flags estão off (evita 404)", () => {
+      expect(firstAllowedPage(collab(apenas("olx")), { env: SEM_FLAGS })).toBe(
+        null,
+      );
+      expect(
+        firstAllowedPage(collab(apenas("facebook")), { env: SEM_FLAGS }),
+      ).toBe(null);
+      expect(firstAllowedPage(collab(apenas("olx")), { env: COM_OLX_FB })).toBe(
+        "olx",
+      );
+      expect(
+        firstAllowedPage(collab(apenas("facebook")), { env: COM_OLX_FB }),
+      ).toBe("facebook");
+    });
+  });
+
   describe("invariante do redirect", () => {
     it("o alvo é sempre uma página permitida, existente e diferente da bloqueada", () => {
       // Varre combinações determinísticas de permissões e prova a propriedade

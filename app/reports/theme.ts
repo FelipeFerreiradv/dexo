@@ -20,6 +20,8 @@ export const DEXO = {
   amarelo: "#F2C419",
   amareloClaro: "#F0E58D",
   azulMagalu: "#2563EB",
+  roxoOlx: "#6E0AD6", // roxo da marca OLX (série de gráfico)
+  azulFacebook: "#1877F2", // azul da marca Facebook (série de gráfico)
   bege: "#E8DFCA",
   pergaminho: "#F2EDE2",
   creme: "#FBF7EE",
@@ -46,6 +48,8 @@ export const PLATFORM_COLOR = {
   ML: DEXO.amarelo,
   SHOPEE: DEXO.verdeOperacao,
   MAGALU: DEXO.azulMagalu,
+  OLX: DEXO.roxoOlx,
+  FACEBOOK: DEXO.azulFacebook,
   OUTRO: DEXO.acoClaro,
 } as const;
 

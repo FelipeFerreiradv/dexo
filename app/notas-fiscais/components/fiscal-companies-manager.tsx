@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
+import { LISTING_PLATFORM_LABELS } from "@/app/produtos/lib/listing-status-labels";
 
 import { FiscalConfigForm } from "./fiscal-config-form";
 
@@ -53,12 +54,6 @@ function formatCnpj(cnpj: string): string {
   if (d.length !== 14) return cnpj;
   return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
 }
-
-const PLATFORM_LABELS: Record<string, string> = {
-  MERCADO_LIVRE: "Mercado Livre",
-  SHOPEE: "Shopee",
-  MAGALU: "Magalu",
-};
 
 // Sentinela do item "CNPJ padrão" no Select de vínculo (o shadcn Select não
 // aceita value="").
@@ -313,7 +308,9 @@ export function FiscalCompaniesManager({
               >
                 <div className="min-w-0">
                   <span className="text-sm font-medium">
-                    {PLATFORM_LABELS[a.platform] ?? a.platform}
+                    {LISTING_PLATFORM_LABELS[
+                      a.platform as keyof typeof LISTING_PLATFORM_LABELS
+                    ] ?? a.platform}
                   </span>
                   <span className="ml-2 text-xs text-muted-foreground">
                     {a.accountName}
