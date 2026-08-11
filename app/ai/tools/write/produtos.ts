@@ -7,11 +7,16 @@
 // ⚠️ ALTERAR PRODUTO SINCRONIZA COM OS MARKETPLACES NA HORA.
 // `ProductUseCase.update` dispara `syncProductData` para cada anúncio da peça
 // (product.usercase.ts:1039-1063). Trocar o preço de uma peça anunciada muda o
-// preço no Mercado Livre e na Shopee assim que for confirmado, e não há um
-// clique para desfazer. Isso NÃO é contornado — usar um caminho que não
-// sincroniza deixaria o Dexo dizendo um preço e o anúncio dizendo outro, que é
-// pior. O que se faz é o lojista SABER: o `aviso` do cartão conta quantos
-// anúncios serão afetados, e ele decide com essa informação na tela.
+// preço assim que for confirmado — nos CINCO canais em que ela puder estar
+// (Mercado Livre, Shopee, Magalu, OLX e Facebook) —, e não há um clique para
+// desfazer. Isso NÃO é contornado — usar um caminho que não sincroniza deixaria
+// o Dexo dizendo um preço e o anúncio dizendo outro, que é pior. O que se faz é
+// o lojista SABER: o `aviso` do cartão conta quantos anúncios serão afetados, e
+// ele decide com essa informação na tela.
+//
+// ⭐ O aviso conta ANÚNCIOS e não cita canal. É o que faz um canal novo entrar
+// na conta sem uma linha de código aqui — e é o motivo de estas tools não terem
+// precisado de nada quando a OLX e o Facebook chegaram.
 
 import { z } from "zod";
 
@@ -68,6 +73,51 @@ function avisoDeMarketplace(produto: any, oQueMuda: string): string | undefined 
     `⚠️ Esta peça tem ${n} anúncio${n > 1 ? "s" : ""} publicado${n > 1 ? "s" : ""}. ` +
     `Ao confirmar, ${oQueMuda} também ${n > 1 ? "serão atualizados" : "será atualizado"} ` +
     `no marketplace na hora — e isso não tem um clique para desfazer.`
+  );
+}
+
+/** Em quais canais a peça está anunciada. `platform` vem do mapeador do repositório. */
+function canaisAnunciados(produto: any): string[] {
+  if (!Array.isArray(produto?.listings)) return [];
+  return Array.from(
+    new Set(
+      produto.listings
+        .map((l: any) => String(l?.platform ?? ""))
+        .filter(Boolean),
+    ),
+  ) as string[];
+}
+
+/**
+ * O que zerar o estoque faz, DE VERDADE, em cada canal.
+ *
+ * ⭐ Antes, o aviso de estoque zero era o `else` do aviso de marketplace: peça
+ * COM anúncio recebia só "os anúncios serão atualizados" e a frase sobre o zero
+ * era engolida. Ou seja, o caso em que zerar o estoque tem consequência era
+ * exatamente o caso em que ninguém era avisado dela. Agora os dois somam.
+ *
+ * E a consequência não é a mesma em toda parte, o que torna a frase genérica
+ * pior que inútil:
+ *
+ *  - OLX: `syncOlxProductStock` chama `deleteAd` (sync.usercase.ts:3955-3973).
+ *    O anúncio é EXCLUÍDO no site da OLX — lá não existe pausar. Voltar o
+ *    estoque republica, mas como anúncio NOVO: endereço, visualizações e
+ *    histórico do anterior não voltam.
+ *  - Facebook: `setAvailability("out of stock")`. O item continua no catálogo,
+ *    só fica indisponível.
+ *  - ML / Shopee / Magalu: pausa, no sentido usual.
+ *
+ * A frase da OLX só aparece se a peça REALMENTE tiver anúncio na OLX. Avisar
+ * sobre exclusão para quem não usa o canal é ruído que ensina a ignorar aviso.
+ */
+function avisoDeEstoqueZero(produto: any): string {
+  const canais = canaisAnunciados(produto);
+  const base = "Estoque zero deixa a peça indisponível para venda.";
+  if (!canais.includes("OLX")) return base;
+  return (
+    `${base} ⚠️ Na OLX isso EXCLUI o anúncio — lá não existe pausar. ` +
+    `Quando a peça voltar ao estoque ele é republicado, mas como anúncio novo: ` +
+    `o endereço e as visualizações do atual não voltam.`
   );
 }
 
@@ -583,11 +633,15 @@ export const ajustarEstoqueDoProduto: AiTool = {
       titulo: "Ajustar estoque",
       alvo: `${produto.name} (SKU ${produto.sku})`,
       campos: [{ campo: "Estoque", de: String(de), para: String(args.estoque) }],
+      // Os dois avisos SOMAM. Ver `avisoDeEstoqueZero` para o porquê de isto
+      // não ser mais um `??`.
       aviso:
-        avisoDeMarketplace(produto, "a quantidade dos anúncios") ??
-        (args.estoque === 0
-          ? "Estoque zero deixa a peça indisponível para venda."
-          : undefined),
+        [
+          avisoDeMarketplace(produto, "a quantidade dos anúncios"),
+          args.estoque === 0 ? avisoDeEstoqueZero(produto) : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined,
     };
 
     const acao = await proporAcao({

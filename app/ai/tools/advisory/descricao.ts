@@ -17,6 +17,7 @@ import { z } from "zod";
 
 import prisma from "../../../lib/prisma";
 import {
+  CANAIS,
   NOME_DO_CANAL,
   fonteDeRegra,
   regrasDeDescricao,
@@ -50,9 +51,10 @@ export const sugerirDescricao: AiTool = {
         .min(3)
         .max(200)
         .describe("O que é a peça, do jeito que o usuário falou."),
-      canal: z
-        .enum(["mercado_livre", "shopee", "magalu"])
-        .describe("Para qual marketplace."),
+      // ⭐ Vem de CANAIS, não de uma cópia literal. Eram três listas soltas em
+      // três tools; um canal novo entrava em `channel-rules` e o modelo
+      // continuava sem poder pedi-lo, sem erro nenhum aparecer.
+      canal: z.enum(CANAIS).describe("Para qual marketplace."),
     })
     .strict(),
   kind: "advisory",
@@ -63,6 +65,8 @@ export const sugerirDescricao: AiTool = {
     "texto do anuncio",
     "o que escrever",
     "descrever a peca",
+    "olx",
+    "facebook",
   ],
   sourceLabel: "Descrição padrão e exemplos da sua loja",
   handler: async (args, scope) => {

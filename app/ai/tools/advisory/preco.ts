@@ -29,6 +29,13 @@ import {
   fonteDaPlataforma,
   lerAgregadoDaPlataforma,
 } from "../../advisory/platform-stats";
+import {
+  CANAIS,
+  NOME_DO_CANAL,
+  fonteDeRegra,
+  regrasDePreco,
+  type Canal,
+} from "../../advisory/channel-rules";
 import { resolverNaOrdem, respondeu } from "../../advisory/source-chain";
 import type { AiSource } from "../../core/types";
 import type { AiTool } from "../registry";
@@ -59,6 +66,16 @@ export const sugerirPreco: AiTool = {
         .describe(
           "Nome da peça com marca e modelo. Ex.: 'parachoque dianteiro gol g5'.",
         ),
+      // OPCIONAL, e ausente se comporta exatamente como antes de este campo
+      // existir. Serve a um caso só, mas é um caso que dá dor de cabeça: na OLX
+      // o preço publicado é ARREDONDADO para inteiro, então dizer "R$ 180,50"
+      // para uma peça anunciada lá é dizer um número que o anúncio não vai ter.
+      canal: z
+        .enum(CANAIS)
+        .optional()
+        .describe(
+          "Para qual marketplace, se o usuário disse. Só preencha quando ele citar o canal.",
+        ),
     })
     .strict(),
   kind: "advisory",
@@ -73,6 +90,8 @@ export const sugerirPreco: AiTool = {
     "valor da peca",
     "por quanto",
     "tabela de preco",
+    "olx",
+    "facebook",
   ],
   sourceLabel: "Referência de preço",
   handler: async (args, scope) => {
@@ -158,6 +177,14 @@ export const sugerirPreco: AiTool = {
     }
 
     const s = resultado.valor!;
+
+    // As regras de preço do canal são RESTRIÇÃO, não fonte — mesmo raciocínio
+    // do título e da descrição: elas valem sobre a resposta, venha ela do
+    // catálogo próprio ou da base consolidada, e por isso são anexadas fora da
+    // cadeia. Três dos cinco canais não têm nenhuma, e aí nada é anexado.
+    const canal = args.canal as Canal | undefined;
+    const regrasDoCanal = canal ? regrasDePreco(canal) : [];
+
     return {
       temSugestao: true,
       consultouNaOrdem,
@@ -167,9 +194,13 @@ export const sugerirPreco: AiTool = {
       origem: s.origem,
       comoLer: s.comoLer,
       ...(s.exemplos ? { exemplos: s.exemplos } : {}),
+      ...(canal ? { canal: NOME_DO_CANAL[canal] } : {}),
+      ...(regrasDoCanal.length > 0
+        ? { regrasDoCanal: regrasDoCanal.map((x) => x.detalhe) }
+        : {}),
       atencao:
         "Isto é referência de preço de VENDA. Não entra na conta o custo de compra da peça nem a margem — o Bitz não tem acesso a esses dados, por regra. Quem fecha o preço é o lojista.",
-      fontes: [resultado.fonte!],
+      fontes: [resultado.fonte!, ...regrasDoCanal.map(fonteDeRegra)],
     };
   },
 };

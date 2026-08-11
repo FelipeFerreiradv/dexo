@@ -33,6 +33,18 @@ const STATUS = [
   "DELIVERED",
   "CANCELLED",
 ] as const;
+/**
+ * Os canais que GERAM pedido. Não é a lista de canais do sistema.
+ *
+ * ⭐ OLX e FACEBOOK estão fora de propósito, e a tentação de "completar" esta
+ * lista é o erro a evitar. A OLX é classificado e o catálogo da Meta não tem
+ * checkout no Brasil: nos dois a venda fecha fora da plataforma, e nenhum pedido
+ * desses canais chega ao Dexo — `Order` não tem uma linha sequer com eles. Um
+ * filtro que os aceitasse devolveria "0 pedidos", que o lojista lê como "não
+ * vendi nada", quando a verdade é "este canal não trabalha com pedido". Zero é a
+ * pior resposta possível aqui: parece certa. A descrição da tool manda dizer a
+ * verdade em vez de filtrar.
+ */
 const PLATAFORMAS = ["MERCADO_LIVRE", "SHOPEE", "MAGALU"] as const;
 
 const ROTULO_STATUS: Record<string, string> = {
@@ -54,6 +66,7 @@ export const buscarPedido: AiTool = {
   name: "buscar_pedido",
   description:
     "Lista pedidos vindos do Mercado Livre, Shopee e Magalu, com filtro de período, situação e canal. " +
+    "OLX e Facebook NÃO entram: neles a venda fecha fora da plataforma e não existe pedido para buscar — se perguntarem por pedido desses dois, diga isso em vez de responder zero. " +
     "A busca por texto só encontra por NOME DO CLIENTE ou NÚMERO DO PEDIDO — não encontra por SKU nem por nome de peça. " +
     "ATENÇÃO: pedidos cancelados entram no resultado por padrão (é o mesmo comportamento da tela de Pedidos); " +
     "para excluí-los, filtre por situação. Venda de balcão NÃO aparece aqui — ela vive no Financeiro.",
@@ -95,6 +108,8 @@ export const buscarPedido: AiTool = {
     "envio",
     "cancelad",
     "marketplace",
+    "olx",
+    "facebook",
   ],
   sourceLabel: "Pedidos dos marketplaces",
   handler: async (args, scope) => {

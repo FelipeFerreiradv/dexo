@@ -18,7 +18,10 @@
 import { z } from "zod";
 
 import { sanitizeMLTitle } from "../../../marketplaces/lib/ml-title";
+import { OLX_CONSTANTS } from "../../../marketplaces/olx/olx-constants";
+import { FACEBOOK_CONSTANTS } from "../../../marketplaces/facebook/facebook-constants";
 import {
+  CANAIS,
   NOME_DO_CANAL,
   fonteDeRegra,
   regrasDeTitulo,
@@ -38,6 +41,29 @@ interface Referencia {
   estimativa: boolean;
 }
 
+/**
+ * A prévia do que sairia publicado, quando o canal transforma o texto.
+ *
+ * `null` para Shopee e Magalu de propósito, e não por esquecimento: nesses dois
+ * o título publicado NÃO é o nome da peça — o Dexo monta "nome - marca - modelo
+ * - ano - versão - PN". Mostrar o nome cortado como "prévia" seria mostrar um
+ * texto que ninguém vai ver. Na OLX e no Facebook o nome vai cru, então o corte
+ * É a prévia.
+ */
+function previaDoCanal(canal: Canal, texto: string): string | null {
+  switch (canal) {
+    case "mercado_livre":
+      return sanitizeMLTitle(texto);
+    case "olx":
+      return texto.slice(0, OLX_CONSTANTS.TITLE_MAX_LENGTH);
+    case "facebook":
+      return texto.slice(0, FACEBOOK_CONSTANTS.TITLE_MAX_LENGTH);
+    case "shopee":
+    case "magalu":
+      return null;
+  }
+}
+
 export const sugerirTitulo: AiTool = {
   name: "sugerir_titulo",
   description:
@@ -54,9 +80,8 @@ export const sugerirTitulo: AiTool = {
         .describe(
           "O que é a peça, do jeito que o usuário falou. Ex.: 'farol direito do palio 2012, original'.",
         ),
-      canal: z
-        .enum(["mercado_livre", "shopee", "magalu"])
-        .describe("Para qual marketplace o título é."),
+      // ⭐ Vem de CANAIS — ver o comentário em descricao.ts.
+      canal: z.enum(CANAIS).describe("Para qual marketplace o título é."),
     })
     .strict(),
   kind: "advisory",
@@ -69,6 +94,8 @@ export const sugerirTitulo: AiTool = {
     "como chamar",
     "escrever o anuncio",
     "titulo cortado",
+    "olx",
+    "facebook",
   ],
   sourceLabel: "Como você nomeia peças parecidas",
   handler: async (args, scope) => {
@@ -120,8 +147,7 @@ export const sugerirTitulo: AiTool = {
     ]);
 
     const r = resultado.valor!;
-    const previa =
-      canal === "mercado_livre" ? sanitizeMLTitle(descricao) : null;
+    const previa = previaDoCanal(canal, descricao);
 
     return {
       canal: NOME_DO_CANAL[canal],
@@ -131,7 +157,7 @@ export const sugerirTitulo: AiTool = {
       regrasDoCanal: regras.map((x) => x.detalhe),
       ...(previa && previa !== descricao
         ? {
-            atencao: `Publicado no Mercado Livre, "${descricao}" viraria "${previa}". É a mesma função que o Dexo usa ao criar o anúncio.`,
+            atencao: `Publicado no ${NOME_DO_CANAL[canal]}, "${descricao}" viraria "${previa}". É a mesma regra que o Dexo aplica ao criar o anúncio.`,
           }
         : {}),
       ...(r.estimativa

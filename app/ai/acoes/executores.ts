@@ -39,8 +39,20 @@ type Executor = (
  *
  * `ProductUseCase.update` chama `syncProductData` para cada anúncio da peça
  * (product.usercase.ts:1039-1063). Confirmar uma troca de preço de uma peça
- * anunciada muda o preço no Mercado Livre e na Shopee NA HORA, e não existe um
- * clique para desfazer.
+ * anunciada muda o preço NA HORA em todo canal em que ela estiver, e não existe
+ * um clique para desfazer.
+ *
+ * ⭐ E são CINCO canais, não dois: o `switch` de `syncProductData`
+ * (sync.usercase.ts:4965) tem ramo para MERCADO_LIVRE, SHOPEE, MAGALU, OLX e
+ * FACEBOOK. Nada aqui precisou mudar quando a OLX e o Facebook entraram — o
+ * executor manda para o usecase e o usecase despacha por plataforma. É o motivo
+ * de esta camada não conhecer canal nenhum, e de ela dever continuar assim.
+ *
+ * Duas consequências que o lojista pode estranhar, e que são do CANAL, não
+ * daqui: a OLX arredonda o preço para inteiro na publicação, e estoque zero
+ * EXCLUI o anúncio da OLX (lá não existe pausar) enquanto no Facebook ele só
+ * fica indisponível. As regras de canal do Bitz (advisory/channel-rules.ts)
+ * são o lugar onde isso é explicado ao usuário.
  *
  * Isso não é contornado aqui, e é de propósito: usar um caminho que NÃO
  * sincroniza deixaria o Dexo dizendo um preço e o anúncio dizendo outro, que é

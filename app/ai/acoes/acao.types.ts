@@ -136,9 +136,14 @@ export interface AiAcaoPreview {
    * ⚠️ A consequência que não cabe numa linha de campo.
    *
    * É aqui que mora o aviso de marketplace: alterar preço ou estoque de uma
-   * peça anunciada muda o anúncio no Mercado Livre e na Shopee ASSIM QUE for
-   * confirmado, e não há um clique para desfazer. Quem decide precisa saber
-   * disso na hora de decidir, não depois.
+   * peça anunciada muda o anúncio em TODOS os canais em que ela está — Mercado
+   * Livre, Shopee, Magalu, OLX e Facebook — ASSIM QUE for confirmado, e não há
+   * um clique para desfazer. Quem decide precisa saber disso na hora de
+   * decidir, não depois.
+   *
+   * O aviso é escrito sem citar canal de propósito: ele conta ANÚNCIOS, e a
+   * contagem sai da própria peça (`produto.listings`), então um canal novo
+   * entra na conta sozinho, sem ninguém lembrar de atualizar um texto.
    */
   aviso?: string;
   /**

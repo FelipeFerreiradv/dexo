@@ -35,6 +35,17 @@ export const KNOWLEDGE_DOCS: readonly KnowledgeDoc[] = [
     title: "Anúncios na Shopee e no Magalu",
     page: "shopee",
   },
+  // OLX e Facebook ganham documento PRÓPRIO, e não uma seção nos existentes,
+  // porque o que muda neles não é o limite de caracteres — é o modelo. Um é
+  // classificado (sem pedido, pausar = excluir) e o outro é catálogo de vitrine
+  // (sem checkout no Brasil). Enfiar isso num documento de "anúncios em geral"
+  // faria a recuperação devolver o parágrafo do canal errado.
+  { id: "anuncios-olx", title: "Anúncios na OLX", page: "olx" },
+  {
+    id: "anuncios-facebook",
+    title: "Anúncios no Facebook",
+    page: "facebook",
+  },
   { id: "pedidos", title: "Pedidos dos marketplaces", page: "pedidos" },
   {
     id: "estoque-e-localizacoes",

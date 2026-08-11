@@ -46,12 +46,27 @@ function projetarProduto(p: any) {
     partNumber: p.partNumber ?? null,
     localizacao:
       p.locationPath ?? p.productLocation?.code ?? p.location ?? null,
+    // ⚠️ CONSERTO DE UM DEFEITO PRÉ-EXISTENTE, achado ao estender o Bitz para
+    // OLX e Facebook — e que valia para os CINCO canais, Mercado Livre
+    // inclusive.
+    //
+    // `mapPrismaToProduct` (product.repository.ts:235-255) ACHATA o anúncio:
+    // ele lê `marketplaceAccount.platform` e devolve `platform` no primeiro
+    // nível, sem repassar o `marketplaceAccount`. A projeção aqui procurava
+    // `l.marketplaceAccount?.platform`, que nesse objeto não existe — então
+    // `plataforma` vinha `null` em toda peça, sempre, desde a Fase 5. O modelo
+    // recebia "esta peça tem 2 anúncios" sem conseguir dizer ONDE.
+    //
+    // `conta` e `erro` saíram porque não é o caso de consertá-los: o select da
+    // LISTAGEM (product.repository.ts:496-510) não busca `accountName` nem
+    // `lastError`. Ir buscá-los aqui custaria egress em todo `buscar_produto`
+    // para repetir o que `detalhe_produto` já entrega de graça, pelo `include`
+    // que ele já faz. Campo que é sempre nulo não é informação: é token pago
+    // para o modelo concluir que não há erro nenhum.
     anuncios: Array.isArray(p.listings)
       ? p.listings.map((l: any) => ({
-          plataforma: l.marketplaceAccount?.platform ?? null,
-          conta: l.marketplaceAccount?.accountName ?? null,
+          plataforma: l.platform ?? null,
           situacao: l.status ?? null,
-          erro: texto(l.lastError, 160),
         }))
       : [],
   };
@@ -63,7 +78,8 @@ export const buscarProduto: AiTool = {
     "Busca peças no catálogo da loja por nome, SKU, part number, marca ou modelo. " +
     "Entende abreviação de autopeça: 'fecha tras esq palio' encontra 'Fechadura Traseira Esquerda Palio'. " +
     "Buscar por um código (SKU, part number) faz busca exata — se não existir, o resultado é vazio, e isso é a resposta correta. " +
-    "Devolve preço de venda, estoque, localização e a situação dos anúncios. NÃO devolve preço de custo nem margem.",
+    "Devolve preço de venda, estoque, localização e, para cada anúncio, EM QUE CANAL ele está e a situação dele " +
+    "(Mercado Livre, Shopee, Magalu, OLX e Facebook). NÃO devolve preço de custo nem margem.",
   args: z
     .object({
       consulta: z
@@ -135,8 +151,9 @@ export const buscarProduto: AiTool = {
 export const detalheProduto: AiTool = {
   name: "detalhe_produto",
   description:
-    "Detalhe completo de UMA peça: dados, anúncios em cada marketplace (com o erro, se houver), " +
+    "Detalhe completo de UMA peça: dados, anúncios em cada marketplace (canal, conta e link), " +
     "últimas movimentações de estoque e o lote de sucata de origem. " +
+    "NÃO traz o motivo de um anúncio recusado — isso vem de diagnostico_operacional. " +
     "Aceita o SKU ou o id. Use depois de buscar_produto, ou quando o usuário der o SKU direto.",
   args: z
     .object({

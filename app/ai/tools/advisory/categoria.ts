@@ -22,6 +22,9 @@ import { z } from "zod";
 import prisma from "../../../lib/prisma";
 import { MLApiService } from "../../../marketplaces/services/ml-api.service";
 import { CategorySuggestionService } from "../../../marketplaces/services/category-suggestion.service";
+import { OlxCategoryResolutionService } from "../../../marketplaces/services/olx-category-resolution.service";
+import { FacebookCategoryResolutionService } from "../../../marketplaces/services/facebook-category-resolution.service";
+import { OLX_AUTOPARTS_CATEGORY } from "../../../marketplaces/olx/olx-category-map";
 import { buscarPecasParecidas, moda } from "../../advisory/own-catalog";
 import {
   comoLerAgregado,
@@ -29,7 +32,11 @@ import {
   lerAgregadoDaPlataforma,
 } from "../../advisory/platform-stats";
 import { resolverNaOrdem, respondeu } from "../../advisory/source-chain";
-import { NOME_DO_CANAL, type Canal } from "../../advisory/channel-rules";
+import {
+  CANAIS,
+  NOME_DO_CANAL,
+  type Canal,
+} from "../../advisory/channel-rules";
 import type { AiSource } from "../../core/types";
 import type { AiTool } from "../registry";
 import { texto } from "../serialize";
@@ -44,9 +51,30 @@ import { texto } from "../serialize";
  */
 const MIN_CATEGORIZADAS = 2;
 
-const SITE: Record<Exclude<Canal, "magalu">, string> = {
+/**
+ * Os canais que têm ÁRVORE de categoria consultável no Dexo e por isso passam
+ * pela cadeia de fontes. Os outros três resolvem sozinhos e saem antes.
+ */
+const SITE: Record<Extract<Canal, "mercado_livre" | "shopee">, string> = {
   mercado_livre: "MLB",
   shopee: "SHP",
+};
+
+/**
+ * Nome legível das subcategorias de autopeças da OLX.
+ *
+ * ⚠️ CÓPIA CONSCIENTE, no mesmo espírito de `SHOPEE_TITLE_MAX_LEN`: os códigos
+ * vivem em `OLX_AUTOPARTS_CATEGORY` mas os nomes só existem como comentário lá
+ * (olx-category-map.ts:9-11) — não há como importá-los.
+ * `ai-canais-olx-facebook.spec.ts` falha se entrar um código novo sem rótulo,
+ * então a cópia não envelhece calada.
+ */
+const ROTULO_CATEGORIA_OLX: Record<number, string> = {
+  [OLX_AUTOPARTS_CATEGORY.CARS]: "Carros, vans e utilitários",
+  [OLX_AUTOPARTS_CATEGORY.TRUCKS]: "Caminhões",
+  [OLX_AUTOPARTS_CATEGORY.MOTORCYCLES]: "Motos",
+  [OLX_AUTOPARTS_CATEGORY.BOATS]: "Barcos e aeronaves",
+  [OLX_AUTOPARTS_CATEGORY.BUSES]: "Ônibus",
 };
 
 interface Categoria {
@@ -108,9 +136,8 @@ export const sugerirCategoria: AiTool = {
         .min(3)
         .max(120)
         .describe("Nome da peça com marca e modelo."),
-      canal: z
-        .enum(["mercado_livre", "shopee", "magalu"])
-        .describe("Para qual marketplace."),
+      // ⭐ Vem de CANAIS — ver o comentário em descricao.ts.
+      canal: z.enum(CANAIS).describe("Para qual marketplace."),
     })
     .strict(),
   kind: "advisory",
@@ -123,6 +150,8 @@ export const sugerirCategoria: AiTool = {
     "em que categoria",
     "qual categoria",
     "classificar",
+    "olx",
+    "facebook",
   ],
   sourceLabel: "Categoria do marketplace",
   handler: async (args, scope) => {
@@ -141,6 +170,71 @@ export const sugerirCategoria: AiTool = {
           {
             kind: "regra",
             rule: "Magalu: categoria resolvida automaticamente na publicação",
+          } satisfies AiSource,
+        ],
+      };
+    }
+
+    // ── OLX ────────────────────────────────────────────────────────────────
+    //
+    // Aqui a cadeia de fontes não se aplica, e não é economia: a resolução é uma
+    // FUNÇÃO PURA do nome da peça (de-para de veículo + default), sem rede e sem
+    // banco. Perguntar "que categoria esta loja já usou em peças parecidas" não
+    // acrescentaria nada — a resposta seria a mesma que a função dá, porque foi
+    // a função que escolheu aquelas também.
+    //
+    // É a MESMA chamada de `GET /marketplace/olx/category-suggest`
+    // (marketplace.routes.ts:3443) e a mesma da criação do anúncio. O Bitz
+    // responde o que a tela mostra porque é a mesma função.
+    if (canal === "olx") {
+      const id = OlxCategoryResolutionService.resolveCategoryId({
+        name: titulo,
+      });
+      const rotulo = id != null ? (ROTULO_CATEGORIA_OLX[id] ?? null) : null;
+
+      return {
+        temSugestao: id != null,
+        resolvidoPeloSistema: true,
+        canal: NOME_DO_CANAL[canal],
+        categoria: id != null ? { id: String(id), caminho: rotulo } : null,
+        explicacao:
+          "Na OLX a categoria do anúncio de autopeça é o TIPO DE VEÍCULO (carro, caminhão, moto, barco, ônibus) — não o tipo de peça. O tipo da peça vai em outro campo do anúncio, preenchido pelo Dexo.",
+        comoLer:
+          "O Dexo escolhe o veículo pela palavra no NOME da peça e cai em carros quando não acha nenhuma. É por isso que 'Retrovisor Moto Honda' vai para Motos e 'Suporte do Motor Gol' não vai — o casamento é por palavra inteira, e 'motor' não é 'moto'.",
+        oQueFazer:
+          "Para mandar a peça para outro veículo, o caminho é o nome dela ou o campo de categoria da OLX no cadastro do produto — esse campo, quando preenchido, vence tudo.",
+        fontes: [
+          {
+            kind: "regra",
+            rule: "Resolução de categoria da OLX — de-para de veículo pelo nome da peça",
+          } satisfies AiSource,
+        ],
+      };
+    }
+
+    // ── Facebook ───────────────────────────────────────────────────────────
+    //
+    // Mesmo desenho da OLX, e pela mesma razão (função pura, offline). O que
+    // muda é a taxonomia: a Meta não expõe árvore consultável, e o sinal de
+    // categoria é o `google_product_category`, que já é um caminho legível.
+    if (canal === "facebook") {
+      const caminho = FacebookCategoryResolutionService.resolveCategory({
+        name: titulo,
+      });
+
+      return {
+        temSugestao: Boolean(caminho),
+        resolvidoPeloSistema: true,
+        canal: NOME_DO_CANAL[canal],
+        categoria: { id: caminho, caminho },
+        explicacao:
+          "No Facebook a categoria do item de catálogo é a taxonomia de produtos do Google (google_product_category). O Dexo escolhe entre peça de carro, de moto e de embarcação pela palavra no NOME da peça, e cai em peça de carro quando não acha nenhuma.",
+        oQueFazer:
+          "Para mandar a peça para outra taxonomia, o caminho é o nome dela ou o campo de categoria do Facebook no cadastro do produto — esse campo, quando preenchido, vence tudo.",
+        fontes: [
+          {
+            kind: "regra",
+            rule: "Resolução de categoria do Facebook — de-para de veículo pelo nome da peça",
           } satisfies AiSource,
         ],
       };
