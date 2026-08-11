@@ -17,6 +17,18 @@ import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
 import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import type { FacebookCatalogProduct } from "../types/facebook-api.types";
+import { OlxApiService } from "../services/olx-api.service";
+import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
+import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
+import {
+  OLX_CONSTANTS,
+  resolveOlxSellerContact,
+} from "../olx/olx-constants";
+import { FacebookApiService } from "../services/facebook-api.service";
+import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
+import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
+import { FACEBOOK_CONSTANTS } from "../facebook/facebook-constants";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -41,6 +53,7 @@ import {
   classifyMLRemoveError,
   withRetry,
 } from "../services/listing-removal.helpers";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -79,7 +92,8 @@ type ShopeeImportJobState = "queued" | "running" | "completed" | "failed";
 interface ShopeeImportJobPayload {
   kind: "SHOPEE_IMPORT";
   state: ShopeeImportJobState;
-  phase: "queued" | "listing" | "details" | "processing" | "completed" | "failed";
+  phase:
+    "queued" | "listing" | "details" | "processing" | "completed" | "failed";
   importId: string;
   accountId: string;
   totalItemIds: number;
@@ -161,6 +175,15 @@ export interface SyncResult {
   success: boolean;
   productId: string;
   externalListingId: string;
+  /**
+   * Id do ProductListing que originou este resultado. É a ÚNICA chave que
+   * identifica um anúncio sem ambiguidade: `externalListingId` é o SKU em
+   * MAGALU, OLX e FACEBOOK, então o mesmo produto anunciado em duas dessas
+   * plataformas produz resultados com chave idêntica. Preenchido pelo funil
+   * único de `syncProductStock`; opcional porque os caminhos que montam
+   * SyncResult sem um listing (produto não encontrado) não têm o que informar.
+   */
+  listingId?: string;
   platform?: Platform;
   previousStock?: number;
   newStock?: number;
@@ -239,7 +262,12 @@ export class SyncUseCase {
         typeof compat.version === "string" && compat.version.trim().length > 0
           ? compat.version.trim()
           : "";
-      const line = [brand.toUpperCase(), model.toUpperCase(), yearPart, versionPart]
+      const line = [
+        brand.toUpperCase(),
+        model.toUpperCase(),
+        yearPart,
+        versionPart,
+      ]
         .filter(Boolean)
         .join(" ");
       if (line && !seen.has(line)) {
@@ -403,9 +431,7 @@ export class SyncUseCase {
       products
         .map((product) => [product.skuNormalized, product] as const)
         .filter(
-          (
-            entry,
-          ): entry is readonly [string, (typeof products)[number]] =>
+          (entry): entry is readonly [string, (typeof products)[number]] =>
             Boolean(entry[0]),
         ),
     );
@@ -710,9 +736,8 @@ export class SyncUseCase {
     const productsMap = new Map(
       products
         .map((p) => [p.skuNormalized, p] as const)
-        .filter(
-          (e): e is readonly [string, (typeof products)[number]] =>
-            Boolean(e[0]),
+        .filter((e): e is readonly [string, (typeof products)[number]] =>
+          Boolean(e[0]),
         ),
     );
 
@@ -839,6 +864,348 @@ export class SyncUseCase {
   }
 
   /**
+   * Importa itens do Catálogo Meta (GET /{catalog_id}/products) e vincula por
+   * SKU. Espelha importMagaluItems: o `retailer_id` do item É o SKU (=
+   * externalListingId gravado no create), então o núcleo idempotente reusa o
+   * vínculo existente e nunca duplica. Itens do catálogo criados à mão só casam
+   * se o vendedor tiver usado o SKU do Dexo como retailer_id (limite da API).
+   */
+  static async importFacebookItems(
+    userId: string,
+    accountId?: string,
+    options?: {
+      skipFinalLog?: boolean;
+      onProgress?: (progress: {
+        processedItems: number;
+        totalItems: number;
+        linkedItems: number;
+        createdProducts: number;
+      }) => Promise<void> | void;
+    },
+  ): Promise<ImportResult> {
+    const result: ImportResult = {
+      totalItems: 0,
+      linkedItems: 0,
+      unlinkedItems: 0,
+      createdProducts: 0,
+      alreadyLinked: 0,
+      skippedDuplicates: 0,
+      errors: [],
+      items: [],
+    };
+
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.FACEBOOK,
+        );
+
+    if (!account || !account.accessToken) {
+      throw new Error("Conta do Facebook não conectada ou sem credenciais");
+    }
+
+    // Catálogo POR CONTA, sem fallback para o global do .env — a mesma regra
+    // que a publicação, a despublicação e o espelhamento de status já aplicam.
+    // Cair no catálogo global aqui é pior do que na publicação: em vez de
+    // escrever no lugar errado, o Dexo LERIA o catálogo de outro tenant e
+    // criaria produtos a partir dele.
+    if (!account.fbCatalogId) {
+      throw new Error(
+        "Catálogo Meta não configurado nesta conta (fbCatalogId ausente). Configure o catálogo do Facebook antes de importar.",
+      );
+    }
+
+    // A paginação (cursor `after`) é resolvida dentro de listCatalogItems: aqui
+    // já chega o portfólio inteiro.
+    const catalogId = account.fbCatalogId;
+    const items = await FacebookApiService.listCatalogItems(
+      account.accessToken,
+      { catalogId },
+    );
+    if (items.length === 0) {
+      return result;
+    }
+
+    result.totalItems = items.length;
+
+    const extractSku = (i: (typeof items)[number]): string | null =>
+      typeof i.retailer_id === "string" && i.retailer_id.trim().length > 0
+        ? i.retailer_id
+        : null;
+    // A identidade no Catálogo Meta é o retailer_id (= SKU). Por isso vem ANTES
+    // do id numérico do item — create/import gravam a MESMA chave (sem duplicar).
+    const extractExternalId = (i: (typeof items)[number]): string =>
+      String(extractSku(i) ?? i.id ?? "");
+
+    const externalItemIds = items
+      .map((i) => extractExternalId(i))
+      .filter(Boolean);
+    const rawSkus = Array.from(
+      new Set(
+        items
+          .map((i) => extractSku(i))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
+    const normalizedSkus = Array.from(
+      new Set(
+        items
+          .map((i) => normalizeSku(extractSku(i)))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
+
+    const listingSelect = {
+      id: true,
+      externalListingId: true,
+      externalSku: true,
+      status: true,
+      permalink: true,
+      productId: true,
+      // Necessário para o write-on-change abaixo: sem a coluna aqui, a
+      // comparação `existingListing.fbCatalogItemId !== catalogItemId` seria
+      // sempre verdadeira e TODA importação gravaria um UPDATE por item.
+      fbCatalogItemId: true,
+    } as const;
+    const existingListings = [
+      ...new Map(
+        [
+          ...(await findManyInChunks(externalItemIds, (ids) =>
+            prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalListingId: { in: ids },
+              },
+              select: listingSelect,
+            }),
+          )),
+          ...(await findManyInChunks(rawSkus, (skus) =>
+            prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalSku: { in: skus },
+              },
+              select: listingSelect,
+            }),
+          )),
+        ].map((l) => [l.id, l] as const),
+      ).values(),
+    ];
+    const existingListingsMap = new Map(
+      existingListings.map((l) => [l.externalListingId, l]),
+    );
+    const existingBySku = new Map(
+      existingListings
+        .filter((l) => l.externalSku)
+        .map((l) => [l.externalSku as string, l] as const),
+    );
+
+    const products = await findManyInChunks(normalizedSkus, (skus) =>
+      prisma.product.findMany({
+        where: { skuNormalized: { in: skus }, userId: account.userId },
+        select: { id: true, skuNormalized: true, name: true },
+      }),
+    );
+    const productsMap = new Map(
+      products
+        .map((p) => [p.skuNormalized, p] as const)
+        .filter((e): e is readonly [string, (typeof products)[number]] =>
+          Boolean(e[0]),
+        ),
+    );
+
+    // Repescagem pelo SKU SANITIZADO.
+    //
+    // A publicação grava `retailer_id` = SKU sanitizado (buildRetailerId troca
+    // tudo fora de [A-Za-z0-9_.-] por "_"), mas `normalizeSku` só faz trim e
+    // lowercase. Logo, para um SKU com espaço, barra ou acento — comum em
+    // auto-peças — o retailer_id que volta da Meta ("abc_123") nunca casa com o
+    // skuNormalized do produto ("abc 123"), e o import criava um produto NOVO,
+    // duplicando a peça.
+    //
+    // Só roda para o que não casou pelo caminho normal: com SKUs limpos o
+    // conjunto é vazio e nada é consultado.
+    // Guarda dupla. O `!productsMap.has(s)` sozinho quase nunca segura: basta UM
+    // item do catálogo que não exista no ERP — o caso normal — para o conjunto
+    // ficar não vazio e o `regexp_replace` (não indexável) varrer os produtos do
+    // tenant inteiro.
+    //
+    // O `includes("_")` é exato, não heurístico: `buildRetailerId` só produz `_`
+    // ONDE houve substituição. Um retailer_id sem `_` não sofreu sanitização
+    // alguma, logo o `skuNormalized` que ele casaria seria idêntico a ele — e
+    // esse produto já teria sido encontrado pelo findMany exato acima, com o
+    // mesmo filtro de userId. Conjunto de resultado idêntico, varredura evitada.
+    const naoCasados = normalizedSkus.filter(
+      (s) => !productsMap.has(s) && s.includes("_"),
+    );
+    if (naoCasados.length > 0) {
+      try {
+        const repescados = await prisma.$queryRaw<
+          Array<{ id: string; skuNormalized: string | null; name: string }>
+        >`
+          SELECT "id", "skuNormalized", "name"
+            FROM "Product"
+           WHERE "userId" = ${account.userId}
+             AND "skuNormalized" IS NOT NULL
+             AND regexp_replace("skuNormalized", '[^a-z0-9_.\-]', '_', 'g')
+                 = ANY(${naoCasados}::text[])
+        `;
+        for (const p of repescados) {
+          // Indexa pela forma SANITIZADA, que é a chave que o item da Meta traz.
+          const chave = (p.skuNormalized ?? "").replace(
+            /[^a-z0-9_.\-]/g,
+            "_",
+          );
+          if (chave && !productsMap.has(chave)) {
+            productsMap.set(chave, {
+              id: p.id,
+              skuNormalized: p.skuNormalized,
+              name: p.name,
+            });
+            products.push({
+              id: p.id,
+              skuNormalized: p.skuNormalized,
+              name: p.name,
+            });
+          }
+        }
+      } catch (err) {
+        // Repescagem é best-effort: se falhar, o import segue com o casamento
+        // exato (comportamento anterior) em vez de abortar o lote inteiro.
+        console.warn(
+          "[SyncUseCase] Repescagem de SKU sanitizado falhou (Facebook):",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    const matchedProductIds = products.map((p) => p.id);
+    const withListing = new Set<string>(
+      (
+        await findManyInChunks(matchedProductIds, (productIds) =>
+          prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              productId: { in: productIds },
+            },
+            select: { productId: true },
+            distinct: ["productId"],
+          }),
+        )
+      ).map((l) => l.productId),
+    );
+
+    const importCache: AutodetectImportCache = {
+      productsBySku: new Map(
+        [...productsMap].map(([k, p]) => [k, { id: p.id, name: p.name }]),
+      ),
+      productIdsWithListing: withListing,
+      knownExternalListingIds: new Set(
+        existingListings.map((l) => l.externalListingId),
+      ),
+    };
+
+    const PREVIEW_CAP = 50;
+    for (const item of items) {
+      const externalListingId = extractExternalId(item);
+      try {
+        const sku = extractSku(item);
+        const existingListing =
+          existingListingsMap.get(externalListingId) ||
+          (sku ? existingBySku.get(sku) : undefined);
+        const availability = (item.availability as string) || "in stock";
+        const status = /out.?of.?stock|discontinued/i.test(availability)
+          ? "paused"
+          : "active";
+        const permalink = (item.url as string) || null;
+
+        let linkedProductId: string | null = null;
+
+        if (existingListing) {
+          linkedProductId = existingListing.productId;
+          const needsIdUpgrade =
+            !!externalListingId &&
+            existingListing.externalListingId !== externalListingId;
+          const needsStatusUpdate = existingListing.status !== status;
+          const needsPermalinkUpdate =
+            !!permalink && existingListing.permalink !== permalink;
+          // O id numérico do item no Catálogo Meta só existe AQUI: o
+          // items_batch da publicação devolve handles, não o id. Este é o
+          // único caminho que pode preencher a coluna.
+          const catalogItemId = item.id ? String(item.id) : null;
+          const needsCatalogItemId =
+            !!catalogItemId &&
+            existingListing.fbCatalogItemId !== catalogItemId;
+          if (
+            needsIdUpgrade ||
+            needsStatusUpdate ||
+            needsPermalinkUpdate ||
+            needsCatalogItemId
+          ) {
+            await ListingRepository.updateListing(existingListing.id, {
+              externalListingId: needsIdUpgrade ? externalListingId : undefined,
+              status: needsStatusUpdate ? status : undefined,
+              permalink: needsPermalinkUpdate ? permalink : undefined,
+              fbCatalogItemId: needsCatalogItemId ? catalogItemId : undefined,
+            });
+          }
+        } else {
+          const outcome =
+            await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+              ListingAutodetectUseCase.normalizeFacebookItem(
+                { id: account.id, userId: account.userId },
+                item,
+              ),
+              importCache,
+            );
+          this.tallyAutodetect(result, outcome.action);
+          linkedProductId = outcome.productId;
+        }
+
+        if (result.items.length < PREVIEW_CAP) {
+          result.items.push({
+            externalListingId,
+            title: (item.name as string) || externalListingId,
+            sku,
+            linkedProductId,
+            status: linkedProductId ? "linked" : "unlinked",
+          });
+        }
+        if (linkedProductId) result.linkedItems++;
+        else result.unlinkedItems++;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        result.errors.push(`Item ${externalListingId}: ${errorMessage}`);
+      }
+    }
+
+    if (options?.onProgress) {
+      await options.onProgress({
+        processedItems: result.totalItems,
+        totalItems: result.totalItems,
+        linkedItems: result.linkedItems,
+        createdProducts: result.createdProducts ?? 0,
+      });
+    }
+
+    if (options?.skipFinalLog) {
+      return result;
+    }
+
+    await this.logSync(
+      account.id,
+      SyncType.PRODUCT_SYNC,
+      result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      `Importados ${result.totalItems} itens do Facebook, ${result.linkedItems} vinculados`,
+      { totalItems: result.totalItems, linkedItems: result.linkedItems },
+    );
+
+    return result;
+  }
+
+  /**
    * Importa todos os itens do Shopee e tenta vincular automaticamente por SKU
    */
   static async importShopeeItems(
@@ -933,7 +1300,12 @@ export class SyncUseCase {
     const pageSize = 100;
     let page = 1;
     // Use para fallback se detalhe falhar
-    const listingSnapshot: { item_id: number; item_sku?: string; item_name?: string; status?: string }[] = [];
+    const listingSnapshot: {
+      item_id: number;
+      item_sku?: string;
+      item_name?: string;
+      status?: string;
+    }[] = [];
     await emitProgress({
       phase: "listing",
       pagesFetched: 0,
@@ -992,7 +1364,10 @@ export class SyncUseCase {
     }
 
     // Mapa rápido do snapshot para reaproveitar SKU do get_item_list
-    const snapshotMap = new Map<number, { item_sku?: string; item_name?: string; status?: string }>();
+    const snapshotMap = new Map<
+      number,
+      { item_sku?: string; item_name?: string; status?: string }
+    >();
     for (const snap of listingSnapshot) {
       snapshotMap.set(snap.item_id, snap);
     }
@@ -1001,7 +1376,10 @@ export class SyncUseCase {
       .map((s) => s.item_sku)
       .filter(Boolean)
       .slice(0, 20);
-    console.log(`[IMPORT][Shopee] Sample item_sku from list call:`, sampleSnapshotSkus);
+    console.log(
+      `[IMPORT][Shopee] Sample item_sku from list call:`,
+      sampleSnapshotSkus,
+    );
 
     // 3. Buscar detalhes dos itens em lote (base info) com retry em auth
     result.totalItems = allItemIds.length;
@@ -1064,7 +1442,10 @@ export class SyncUseCase {
                 );
                 continue;
               }
-              console.error(`[IMPORT] Erro em batch ${batchLabel} após refresh:`, err);
+              console.error(
+                `[IMPORT] Erro em batch ${batchLabel} após refresh:`,
+                err,
+              );
               recordError(
                 `Batch ${batchLabel}: ${err instanceof Error ? err.message : err}`,
                 slice.length,
@@ -1161,25 +1542,25 @@ export class SyncUseCase {
       if (item.has_model && Array.isArray((item as any).model_list)) {
         for (const model of (item as any).model_list as any[]) {
           const sku =
-            this.extractShopeeSku(item, model) ||
-            snapshot?.item_sku ||
-            null;
+            this.extractShopeeSku(item, model) || snapshot?.item_sku || null;
           const externalId = `${item.item_id}:${model.model_id}`;
           flatItems.push({
             externalId,
             sku,
             title: `${item.item_name} - ${model.model_name || "variação"}`,
-            status:
-              model.status
-                ? normalizeShopeeStatus(model.status)
-                : baseStatus,
+            status: model.status
+              ? normalizeShopeeStatus(model.status)
+              : baseStatus,
             itemId: item.item_id,
           });
         }
       } else {
         flatItems.push({
           externalId: item.item_id.toString(),
-          sku: this.extractShopeeSku(item) /* item-level SKU */ || snapshot?.item_sku || null,
+          sku:
+            this.extractShopeeSku(item) /* item-level SKU */ ||
+            snapshot?.item_sku ||
+            null,
           title: item.item_name,
           status: baseStatus,
           itemId: item.item_id,
@@ -1288,12 +1669,10 @@ export class SyncUseCase {
     );
 
     const itemsWithSku = flatItems.filter((i) => normalizeSku(i.sku)).length;
-    const matchedSkus = flatItems.filter(
-      (i) => {
-        const normalizedSku = normalizeSku(i.sku);
-        return normalizedSku ? productsMap.has(normalizedSku) : false;
-      },
-    ).length;
+    const matchedSkus = flatItems.filter((i) => {
+      const normalizedSku = normalizeSku(i.sku);
+      return normalizedSku ? productsMap.has(normalizedSku) : false;
+    }).length;
     const sampleSkus = Array.from(
       new Set(
         flatItems
@@ -1472,7 +1851,11 @@ export class SyncUseCase {
   static async startShopeeImportJob(
     userId: string,
     accountId?: string,
-  ): Promise<{ importId: string; status: ShopeeImportJobState; message: string }> {
+  ): Promise<{
+    importId: string;
+    status: ShopeeImportJobState;
+    message: string;
+  }> {
     const account = await this.resolveShopeeAccount(userId, accountId);
     const queuedMessage = "Importação Shopee enfileirada";
     const created = await prisma.syncLog.create({
@@ -1491,7 +1874,10 @@ export class SyncUseCase {
     await prisma.syncLog.update({
       where: { id: created.id },
       data: {
-        status: this.getShopeeImportSyncStatus(payload.state, payload.errorCount),
+        status: this.getShopeeImportSyncStatus(
+          payload.state,
+          payload.errorCount,
+        ),
         message: payload.message,
         payload: payload as object,
       },
@@ -1718,12 +2104,11 @@ export class SyncUseCase {
     }
 
     let payload = this.parseShopeeImportPayload(syncLog.payload, syncLog.id);
-    const lastUpdatedMs =
-      payload.finishedAt
-        ? Date.parse(payload.finishedAt)
-        : payload.startedAt
-          ? Date.parse(payload.startedAt)
-          : syncLog.createdAt.getTime();
+    const lastUpdatedMs = payload.finishedAt
+      ? Date.parse(payload.finishedAt)
+      : payload.startedAt
+        ? Date.parse(payload.startedAt)
+        : syncLog.createdAt.getTime();
 
     if (
       (payload.state === "queued" || payload.state === "running") &&
@@ -1810,7 +2195,10 @@ export class SyncUseCase {
           );
           return a ? [a] : [];
         })()
-      : await MarketplaceRepository.findAllByUserIdAndPlatform(userId, platform);
+      : await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          platform,
+        );
 
     const aggregate: ImportResult = {
       totalItems: 0,
@@ -1840,12 +2228,26 @@ export class SyncUseCase {
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i];
       try {
-        const r =
-          platform === Platform.MERCADO_LIVRE
-            ? await this.importMLItems(userId, acc.id, { skipFinalLog: true })
-            : await this.importMagaluItems(userId, acc.id, {
-                skipFinalLog: true,
-              });
+        // Roteamento EXPLÍCITO por plataforma. Antes o `else` mandava QUALQUER
+        // plataforma não-ML para importMagaluItems — o que enviaria o token de
+        // OLX/Facebook para a API da Magalu. Plataformas sem import (OLX/Shopee
+        // aqui) lançam em vez de cair no ramo errado.
+        let r: ImportResult;
+        if (platform === Platform.MERCADO_LIVRE) {
+          r = await this.importMLItems(userId, acc.id, { skipFinalLog: true });
+        } else if (platform === Platform.MAGALU) {
+          r = await this.importMagaluItems(userId, acc.id, {
+            skipFinalLog: true,
+          });
+        } else if (platform === Platform.FACEBOOK) {
+          r = await this.importFacebookItems(userId, acc.id, {
+            skipFinalLog: true,
+          });
+        } else {
+          throw new Error(
+            `Importação de anúncios não suportada para ${platform}`,
+          );
+        }
         aggregate.totalItems += r.totalItems;
         aggregate.linkedItems += r.linkedItems;
         aggregate.unlinkedItems += r.unlinkedItems;
@@ -1872,7 +2274,8 @@ export class SyncUseCase {
           }
         }
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "Erro desconhecido";
+        const msg =
+          error instanceof Error ? error.message : "Erro desconhecido";
         aggregate.errorCount = (aggregate.errorCount ?? 0) + 1;
         if (aggregate.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
           aggregate.errors.push(`Conta ${acc.id}: ${msg}`);
@@ -1903,7 +2306,11 @@ export class SyncUseCase {
     userId: string,
     platform: Platform,
     accountId?: string,
-  ): Promise<{ importId: string; status: GenericImportJobState; message: string }> {
+  ): Promise<{
+    importId: string;
+    status: GenericImportJobState;
+    message: string;
+  }> {
     const accounts = accountId
       ? await (async () => {
           const a = await MarketplaceRepository.findByIdAndUser(
@@ -1912,12 +2319,17 @@ export class SyncUseCase {
           );
           return a ? [a] : [];
         })()
-      : await MarketplaceRepository.findAllByUserIdAndPlatform(userId, platform);
+      : await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          platform,
+        );
     if (accounts.length === 0) {
       throw new Error(
         platform === Platform.MERCADO_LIVRE
           ? "Nenhuma conta do Mercado Livre conectada"
-          : "Nenhuma conta da Magalu conectada",
+          : platform === Platform.FACEBOOK
+            ? "Nenhuma conta do Facebook conectada"
+            : "Nenhuma conta da Magalu conectada",
       );
     }
 
@@ -1942,7 +2354,12 @@ export class SyncUseCase {
       },
     });
 
-    const label = platform === Platform.MERCADO_LIVRE ? "MercadoLivre" : "Magalu";
+    const label =
+      platform === Platform.MERCADO_LIVRE
+        ? "MercadoLivre"
+        : platform === Platform.FACEBOOK
+          ? "Facebook"
+          : "Magalu";
 
     setImmediate(async () => {
       const writePayload = async (
@@ -1951,7 +2368,11 @@ export class SyncUseCase {
       ) => {
         await prisma.syncLog.update({
           where: { id: created.id },
-          data: { status, message: payload.message ?? "", payload: payload as object },
+          data: {
+            status,
+            message: payload.message ?? "",
+            payload: payload as object,
+          },
         });
       };
       try {
@@ -1981,7 +2402,9 @@ export class SyncUseCase {
             message: `Importação concluída: ${result.createdProducts ?? 0} criado(s), ${result.linkedItems} vinculado(s)`,
             result,
           },
-          (result.errorCount ?? 0) > 0 ? SyncStatus.WARNING : SyncStatus.SUCCESS,
+          (result.errorCount ?? 0) > 0
+            ? SyncStatus.WARNING
+            : SyncStatus.SUCCESS,
         );
         await SystemLogService.logSyncComplete(userId, "IMPORT", label, {
           totalItems: result.totalItems,
@@ -1991,7 +2414,8 @@ export class SyncUseCase {
           importId: created.id,
         });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "Erro desconhecido";
+        const msg =
+          error instanceof Error ? error.message : "Erro desconhecido";
         await writePayload(
           {
             ...base,
@@ -2014,15 +2438,27 @@ export class SyncUseCase {
       }
     });
 
-    return { importId: created.id, status: "running", message: base.message ?? "" };
+    return {
+      importId: created.id,
+      status: "running",
+      message: base.message ?? "",
+    };
   }
 
   static startMLImportJob(userId: string, accountId?: string) {
-    return this.startGenericImportJob(userId, Platform.MERCADO_LIVRE, accountId);
+    return this.startGenericImportJob(
+      userId,
+      Platform.MERCADO_LIVRE,
+      accountId,
+    );
   }
 
   static startMagaluImportJob(userId: string, accountId?: string) {
     return this.startGenericImportJob(userId, Platform.MAGALU, accountId);
+  }
+
+  static startFacebookImportJob(userId: string, accountId?: string) {
+    return this.startGenericImportJob(userId, Platform.FACEBOOK, accountId);
   }
 
   static async getGenericImportJobStatus(
@@ -2113,11 +2549,10 @@ export class SyncUseCase {
         // tenta refresh do token do seller antes do fallback local
         if (isAuthErr && account?.refreshToken) {
           try {
-            const refreshed =
-              await MLOAuthService.refreshAccessTokenForAccount(
-                account.id,
-                account.refreshToken,
-              );
+            const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+              account.id,
+              account.refreshToken,
+            );
             await MarketplaceRepository.updateTokens(account.id, {
               accessToken: refreshed.accessToken,
               refreshToken: refreshed.refreshToken,
@@ -2282,7 +2717,10 @@ export class SyncUseCase {
   /**
    * Extrai o SKU de um item do ML (pode estar em diferentes lugares)
    */
-  private static async resolveShopeeAccount(userId: string, accountId?: string) {
+  private static async resolveShopeeAccount(
+    userId: string,
+    accountId?: string,
+  ) {
     const account = accountId
       ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
       : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
@@ -2401,7 +2839,9 @@ export class SyncUseCase {
         (attr) =>
           attr.id === "SELLER_SKU" ||
           attr.id === "SKU" ||
-          (attr.id && typeof attr.id === "string" && attr.id.toLowerCase().includes("sku")),
+          (attr.id &&
+            typeof attr.id === "string" &&
+            attr.id.toLowerCase().includes("sku")),
       );
       if (skuAttr?.value_name) {
         return skuAttr.value_name;
@@ -2409,7 +2849,10 @@ export class SyncUseCase {
     }
 
     // Por fim, tentar extrair SKU das variações (seller_custom_field ou atributos)
-    if (Array.isArray((item as any).variations) && (item as any).variations.length > 0) {
+    if (
+      Array.isArray((item as any).variations) &&
+      (item as any).variations.length > 0
+    ) {
       const variationSkus = new Set<string>();
       for (const v of (item as any).variations) {
         if (v?.seller_custom_field) {
@@ -2421,7 +2864,9 @@ export class SyncUseCase {
             (attr: any) =>
               attr.id === "SELLER_SKU" ||
               attr.id === "SKU" ||
-              (attr.id && typeof attr.id === "string" && attr.id.toLowerCase().includes("sku")),
+              (attr.id &&
+                typeof attr.id === "string" &&
+                attr.id.toLowerCase().includes("sku")),
           );
           if (attrSku?.value_name) {
             variationSkus.add(String(attrSku.value_name));
@@ -2450,8 +2895,11 @@ export class SyncUseCase {
     return raw && raw.length > 0 ? raw : null;
   }
 
-  private static getShopeeAvailableStock(item: Partial<ShopeeItem> & any): number {
-    const summaryStock = item?.stock_info_v2?.summary_info?.total_available_stock;
+  private static getShopeeAvailableStock(
+    item: Partial<ShopeeItem> & any,
+  ): number {
+    const summaryStock =
+      item?.stock_info_v2?.summary_info?.total_available_stock;
     if (typeof summaryStock === "number") {
       return summaryStock;
     }
@@ -2846,6 +3294,120 @@ export class SyncUseCase {
   }
 
   /**
+   * Auto-detecção contínua de itens novos no Catálogo Meta (cron).
+   *
+   * ⚠️ O gate "só novos" da Shopee/Magalu é POR DATA e aqui seria impossível:
+   * a borda `GET /{catalog_id}/products` não expõe um `created_at` confiável, e
+   * `normalizeFacebookItem` preenche `createdAt` com a hora atual. Copiar o
+   * gate do Magalu faria `createdMs >= baselineMs` ser SEMPRE verdadeiro e o
+   * cron reimportaria o catálogo inteiro a cada rodada.
+   *
+   * Por isso o gate é POR IDENTIDADE: pré-carrega os `retailer_id` que já têm
+   * vínculo NESTA conta e pula todos. Mesmo pré-filtro `linkedSkus` da Magalu,
+   * só que por `externalListingId` (= retailer_id) em vez de por data.
+   *
+   * Consequência honesta: na PRIMEIRA passada, tudo o que existe no catálogo e
+   * ainda não está vinculado é importado — não há "linha do tempo" para separar
+   * antigos de novos. Por isso é opt-in explícito (FACEBOOK_AUTODETECT_ENABLED)
+   * e deve ser ligado numa conta piloto.
+   */
+  static async importNewFacebookItemsForAccount(account: {
+    id: string;
+    userId: string;
+    accessToken: string;
+    fbCatalogId?: string | null;
+    autoImportListingsSince: Date | null;
+  }): Promise<{
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: number;
+  }> {
+    const summary = { created: 0, linked: 0, skipped: 0, errors: 0 };
+
+    // Opt-in explícito + kill-switch de runtime já existente.
+    if (process.env.FACEBOOK_AUTODETECT_ENABLED !== "1") return summary;
+    if (isPlatformDisabled(Platform.FACEBOOK)) return summary;
+    // Fail-safe idêntico ao da Magalu: sem baseline, não importa.
+    if (!account.autoImportListingsSince) return summary;
+    // Catálogo por conta, sem fallback global (mesma regra do resto do Facebook).
+    if (!account.fbCatalogId) return summary;
+
+    let items: FacebookCatalogProduct[];
+    try {
+      items = await FacebookApiService.listCatalogItems(account.accessToken, {
+        catalogId: account.fbCatalogId,
+      });
+    } catch (err) {
+      console.error(
+        `[autodetect][facebook] listCatalogItems falhou (conta ${account.id}):`,
+        err instanceof Error ? err.message : err,
+      );
+      return summary;
+    }
+    if (items.length === 0) return summary;
+
+    // Gate por IDENTIDADE: retailer_id já vinculado nesta conta = nada a fazer.
+    const retailerIds = items
+      .map((i) =>
+        typeof i.retailer_id === "string" && i.retailer_id.trim()
+          ? i.retailer_id
+          : null,
+      )
+      .filter((x): x is string => Boolean(x));
+    const jaVinculados = new Set<string>(
+      (
+        await findManyInChunks(retailerIds, (ids) =>
+          prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              externalListingId: { in: ids },
+            },
+            select: { externalListingId: true },
+          }),
+        )
+      ).map((l) => l.externalListingId),
+    );
+
+    for (const item of items) {
+      try {
+        const normalized = ListingAutodetectUseCase.normalizeFacebookItem(
+          { id: account.id, userId: account.userId },
+          item,
+        );
+        if (
+          !normalized.externalListingId ||
+          jaVinculados.has(normalized.externalListingId)
+        ) {
+          summary.skipped++;
+          continue;
+        }
+
+        const res =
+          await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+            normalized,
+          );
+        if (res.action === "created_product") {
+          summary.created++;
+        } else if (
+          res.action === "linked_existing_product" ||
+          res.action === "raced"
+        ) {
+          summary.linked++;
+        }
+      } catch (err) {
+        summary.errors++;
+        console.error(
+          `[AUTODETECT][Facebook] Falha no item ${item.retailer_id ?? item.id} (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    return summary;
+  }
+
+  /**
    * Sincroniza o estoque de um produto especÃ­fico para todos os marketplaces conectados
    */
   static async syncProductStock(productId: string): Promise<SyncResult[]> {
@@ -2889,6 +3451,22 @@ export class SyncUseCase {
     for (const listing of product.listings) {
       const account = listing.marketplaceAccount;
 
+      // Kill-switch de runtime: com OLX/FACEBOOK_INTEGRATION_DISABLED=1 nenhuma
+      // chamada outbound sai (cobre StockSyncRetryService e baixa por venda).
+      // No-op explícito p/ o operador ver que parou de verdade.
+      if (isPlatformDisabled(account.platform)) {
+        results.push({
+          success: true,
+          productId,
+          externalListingId: listing.externalListingId,
+          listingId: listing.id,
+          platform: account.platform,
+          skipped: true,
+          skipReason: "integration_disabled",
+        });
+        continue;
+      }
+
       try {
         let result: SyncResult;
 
@@ -2902,6 +3480,12 @@ export class SyncUseCase {
           case Platform.MAGALU:
             result = await this.syncMagaluProductStock(listing, product);
             break;
+          case Platform.OLX:
+            result = await this.syncOlxProductStock(listing, product);
+            break;
+          case Platform.FACEBOOK:
+            result = await this.syncFacebookProductStock(listing, product);
+            break;
           default:
             result = {
               success: false,
@@ -2911,7 +3495,11 @@ export class SyncUseCase {
             };
         }
 
-        results.push({ ...result, platform: account.platform });
+        results.push({
+          ...result,
+          listingId: listing.id,
+          platform: account.platform,
+        });
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
@@ -2919,6 +3507,7 @@ export class SyncUseCase {
           success: false,
           productId,
           externalListingId: listing.externalListingId,
+          listingId: listing.id,
           platform: account.platform,
           error: errorMessage,
         });
@@ -2936,7 +3525,7 @@ export class SyncUseCase {
    */
   private static async mirrorListingStatusBestEffort(
     listing: any,
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "FACEBOOK",
     rawRemoteStatus: string | null | undefined,
   ): Promise<void> {
     if (process.env.LISTING_STATUS_SYNC_DISABLED === "1") return;
@@ -3103,9 +3692,13 @@ export class SyncUseCase {
         }
 
         if (currentStatus === "active") {
-          await MLApiService.updateItem(account.accessToken, listing.externalListingId, {
-            status: "paused",
-          });
+          await MLApiService.updateItem(
+            account.accessToken,
+            listing.externalListingId,
+            {
+              status: "paused",
+            },
+          );
 
           await this.logSync(
             account.id,
@@ -3318,8 +3911,574 @@ export class SyncUseCase {
   }
 
   /**
+   * Sincroniza estoque para a OLX — path DURÁVEL (stockSyncJob → syncProductStock).
+   *
+   * A OLX não tem API de estoque per-SKU: a baixa é UNIDIRECIONAL ERP→OLX e
+   * mapeia para publicar/despublicar o anúncio:
+   *   - targetStock === 0 → deleteAd (despublica).
+   *   - targetStock  >  0 → upsertAd insert (re-publica; re-entra na fila da OLX).
+   * Idempotente: delete repetido = no-op; insert com o mesmo id = edição.
+   *
+   * ⚠️ Este `case OLX` é OBRIGATÓRIO: sem ele o switch cai no `default` e todo
+   * stockSyncJob de listing OLX falha em loop (o job é enfileirado p/ TODA
+   * listing, sem filtro de plataforma). Sem refresh de token (OLX não tem).
+   */
+  private static async syncOlxProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta OLX sem token de acesso",
+      };
+    }
+
+    const olxId = listing.externalListingId;
+    if (!olxId || String(olxId).startsWith("PENDING_")) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Anúncio local (placeholder) — não existe na OLX. Sincronização ignorada.",
+      };
+    }
+
+    const targetStock = Number(product.stock) || 0;
+
+    try {
+      if (targetStock <= 0) {
+        // No-op: já despublicado (paused) → não re-executa deleteAd a cada
+        // rodada (a baixa já foi refletida; delete repetido é chamada à toa).
+        if (listing.status === "paused") {
+          return {
+            success: true,
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            newStock: targetStock,
+            skipped: true,
+            skipReason: "olx_listing_already_paused",
+          };
+        }
+        // Zerou → despublica.
+        const resp = await OlxApiService.deleteAd(account.accessToken, olxId);
+        if (resp.statusCode !== 0) {
+          throw this.olxRespError(resp);
+        }
+        await ListingRepository.updateStatus(listing.id, "paused");
+      } else if (listing.status === "active" || listing.status === "pending") {
+        // No-op: a OLX não tem API de estoque per-SKU e republicar reenviaria o
+        // anúncio inteiro (podendo zerar preço/foto). Só republica se saiu do ar.
+        // "pending" é o estado normal logo após publicar (fila de revisão da
+        // OLX) — sem isto, todo "Sincronizar estoque" republicaria o pendente.
+        await this.logSync(
+          account.id,
+          SyncType.STOCK_UPDATE,
+          SyncStatus.SUCCESS,
+          `Estoque do produto ${product.name} já disponível na OLX (anúncio ${listing.status}, sem republicar)`,
+          {
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            newStock: targetStock,
+            skipReason: "olx_listing_already_active",
+          },
+        );
+        return {
+          success: true,
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+          skipped: true,
+          skipReason: "olx_listing_already_active",
+        };
+      } else {
+        // Anúncio saiu do ar: republica com o mesmo id. Recarrega o produto se
+        // vier parcial (sem os campos que o build lê).
+        let fullProduct: any = product;
+        const productLacksBuildFields =
+          product.price === undefined || product.imageUrls === undefined;
+        if (productLacksBuildFields) {
+          const reloaded = await prisma.product.findUnique({
+            where: { id: product.id },
+          });
+          if (!reloaded) {
+            throw new Error(
+              `Produto ${product.id} não encontrado ao republicar na OLX.`,
+            );
+          }
+          fullProduct = reloaded;
+        }
+
+        // Aplica os overrides do listing antes do build; recarrega o listing se
+        // ele não trouxer as colunas *Override.
+        let listingForOverrides: any = listing;
+        if (!("titleOverride" in listing)) {
+          try {
+            listingForOverrides =
+              (await prisma.productListing.findUnique({
+                where: { id: listing.id },
+              })) ?? listing;
+          } catch {
+            listingForOverrides = listing;
+          }
+        }
+        const { applyOverridesToProduct } = await import(
+          "../services/listing-overrides.service"
+        );
+        const effectiveProduct = applyOverridesToProduct(
+          fullProduct,
+          listingForOverrides,
+        ) as any;
+
+        // Guarda antes do build: preço <= 0 ou sem imagem lança, p/ nunca
+        // republicar um anúncio zerado.
+        const effImages: string[] = [];
+        if (effectiveProduct?.imageUrl) {
+          effImages.push(String(effectiveProduct.imageUrl));
+        }
+        if (Array.isArray(effectiveProduct?.imageUrls)) {
+          for (const u of effectiveProduct.imageUrls) {
+            if (u) effImages.push(String(u));
+          }
+        }
+        const effPrice = Number(
+          typeof effectiveProduct?.price?.toNumber === "function"
+            ? effectiveProduct.price.toNumber()
+            : effectiveProduct?.price,
+        );
+        if (!Number.isFinite(effPrice) || effPrice <= 0) {
+          throw new Error(
+            "Republicação OLX abortada: produto sem preço válido (> 0).",
+          );
+        }
+        if (effImages.length === 0) {
+          throw new Error("Republicação OLX abortada: produto sem imagem.");
+        }
+
+        // Contato do vendedor por conta (env só fallback) p/ não vazar entre tenants.
+        const category =
+          OlxCategoryResolutionService.resolveCategoryId(effectiveProduct);
+        const { phone, zipcode } = resolveOlxSellerContact(account);
+        if (category == null || !phone || !zipcode) {
+          throw new Error(
+            "Publicação OLX requer categoria resolvida + telefone/CEP do vendedor (conta ou OLX_SELLER_PHONE/ZIPCODE).",
+          );
+        }
+        const ad = OlxPayloadBuilderService.build(effectiveProduct, {
+          categoryId: category,
+          phone,
+          zipcode,
+          params: OlxCategoryResolutionService.buildAdParams(
+            effectiveProduct,
+            category,
+          ),
+        });
+        ad.id = olxId; // preserva o id do anúncio (idempotência da edição)
+        const resp = await OlxApiService.submitImport(account.accessToken, [
+          ad,
+        ]);
+        if (resp.statusCode !== 0) {
+          throw this.olxRespError(resp);
+        }
+        // A OLX processa o import de forma assíncrona (200 + token): só marca
+        // "active" quando o poll confirma.
+        let olxListId: string | null = null;
+        let permalink: string | null = null;
+        if (resp.token) {
+          const status = await OlxApiService.pollImportUntilDone(
+            account.accessToken,
+            resp.token,
+          );
+          const entry = status?.ads?.[ad.id];
+          if (entry?.status === "refused") {
+            const msg = (entry.message || []).join("; ") || "REFUSED_GENERIC";
+            throw this.olxRespError({
+              statusCode: -1,
+              statusMessage: `OLX recusou o anúncio ao republicar: ${msg}`,
+            });
+          }
+          // Repopula o list_id/url REAIS: a OLX só os devolve quando aceita, e o
+          // republish antes descartava esse `entry`. Grava só quando presente
+          // (poll inconclusivo devolve null e não deve zerar o já capturado).
+          olxListId = entry?.list_id ?? null;
+          permalink = entry?.url ?? null;
+        }
+        await ListingRepository.updateListing(listing.id, {
+          status: "active",
+          ...(olxListId ? { olxListId } : {}),
+          ...(permalink ? { permalink } : {}),
+        });
+      }
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} sincronizado na OLX (${targetStock <= 0 ? "despublicado" : "publicado"})`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        newStock: targetStock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao sincronizar estoque na OLX: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /** Transforma uma resposta de import OLX com statusCode≠0 num Error tipado. */
+  private static olxRespError(resp: {
+    statusCode: number;
+    statusMessage?: string;
+    errors?: string[];
+  }): Error {
+    const detail =
+      resp.statusMessage ||
+      (resp.errors && resp.errors.join("; ")) ||
+      `statusCode ${resp.statusCode}`;
+    const err = new Error(`OLX recusou o import: ${detail}`);
+    (err as any).olxStatusCode = resp.statusCode;
+    return err;
+  }
+
+  /**
    * Sincroniza dados completos (estoque + preço) para a Magalu.
    */
+  /**
+   * Sincroniza dados completos (título/descrição/preço/estoque) para a OLX.
+   * Na OLX editar = re-insert com o MESMO id (edição). Estoque 0 → delete.
+   * Reflete mudanças do produto reenviando o anúncio inteiro.
+   */
+  private static async syncOlxProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+    knownListingId?: string | null,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    if (!externalListingId || externalListingId.startsWith("PENDING_")) {
+      result.error = "Anúncio OLX ainda não publicado (placeholder).";
+      return result;
+    }
+
+    try {
+      const targetStock = Number(product.stock) || 0;
+      if (targetStock <= 0) {
+        const resp = await OlxApiService.deleteAd(
+          account.accessToken,
+          externalListingId,
+        );
+        if (resp.statusCode !== 0) throw this.olxRespError(resp);
+        // O anúncio saiu do ar na OLX: o status local TEM que acompanhar.
+        // Sem isto o Dexo segue mostrando "Ativo" e, quando o estoque voltar
+        // por um caminho sem forceRemote (estorno de venda balcão, botão
+        // Reativar), o fast-path de idempotência faz no-op e o anúncio nunca
+        // mais volta. É o que `syncOlxProductStock` já faz no ramo gêmeo.
+        if (knownListingId) {
+          await ListingRepository.updateStatus(knownListingId, "paused");
+        }
+      } else {
+        const category =
+          OlxCategoryResolutionService.resolveCategoryId(product);
+        // Contato do vendedor por conta (env só fallback) p/ não vazar entre
+        // tenants — mesmo desenho de syncOlxProductStock/updateOlxListingFields.
+        const { phone, zipcode } = resolveOlxSellerContact(account);
+        if (category == null || !phone || !zipcode) {
+          throw new Error(
+            "Sincronização OLX requer categoria resolvida + OLX_SELLER_PHONE/ZIPCODE.",
+          );
+        }
+        const ad = OlxPayloadBuilderService.build(product, {
+          categoryId: category,
+          phone,
+          zipcode,
+          params: OlxCategoryResolutionService.buildAdParams(product, category),
+        });
+        ad.id = externalListingId;
+        const resp = await OlxApiService.submitImport(account.accessToken, [
+          ad,
+        ]);
+        if (resp.statusCode !== 0) throw this.olxRespError(resp);
+        // Import assíncrono (200 + token): confirma no poll antes de gravar
+        // SUCCESS — senão marca sucesso p/ um anúncio que a OLX vai recusar.
+        if (resp.token) {
+          const status = await OlxApiService.pollImportUntilDone(
+            account.accessToken,
+            resp.token,
+          );
+          const entry = status?.ads?.[ad.id];
+          if (entry?.status === "refused") {
+            const msg = (entry.message || []).join("; ") || "REFUSED_GENERIC";
+            throw this.olxRespError({
+              statusCode: -1,
+              statusMessage: `OLX recusou o anúncio ao sincronizar: ${msg}`,
+            });
+          }
+        }
+      }
+      result.success = true;
+      result.newStock = targetStock;
+      return result;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+      return result;
+    }
+  }
+
+  /**
+   * A Meta devolve 200 + handles mesmo quando rejeita o item (async): faz o
+   * poll do handle e lança em erro explícito antes de gravar SUCCESS.
+   */
+  private static async confirmFacebookBatchOrThrow(
+    accessToken: string,
+    resp: { handles?: string[] } | null | undefined,
+    catalogId?: string,
+  ): Promise<void> {
+    const handle = resp?.handles?.[0];
+    if (!handle) return;
+    const entry = await FacebookApiService.pollBatchUntilDone(
+      accessToken,
+      handle,
+      { catalogId },
+    );
+    if (
+      entry &&
+      (entry.status === "error" ||
+        (Array.isArray(entry.errors) && entry.errors.length > 0))
+    ) {
+      const detail = Array.isArray(entry.errors)
+        ? JSON.stringify(entry.errors)
+        : entry.status;
+      throw new Error(`Facebook rejeitou o item: ${detail}`);
+    }
+  }
+
+  /**
+   * Sincroniza estoque para o Facebook/Meta — path DURÁVEL (stockSyncJob →
+   * syncProductStock).
+   *
+   * ⚠️ Diferente da OLX (delete/insert): a baixa mapeia para UPDATE de
+   * disponibilidade (o item PERMANECE no catálogo):
+   *   - targetStock === 0 → setAvailability 'out of stock' (+ status paused).
+   *   - targetStock  >  0 → setAvailability 'in stock' (+ quantity, status active).
+   * Usa só o retailer_id (externalListingId) — NÃO depende de FB_PRODUCT_URL_BASE
+   * (só a publicação inicial precisa do `link`), então o job de estoque roda
+   * mesmo antes da URL estar configurada.
+   *
+   * ⚠️ Este `case FACEBOOK` é OBRIGATÓRIO: sem ele o switch cai no `default` e
+   * todo stockSyncJob de listing FACEBOOK falha em loop (o job é enfileirado p/
+   * TODA listing, sem filtro de plataforma).
+   */
+  private static async syncFacebookProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta Facebook sem token de acesso",
+      };
+    }
+
+    const retailerId = listing.externalListingId;
+    if (!retailerId || String(retailerId).startsWith("PENDING_")) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Item local (placeholder) — não existe no catálogo Meta. Sincronização ignorada.",
+      };
+    }
+
+    const targetStock = Number(product.stock) || 0;
+    // Catálogo por conta: bloqueia quando ausente (sem fallback p/ o global do
+    // .env) — dois tenants sem fbCatalogId se sobrescreveriam no mesmo catálogo.
+    if (!account.fbCatalogId) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).",
+      };
+    }
+    const catalogId = account.fbCatalogId;
+
+    try {
+      if (targetStock <= 0) {
+        const resp = await FacebookApiService.setAvailability(
+          account.accessToken,
+          retailerId,
+          "out of stock",
+          { quantity: 0, catalogId },
+        );
+        await this.confirmFacebookBatchOrThrow(
+          account.accessToken,
+          resp,
+          catalogId,
+        );
+        await ListingRepository.updateStatus(listing.id, "paused");
+      } else {
+        const resp = await FacebookApiService.setAvailability(
+          account.accessToken,
+          retailerId,
+          "in stock",
+          { quantity: targetStock, catalogId },
+        );
+        await this.confirmFacebookBatchOrThrow(
+          account.accessToken,
+          resp,
+          catalogId,
+        );
+        await ListingRepository.updateStatus(listing.id, "active");
+      }
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} sincronizado no Facebook (${targetStock <= 0 ? "indisponível" : "disponível"})`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        newStock: targetStock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao sincronizar estoque no Facebook: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Sincroniza dados completos (título/descrição/preço/estoque) para o Facebook.
+   * Reenvia o item inteiro (upsert com o mesmo retailer_id), refletindo o
+   * estoque na disponibilidade. ⚠️ Requer FB_PRODUCT_URL_BASE (o build monta o
+   * `link` do item) — o build lança erro claro se ausente.
+   */
+  private static async syncFacebookProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    if (!externalListingId || externalListingId.startsWith("PENDING_")) {
+      result.error = "Item Facebook ainda não publicado (placeholder).";
+      return result;
+    }
+
+    // Catálogo por conta: sem ele o retailer_id=SKU cairia no catálogo global do
+    // .env e dois tenants se sobrescreveriam. Bloqueia em vez de usar fallback.
+    if (!account.fbCatalogId) {
+      result.error =
+        "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).";
+      return result;
+    }
+    const catalogId = account.fbCatalogId;
+
+    try {
+      const targetStock = Number(product.stock) || 0;
+      const data = FacebookPayloadBuilderService.build(product, {
+        googleProductCategory:
+          FacebookCategoryResolutionService.resolveCategory(product),
+        availability: targetStock > 0 ? "in stock" : "out of stock",
+        quantity: targetStock,
+        // URL da página do vendedor por conta (env só fallback): sem isto o
+        // `link` do item seria reescrito com a URL global de outro tenant.
+        productUrlBase:
+          account.fbProductUrlBase ?? FACEBOOK_CONSTANTS.PRODUCT_URL_BASE,
+      });
+      const resp = await FacebookApiService.upsertItem(
+        account.accessToken,
+        externalListingId,
+        data,
+        { catalogId },
+      );
+      // A Meta devolve 200 + handles mesmo rejeitando o item (async): confirma
+      // no poll antes de gravar SUCCESS (senão marca sucesso p/ item recusado).
+      await this.confirmFacebookBatchOrThrow(
+        account.accessToken,
+        resp,
+        catalogId,
+      );
+      result.success = true;
+      result.newStock = targetStock;
+      return result;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+      return result;
+    }
+  }
+
   private static async syncMagaluProductData(
     product: any,
     externalListingId: string,
@@ -3622,6 +4781,12 @@ export class SyncUseCase {
       results: [],
     };
 
+    // Kill-switch de runtime: OLX/FACEBOOK_INTEGRATION_DISABLED=1 ⇒ no-op (não
+    // busca contas nem dispara nenhuma chamada outbound).
+    if (isPlatformDisabled(platform)) {
+      return result;
+    }
+
     // 1. Buscar contas do marketplace (multi-contas)
     const accounts =
       accountIds && accountIds.length > 0
@@ -3658,7 +4823,26 @@ export class SyncUseCase {
         select: {
           id: true,
           externalListingId: true,
-          product: { select: { id: true, sku: true, stock: true, name: true } },
+          // `status` decide o no-op da OLX (estoque > 0 + já ativo não republica).
+          status: true,
+          // A republicação da OLX reenvia o anúncio inteiro, então o select da
+          // OLX precisa dos campos que o build lê (preço/descrição/imagens/quality).
+          product: {
+            select:
+              platform === Platform.OLX
+                ? {
+                    id: true,
+                    sku: true,
+                    stock: true,
+                    name: true,
+                    description: true,
+                    price: true,
+                    imageUrl: true,
+                    imageUrls: true,
+                    quality: true,
+                  }
+                : { id: true, sku: true, stock: true, name: true },
+          },
           marketplaceAccount: true,
         },
       });
@@ -3686,8 +4870,16 @@ export class SyncUseCase {
 
         const batchResults = await Promise.allSettled(
           batch.map(async (listing) => {
-            // Timeout de 15s por item para evitar travamento
-            const timeoutMs = 15000;
+            // Timeout por item p/ evitar travamento. OLX/FB fazem poll assíncrono
+            // (OLX até 2s×15=30s; FB 1.5s×8=12s): com 15s fixo o timeout disparava
+            // ANTES do poll da OLX terminar → falso "falhou" + promessa órfã ainda
+            // escrevendo no banco depois. Dá folga acima do poll de cada plataforma.
+            const timeoutMs =
+              platform === Platform.OLX
+                ? 40000
+                : platform === Platform.FACEBOOK
+                  ? 20000
+                  : 15000;
             const syncPromise = (async () => {
               switch (platform) {
                 case Platform.MERCADO_LIVRE:
@@ -3696,6 +4888,13 @@ export class SyncUseCase {
                   return this.syncShopeeProductStock(listing, listing.product);
                 case Platform.MAGALU:
                   return this.syncMagaluProductStock(listing, listing.product);
+                case Platform.OLX:
+                  return this.syncOlxProductStock(listing, listing.product);
+                case Platform.FACEBOOK:
+                  return this.syncFacebookProductStock(
+                    listing,
+                    listing.product,
+                  );
                 default:
                   return {
                     success: false,
@@ -3819,9 +5018,8 @@ export class SyncUseCase {
           })
           .catch(() => [] as unknown[]),
       ]);
-      const { applyOverridesToProduct } = await import(
-        "../services/listing-overrides.service"
-      );
+      const { applyOverridesToProduct } =
+        await import("../services/listing-overrides.service");
       const effectiveProduct = applyOverridesToProduct(
         product,
         listingForOverrides,
@@ -3863,6 +5061,21 @@ export class SyncUseCase {
           );
         case Platform.MAGALU:
           return await this.syncMagaluProductData(
+            effectiveProduct,
+            externalListingId,
+            account,
+          );
+        case Platform.OLX:
+          return await this.syncOlxProductData(
+            effectiveProduct,
+            externalListingId,
+            account,
+            // Mesmo padrão do ML: o listing já está carregado, e a despublicação
+            // por estoque zerado precisa do id para gravar o status "paused".
+            listingForOverrides?.id ?? null,
+          );
+        case Platform.FACEBOOK:
+          return await this.syncFacebookProductData(
             effectiveProduct,
             externalListingId,
             account,
@@ -3947,12 +5160,13 @@ export class SyncUseCase {
       // Para esses, o título é atualizado via PUT /items/{id} com `family_name`
       // (NÃO `title`) — mesmo caminho usado em ListingUseCase pós-criação. A
       // descrição vai via POST /items/{id}/description.
-      const userProductIdFromMl =
-        ((currentItem as { user_product_id?: string | null })
-          .user_product_id || "").trim();
-      const familyNameFromMl =
-        ((currentItem as { family_name?: string | null }).family_name || "")
-          .trim();
+      const userProductIdFromMl = (
+        (currentItem as { user_product_id?: string | null }).user_product_id ||
+        ""
+      ).trim();
+      const familyNameFromMl = (
+        (currentItem as { family_name?: string | null }).family_name || ""
+      ).trim();
       const isUserProductItem = !!(userProductIdFromMl || familyNameFromMl);
 
       // Atualizações UP-específicas pendentes (executadas após o PUT /items).
@@ -4276,11 +5490,7 @@ export class SyncUseCase {
             const cause = err?.response?.data;
             const causeStr =
               typeof cause === "string" ? cause : JSON.stringify(cause || "");
-            const lower = (
-              causeStr +
-              " " +
-              (err?.message || "")
-            ).toLowerCase();
+            const lower = (causeStr + " " + (err?.message || "")).toLowerCase();
 
             const blockedThisRound: string[] = [];
             if (
@@ -4521,8 +5731,7 @@ export class SyncUseCase {
               `[SYNC] UP description atualizada via endpoint dedicado /items/${externalListingId}/description`,
             );
           } catch (err) {
-            const rawMessage =
-              err instanceof Error ? err.message : String(err);
+            const rawMessage = err instanceof Error ? err.message : String(err);
             console.error(
               JSON.stringify({
                 event: "ml.description.update_failed",

@@ -3,6 +3,7 @@ import {
   ListingStatusRefreshService,
   type RefreshableListingRow,
 } from "./listing-status-refresh.service";
+import { isFacebookDisabled } from "@/app/lib/integration-flags";
 
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
 const PAGE_SIZE = 100;
@@ -14,7 +15,7 @@ const PAGE_SIZE = 100;
  * (ML) e o live=1 do dialog cobrem o "agora"; esta varredura cura o resto:
  * badges/listas desatualizados, eventos de webhook perdidos e a Shopee (que
  * não tem webhook de item). A cada rodada processa uma página de listings
- * por conta ativa (ML/Shopee) e delega ao ListingStatusRefreshService.
+ * por conta ativa (ML/Shopee/Facebook) e delega ao ListingStatusRefreshService.
  *
  * Cursor keyset em memória por conta: rodadas sucessivas percorrem todo o
  * catálogo; página incompleta reinicia a rotação. Restart do processo só
@@ -31,10 +32,15 @@ export class ListingStatusSweepService {
   static async runOnce(): Promise<void> {
     if (process.env.LISTING_STATUS_SYNC_DISABLED === "1") return;
 
+    // Kill-switch de runtime: Facebook sai da varredura de espelhamento quando
+    // FACEBOOK_INTEGRATION_DISABLED=1. (OLX não espelha status nesta fase.)
+    const mirrorPlatforms = ["MERCADO_LIVRE", "SHOPEE"];
+    if (!isFacebookDisabled()) mirrorPlatforms.push("FACEBOOK");
+
     const accounts = await (prisma as any).marketplaceAccount.findMany({
       where: {
         status: "ACTIVE",
-        platform: { in: ["MERCADO_LIVRE", "SHOPEE"] },
+        platform: { in: mirrorPlatforms },
       },
       select: {
         id: true,
@@ -44,6 +50,7 @@ export class ListingStatusSweepService {
         refreshToken: true,
         expiresAt: true,
         shopId: true,
+        fbCatalogId: true,
       },
     });
 

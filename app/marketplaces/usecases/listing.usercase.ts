@@ -7,6 +7,21 @@ import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { MagaluPayloadBuilderService } from "../services/magalu-payload-builder.service";
 import { MagaluCategoryResolutionService } from "../services/magalu-category-resolution.service";
+import { OlxApiService } from "../services/olx-api.service";
+import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
+import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
+import { OlxRepublishService } from "../services/olx-republish.service";
+import { MarketplaceAccountService } from "../services/marketplace-account.service";
+import { formatMarketplaceError } from "../services/olx-facebook-error-message.service";
+import {
+  OLX_CONSTANTS,
+  resolveOlxSellerContact,
+} from "../olx/olx-constants";
+import { FacebookApiService } from "../services/facebook-api.service";
+import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
+import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
+import { FACEBOOK_CONSTANTS } from "../facebook/facebook-constants";
+import { isPlatformDisabled } from "../../lib/integration-flags";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -26,6 +41,8 @@ import {
 import {
   classifyMLRemoveError,
   classifyShopeeRemoveError,
+  classifyOlxRemoveError,
+  classifyFacebookRemoveError,
   withRetry,
 } from "../services/listing-removal.helpers";
 import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
@@ -138,6 +155,8 @@ export interface ListingFullEditInput extends MLListingSettings {
   categoryOverride?: string | null;
   mlCategoryOverride?: string | null;
   shopeeCategoryOverride?: string | null;
+  olxCategoryOverride?: string | null;
+  fbCategoryOverride?: string | null;
   partNumberOverride?: string | null;
   qualityOverride?: string | null;
   heightCmOverride?: number | null;
@@ -181,11 +200,27 @@ export class ListingUseCase {
   // pt-BR e en. Usados quando precisamos escolher um valor para um atributo
   // mandatory sem dados do produto — preferimos o neutro.
   private static readonly SHOPEE_NEUTRAL_VALUE_SYNONYMS = new Set([
-    "outros", "outro", "other", "others",
-    "não aplicável", "nao aplicavel", "n/a", "na",
-    "nenhum", "nenhuma", "none", "sem",
-    "genérica", "generica", "genérico", "generico", "generic",
-    "indefinido", "indefinida", "não informado", "nao informado",
+    "outros",
+    "outro",
+    "other",
+    "others",
+    "não aplicável",
+    "nao aplicavel",
+    "n/a",
+    "na",
+    "nenhum",
+    "nenhuma",
+    "none",
+    "sem",
+    "genérica",
+    "generica",
+    "genérico",
+    "generico",
+    "generic",
+    "indefinido",
+    "indefinida",
+    "não informado",
+    "nao informado",
   ]);
 
   /**
@@ -457,6 +492,15 @@ export class ListingUseCase {
         );
       case Platform.MAGALU:
         return this.createMagaluListing(
+          userId,
+          productId,
+          categoryId,
+          accountId,
+        );
+      case Platform.OLX:
+        return this.createOlxListing(userId, productId, categoryId, accountId);
+      case Platform.FACEBOOK:
+        return this.createFacebookListing(
           userId,
           productId,
           categoryId,
@@ -956,7 +1000,9 @@ export class ListingUseCase {
 
     if (compatLines.length > 0) {
       parts.push("Compatível com:");
-      parts.push(compatLines.map((l) => `- ${this.normalizeUtf8(l)}`).join("\n"));
+      parts.push(
+        compatLines.map((l) => `- ${this.normalizeUtf8(l)}`).join("\n"),
+      );
     }
 
     if (product.sku) parts.push(`SKU: ${product.sku}`);
@@ -1054,8 +1100,7 @@ export class ListingUseCase {
     const includeFamilyName = this.shouldIncludeFamilyName(normalized);
     const noTitleFlow = this.noTitleWithFamilyName(normalized);
     const familyNameValue = this.buildMLTitle(product);
-    const titleValue =
-      (basePayload as any).title || this.buildMLTitle(product);
+    const titleValue = (basePayload as any).title || this.buildMLTitle(product);
 
     const rebuilt: MLItemCreatePayload = {
       ...basePayload,
@@ -1614,18 +1659,15 @@ export class ListingUseCase {
           );
         if (!domainCheck.ok && domainCheck.reason === "outside_root") {
           guardWithinVehicleRoot = false;
-          console.warn(
-            `[ListingUseCase] category trace BLOCKED outside_root`,
-            {
-              productId: product.id,
-              productPersisted: (product as any).mlCategoryId,
-              requestedByClient: categoryId,
-              resolved: categoryIdForML,
-              source: resolvedCategory.source,
-              fullPath: resolvedCategory.fullPath,
-              withinVehicleRoot: false,
-            },
-          );
+          console.warn(`[ListingUseCase] category trace BLOCKED outside_root`, {
+            productId: product.id,
+            productPersisted: (product as any).mlCategoryId,
+            requestedByClient: categoryId,
+            resolved: categoryIdForML,
+            source: resolvedCategory.source,
+            fullPath: resolvedCategory.fullPath,
+            withinVehicleRoot: false,
+          });
           return {
             success: false,
             error: `Categoria '${resolvedCategory.fullPath || categoryIdForML}' está fora do nicho de autopeças. Edite o produto e escolha uma categoria sob 'Acessórios para Veículos'.`,
@@ -1644,11 +1686,10 @@ export class ListingUseCase {
       // Previne chamadas ao ML API quando sabemos que a categoria não aceita
       // a `condition` do produto (ex: categoria só aceita [new] mas produto
       // é usado). Fail-open em caso de erro de rede ou metadados ausentes.
-      const condCheck =
-        await CategoryResolutionService.assertConditionCoherent(
-          categoryIdForML,
-          effectiveConditionForPreflight,
-        );
+      const condCheck = await CategoryResolutionService.assertConditionCoherent(
+        categoryIdForML,
+        effectiveConditionForPreflight,
+      );
       // Rastreia se a condição veio EXPLICITAMENTE do modal (mlSettings) vs.
       // de derivação automática (product.quality). Override silencioso só é
       // aceitável no segundo caso — quando o usuário não escolheu, derivamos.
@@ -2001,9 +2042,8 @@ export class ListingUseCase {
       // `gold_premium` é alias legado que sofre downgrade silencioso em fluxos
       // UP/family_name. Ver `MLApiService.normalizeListingType` para detalhes.
       const requestedListingType = effectiveSettings.listingType || "bronze";
-      const normalizedListingType = MLApiService.normalizeListingType(
-        requestedListingType,
-      );
+      const normalizedListingType =
+        MLApiService.normalizeListingType(requestedListingType);
       if (normalizedListingType !== requestedListingType) {
         console.warn(
           `[ListingUseCase] listing_type normalizado: ${requestedListingType} → ${normalizedListingType} (alias MLB)`,
@@ -2679,10 +2719,10 @@ export class ListingUseCase {
                 const innerMl =
                   innerErr && innerErr.mlError ? innerErr.mlError : null;
                 recordAttemptCause(innerErr);
-                const innerMsg = JSON.stringify(innerMl || innerErr?.message || "")
-                  .toLowerCase();
-                const innerNeedsFamily =
-                  innerMsg.includes("family_name");
+                const innerMsg = JSON.stringify(
+                  innerMl || innerErr?.message || "",
+                ).toLowerCase();
+                const innerNeedsFamily = innerMsg.includes("family_name");
                 if (innerNeedsFamily) {
                   const familyRetryPayload: MLItemCreatePayload = {
                     ...retryPayload,
@@ -2703,7 +2743,9 @@ export class ListingUseCase {
                   } catch (innerErr2: any) {
                     recordAttemptCause(innerErr2);
                     const inner2Msg = JSON.stringify(
-                      (innerErr2 && innerErr2.mlError) || innerErr2?.message || "",
+                      (innerErr2 && innerErr2.mlError) ||
+                        innerErr2?.message ||
+                        "",
                     ).toLowerCase();
                     // Título rejeitado novamente → tentar apenas sem title
                     if (inner2Msg.includes("title")) {
@@ -2715,10 +2757,7 @@ export class ListingUseCase {
                       } as any;
                       delete (noTitleRetry as any).title;
                       mlItem = await this.withTimeout(
-                        MLApiService.createItem(
-                          acc.accessToken,
-                          noTitleRetry,
-                        ),
+                        MLApiService.createItem(acc.accessToken, noTitleRetry),
                         timeoutMs,
                         "ML createItem suggested+noTitle",
                       );
@@ -3029,11 +3068,9 @@ export class ListingUseCase {
       // Clássica. POST /items/{id}/listing_type só permite upgrades, então é
       // seguro (no-op se já estiver no alvo; rejeita downgrades).
       const sentListingType = (payload as any).listing_type_id as
-        | string
-        | undefined;
+        string | undefined;
       const returnedListingType = (mlItem as any)?.listing_type_id as
-        | string
-        | undefined;
+        string | undefined;
       if (
         mlItem?.id &&
         sentListingType &&
@@ -3121,9 +3158,7 @@ export class ListingUseCase {
         !!mlItem?.id &&
         !!desiredFamilyName &&
         !familyNameAlreadyOk &&
-        (titleMismatch ||
-          includeFamilyName ||
-          !!(payload as any).family_name);
+        (titleMismatch || includeFamilyName || !!(payload as any).family_name);
 
       const descriptionPromise = this.withTimeout(
         MLApiService.upsertDescription(
@@ -3726,7 +3761,10 @@ export class ListingUseCase {
       // aceito (createSku é assíncrono/202 e o sku/group.id são fixos).
       let created: Awaited<ReturnType<typeof MagaluApiService.createSku>>;
       try {
-        created = await MagaluApiService.createSku(account.accessToken, payload);
+        created = await MagaluApiService.createSku(
+          account.accessToken,
+          payload,
+        );
       } catch (createErr) {
         const status = (createErr as { status?: number })?.status;
         const isPayloadValidation = status === 400 || status === 422;
@@ -3833,6 +3871,242 @@ export class ListingUseCase {
         } catch (persistErr) {
           console.warn(
             `[ListingUseCase] Falha ao gravar o erro do create Magalu (sku=${product.sku}):`,
+            persistErr instanceof Error ? persistErr.message : persistErr,
+          );
+        }
+      }
+      return { success: false, error: message };
+    }
+  }
+
+  /**
+   * Cria (publica) um anúncio na OLX via autoupload. Espelha createMagaluListing,
+   * adaptado ao contrato REAL da OLX:
+   *  - SEM refresh de token (OLX não tem) — usa o access_token da conta direto.
+   *  - Categoria resolvida OFFLINE (código INT); sem categoria → não publica.
+   *  - submitImport (insert) → statusCode; poll best-effort → list_id + url.
+   *  - Persiste externalListingId = SKU (chave estável p/ insert/delete/edição —
+   *    NÃO placeholder PENDING_, senão baixa/refill pulam a listing) e o list_id
+   *    real em olxListId (+ url em permalink).
+   */
+  static async createOlxListing(
+    userId: string,
+    productId: string,
+    categoryId?: string,
+    accountId?: string,
+    actorId?: string,
+  ): Promise<CreateListingResult> {
+    let account: any = null;
+    let product: any = null;
+    try {
+      account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.OLX,
+          );
+
+      if (!account && !accountId) {
+        const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.OLX,
+        );
+        const active = (all || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta OLX para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
+
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          error: "Conta da OLX não conectada ou sem credenciais válidas",
+        };
+      }
+      // ⚠️ SEM refresh de token: a OLX não fornece refresh_token. Se o
+      // access_token estiver morto, o submitImport falha e o seller reconecta.
+
+      product = await ListingUseCase.productRepository.findById(productId);
+      if (!product) {
+        return { success: false, error: "Produto não encontrado" };
+      }
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio na OLX",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio na OLX",
+        };
+      }
+      if (ListingUseCase.collectProductImageUrls(product).length === 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter pelo menos uma imagem para criar anúncio na OLX",
+        };
+      }
+
+      // Categoria (offline): explícita > de-para de veículo > default (2101).
+      // Só cai em null se OLX_DEFAULT_CATEGORY_ID for desativado (guarda defensiva).
+      const resolvedCategory =
+        (categoryId != null && Number.isFinite(Number(categoryId))
+          ? Number(categoryId)
+          : null) ?? OlxCategoryResolutionService.resolveCategoryId(product);
+      if (resolvedCategory == null) {
+        return {
+          success: false,
+          error: "Categoria OLX não resolvida para este produto.",
+        };
+      }
+
+      // Contato do vendedor por conta (env só fallback) p/ não vazar entre tenants.
+      const { phone, zipcode } = resolveOlxSellerContact(account);
+      if (!phone || !zipcode) {
+        return {
+          success: false,
+          error:
+            "Configure o telefone/CEP do vendedor OLX na conta (ou OLX_SELLER_PHONE/OLX_SELLER_ZIPCODE).",
+        };
+      }
+
+      const ad = OlxPayloadBuilderService.build(product, {
+        categoryId: resolvedCategory,
+        phone,
+        zipcode,
+        params: OlxCategoryResolutionService.buildAdParams(
+          product,
+          resolvedCategory,
+        ),
+      });
+
+      const importResp = await OlxApiService.submitImport(account.accessToken, [
+        ad,
+      ]);
+      // A OLX devolve statusCode no corpo (mesmo em HTTP 200). Só 0 é OK.
+      if (importResp.statusCode !== 0) {
+        const detail =
+          importResp.statusMessage ||
+          (importResp.errors && importResp.errors.join("; ")) ||
+          `statusCode ${importResp.statusCode}`;
+        const err = new Error(`OLX recusou o import: ${detail}`);
+        (err as any).olxStatusCode = importResp.statusCode;
+        throw err;
+      }
+
+      // Poll best-effort do status → list_id/url quando accepted. Não falha a
+      // criação se o poll não concluir (o anúncio pode ficar na fila da OLX).
+      let olxListId: string | null = null;
+      let permalink: string | null = null;
+      let listingStatus = "pending"; // fila de revisão da OLX
+      if (importResp.token) {
+        try {
+          const status = await OlxApiService.pollImportUntilDone(
+            account.accessToken,
+            importResp.token,
+          );
+          const entry = status?.ads?.[ad.id];
+          if (entry) {
+            olxListId = entry.list_id ?? null;
+            permalink = entry.url ?? null;
+            if (entry.status === "accepted") listingStatus = "active";
+            else if (entry.status === "refused") {
+              const msg = (entry.message || []).join("; ") || "REFUSED_GENERIC";
+              const err = new Error(`OLX recusou o anúncio: ${msg}`);
+              (err as any).olxStatusCode = importResp.statusCode;
+              throw err;
+            }
+          }
+        } catch (pollErr) {
+          if (pollErr instanceof Error && /OLX recusou/.test(pollErr.message)) {
+            throw pollErr;
+          }
+          console.warn(
+            `[ListingUseCase] poll de status OLX falhou (segue como pending, id=${ad.id}):`,
+            pollErr instanceof Error ? pollErr.message : pollErr,
+          );
+        }
+      }
+
+      // externalListingId = SKU/id ESTÁVEL (chave de insert/delete/edição).
+      // NÃO placeholder PENDING_ (guards de baixa/refill pulam PENDING).
+      const externalListingId = ad.id;
+
+      const listing = await ListingRepository.upsertListing({
+        productId: product.id,
+        marketplaceAccountId: account.id,
+        externalListingId,
+        externalSku: product.sku ?? null,
+        permalink,
+        olxListId,
+        status: listingStatus,
+        lastError: null,
+        retryEnabled: false,
+        nextRetryAt: null,
+        // Categoria efetivamente publicada — alimenta o filtro "Categoria
+        // publicada". Na OLX é o código do VEÍCULO (2101 carros / 2103 motos);
+        // o tipo de peça viaja em `params`, não aqui.
+        requestedCategoryId: String(resolvedCategory),
+        // "Criado por": o ator humano que disparou o create (mesmo padrão
+        // ML/Shopee/Magalu). Sem isto o anúncio OLX nascia sem autor.
+        createdByUserId: actorId ?? null,
+      });
+
+      return {
+        success: true,
+        listingId: listing.id,
+        externalListingId,
+        permalink: permalink ?? undefined,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erro ao criar anúncio na OLX";
+      // Credencial morta marca a conta como ERROR (no-op para erro comum):
+      // sem isto a conta seguia verde na tela de Integrações enquanto toda
+      // publicação falhava.
+      if (account?.id) {
+        await MarketplaceAccountService.handleAuthFailure(account.id, error, {
+          userId,
+          context: "AUTH_REFRESH",
+        });
+      }
+      if (product?.sku && account?.id) {
+        try {
+          await ListingRepository.upsertListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId: OlxPayloadBuilderService.buildId(product),
+            externalSku: product.sku,
+            status: "error",
+            // Mensagem acionável em vez do enum cru da OLX (o original fica
+            // preservado entre parênteses para quem for investigar).
+            lastError: formatMarketplaceError("OLX", message).slice(0, 490),
+            // Retry habilitado: o ListingRetryService tem branch OLX que
+            // delega para createOlxListing (nunca toca a API do ML). Sem
+            // isto uma instabilidade transitória da OLX matava o anúncio na
+            // primeira tentativa.
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + 60 * 1000),
+            // "Criado por" também no caminho de erro: a linha NASCE aqui quando
+            // a primeira tentativa falha, e o ramo `update` do upsert nunca mais
+            // preenche o autor — ficaria null para sempre.
+            createdByUserId: actorId ?? null,
+          });
+        } catch (persistErr) {
+          console.warn(
+            `[ListingUseCase] Falha ao gravar o erro do create OLX (sku=${product.sku}):`,
             persistErr instanceof Error ? persistErr.message : persistErr,
           );
         }
@@ -4563,11 +4837,17 @@ export class ListingUseCase {
       const rawWeightKg =
         product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0;
       const rawLength =
-        product.lengthCm && product.lengthCm > 0 ? Math.round(product.lengthCm) : 10;
+        product.lengthCm && product.lengthCm > 0
+          ? Math.round(product.lengthCm)
+          : 10;
       const rawWidth =
-        product.widthCm && product.widthCm > 0 ? Math.round(product.widthCm) : 10;
+        product.widthCm && product.widthCm > 0
+          ? Math.round(product.widthCm)
+          : 10;
       const rawHeight =
-        product.heightCm && product.heightCm > 0 ? Math.round(product.heightCm) : 10;
+        product.heightCm && product.heightCm > 0
+          ? Math.round(product.heightCm)
+          : 10;
 
       // Envelope = most permissive per-axis limit across enabled channels.
       // A value of 0/undefined means "no limit" → represented as Infinity.
@@ -4623,7 +4903,8 @@ export class ListingUseCase {
           adjL = Math.max(SHOPEE_MIN_DIM_CM, adjL - (sum - envelope.maxDimSum));
         else if (adjW >= adjH)
           adjW = Math.max(SHOPEE_MIN_DIM_CM, adjW - (sum - envelope.maxDimSum));
-        else adjH = Math.max(SHOPEE_MIN_DIM_CM, adjH - (sum - envelope.maxDimSum));
+        else
+          adjH = Math.max(SHOPEE_MIN_DIM_CM, adjH - (sum - envelope.maxDimSum));
         sum = adjL + adjW + adjH;
         safety++;
       }
@@ -4963,13 +5244,18 @@ export class ListingUseCase {
             const maxAttempts = 5;
             const shouldRetry = !isTerminalError && attempts < maxAttempts;
             const backoffSeconds = [60, 120, 300, 600, 900];
-            const nextDelay = backoffSeconds[Math.min(attempts - 1, backoffSeconds.length - 1)];
+            const nextDelay =
+              backoffSeconds[Math.min(attempts - 1, backoffSeconds.length - 1)];
 
             await ListingRepository.updateListing(existingListing.id, {
               status: "error",
-              lastError: (isTerminalError ? "[TERMINAL] " : "") + errorMsg.substring(0, 490),
+              lastError:
+                (isTerminalError ? "[TERMINAL] " : "") +
+                errorMsg.substring(0, 490),
               retryEnabled: shouldRetry,
-              nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
               retryAttempts: attempts,
             });
 
@@ -5055,9 +5341,13 @@ export class ListingUseCase {
         }
 
         if (currentItem.status === "active") {
-          await MLApiService.updateItem(account.accessToken, listing.externalListingId, {
-            status: "paused",
-          });
+          await MLApiService.updateItem(
+            account.accessToken,
+            listing.externalListingId,
+            {
+              status: "paused",
+            },
+          );
           return { success: true };
         }
       }
@@ -5091,9 +5381,7 @@ export class ListingUseCase {
    *    Se ainda falhar, NÃO deleta local, retorna retryable=true.
    *  - Erro permanente (4xx genérico, auth) → NÃO deleta local.
    */
-  static async removeMLListing(
-    listingId: string,
-  ): Promise<{
+  static async removeMLListing(listingId: string): Promise<{
     success: boolean;
     closedOnMarketplace: boolean;
     error?: string;
@@ -5169,17 +5457,25 @@ export class ListingUseCase {
               currentAccountId: listing.marketplaceAccountId,
               externalListingId: listing.externalListingId,
             });
-            if (repair.repaired && repair.newAccountId && repair.newAccountToken) {
+            if (
+              repair.repaired &&
+              repair.newAccountId &&
+              repair.newAccountToken
+            ) {
               await ListingRepository.reassignAccount(
                 listingId,
                 repair.newAccountId,
               );
-              void SystemLogService.logListingOwnershipRepaired(userId, listingId, {
-                externalListingId: listing.externalListingId,
-                oldAccountId: listing.marketplaceAccountId,
-                newAccountId: repair.newAccountId,
-                itemStatus: repair.itemStatus,
-              });
+              void SystemLogService.logListingOwnershipRepaired(
+                userId,
+                listingId,
+                {
+                  externalListingId: listing.externalListingId,
+                  oldAccountId: listing.marketplaceAccountId,
+                  newAccountId: repair.newAccountId,
+                  itemStatus: repair.itemStatus,
+                },
+              );
               console.log(
                 `[ListingUseCase] ownership reparado: listing ${listingId} reapontado para conta ${repair.newAccountId} (item status=${repair.itemStatus})`,
               );
@@ -5250,7 +5546,8 @@ export class ListingUseCase {
       return {
         success: false,
         closedOnMarketplace: false,
-        error: error instanceof Error ? error.message : "Erro ao remover anúncio",
+        error:
+          error instanceof Error ? error.message : "Erro ao remover anúncio",
       };
     }
   }
@@ -5261,9 +5558,7 @@ export class ListingUseCase {
    * Idempotência Shopee: error_inexist / product.error_inexist são tratados
    * como sucesso (item já não existe no marketplace).
    */
-  static async removeShopeeListing(
-    listingId: string,
-  ): Promise<{
+  static async removeShopeeListing(listingId: string): Promise<{
     success: boolean;
     closedOnMarketplace: boolean;
     error?: string;
@@ -5353,7 +5648,8 @@ export class ListingUseCase {
       return {
         success: false,
         closedOnMarketplace: false,
-        error: error instanceof Error ? error.message : "Erro ao remover anúncio",
+        error:
+          error instanceof Error ? error.message : "Erro ao remover anúncio",
       };
     }
   }
@@ -5363,9 +5659,7 @@ export class ListingUseCase {
    * da conta vinculada. Propaga o resultado estendido (closedOnMarketplace,
    * retryable). Plataforma desconhecida = só delete local (sem nada remoto).
    */
-  static async removeListing(
-    listingId: string,
-  ): Promise<{
+  static async removeListing(listingId: string): Promise<{
     success: boolean;
     closedOnMarketplace: boolean;
     error?: string;
@@ -5389,6 +5683,12 @@ export class ListingUseCase {
     }
     if (platform === Platform.MAGALU) {
       return ListingUseCase.removeMagaluListing(listingId);
+    }
+    if (platform === Platform.OLX) {
+      return ListingUseCase.removeOlxListing(listingId);
+    }
+    if (platform === Platform.FACEBOOK) {
+      return ListingUseCase.removeFacebookListing(listingId);
     }
 
     console.warn(
@@ -5444,6 +5744,17 @@ export class ListingUseCase {
         return await ListingUseCase.updateMagaluListingFields(listing, fields);
       }
 
+      if (platform === Platform.OLX) {
+        return await ListingUseCase.updateOlxListingFields(listing, fields);
+      }
+
+      if (platform === Platform.FACEBOOK) {
+        return await ListingUseCase.updateFacebookListingFields(
+          listing,
+          fields,
+        );
+      }
+
       return {
         success: false,
         error: `Plataforma ${platform} não suportada para edição`,
@@ -5495,6 +5806,14 @@ export class ListingUseCase {
 
       // Guard comum a ambas as plataformas: anúncio precisa estar publicado.
       const platform = listing.marketplaceAccount?.platform;
+
+      // Kill-switch de runtime: integração desativada não toca a API do canal.
+      // Cobre os caminhos que NÃO passam pelo prefixo /marketplace (e portanto
+      // escapam do hook de rota): auto-pause por venda no PDV, pause manual em
+      // /products e restore de cancelamento. No-op mantém DB e canal intactos.
+      if (platform && isPlatformDisabled(platform)) {
+        return { success: false, error: `${platform} desativado por kill-switch` };
+      }
 
       // Magalu: a publicação é assíncrona (POST 202) e o `externalListingId` fica
       // PENDING_<sku>; a chave de API é o SKU (externalSku). Considera-se
@@ -5584,6 +5903,122 @@ export class ListingUseCase {
         await MagaluApiService.patchSku(token, sku, {
           active: status === "active",
         });
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
+      }
+
+      if (platform === Platform.OLX) {
+        // OLX não tem "pausar": pausar = delete (despublicar), reativar = insert
+        // (re-entra na fila de revisão da OLX). O `id` do autoupload é o
+        // externalListingId (SKU). Sem refresh de token (OLX não tem).
+        const account = listing.marketplaceAccount;
+        if (!account || !account.accessToken) {
+          return { success: false, error: "Conta OLX sem credenciais válidas" };
+        }
+        const olxId = listing.externalListingId;
+        if (status === "paused") {
+          // A OLX devolve statusCode no corpo mesmo em HTTP 200 → só 0 é OK.
+          const resp = await OlxApiService.deleteAd(account.accessToken, olxId);
+          if (resp.statusCode !== 0) {
+            const detail =
+              resp.statusMessage ||
+              (resp.errors && resp.errors.join("; ")) ||
+              `statusCode ${resp.statusCode}`;
+            return {
+              success: false,
+              error: `OLX recusou a despublicação: ${detail}`,
+            };
+          }
+          await ListingRepository.updateStatus(listingId, status);
+          return { success: true };
+        }
+        // Reativar = recriar o anúncio inteiro (a OLX não tem pausa). Este é o
+        // caminho do CANCELAMENTO DE PEDIDO: o estoque volta e o anúncio precisa
+        // voltar ao ar exatamente como estava — com os overrides do anúncio, a
+        // categoria escolhida pelo operador e a confirmação da OLX.
+        // `findById` (sem leanProduct) já trouxe o Product completo e as colunas
+        // *Override, então não há reload a fazer aqui.
+        const rep = await OlxRepublishService.republish({
+          accessToken: account.accessToken,
+          olxId,
+          product: listing.product,
+          listingOverrides: listing,
+          sellerPhone: account.olxSellerPhone,
+          sellerZipcode: account.olxSellerZipcode,
+        });
+        if (!rep.success) {
+          return {
+            success: false,
+            error: rep.error ?? "Falha ao reativar o anúncio na OLX",
+          };
+        }
+        // Repopula os identificadores REAIS devolvidos pela OLX. Sem isto o
+        // link do anúncio continua apontando para o `list_id` antigo, que morreu
+        // junto com a despublicação.
+        await ListingRepository.updateListing(listingId, {
+          status,
+          ...(rep.olxListId ? { olxListId: rep.olxListId } : {}),
+          ...(rep.permalink ? { permalink: rep.permalink } : {}),
+        });
+        return { success: true };
+      }
+
+      if (platform === Platform.FACEBOOK) {
+        // Facebook/Meta: "pausar" = UPDATE availability='out of stock' (o item
+        // PERMANECE no catálogo); "reativar" = 'in stock'. NÃO deleta/reinsere
+        // como a OLX. O retailer_id do catálogo = externalListingId (SKU).
+        const account = listing.marketplaceAccount;
+        if (!account || !account.accessToken) {
+          return {
+            success: false,
+            error: "Conta Facebook sem credenciais válidas",
+          };
+        }
+        // Catálogo por conta: sem ele o retailer_id=SKU cairia no catálogo
+        // global do .env e dois tenants se sobrescreveriam. Bloqueia, sem fallback.
+        if (!account.fbCatalogId) {
+          return {
+            success: false,
+            error:
+              "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).",
+          };
+        }
+        const catalogId = account.fbCatalogId;
+        const availability = status === "paused" ? "out of stock" : "in stock";
+        const quantity =
+          status === "paused"
+            ? 0
+            : typeof listing.product?.stock === "number"
+              ? listing.product.stock
+              : undefined;
+        const resp = await FacebookApiService.setAvailability(
+          account.accessToken,
+          listing.externalListingId,
+          availability,
+          { catalogId, quantity },
+        );
+        // items_batch devolve 200 + handles mesmo quando a Meta rejeita (async) → poll.
+        const handle = resp.handles?.[0];
+        if (handle) {
+          const entry = await FacebookApiService.pollBatchUntilDone(
+            account.accessToken,
+            handle,
+            { catalogId },
+          );
+          if (
+            entry &&
+            (entry.status === "error" ||
+              (Array.isArray(entry.errors) && entry.errors.length > 0))
+          ) {
+            const detail = Array.isArray(entry.errors)
+              ? JSON.stringify(entry.errors)
+              : entry.status;
+            return {
+              success: false,
+              error: `Facebook recusou a alteração de disponibilidade: ${detail}`,
+            };
+          }
+        }
         await ListingRepository.updateStatus(listingId, status);
         return { success: true };
       }
@@ -5778,7 +6213,9 @@ export class ListingUseCase {
    * Sem campos mapeáveis ⇒ no-op com sucesso (mesmo contrato do ML/Shopee).
    */
   private static async updateMagaluListingFields(
-    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    listing: NonNullable<
+      Awaited<ReturnType<typeof ListingRepository.findById>>
+    >,
     fields: ListingFullEditInput,
   ): Promise<{ success: boolean; error?: string }> {
     const account = listing.marketplaceAccount;
@@ -5848,6 +6285,721 @@ export class ListingUseCase {
       const channelId =
         await ListingUseCase.resolveMagaluChannelIdForUpdate(token);
       await MagaluApiService.setPrice(token, sku, priceToApply, channelId);
+    }
+    return { success: true };
+  }
+
+  /**
+   * Remove (despublica) um anúncio da OLX. Espelha removeMLListing/
+   * removeShopeeListing (withRetry + classifyOlxRemoveError), NÃO o Magalu
+   * (que faz try/catch inline). Idempotente: delete de anúncio já removido /
+   * inexistente é tratado como sucesso, e aí deleta o vínculo local.
+   */
+  static async removeOlxListing(listingId: string): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
+    try {
+      const listing = await ListingRepository.findById(listingId);
+      if (!listing) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
+      }
+
+      // Sem externalListingId real: nada a fechar na OLX.
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        await ListingRepository.deleteListing(listingId);
+        return { success: true, closedOnMarketplace: false };
+      }
+
+      const account = await MarketplaceRepository.findById(
+        listing.marketplaceAccountId,
+      );
+      if (!account || !account.accessToken) {
+        // Conta desconectada — política estrita: NÃO deleta local.
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta da OLX sem token de acesso. Reconecte a conta e tente novamente.",
+        };
+      }
+
+      try {
+        await withRetry(
+          async () => {
+            const resp = await OlxApiService.deleteAd(
+              account.accessToken!,
+              listing.externalListingId,
+            );
+            // A OLX devolve statusCode no corpo mesmo em HTTP 200 → transforma
+            // em erro (com olxStatusCode) p/ o classify decidir retry/permanent.
+            if (resp.statusCode !== 0) {
+              const detail =
+                resp.statusMessage ||
+                (resp.errors && resp.errors.join("; ")) ||
+                `statusCode ${resp.statusCode}`;
+              const err = new Error(`OLX recusou o delete: ${detail}`);
+              (err as any).olxStatusCode = resp.statusCode;
+              throw err;
+            }
+            return resp;
+          },
+          { classify: classifyOlxRemoveError },
+        );
+      } catch (closeError) {
+        const c = classifyOlxRemoveError(closeError);
+        if (c.kind === "idempotent") {
+          console.log(
+            `[ListingUseCase] OLX anúncio ${listing.externalListingId} já despublicado (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
+      }
+
+      await ListingRepository.deleteListing(listingId);
+      return { success: true, closedOnMarketplace: true };
+    } catch (error) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro ao remover anúncio OLX",
+      };
+    }
+  }
+
+  /**
+   * Edição de campos de um anúncio OLX: na OLX editar = re-insert com o MESMO
+   * id. Persiste os overrides no vínculo e re-envia o payload reconstruído.
+   */
+  private static async updateOlxListingFields(
+    listing: NonNullable<
+      Awaited<ReturnType<typeof ListingRepository.findById>>
+    >,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    const account = listing.marketplaceAccount;
+    if (!account || !account.accessToken) {
+      return { success: false, error: "Conta OLX sem credenciais válidas" };
+    }
+    const olxId = listing.externalListingId;
+    if (!olxId || olxId.startsWith("PENDING_")) {
+      return {
+        success: false,
+        error: "Anúncio ainda não foi publicado na OLX",
+      };
+    }
+
+    // Valida o preço antes de persistir/enviar.
+    let priceToApply: number | null = null;
+    let clearPriceOverride = false;
+    if (fields.priceOverride !== undefined) {
+      if (fields.priceOverride === null) {
+        clearPriceOverride = true;
+      } else {
+        const priceNum = Number(fields.priceOverride);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) {
+          return {
+            success: false,
+            error: "Preço inválido para anúncio OLX (deve ser número positivo)",
+          };
+        }
+        priceToApply = priceNum;
+      }
+    }
+
+    const data: {
+      titleOverride?: string | null;
+      descriptionOverride?: string | null;
+      olxCategoryOverride?: string | null;
+    } = {};
+    if (fields.titleOverride !== undefined)
+      data.titleOverride = fields.titleOverride;
+    if (fields.descriptionOverride !== undefined)
+      data.descriptionOverride = fields.descriptionOverride;
+    // Persiste a categoria escolhida ANTES do reload abaixo, p/ o build usar o
+    // valor novo (antes a coluna não tinha caminho de escrita: o operador
+    // digitava, recebia "salvo" e reabria vazio).
+    if (fields.olxCategoryOverride !== undefined)
+      data.olxCategoryOverride = fields.olxCategoryOverride;
+    if (Object.keys(data).length > 0) {
+      await ListingRepository.updateListing(listing.id, data);
+    }
+    if (priceToApply !== null) {
+      await ListingRepository.updatePriceOverride(listing.id, priceToApply);
+    } else if (clearPriceOverride) {
+      await ListingRepository.updatePriceOverride(listing.id, null);
+    }
+
+    // Recarrega o produto CHEIO: o findById do updateListingFields usa
+    // leanProduct (só userId+sku), então reconstruir o anúncio a partir de
+    // listing.product reenviaria título/preço/imagens vazios e sobrescreveria o
+    // anúncio vivo. Mesmo padrão do caminho Shopee (findById(listing.productId)).
+    const product = await ListingUseCase.productRepository.findById(
+      listing.productId,
+    );
+    if (!product) {
+      return { success: false, error: "Produto do anúncio OLX não encontrado" };
+    }
+    const { applyOverridesToProduct } = await import(
+      "../services/listing-overrides.service"
+    );
+    let listingForOverrides: any = listing;
+    try {
+      const prisma = (await import("../../lib/prisma")).default;
+      listingForOverrides =
+        (await prisma.productListing.findUnique({
+          where: { id: listing.id },
+        })) ?? listing;
+    } catch {
+      listingForOverrides = listing;
+    }
+    const effectiveProduct = applyOverridesToProduct(
+      product as any,
+      listingForOverrides,
+    ) as any;
+
+    const overrideCategory = (listingForOverrides as any)?.olxCategoryOverride;
+    const resolvedCategory =
+      (overrideCategory != null && Number.isFinite(Number(overrideCategory))
+        ? Number(overrideCategory)
+        : null) ??
+      OlxCategoryResolutionService.resolveCategoryId(effectiveProduct);
+    if (resolvedCategory == null) {
+      return {
+        success: false,
+        error: "Categoria OLX não resolvida para este anúncio.",
+      };
+    }
+
+    const { phone, zipcode } = resolveOlxSellerContact(account);
+    if (!phone || !zipcode) {
+      return {
+        success: false,
+        error:
+          "Edição OLX requer telefone/CEP do vendedor (conta ou OLX_SELLER_PHONE/ZIPCODE).",
+      };
+    }
+
+    const ad = OlxPayloadBuilderService.build(effectiveProduct, {
+      categoryId: resolvedCategory,
+      phone,
+      zipcode,
+      params: OlxCategoryResolutionService.buildAdParams(
+        effectiveProduct,
+        resolvedCategory,
+      ),
+    });
+    ad.id = olxId;
+
+    const resp = await OlxApiService.submitImport(account.accessToken, [ad]);
+    if (resp.statusCode !== 0) {
+      const detail =
+        resp.statusMessage ||
+        (resp.errors && resp.errors.join("; ")) ||
+        `statusCode ${resp.statusCode}`;
+      return { success: false, error: `OLX recusou a edição: ${detail}` };
+    }
+    return { success: true };
+  }
+
+  /**
+   * Monta o objeto passado à resolução de categoria Facebook: preserva a
+   * categoria explícita presente no input e enriquece o `name` com os
+   * campos veiculares estruturados (brand/model/year/version/sourceVehicle),
+   * para a heurística de veículo casar mesmo quando o nome não traz o termo.
+   * Espelha a leitura desses campos em OLX/ML.
+   */
+  private static buildFacebookCategoryInput(product: any): any {
+    const vehicleParts = [
+      product?.name,
+      product?.brand,
+      product?.model,
+      product?.year,
+      product?.version,
+      product?.sourceVehicle,
+    ]
+      .filter((p) => typeof p === "string" && p.trim())
+      .join(" ");
+    return {
+      ...product,
+      name: vehicleParts || product?.name,
+    };
+  }
+
+  /**
+   * Cria (publica) um item no catálogo Meta (Commerce Catalog) via items_batch.
+   * Espelha createOlxListing, adaptado ao contrato do Graph:
+   *  - Categoria resolvida OFFLINE (google_product_category).
+   *  - upsertItem (CREATE/allow_upsert) — retailer_id = SKU.
+   *  - Persiste externalListingId = SKU (chave estável) e o `link` em permalink.
+   *  - ⚠️ Exige FB_PRODUCT_URL_BASE (link do item); sem ela o build lança erro.
+   */
+  static async createFacebookListing(
+    userId: string,
+    productId: string,
+    categoryId?: string,
+    accountId?: string,
+    actorId?: string,
+  ): Promise<CreateListingResult> {
+    let account: any = null;
+    let product: any = null;
+    try {
+      account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.FACEBOOK,
+          );
+
+      if (!account && !accountId) {
+        const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.FACEBOOK,
+        );
+        const active = (all || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta Facebook para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
+
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          error: "Conta do Facebook não conectada ou sem credenciais válidas",
+        };
+      }
+
+      product = await ListingUseCase.productRepository.findById(productId);
+      if (!product) {
+        return { success: false, error: "Produto não encontrado" };
+      }
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio no Facebook",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio no Facebook",
+        };
+      }
+      if (ListingUseCase.collectProductImageUrls(product).length === 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter pelo menos uma imagem para criar anúncio no Facebook",
+        };
+      }
+
+      // Catálogo por conta: retailer_id == SKU, então dois tenants com o mesmo
+      // SKU colidiriam no mesmo catálogo Meta. Bloqueia quando ausente (sem
+      // fallback p/ o global do .env) em vez de publicar no catálogo errado.
+      if (!account.fbCatalogId) {
+        return {
+          success: false,
+          error:
+            "Catálogo Meta não configurado nesta conta (fbCatalogId ausente). Configure o catálogo do Facebook antes de publicar.",
+        };
+      }
+      const catalogId = account.fbCatalogId;
+      const productUrlBase =
+        account.fbProductUrlBase ?? FACEBOOK_CONSTANTS.PRODUCT_URL_BASE;
+
+      // Categoria: explícita (rota/override) > heurística de veículo.
+      // A heurística lê os campos estruturados (brand/model/year/version/
+      // sourceVehicle) além do nome, espelhando a resolução OLX/ML.
+      const explicitCategory =
+        typeof categoryId === "string" && categoryId.trim()
+          ? categoryId.trim()
+          : null;
+      const googleProductCategory =
+        explicitCategory ??
+        FacebookCategoryResolutionService.resolveCategory(
+          ListingUseCase.buildFacebookCategoryInput(product),
+        );
+      const retailerId = FacebookPayloadBuilderService.buildRetailerId(product);
+      // build() lança se a URL da página do vendedor estiver ausente (bloqueio conhecido).
+      const data = FacebookPayloadBuilderService.build(product, {
+        googleProductCategory,
+        availability: "in stock",
+        quantity: product.stock,
+        productUrlBase,
+      });
+
+      const resp = await FacebookApiService.upsertItem(
+        account.accessToken,
+        retailerId,
+        data,
+        { catalogId },
+      );
+
+      // Poll best-effort do status: o items_batch devolve 200 + handles mesmo
+      // quando a Meta rejeita o item (async). Só falha o create em erro EXPLÍCITO
+      // (status "error"/errors); poll inconclusivo segue como publicado.
+      const handle = resp.handles?.[0];
+      if (handle) {
+        const entry = await FacebookApiService.pollBatchUntilDone(
+          account.accessToken,
+          handle,
+          { catalogId },
+        );
+        if (
+          entry &&
+          (entry.status === "error" ||
+            (Array.isArray(entry.errors) && entry.errors.length > 0))
+        ) {
+          const detail = Array.isArray(entry.errors)
+            ? JSON.stringify(entry.errors)
+            : entry.status;
+          throw new Error(`Facebook rejeitou o item: ${detail}`);
+        }
+      }
+
+      const listing = await ListingRepository.upsertListing({
+        productId: product.id,
+        marketplaceAccountId: account.id,
+        externalListingId: retailerId,
+        externalSku: product.sku ?? null,
+        permalink: data.link ?? null,
+        status: "active",
+        lastError: null,
+        retryEnabled: false,
+        nextRetryAt: null,
+        // Categoria efetivamente publicada (google_product_category) — mesmo
+        // papel que mlCategoryId cumpre no ML para o filtro de Produtos.
+        requestedCategoryId: googleProductCategory
+          ? String(googleProductCategory)
+          : null,
+        // "Criado por": ator humano do create (mesmo padrão ML/Shopee/Magalu).
+        createdByUserId: actorId ?? null,
+      });
+
+      return {
+        success: true,
+        listingId: listing.id,
+        externalListingId: retailerId,
+        permalink: data.link ?? undefined,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Erro ao criar anúncio no Facebook";
+      // Token da Meta revogado/expirado marca a conta como ERROR. No-op quando
+      // o erro é comum (categoria inválida, imagem pequena etc.).
+      if (account?.id) {
+        await MarketplaceAccountService.handleAuthFailure(account.id, error, {
+          userId,
+          context: "AUTH_REFRESH",
+        });
+      }
+      if (product?.sku && account?.id) {
+        try {
+          await ListingRepository.upsertListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId:
+              FacebookPayloadBuilderService.buildRetailerId(product),
+            externalSku: product.sku,
+            status: "error",
+            // Idem OLX: traduz o JSON cru da Graph API.
+            lastError: formatMarketplaceError("FACEBOOK", message).slice(0, 490),
+            // Retry habilitado: branch FACEBOOK no ListingRetryService delega
+            // para createFacebookListing. Cobre rate limit e 5xx da Meta.
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + 60 * 1000),
+            // Idem OLX: a linha nasce aqui no caminho de erro, e o ramo
+            // `update` do upsert nunca preencheria o autor depois.
+            createdByUserId: actorId ?? null,
+          });
+        } catch (persistErr) {
+          console.warn(
+            `[ListingUseCase] Falha ao gravar o erro do create Facebook (sku=${product.sku}):`,
+            persistErr instanceof Error ? persistErr.message : persistErr,
+          );
+        }
+      }
+      return { success: false, error: message };
+    }
+  }
+
+  /**
+   * Remove um item do catálogo Meta (DELETE via items_batch). Espelha
+   * removeOlxListing (withRetry + classifyFacebookRemoveError). Idempotente:
+   * DELETE de item já removido/inexistente é sucesso, e aí deleta o vínculo.
+   */
+  static async removeFacebookListing(listingId: string): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
+    try {
+      const listing = await ListingRepository.findById(listingId);
+      if (!listing) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
+      }
+
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        await ListingRepository.deleteListing(listingId);
+        return { success: true, closedOnMarketplace: false };
+      }
+
+      const account = await MarketplaceRepository.findById(
+        listing.marketplaceAccountId,
+      );
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta do Facebook sem token de acesso. Reconecte a conta e tente novamente.",
+        };
+      }
+      // Catálogo por conta: o DELETE é endereçado por retailer_id = SKU. Sem o
+      // catálogo da conta, o DELETE sairia contra o catálogo global do .env e,
+      // com SKUs colidindo entre tenants, apagaria o item de OUTRO cliente.
+      if (!account.fbCatalogId) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Catálogo Meta não configurado nesta conta (fbCatalogId ausente). Configure o catálogo antes de desvincular.",
+        };
+      }
+
+      try {
+        await withRetry(
+          async () =>
+            FacebookApiService.deleteItem(
+              account.accessToken!,
+              listing.externalListingId,
+              { catalogId: account.fbCatalogId! },
+            ),
+          { classify: classifyFacebookRemoveError },
+        );
+      } catch (closeError) {
+        const c = classifyFacebookRemoveError(closeError);
+        if (c.kind === "idempotent") {
+          console.log(
+            `[ListingUseCase] Facebook item ${listing.externalListingId} já removido (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
+      }
+
+      await ListingRepository.deleteListing(listingId);
+      return { success: true, closedOnMarketplace: true };
+    } catch (error) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro ao remover item do Facebook",
+      };
+    }
+  }
+
+  /**
+   * Edição de campos de um item de catálogo Facebook: persiste os overrides e
+   * faz UPDATE no items_batch (endereçado por retailer_id = SKU).
+   */
+  private static async updateFacebookListingFields(
+    listing: NonNullable<
+      Awaited<ReturnType<typeof ListingRepository.findById>>
+    >,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    const account = listing.marketplaceAccount;
+    if (!account || !account.accessToken) {
+      return { success: false, error: "Conta Facebook sem credenciais válidas" };
+    }
+    const retailerId = listing.externalListingId;
+    if (!retailerId || retailerId.startsWith("PENDING_")) {
+      return {
+        success: false,
+        error: "Anúncio ainda não foi publicado no Facebook",
+      };
+    }
+
+    // Valida o preço antes de persistir/enviar.
+    let priceToApply: number | null = null;
+    let clearPriceOverride = false;
+    if (fields.priceOverride !== undefined) {
+      if (fields.priceOverride === null) {
+        clearPriceOverride = true;
+      } else {
+        const priceNum = Number(fields.priceOverride);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) {
+          return {
+            success: false,
+            error:
+              "Preço inválido para anúncio Facebook (deve ser número positivo)",
+          };
+        }
+        priceToApply = priceNum;
+      }
+    }
+
+    const data: {
+      titleOverride?: string | null;
+      descriptionOverride?: string | null;
+      fbCategoryOverride?: string | null;
+    } = {};
+    if (fields.titleOverride !== undefined)
+      data.titleOverride = fields.titleOverride;
+    if (fields.descriptionOverride !== undefined)
+      data.descriptionOverride = fields.descriptionOverride;
+    // Persiste a categoria (google_product_category) ANTES do reload abaixo, p/
+    // o build usar o valor novo (a coluna não tinha caminho de escrita).
+    if (fields.fbCategoryOverride !== undefined)
+      data.fbCategoryOverride = fields.fbCategoryOverride;
+    if (Object.keys(data).length > 0) {
+      await ListingRepository.updateListing(listing.id, data);
+    }
+    if (priceToApply !== null) {
+      await ListingRepository.updatePriceOverride(listing.id, priceToApply);
+    } else if (clearPriceOverride) {
+      await ListingRepository.updatePriceOverride(listing.id, null);
+    }
+
+    // Recarrega o produto CHEIO (updateListingFields usa leanProduct) p/ não
+    // reenviar título/preço/imagens vazios e apagar o item vivo — mesmo padrão
+    // do caminho Shopee (findById(listing.productId)).
+    const product = await ListingUseCase.productRepository.findById(
+      listing.productId,
+    );
+    if (!product) {
+      return {
+        success: false,
+        error: "Produto do anúncio Facebook não encontrado",
+      };
+    }
+    const { applyOverridesToProduct } = await import(
+      "../services/listing-overrides.service"
+    );
+    let listingForOverrides: any = listing;
+    try {
+      const prisma = (await import("../../lib/prisma")).default;
+      listingForOverrides =
+        (await prisma.productListing.findUnique({
+          where: { id: listing.id },
+        })) ?? listing;
+    } catch {
+      listingForOverrides = listing;
+    }
+    const effectiveProduct = applyOverridesToProduct(
+      product as any,
+      listingForOverrides,
+    ) as any;
+
+    // Catálogo por conta: sem ele o UPDATE (retailer_id=SKU) cairia no catálogo
+    // global do .env e editaria o item de outro tenant. Bloqueia, sem fallback.
+    if (!account.fbCatalogId) {
+      return {
+        success: false,
+        error:
+          "Catálogo Meta não configurado nesta conta (fbCatalogId ausente).",
+      };
+    }
+    const catalogId = account.fbCatalogId;
+    const productUrlBase =
+      account.fbProductUrlBase ?? FACEBOOK_CONSTANTS.PRODUCT_URL_BASE;
+
+    const overrideCategory = (listingForOverrides as any)?.fbCategoryOverride;
+    const googleProductCategory =
+      (typeof overrideCategory === "string" && overrideCategory.trim()
+        ? overrideCategory.trim()
+        : null) ??
+      FacebookCategoryResolutionService.resolveCategory(effectiveProduct);
+
+    const itemData = FacebookPayloadBuilderService.build(effectiveProduct, {
+      googleProductCategory,
+      availability:
+        listing.status?.toLowerCase() === "paused" ? "out of stock" : "in stock",
+      quantity:
+        typeof effectiveProduct?.stock === "number"
+          ? effectiveProduct.stock
+          : undefined,
+      productUrlBase,
+    });
+
+    const resp = await FacebookApiService.updateItem(
+      account.accessToken,
+      retailerId,
+      itemData,
+      { catalogId },
+    );
+    // items_batch devolve 200 + handles mesmo quando a Meta rejeita (async) → poll.
+    const handle = resp.handles?.[0];
+    if (handle) {
+      const entry = await FacebookApiService.pollBatchUntilDone(
+        account.accessToken,
+        handle,
+        { catalogId },
+      );
+      if (
+        entry &&
+        (entry.status === "error" ||
+          (Array.isArray(entry.errors) && entry.errors.length > 0))
+      ) {
+        const detail = Array.isArray(entry.errors)
+          ? JSON.stringify(entry.errors)
+          : entry.status;
+        return {
+          success: false,
+          error: `Facebook recusou a edição: ${detail}`,
+        };
+      }
     }
     return { success: true };
   }
@@ -5971,7 +7123,9 @@ export class ListingUseCase {
   }
 
   private static async updateMLListingFields(
-    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    listing: NonNullable<
+      Awaited<ReturnType<typeof ListingRepository.findById>>
+    >,
     fields: ListingFullEditInput,
   ): Promise<{ success: boolean; error?: string }> {
     // Reusa o marketplaceAccount já incluído no findById (evita 2ª query
@@ -6028,7 +7182,10 @@ export class ListingUseCase {
       }));
     }
     // Atributos override: respeita lista de imutáveis do ML após criação
-    if (fields.attributesOverride && typeof fields.attributesOverride === "object") {
+    if (
+      fields.attributesOverride &&
+      typeof fields.attributesOverride === "object"
+    ) {
       const IMMUTABLE_ATTRS = new Set([
         "BRAND",
         "MODEL",
@@ -6092,8 +7249,7 @@ export class ListingUseCase {
         fields.hasWarranty ?? listing.hasWarranty ?? false;
       const effectiveDuration =
         fields.warrantyDuration ?? listing.warrantyDuration ?? null;
-      const effectiveUnit =
-        fields.warrantyUnit ?? listing.warrantyUnit ?? null;
+      const effectiveUnit = fields.warrantyUnit ?? listing.warrantyUnit ?? null;
       if (effectiveHasWarranty === false) {
         payload.warranty = "Sem garantia";
       } else if (
@@ -6310,7 +7466,8 @@ export class ListingUseCase {
           }
           if (
             lower.includes("condition") &&
-            (lower.includes("not modifiable") || lower.includes("not_updatable"))
+            (lower.includes("not modifiable") ||
+              lower.includes("not_updatable"))
           ) {
             if ("condition" in currentPayload) {
               blockedThisRound.push("condition");
@@ -6360,8 +7517,9 @@ export class ListingUseCase {
           }
 
           // Remove campos bloqueados e tenta de novo.
-          const next: import("../types/ml-api.types").MLItemUpdatePayload =
-            { ...currentPayload };
+          const next: import("../types/ml-api.types").MLItemUpdatePayload = {
+            ...currentPayload,
+          };
           for (const key of blockedThisRound) {
             delete next[key];
           }
@@ -6398,7 +7556,10 @@ export class ListingUseCase {
       } catch (error) {
         const rawMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
-        console.error("[ListingUseCase] ML upsertDescription failed:", rawMessage);
+        console.error(
+          "[ListingUseCase] ML upsertDescription failed:",
+          rawMessage,
+        );
         return {
           success: false,
           error: `Falha ao atualizar descrição: ${rawMessage}`,
@@ -6514,7 +7675,9 @@ export class ListingUseCase {
    * pois a Shopee só aceita mudança via update_item.
    */
   private static async updateShopeeListingFields(
-    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    listing: NonNullable<
+      Awaited<ReturnType<typeof ListingRepository.findById>>
+    >,
     fields: ListingFullEditInput,
   ): Promise<{ success: boolean; error?: string }> {
     // Reusa marketplaceAccount já incluído no findById.
@@ -6541,7 +7704,8 @@ export class ListingUseCase {
       };
     }
 
-    type ShopeeUpdate = import("../types/shopee-api.types").ShopeeItemUpdatePayload;
+    type ShopeeUpdate =
+      import("../types/shopee-api.types").ShopeeItemUpdatePayload;
     const payload: ShopeeUpdate = { item_id: itemId };
     let hasItemUpdateField = false;
     let priceToApply: number | null = null;
@@ -6562,14 +7726,18 @@ export class ListingUseCase {
       if (!Number.isFinite(priceNum) || priceNum <= 0) {
         return {
           success: false,
-          error: "Preço inválido para anúncio Shopee (deve ser número positivo)",
+          error:
+            "Preço inválido para anúncio Shopee (deve ser número positivo)",
         };
       }
       // Preço NÃO vai pelo update_item (Shopee descarta silenciosamente
       // em vários cenários). Vai por update_price abaixo.
       priceToApply = priceNum;
     }
-    if (fields.weightKgOverride !== undefined && fields.weightKgOverride !== null) {
+    if (
+      fields.weightKgOverride !== undefined &&
+      fields.weightKgOverride !== null
+    ) {
       payload.weight = fields.weightKgOverride;
       hasItemUpdateField = true;
     }
@@ -6765,9 +7933,11 @@ export class ListingUseCase {
           if (currentItem?.has_model === true) {
             // Item com variações: aplica o mesmo preço a TODOS os modelos.
             // Lê model_list do currentItem (presente em getItemBaseInfo).
-            const models = (currentItem as unknown as {
-              model_list?: Array<{ model_id?: number }>;
-            }).model_list;
+            const models = (
+              currentItem as unknown as {
+                model_list?: Array<{ model_id?: number }>;
+              }
+            ).model_list;
             if (Array.isArray(models) && models.length > 0) {
               for (const m of models) {
                 if (typeof m.model_id === "number") {
@@ -6868,6 +8038,8 @@ function buildListingPersistData(fields: ListingFullEditInput) {
     categoryOverride: fields.categoryOverride,
     mlCategoryOverride: fields.mlCategoryOverride,
     shopeeCategoryOverride: fields.shopeeCategoryOverride,
+    olxCategoryOverride: fields.olxCategoryOverride,
+    fbCategoryOverride: fields.fbCategoryOverride,
     partNumberOverride: fields.partNumberOverride,
     qualityOverride: fields.qualityOverride,
     heightCmOverride: fields.heightCmOverride,

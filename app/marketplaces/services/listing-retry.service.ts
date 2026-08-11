@@ -1,8 +1,14 @@
+import { Platform } from "@prisma/client";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MLApiService } from "./ml-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MLOAuthService } from "./ml-oauth.service";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
+import {
+  classifyFacebookRemoveError,
+  classifyOlxRemoveError,
+} from "./listing-removal.helpers";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -160,6 +166,123 @@ export class ListingRetryService {
           }
           continue;
         }
+        // OLX e Facebook: delegar ao create da própria plataforma, no mesmo
+        // desenho do branch da Shopee acima. Antes destes ramos, os dois caíam
+        // no guard abaixo e tinham o retry DESLIGADO — ou seja, uma falha
+        // transitória (5xx da OLX, rate limit da Meta) matava o anúncio na
+        // primeira tentativa e ele nunca mais era republicado.
+        // Não replicar a condição `startsWith("PENDING_")`: OLX/Facebook não
+        // usam placeholder — o externalListingId deles já é o SKU.
+        if (
+          account?.platform === Platform.OLX ||
+          account?.platform === Platform.FACEBOOK
+        ) {
+          const ehOlx = account.platform === Platform.OLX;
+          const nome = ehOlx ? "OLX" : "Facebook";
+
+          // Kill-switch: com a integração pausada, este cron NÃO pode continuar
+          // publicando. Reagenda sem consumir tentativa — quando o operador
+          // religar, o candidato volta à fila no estado em que estava.
+          if (isPlatformDisabled(account.platform)) {
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              nextRetryAt: new Date(Date.now() + 30 * 60 * 1000),
+              lastError: `${nome} pausado por kill-switch — retry adiado`,
+            });
+            continue;
+          }
+
+          try {
+            const { ListingUseCase } =
+              await import("../usecases/listing.usercase");
+            const result = ehOlx
+              ? await ListingUseCase.createOlxListing(
+                  account?.userId || "",
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account?.id,
+                )
+              : await ListingUseCase.createFacebookListing(
+                  account?.userId || "",
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account?.id,
+                );
+            if (!result.success) {
+              // TETO DE TENTATIVAS.
+              //
+              // Diferente do branch da Shopee, createOlxListing e
+              // createFacebookListing NÃO lançam: devolvem { success:false } e o
+              // catch deles regrava `retryEnabled: true` com nextRetryAt de 60s.
+              // Sem o bloco abaixo, uma recusa DEFINITIVA (preço suspeito, sem
+              // vaga no plano, imagem pequena) voltaria a ser publicada a cada
+              // 60 segundos, para sempre — ~1.440 chamadas/dia por anúncio.
+              //
+              // Classifica com o mesmo vocabulário já usado na remoção, para
+              // erro permanente sair da fila na primeira vez.
+              const msg = result.error ?? "Erro desconhecido";
+              const classificacao = ehOlx
+                ? classifyOlxRemoveError(new Error(msg))
+                : classifyFacebookRemoveError(new Error(msg));
+              const ehPermanente = classificacao.kind === "permanent";
+              const attempts = (cand.retryAttempts || 0) + 1;
+              const shouldRetry = !ehPermanente && attempts < MAX_ATTEMPTS;
+              const nextDelay =
+                BACKOFF_SECONDS[
+                  Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+                ];
+              await ListingRepository.incrementRetryAttempts(cand.id, {
+                lastError:
+                  (ehPermanente ? "[TERMINAL] " : "") + msg.substring(0, 490),
+                nextRetryAt: shouldRetry
+                  ? new Date(Date.now() + nextDelay * 1000)
+                  : null,
+                retryEnabled: shouldRetry,
+              });
+              console.warn(
+                `[ListingRetryService] retry ${nome} falhou para ${cand.id} (tentativa ${attempts}/${MAX_ATTEMPTS}${ehPermanente ? ", TERMINAL" : ""}): ${msg}`,
+              );
+            }
+          } catch (err) {
+            const msg = errMsg(err);
+            console.error(
+              `[ListingRetryService] exceção no retry ${nome} para ${cand.id}:`,
+              msg,
+            );
+            const attempts = (cand.retryAttempts || 0) + 1;
+            const shouldRetry = attempts < MAX_ATTEMPTS;
+            const nextDelay =
+              BACKOFF_SECONDS[
+                Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+              ];
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              lastError: msg.substring(0, 490),
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
+              retryEnabled: shouldRetry,
+            });
+          }
+          continue;
+        }
+
+        // Só MERCADO_LIVRE segue no caminho ML: Magalu não pode enviar
+        // seu token para api.mercadolibre.com (vazamento de token).
+        // DESABILITA o retry ao pular: este é o único publish-retry e
+        // claimRetryCandidate é agnóstico de plataforma — sem desligar, um
+        // candidato Magalu/OLX/FB é reivindicado (write no banco) a cada ciclo,
+        // p/ sempre, e nunca sai da fila.
+        if (account?.platform && account.platform !== Platform.MERCADO_LIVRE) {
+          console.log(
+            `[ListingRetryService] skipping ${cand.id} (plataforma ${account.platform} não suportada pelo retry ML) — retry desabilitado`,
+          );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            retryEnabled: false,
+            nextRetryAt: null,
+            lastError: "[TERMINAL] plataforma sem retry",
+          });
+          continue;
+        }
+
         if (!account || !account.accessToken) {
           console.log(
             `[ListingRetryService] skipping ${cand.id} (no account/token)`,

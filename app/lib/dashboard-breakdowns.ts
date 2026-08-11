@@ -52,6 +52,11 @@ const PLATFORM_LABEL: Record<CanonPlatform, string> = {
   ML: "Mercado Livre",
   SHOPEE: "Shopee",
   MAGALU: "Magalu",
+  // OLX/Facebook são unidirecionais (sem pedidos): entram no tipo p/ o Record
+  // ficar total, mas ficam FORA de PLATFORM_ORDER/CANON_TO_ENUM — sem fatia vazia
+  // no breakdown de vendas.
+  OLX: "OLX",
+  FACEBOOK: "Facebook",
   OUTRO: "Outros",
 };
 

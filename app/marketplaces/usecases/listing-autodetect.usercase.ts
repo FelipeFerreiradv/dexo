@@ -11,6 +11,7 @@ import { SyncUseCase } from "./sync.usercase";
 import { MLItemDetails } from "../types/ml-api.types";
 import { ShopeeItem } from "../types/shopee-api.types";
 import { MagaluSku } from "../types/magalu-api.types";
+import { FacebookCatalogProduct } from "../types/facebook-api.types";
 
 /**
  * Formato comum para o qual ML e Shopee normalizam um anúncio antes de chamar o
@@ -476,8 +477,114 @@ export class ListingAutodetectUseCase {
     };
   }
 
+  /**
+   * Normaliza um item do Catálogo Meta (GET /{catalog_id}/products) para o
+   * núcleo de auto-detecção. Espelha normalizeMagaluItem: a identidade do item
+   * é o `retailer_id`, que o Dexo grava = SKU (buildRetailerId) — por isso ele é
+   * a chave de vínculo (externalListingId/externalSku), sem divergir do create.
+   * `availability` "out of stock" ⇒ status "paused"; qualquer outro ⇒ "active".
+   * A borda /products não expõe created_at confiável ⇒ createdAt = agora
+   * (informativo; o vínculo é por SKU, não por data).
+   */
+  static normalizeFacebookItem(
+    account: { id: string; userId: string },
+    item: FacebookCatalogProduct,
+  ): NormalizedMarketplaceItem {
+    const rawSku =
+      typeof item.retailer_id === "string" && item.retailer_id.trim().length > 0
+        ? item.retailer_id
+        : null;
+    const externalListingId = String(rawSku ?? item.id ?? "");
+    const imageUrl =
+      typeof item.image_url === "string" && item.image_url.trim().length > 0
+        ? item.image_url
+        : null;
+    const availability = (item.availability as string) || "in stock";
+    const status = /out.?of.?stock|discontinued/i.test(availability)
+      ? "paused"
+      : "active";
+
+    // Estoque REAL do catálogo quando a Meta o expõe. O fallback é o
+    // comportamento anterior (1 unidade disponível) — a edge de leitura pode
+    // não devolver o campo dependendo da versão/permissão do app, e inventar
+    // um número seria pior do que assumir a unidade.
+    const rawQty = item.quantity_to_sell_on_facebook;
+    const parsedQty =
+      typeof rawQty === "number"
+        ? rawQty
+        : typeof rawQty === "string" && rawQty.trim() !== ""
+          ? Number(rawQty)
+          : NaN;
+    const stock =
+      status === "paused"
+        ? 0
+        : Number.isFinite(parsedQty) && parsedQty >= 0
+          ? Math.trunc(parsedQty)
+          : 1;
+
+    // Galeria inteira: capa + adicionais, sem duplicar a capa.
+    const extras = Array.isArray(item.additional_image_urls)
+      ? item.additional_image_urls.filter(
+          (u): u is string => typeof u === "string" && u.trim().length > 0,
+        )
+      : [];
+    const imageUrls = [...(imageUrl ? [imageUrl] : []), ...extras].filter(
+      (u, i, arr) => arr.indexOf(u) === i,
+    );
+
+    return {
+      platform: Platform.FACEBOOK,
+      account,
+      externalListingId,
+      rawSku,
+      title: (item.name as string) || rawSku || externalListingId,
+      price: this.coerceFacebookPrice(item.price),
+      stock,
+      status,
+      permalink: (item.url as string) || null,
+      imageUrl,
+      imageUrls,
+      createdAt: new Date(),
+    };
+  }
+
+  /**
+   * Preço vindo de ML, Shopee e Magalu. BYTE-IDÊNTICO ao da main: estes três
+   * canais entregam número, e alargar o parse aqui mudaria silenciosamente o
+   * preço com que um produto é criado na auto-detecção deles.
+   * O caso do Facebook (string com moeda) vive em `coerceFacebookPrice`.
+   */
   private static coercePrice(value: unknown): number {
     const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+
+  /**
+   * Preço do Catálogo Meta, que vem como string com moeda ("199.90 BRL"):
+   * `Number("199.90 BRL")` é NaN, o que zerava todo produto importado.
+   * Isolado do `coercePrice` de propósito — ver o comentário acima.
+   */
+  private static coerceFacebookPrice(value: unknown): number {
+    if (typeof value === "number") {
+      return Number.isFinite(value) && value >= 0 ? value : 0;
+    }
+    if (typeof value === "string") {
+      const match = value.match(/-?\d[\d.,]*/);
+      if (!match) return 0;
+      let t = match[0];
+      if (t.includes(",") && t.includes(".")) {
+        // O separador decimal é o último a aparecer; o outro é de milhar.
+        t =
+          t.lastIndexOf(",") > t.lastIndexOf(".")
+            ? t.replace(/\./g, "").replace(",", ".")
+            : t.replace(/,/g, "");
+      } else if (t.includes(",")) {
+        t = t.replace(",", ".");
+      }
+      const n = Number(t);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+    const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? n : 0;
   }
 

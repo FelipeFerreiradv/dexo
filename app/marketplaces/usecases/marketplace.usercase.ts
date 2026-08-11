@@ -2,6 +2,8 @@
 import { MLApiService } from "../services/ml-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import { OlxOAuthService } from "../services/olx-oauth.service";
+import { FacebookOAuthService } from "../services/facebook-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
@@ -386,6 +388,13 @@ export class MarketplaceUseCase {
         throw new Error(`Conta ${platform} nÃ£o encontrada`);
       }
 
+      // Confere a plataforma: sem isto, DELETE /marketplace/olx?accountId=<id de
+      // conta ML> encontraria a conta ML (mesmo usuário) e a apagaria, devolvendo
+      // "OLX desconectada". O accountId da query precisa ser da plataforma da rota.
+      if (account.platform !== platform) {
+        throw new Error(`Conta ${platform} nÃ£o encontrada`);
+      }
+
       await MarketplaceRepository.deleteAccount(account.id);
 
       // Se restarem outras contas ativas do mesmo usuário/plataforma, manter estado conectado
@@ -714,7 +723,9 @@ export class MarketplaceUseCase {
         throw new Error("userId não encontrado. Faça login e tente novamente.");
       }
 
-      const tokenData = await MagaluOAuthService.exchangeCodeForTokens(data.code);
+      const tokenData = await MagaluOAuthService.exchangeCodeForTokens(
+        data.code,
+      );
 
       if (!tokenData.externalUserId) {
         throw new Error(
@@ -871,6 +882,322 @@ export class MarketplaceUseCase {
         connected: account.status === AccountStatus.ACTIVE,
         account,
         message: "Conta conectada",
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        message: `Erro ao verificar status: ${error instanceof Error ? error.message : error}`,
+      };
+    }
+  }
+
+  // ====================================================================
+  // MÉTODOS PARA OLX
+  // ====================================================================
+  //
+  // ⚠️ A OLX NÃO tem refresh_token nem expires_in (validado 2026-07-15). O
+  // access_token é salvo e reusado; se morrer, o seller refaz o OAuth. Como o
+  // schema de MarketplaceAccount exige `refreshToken`/`expiresAt`, gravamos
+  // placeholder ("" + data no far-future) — NUNCA há renovação de token OLX.
+
+  // Sentinela de expiração p/ contas OLX (sem expiry real): far-future.
+  private static readonly OLX_NO_EXPIRY = new Date("9999-12-31T00:00:00.000Z");
+
+  /** Inicia o fluxo OAuth da OLX (Authorization Code, sem PKCE, scope autoupload). */
+  static initiateOlxOAuth(userId?: string): { authUrl: string; state: string } {
+    const oauthData = OlxOAuthService.generateAuthUrl(userId);
+    return { authUrl: oauthData.authUrl, state: oauthData.state };
+  }
+
+  /**
+   * Processa o callback OAuth da OLX. Espelha handleMagaluOAuthCallback, porém:
+   * troca code → SÓ access_token (sem refresh/expiry); o externalUserId vem de
+   * basic_user_info (user_email), não de um JWT. Persiste a conta ACTIVE.
+   */
+  static async handleOlxOAuthCallback(data: {
+    code: string;
+    state: string;
+    userId?: string;
+  }) {
+    try {
+      const stateValidation = OlxOAuthService.validateState(data.state);
+      if (!stateValidation.valid) {
+        throw new Error("State inválido ou expirado. Reinicie a autenticação.");
+      }
+
+      const userId = data.userId || stateValidation.userId;
+      if (!userId) {
+        throw new Error("userId não encontrado. Faça login e tente novamente.");
+      }
+
+      const { accessToken } = await OlxOAuthService.exchangeCodeForTokens(
+        data.code,
+      );
+
+      // Identifica a conta via basic_user_info (best-effort). O user_email é o
+      // externalUserId (chave estável da conta OLX). Sem ele, cai num fallback
+      // derivado do userId para não bloquear a conexão.
+      let externalUserId = "";
+      let accountName = "OLX";
+      try {
+        const info = await OlxOAuthService.fetchBasicUserInfo(accessToken);
+        externalUserId = String(info.user_email ?? info.user_name ?? "").trim();
+        if (info.user_name) accountName = `OLX ${info.user_name}`;
+        else if (info.user_email) accountName = `OLX ${info.user_email}`;
+      } catch (infoErr) {
+        console.warn(
+          "[handleOlxOAuthCallback] basic_user_info falhou:",
+          infoErr instanceof Error ? infoErr.message : String(infoErr),
+        );
+      }
+      if (!externalUserId) {
+        // NÃO ancorar no userId do Dexo: um externalUserId derivado do userId
+        // anula a checagem cross-user (cada usuário viraria uma chave distinta),
+        // deixando DOIS tenants vincularem a MESMA conta OLX. Sem a identidade
+        // real da conta (user_email/name) a conexão é recusada.
+        throw new Error(
+          "Não foi possível identificar a conta da OLX (basic_user_info indisponível). Tente reconectar em instantes.",
+        );
+      }
+
+      // Bloqueia vinculação da mesma conta OLX a outro usuário do Dexo.
+      const conflictingAccounts =
+        await MarketplaceRepository.findAllByExternalUserId(
+          externalUserId,
+          Platform.OLX,
+        );
+      const conflictingAccount = conflictingAccounts.find(
+        (account) => account.userId !== userId,
+      );
+      if (conflictingAccount) {
+        throw new Error(
+          "Esta conta da OLX já está vinculada a outro usuário. Desconecte a conta anterior antes de continuar.",
+        );
+      }
+
+      const existingAccount =
+        await MarketplaceRepository.findByUserAndExternalUserId(
+          userId,
+          externalUserId,
+          Platform.OLX,
+        );
+
+      let account;
+      if (existingAccount) {
+        account = await MarketplaceRepository.updateTokens(existingAccount.id, {
+          accessToken,
+          refreshToken: "", // OLX não tem refresh
+          expiresAt: this.OLX_NO_EXPIRY,
+        });
+        if (account.status !== AccountStatus.ACTIVE) {
+          account = await MarketplaceRepository.updateStatus(
+            existingAccount.id,
+            AccountStatus.ACTIVE,
+          );
+        }
+      } else {
+        account = await MarketplaceRepository.createAccount({
+          userId,
+          platform: Platform.OLX,
+          accountName,
+          externalUserId,
+          accessToken,
+          refreshToken: "", // OLX não tem refresh
+          expiresAt: this.OLX_NO_EXPIRY,
+          autoImportListingsSince: new Date(),
+        });
+      }
+
+      return account;
+    } catch (error) {
+      throw new Error(
+        `Erro ao processar callback OAuth OLX: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  /**
+   * Status da conta OLX. Sem renovação de token (OLX não tem refresh): apenas
+   * reporta se há conta ACTIVE. Se o access_token morrer, o fluxo de publicação
+   * falha e o seller reconecta (re-consent) — não há refresh a tentar aqui.
+   */
+  static async getOlxAccountStatus(
+    userId: string,
+    accountId?: string,
+  ): Promise<{ connected: boolean; account?: any; message: string }> {
+    try {
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.OLX,
+          );
+
+      if (!account) {
+        return { connected: false, message: "Conta OLX não conectada" };
+      }
+
+      return {
+        connected: account.status === AccountStatus.ACTIVE,
+        account,
+        message: "Conta conectada",
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        message: `Erro ao verificar status: ${error instanceof Error ? error.message : error}`,
+      };
+    }
+  }
+
+  // ====================================================================
+  // MÉTODOS PARA FACEBOOK/META (Commerce Catalog)
+  // ====================================================================
+  //
+  // ⚠️ Diferente da OLX: o token da Meta EXPIRA (~60d). Guardamos o long-lived
+  // token + `expiresAt` REAL. NÃO há refresh_token clássico — quando expira, o
+  // seller refaz o OAuth (re-consent). Como o schema exige `refreshToken`,
+  // gravamos "" (placeholder). O externalUserId vem do /me (id da conta Meta).
+
+  /** Inicia o fluxo OAuth do Facebook (Meta Graph, scope catalog_management). */
+  static initiateFacebookOAuth(userId?: string): {
+    authUrl: string;
+    state: string;
+  } {
+    const oauthData = FacebookOAuthService.generateAuthUrl(userId);
+    return { authUrl: oauthData.authUrl, state: oauthData.state };
+  }
+
+  /**
+   * Processa o callback OAuth do Facebook. Espelha handleOlxOAuthCallback, mas
+   * com `expiresAt` REAL (long-lived ~60d) e externalUserId do /me (id Meta).
+   */
+  static async handleFacebookOAuthCallback(data: {
+    code: string;
+    state: string;
+    userId?: string;
+  }) {
+    try {
+      const stateValidation = FacebookOAuthService.validateState(data.state);
+      if (!stateValidation.valid) {
+        throw new Error("State inválido ou expirado. Reinicie a autenticação.");
+      }
+
+      const userId = data.userId || stateValidation.userId;
+      if (!userId) {
+        throw new Error("userId não encontrado. Faça login e tente novamente.");
+      }
+
+      const { accessToken, expiresAt } =
+        await FacebookOAuthService.exchangeCodeForToken(data.code);
+
+      // Identifica a conta via /me. O id da conta Meta é o externalUserId
+      // (chave estável). NÃO ancorar no userId do Dexo: um fallback derivado do
+      // userId anularia a checagem cross-user e deixaria dois tenants vincularem
+      // a MESMA conta Meta.
+      let externalUserId = "";
+      let accountName = "Facebook";
+      try {
+        const info = await FacebookOAuthService.fetchMe(accessToken);
+        externalUserId = String(info.id ?? "").trim();
+        if (info.name) accountName = `Facebook ${info.name}`;
+      } catch (infoErr) {
+        console.warn(
+          "[handleFacebookOAuthCallback] /me falhou:",
+          infoErr instanceof Error ? infoErr.message : String(infoErr),
+        );
+      }
+      if (!externalUserId) {
+        throw new Error(
+          "Não foi possível identificar a conta do Facebook (/me indisponível). Tente reconectar em instantes.",
+        );
+      }
+
+      // Bloqueia vinculação da mesma conta Meta a outro usuário do Dexo.
+      const conflictingAccounts =
+        await MarketplaceRepository.findAllByExternalUserId(
+          externalUserId,
+          Platform.FACEBOOK,
+        );
+      const conflictingAccount = conflictingAccounts.find(
+        (account) => account.userId !== userId,
+      );
+      if (conflictingAccount) {
+        throw new Error(
+          "Esta conta do Facebook já está vinculada a outro usuário. Desconecte a conta anterior antes de continuar.",
+        );
+      }
+
+      const existingAccount =
+        await MarketplaceRepository.findByUserAndExternalUserId(
+          userId,
+          externalUserId,
+          Platform.FACEBOOK,
+        );
+
+      let account;
+      if (existingAccount) {
+        account = await MarketplaceRepository.updateTokens(existingAccount.id, {
+          accessToken,
+          refreshToken: "", // Meta não tem refresh_token clássico
+          expiresAt,
+        });
+        if (account.status !== AccountStatus.ACTIVE) {
+          account = await MarketplaceRepository.updateStatus(
+            existingAccount.id,
+            AccountStatus.ACTIVE,
+          );
+        }
+      } else {
+        account = await MarketplaceRepository.createAccount({
+          userId,
+          platform: Platform.FACEBOOK,
+          accountName,
+          externalUserId,
+          accessToken,
+          refreshToken: "", // Meta não tem refresh_token clássico
+          expiresAt,
+          autoImportListingsSince: new Date(),
+        });
+      }
+
+      return account;
+    } catch (error) {
+      throw new Error(
+        `Erro ao processar callback OAuth Facebook: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  /**
+   * Status da conta Facebook. Reporta se há conta ACTIVE e se o token ainda é
+   * válido (expiresAt no futuro). Sem refresh: token expirado ⇒ reconectar.
+   */
+  static async getFacebookAccountStatus(
+    userId: string,
+    accountId?: string,
+  ): Promise<{ connected: boolean; account?: any; message: string }> {
+    try {
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.FACEBOOK,
+          );
+
+      if (!account) {
+        return { connected: false, message: "Conta Facebook não conectada" };
+      }
+
+      const expired =
+        account.expiresAt != null && new Date(account.expiresAt) <= new Date();
+
+      return {
+        connected: account.status === AccountStatus.ACTIVE && !expired,
+        account,
+        message: expired
+          ? "Token do Facebook expirado — reconecte a conta"
+          : "Conta conectada",
       };
     } catch (error) {
       return {

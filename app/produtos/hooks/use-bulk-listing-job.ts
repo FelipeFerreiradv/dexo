@@ -12,7 +12,7 @@ export type BulkJobStatus =
 
 export interface BulkJobResultItem {
   productId: string;
-  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
   accountId: string;
   success: boolean;
   listingId?: string;

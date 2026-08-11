@@ -124,6 +124,50 @@ const envSchema = z.object({
   MAGALU_WEBHOOK_SECRET: z.string().optional(),
   MAGALU_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
 
+  // OLX (autoupload / anúncios). TODAS opcionais de propósito, mesmo padrão do
+  // bloco Magalu: a integração fica atrás da flag NEXT_PUBLIC_OLX_INTEGRATION_ENABLED
+  // e env.ts é exit-on-error — vars obrigatórias ausentes derrubariam o boot.
+  // Os serviços olx-* validam a presença em runtime (validateOlxConfig).
+  // Credenciais vêm por email (suporteintegrador@olxbr.com), não self-service.
+  OLX_CLIENT_ID: z.string().optional(),
+  OLX_CLIENT_SECRET: z.string().optional(),
+  OLX_AUTH_URL: optionalUrlIsh,
+  OLX_API_URL: optionalUrlIsh,
+  OLX_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por espaço. Sem valor → usa o default das constantes.
+  OLX_SCOPES: z.string().optional(),
+  OLX_CATEGORY_ROOT_HINT: z.string().optional(),
+  // Contato do vendedor exigido em cada anúncio OLX (telefone DDD+número, CEP).
+  OLX_SELLER_PHONE: z.string().optional(),
+  OLX_SELLER_ZIPCODE: z.string().optional(),
+  OLX_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
+  // Sem OLX_WEBHOOK_SECRET: OLX não tem webhook de venda na fase 1.
+
+  // Facebook/Meta (Commerce Catalog via Graph API). TODAS opcionais de propósito,
+  // mesmo padrão dos blocos Magalu/OLX: a integração fica atrás da flag
+  // NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED e env.ts é exit-on-error. Os
+  // serviços facebook-* validam a presença em runtime (validateFacebookConfig).
+  FACEBOOK_APP_ID: z.string().optional(),
+  FACEBOOK_APP_SECRET: z.string().optional(),
+  // ID do Catálogo (Commerce Manager) — alvo do items_batch.
+  FACEBOOK_CATALOG_ID: z.string().optional(),
+  FACEBOOK_GRAPH_BASE_URL: optionalUrlIsh,
+  FACEBOOK_DIALOG_BASE_URL: optionalUrlIsh,
+  FACEBOOK_API_VERSION: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === "" || /^v\d+\.\d+$/.test(v), {
+      message: "FACEBOOK_API_VERSION deve ter o formato vNN.N (ex.: v25.0)",
+    }),
+  FACEBOOK_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por vírgula. Vazio → default das constantes.
+  FACEBOOK_SCOPES: z.string().optional(),
+  FACEBOOK_CURRENCY: z.string().optional(),
+  // URL base da página de produto (item de catálogo EXIGE `link`). Pendente de
+  // decisão do cliente — sem ela o build de payload falha com erro claro.
+  FB_PRODUCT_URL_BASE: optionalUrlIsh,
+  // Sem FACEBOOK_WEBHOOK_SECRET: checkout fora da plataforma, sem webhook de venda.
+
   // WhatsApp (Cloud API oficial da Meta). TODAS opcionais de propósito, mesmo
   // padrão do bloco Magalu acima: o módulo fica atrás da flag
   // NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED + gate por usuário, e env.ts é

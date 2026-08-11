@@ -335,15 +335,19 @@ export function StackedBar({
   shopee,
   outro,
   magalu = 0,
+  olx = 0,
+  facebook = 0,
   widthPct,
 }: {
   ml: number;
   shopee: number;
   outro: number;
   magalu?: number;
+  olx?: number;
+  facebook?: number;
   widthPct: number;
 }) {
-  const total = ml + shopee + outro + magalu;
+  const total = ml + shopee + outro + magalu + olx + facebook;
   const seg = (v: number, color: string) =>
     total > 0 && v > 0 ? (
       <View
@@ -369,6 +373,8 @@ export function StackedBar({
         {seg(ml, PLATFORM_COLOR.ML)}
         {seg(shopee, PLATFORM_COLOR.SHOPEE)}
         {seg(magalu, PLATFORM_COLOR.MAGALU)}
+        {seg(olx, PLATFORM_COLOR.OLX)}
+        {seg(facebook, PLATFORM_COLOR.FACEBOOK)}
         {seg(outro, PLATFORM_COLOR.OUTRO)}
       </View>
     </View>

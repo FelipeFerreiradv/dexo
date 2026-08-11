@@ -23,7 +23,7 @@ import {
 } from "./primitives";
 import { AreaTimeline } from "./charts";
 
-type CanonPlat = "ML" | "SHOPEE" | "MAGALU" | "OUTRO";
+type CanonPlat = "ML" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK" | "OUTRO";
 
 export interface DashboardReportData {
   company: string;
@@ -54,6 +54,8 @@ export interface DashboardReportData {
       ml: number;
       shopee: number;
       magalu: number;
+      olx?: number;
+      facebook?: number;
       outro: number;
     };
     top: Array<{ nome: string; produtos: number; anuncios: number }>;
@@ -71,6 +73,8 @@ function platLabel(p: CanonPlat): string {
   if (p === "ML") return "Mercado Livre";
   if (p === "SHOPEE") return "Shopee";
   if (p === "MAGALU") return "Magalu";
+  if (p === "OLX") return "OLX";
+  if (p === "FACEBOOK") return "Facebook";
   return "Outro";
 }
 
@@ -306,6 +310,16 @@ function Doc({ data }: { data: DashboardReportData }) {
               label="Anúncios Magalu"
               value={fmtInt(equipe.anuncios.magalu)}
               dot={PLATFORM_COLOR.MAGALU}
+            />
+            <Kpi
+              label="Anúncios OLX"
+              value={fmtInt(equipe.anuncios.olx ?? 0)}
+              dot={PLATFORM_COLOR.OLX}
+            />
+            <Kpi
+              label="Anúncios Facebook"
+              value={fmtInt(equipe.anuncios.facebook ?? 0)}
+              dot={PLATFORM_COLOR.FACEBOOK}
             />
           </KpiRow>
           <View style={{ flexDirection: "row", marginBottom: 6 }}>

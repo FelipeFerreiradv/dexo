@@ -37,6 +37,12 @@ import {
 import type { MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-links";
 import { getApiBaseUrl } from "@/lib/api";
 
+const OLX_INTEGRATION_ENABLED =
+  process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+
+const FACEBOOK_INTEGRATION_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
+
 type ListingDetail = {
   id: string;
   externalListingId: string | null;
@@ -52,6 +58,8 @@ type ListingDetail = {
   freeShipping: boolean | null;
   localPickup: boolean | null;
   manufacturingTime: number | null;
+  olxCategoryOverride: string | null;
+  fbCategoryOverride: string | null;
   updatedAt: string;
   product: { id: string; name: string; sku: string };
   account: {
@@ -79,6 +87,8 @@ type FormState = {
   freeShipping: boolean;
   localPickup: boolean;
   manufacturingTime: number;
+  olxCategoryOverride: string;
+  fbCategoryOverride: string;
 };
 
 const DEFAULT_FORM: FormState = {
@@ -91,6 +101,8 @@ const DEFAULT_FORM: FormState = {
   freeShipping: false,
   localPickup: false,
   manufacturingTime: 0,
+  olxCategoryOverride: "",
+  fbCategoryOverride: "",
 };
 
 function buildFormState(listing: ListingDetail): FormState {
@@ -106,6 +118,8 @@ function buildFormState(listing: ListingDetail): FormState {
     localPickup: listing.localPickup ?? DEFAULT_FORM.localPickup,
     manufacturingTime:
       listing.manufacturingTime ?? DEFAULT_FORM.manufacturingTime,
+    olxCategoryOverride: listing.olxCategoryOverride ?? "",
+    fbCategoryOverride: listing.fbCategoryOverride ?? "",
   };
 }
 
@@ -133,6 +147,8 @@ export function EditListingDialog({
   const isML = listing?.account.platform === "MERCADO_LIVRE";
   const isShopee = listing?.account.platform === "SHOPEE";
   const isMagalu = listing?.account.platform === "MAGALU";
+  const isOlx = listing?.account.platform === "OLX";
+  const isFacebook = listing?.account.platform === "FACEBOOK";
 
   const isPaused = useMemo(() => {
     const s = (listing?.status ?? "").toLowerCase();
@@ -213,6 +229,12 @@ export function EditListingDialog({
             freeShipping: form.freeShipping,
             localPickup: form.localPickup,
             manufacturingTime: form.manufacturingTime,
+            ...(isOlx && {
+              olxCategoryOverride: form.olxCategoryOverride || null,
+            }),
+            ...(isFacebook && {
+              fbCategoryOverride: form.fbCategoryOverride || null,
+            }),
           }),
         },
       );
@@ -316,7 +338,7 @@ export function EditListingDialog({
                 )}
               </div>
 
-              {(isML || isMagalu) && (
+              {(isML || isMagalu || isOlx || isFacebook) && (
                 <Button
                   type="button"
                   variant="outline"
@@ -360,6 +382,64 @@ export function EditListingDialog({
                 nome, descrição, preço ou estoque, use{" "}
                 <strong>Editar produto</strong> — as mudanças são propagadas
                 para a Magalu pelo fluxo de sincronização.
+              </div>
+            )}
+
+            {isOlx && (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
+                  Aqui você pode <strong>pausar</strong> ou{" "}
+                  <strong>reativar</strong> o anúncio da OLX e ajustar a
+                  categoria. Para alterar nome, preço ou estoque, use{" "}
+                  <strong>Editar produto</strong>.
+                </div>
+                {OLX_INTEGRATION_ENABLED && (
+                  <div className="space-y-2">
+                    <Label htmlFor="olx-category-override">
+                      Categoria OLX (override)
+                    </Label>
+                    <Input
+                      id="olx-category-override"
+                      placeholder="ID da categoria OLX (deixe em branco para usar o padrão)"
+                      value={form.olxCategoryOverride}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          olxCategoryOverride: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {isFacebook && (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
+                  Aqui você pode <strong>pausar</strong> ou{" "}
+                  <strong>reativar</strong> o anúncio do Facebook e ajustar a
+                  categoria. Para alterar nome, preço ou estoque, use{" "}
+                  <strong>Editar produto</strong>.
+                </div>
+                {FACEBOOK_INTEGRATION_ENABLED && (
+                  <div className="space-y-2">
+                    <Label htmlFor="fb-category-override">
+                      Categoria Facebook (override)
+                    </Label>
+                    <Input
+                      id="fb-category-override"
+                      placeholder="Categoria do produto no Facebook (deixe em branco para usar o padrão)"
+                      value={form.fbCategoryOverride}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          fbCategoryOverride: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                )}
               </div>
             )}
 
@@ -530,7 +610,7 @@ export function EditListingDialog({
           >
             Cancelar
           </Button>
-          {isML && (
+          {(isML || isOlx || isFacebook) && (
             <Button
               type="button"
               onClick={handleSave}

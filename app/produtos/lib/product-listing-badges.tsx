@@ -52,6 +52,14 @@ const MARKETPLACE_ICONS: Record<
     label: "Magalu",
     src: "/marketplaces/magalu.svg",
   },
+  OLX: {
+    label: "OLX",
+    src: "/marketplaces/olx.svg",
+  },
+  FACEBOOK: {
+    label: "Facebook",
+    src: "/marketplaces/facebook.svg",
+  },
 };
 
 // Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de
@@ -143,7 +151,8 @@ export function PauseListingsButton({
   const targetStatus: "active" | "paused" =
     state === "all-active" ? "paused" : "active";
   const Icon = state === "all-active" ? Pause : Play;
-  const title = state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
+  const title =
+    state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
   const confirmLabel = state === "all-active" ? "Pausar" : "Despausar";
   const description =
     state === "all-active"
@@ -153,7 +162,12 @@ export function PauseListingsButton({
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="icon-sm" title={title} disabled={isPausing}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title={title}
+          disabled={isPausing}
+        >
           {isPausing ? (
             <Loader2 className="size-4 animate-spin" />
           ) : (
@@ -168,7 +182,9 @@ export function PauseListingsButton({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancelar</AlertDialogCancel>
-          <AlertDialogAction onClick={() => onTogglePause(product, targetStatus)}>
+          <AlertDialogAction
+            onClick={() => onTogglePause(product, targetStatus)}
+          >
             {confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -210,8 +226,8 @@ export function MarketplaceBadges({
       ) {
         current.anyOpenable = true;
       }
-      // Status "publicado" (active/normal) — usado só para a OPACIDADE da Magalu,
-      // que não tem link público derivável (publicação assíncrona).
+      // Status "publicado" (active/normal) — usado para a OPACIDADE de canais
+      // sem link público derivável (Magalu/OLX/Facebook: publicação assíncrona).
       const st = (listing as { status?: string | null }).status
         ?.toString()
         .toLowerCase();
@@ -248,11 +264,15 @@ export function MarketplaceBadges({
             : `Anúncio publicado no ${icon.label}`;
 
         // Opacidade = "publicado". ML/Shopee: têm link quando publicados
-        // (anyOpenable). Magalu: publicação é assíncrona e a URL pública não é
-        // derivável do SKU, então o sinal é o STATUS active/normal. ML/Shopee
-        // ficam idênticos (não entram no ramo MAGALU).
+        // (anyOpenable). Magalu/OLX/Facebook: publicação é assíncrona e a URL
+        // pública não é derivável do SKU, então o sinal é o STATUS active/normal.
+        // ML/Shopee ficam idênticos (não entram nesse ramo).
         const isPublished =
-          anyOpenable || (platform === "MAGALU" && anyActive);
+          anyOpenable ||
+          ((platform === "MAGALU" ||
+            platform === "OLX" ||
+            platform === "FACEBOOK") &&
+            anyActive);
 
         return (
           <button

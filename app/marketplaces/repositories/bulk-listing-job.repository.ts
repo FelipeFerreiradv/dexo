@@ -1,7 +1,8 @@
 import { BulkJobStatus, Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
 
-export type BulkListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+export type BulkListingPlatform =
+  "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 export interface BulkListingRequestSpec {
   platform: BulkListingPlatform;
@@ -59,13 +60,33 @@ export interface PerProductMagaluOverride {
   listingPrice?: number;
 }
 
+export interface PerProductOlxOverride {
+  categoryId?: string;
+  /**
+   * "Valor do Anúncio" — preço deste anúncio, como ML/Shopee/Magalu já têm.
+   * Na OLX aplicar o preço reenvia o anúncio inteiro (editar = insert com o
+   * mesmo id), então ele volta para a fila de revisão da OLX.
+   */
+  listingPrice?: number;
+}
+
+export interface PerProductFacebookOverride {
+  categoryId?: string;
+  /** "Valor do Anúncio" — aplicado via UPDATE no items_batch. */
+  listingPrice?: number;
+}
+
 export interface PerProductOverrideEntry {
   ml?: PerProductMlOverride;
   shopee?: PerProductShopeeOverride;
   magalu?: PerProductMagaluOverride;
+  olx?: PerProductOlxOverride;
+  facebook?: PerProductFacebookOverride;
   disabledMlAccountIds?: string[];
   disabledShopeeAccountIds?: string[];
   disabledMagaluAccountIds?: string[];
+  disabledOlxAccountIds?: string[];
+  disabledFacebookAccountIds?: string[];
 }
 
 export interface BulkOverrideTemplate {
@@ -94,6 +115,8 @@ export interface BulkOverrideTemplate {
     indexByAccountId?: Record<string, number>;
     shopeeIndexByAccountId?: Record<string, number>;
     magaluIndexByAccountId?: Record<string, number>;
+    olxIndexByAccountId?: Record<string, number>;
+    fbIndexByAccountId?: Record<string, number>;
   };
 
   // Config por produto (modo Revisão individual). Opcional/aditivo: ausente ⇒

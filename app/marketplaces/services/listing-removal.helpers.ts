@@ -153,6 +153,152 @@ export function classifyShopeeRemoveError(
 }
 
 /**
+ * Classifica um erro de despublicação (delete) de anúncio da OLX.
+ *
+ * A OLX é autoupload assíncrona: o `delete` (operation) devolve `statusCode` no
+ * corpo (mesmo em HTTP 200) e o resultado real vem na consulta de status
+ * (`status: accepted|refused|...`). O chamador anexa `(error as any).olxStatusCode`
+ * (statusCode do import) e/ou deixa a mensagem carregar os enums de erro;
+ * caímos na leitura de `responseData.statusCode` como fallback.
+ *
+ * Idempotente (objetivo da remoção atingido):
+ *  - delete com `status:"accepted"` (já despublicado), ou id inexistente.
+ *  - "not found" / "does not exist" / "ad_not_found".
+ *
+ * Retryable (transitório):
+ *  - statusCode -1 (erro inesperado da OLX).
+ *  - 429/5xx/timeout/network.
+ *  - ERROR_DOWNLOADING_IMAGE / ERROR_UPLOADING_IMAGE (imagem transitória).
+ *
+ * Permanent (definitivo — NÃO deletar local):
+ *  - statusCode -4 (validação), -6 (sem permissão/plano).
+ *  - REFUSED_* (SUSPECT_PRICE/REGION/AUTOS/DUPLICATES/GENERIC).
+ *  - ERROR_IMAGE_TOO_SMALL, NOT_ENOUGH_AD_SLOTS.
+ */
+export function classifyOlxRemoveError(
+  error: unknown,
+): RemovalErrorClassification {
+  const message = pickMessage(error);
+  const e = error as AxiosLikeError & { olxStatusCode?: number };
+  const status = typeof e?.status === "number" ? e.status : undefined;
+  const olxCode =
+    typeof e?.olxStatusCode === "number"
+      ? e.olxStatusCode
+      : typeof e?.responseData?.statusCode === "number"
+        ? e.responseData.statusCode
+        : undefined;
+
+  const lower = message.toLowerCase();
+
+  const looksIdempotent =
+    lower.includes("accepted") ||
+    lower.includes("not found") ||
+    lower.includes("not_found") ||
+    lower.includes("ad_not_found") ||
+    lower.includes("does not exist") ||
+    lower.includes("inexist");
+
+  if (status === 404 || looksIdempotent) {
+    return { kind: "idempotent", message, status };
+  }
+
+  // Permanentes definidos por statusCode/enum ANTES do retryable genérico.
+  const looksPermanent =
+    olxCode === -4 ||
+    olxCode === -6 ||
+    lower.includes("refused_") ||
+    lower.includes("error_image_too_small") ||
+    lower.includes("not_enough_ad_slots");
+
+  if (looksPermanent) {
+    return { kind: "permanent", message, status };
+  }
+
+  if (
+    olxCode === -1 ||
+    status === 429 ||
+    (typeof status === "number" && status >= 500 && status <= 599) ||
+    e?.code === "ECONNRESET" ||
+    e?.code === "ECONNABORTED" ||
+    e?.code === "ETIMEDOUT" ||
+    lower.includes("timeout") ||
+    lower.includes("network") ||
+    lower.includes("socket hang up") ||
+    lower.includes("error_downloading_image") ||
+    lower.includes("error_uploading_image")
+  ) {
+    return { kind: "retryable", message, status };
+  }
+
+  return { kind: "permanent", message, status };
+}
+
+/**
+ * Classifica um erro de remoção (DELETE) de item de catálogo do Facebook/Meta.
+ *
+ * O DELETE do items_batch é endereçado por `retailer_id`. A Graph API devolve
+ * erros no formato `{ error: { message, code, error_subcode, type } }` — o
+ * service anexa `responseData` e `status`.
+ *
+ * Idempotente (objetivo da remoção atingido):
+ *  - 404 / "not found" / "does not exist" / "no item" — item já removido.
+ *
+ * Retryable (transitório):
+ *  - 429/5xx/timeout/network.
+ *  - códigos de rate limit da Graph (4, 17, 32, 613) e error "temporarily".
+ *
+ * Permanent (definitivo — NÃO deletar local):
+ *  - 400 validação, 401/403 (token/permissão — OAuthException code 190/10/200).
+ */
+export function classifyFacebookRemoveError(
+  error: unknown,
+): RemovalErrorClassification {
+  const message = pickMessage(error);
+  const e = error as AxiosLikeError;
+  const status = typeof e?.status === "number" ? e.status : undefined;
+  const graphCode =
+    typeof e?.responseData?.error?.code === "number"
+      ? e.responseData.error.code
+      : undefined;
+
+  const lower = message.toLowerCase();
+
+  const looksIdempotent =
+    lower.includes("not found") ||
+    lower.includes("not_found") ||
+    lower.includes("does not exist") ||
+    lower.includes("no item") ||
+    lower.includes("inexist");
+
+  if (status === 404 || looksIdempotent) {
+    return { kind: "idempotent", message, status };
+  }
+
+  const isRateLimit =
+    graphCode === 4 ||
+    graphCode === 17 ||
+    graphCode === 32 ||
+    graphCode === 613;
+
+  if (
+    isRateLimit ||
+    status === 429 ||
+    (typeof status === "number" && status >= 500 && status <= 599) ||
+    e?.code === "ECONNRESET" ||
+    e?.code === "ECONNABORTED" ||
+    e?.code === "ETIMEDOUT" ||
+    lower.includes("timeout") ||
+    lower.includes("temporarily") ||
+    lower.includes("network") ||
+    lower.includes("socket hang up")
+  ) {
+    return { kind: "retryable", message, status };
+  }
+
+  return { kind: "permanent", message, status };
+}
+
+/**
  * Executa `fn` com retry exponencial em erros classificados como retryable.
  *
  * Backoff padrão: 500ms, 2000ms, 8000ms (3 tentativas após a inicial).

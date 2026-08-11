@@ -24,6 +24,24 @@ describe("getShippingProvider", () => {
     expect(p.platform).toBe("MAGALU");
   });
 
+  it.each(["OLX", "FACEBOOK"] as const)(
+    "lança mensagem de venda manual para %s (sem API de pedido/checkout)",
+    (platform) => {
+      let err: unknown;
+      try {
+        getShippingProvider(platform);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(ShippingLabelError);
+      expect((err as ShippingLabelError).code).toBe("UNSUPPORTED_PLATFORM");
+      // Mensagem específica (não o genérico "Plataforma não suportada").
+      expect((err as ShippingLabelError).message).toMatch(
+        /não fornece etiqueta.*[Rr]egistre a venda manualmente/,
+      );
+    },
+  );
+
   it("lança UNSUPPORTED_PLATFORM para plataforma desconhecida", () => {
     let err: unknown;
     try {

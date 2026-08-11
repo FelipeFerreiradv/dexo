@@ -20,10 +20,18 @@ vi.mock("../app/lib/prisma", () => ({
   },
 }));
 
-const { mockCreateML, mockCreateShopee, mockCreateMagalu } = vi.hoisted(() => ({
+const {
+  mockCreateML,
+  mockCreateShopee,
+  mockCreateMagalu,
+  mockCreateOlx,
+  mockCreateFacebook,
+} = vi.hoisted(() => ({
   mockCreateML: vi.fn(),
   mockCreateShopee: vi.fn(),
   mockCreateMagalu: vi.fn(),
+  mockCreateOlx: vi.fn(),
+  mockCreateFacebook: vi.fn(),
 }));
 
 vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
@@ -31,6 +39,8 @@ vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
     createMLListing: mockCreateML,
     createShopeeListing: mockCreateShopee,
     createMagaluListing: mockCreateMagalu,
+    createOlxListing: mockCreateOlx,
+    createFacebookListing: mockCreateFacebook,
     updateListingFields: vi.fn(),
   },
 }));
@@ -53,6 +63,8 @@ beforeEach(() => {
   mockCreateML.mockResolvedValue({ success: true, listingId: "l-1" });
   mockCreateShopee.mockResolvedValue({ success: true, listingId: "l-2" });
   mockCreateMagalu.mockResolvedValue({ success: true, listingId: "l-3" });
+  mockCreateOlx.mockResolvedValue({ success: true, listingId: "l-4" });
+  mockCreateFacebook.mockResolvedValue({ success: true, listingId: "l-5" });
 });
 
 describe("ListingRepository — createdByUserId", () => {
@@ -99,7 +111,7 @@ describe("ListingRepository — createdByUserId", () => {
 
 describe("ListingDispatcher — threading do actorId até os createXListing", () => {
   const dispatchWith = (
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK",
     actorId?: string,
   ) =>
     ListingDispatcher.dispatch({
@@ -143,6 +155,32 @@ describe("ListingDispatcher — threading do actorId até os createXListing", ()
 
     await vi.waitFor(() => expect(mockCreateMagalu).toHaveBeenCalled());
     expect(mockCreateMagalu).toHaveBeenCalledWith(
+      "owner-1",
+      "prod-1",
+      "CAT-1",
+      "acc-1",
+      "collab-1",
+    );
+  });
+
+  it("OLX: actorId chega como 5º argumento", async () => {
+    dispatchWith("OLX", "collab-1");
+
+    await vi.waitFor(() => expect(mockCreateOlx).toHaveBeenCalled());
+    expect(mockCreateOlx).toHaveBeenCalledWith(
+      "owner-1",
+      "prod-1",
+      "CAT-1",
+      "acc-1",
+      "collab-1",
+    );
+  });
+
+  it("Facebook: actorId chega como 5º argumento", async () => {
+    dispatchWith("FACEBOOK", "collab-1");
+
+    await vi.waitFor(() => expect(mockCreateFacebook).toHaveBeenCalled());
+    expect(mockCreateFacebook).toHaveBeenCalledWith(
       "owner-1",
       "prod-1",
       "CAT-1",
