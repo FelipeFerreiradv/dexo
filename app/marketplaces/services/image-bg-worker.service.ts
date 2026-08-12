@@ -50,6 +50,10 @@ const SWEEP_DELAYS_MS = [2 * 60 * 1000, 8 * 60 * 1000];
 // o contador — só re-agenda.
 const SWEEP_RETRY_MS = 2 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 5 * 1000;
+// Quantos jobs um tick pode emendar antes de voltar a fazer reclaim/sweeps.
+// A ~12s por foto, 10 jobs ≈ 2min de tick — folga suficiente para os sweeps
+// (agendados em +2min/+10min, e que só rodam ATRASADOS, nunca se perdem).
+export const MAX_JOBS_PER_TICK = 10;
 
 const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
@@ -102,7 +106,14 @@ export class ImageBgWorkerService {
       if (!isAsyncBgEnabled()) return; // lido por tick: liga/desliga por .env+restart
       await this.reclaimExpiredLeases();
       await this.runDueSweeps();
-      await this.processNextJob();
+      // Emenda os jobs SEM esperar o tick. Antes era um job por tick de 5s:
+      // com a fila cheia, o worker ficava parado até 5s depois de cada foto —
+      // ~20-30% do tempo de drenagem jogado fora. Continua estritamente
+      // sequencial (o sidecar tem 1 worker); só some o tempo ocioso.
+      // O teto existe para reclaim/sweeps não ficarem de fora numa fila longa.
+      for (let i = 0; i < MAX_JOBS_PER_TICK; i++) {
+        if (!(await this.processNextJob())) break;
+      }
     } catch (err) {
       console.error("[ImageBgWorker] tick falhou:", err);
     } finally {
@@ -187,11 +198,17 @@ export class ImageBgWorkerService {
     return externalCfg !== null && externalRembgBreaker.peekAllowed();
   }
 
-  /** Processa UM job por tick — o sidecar tem 1 worker; paralelizar aqui só
-   *  criaria fila interna e roubaria os slots do tráfego síncrono. */
-  private static async processNextJob(): Promise<void> {
+  /** Processa UM job — o sidecar tem 1 worker; paralelizar aqui só criaria fila
+   *  interna e roubaria os slots do tráfego síncrono. O encadeamento SEQUENCIAL
+   *  de vários jobs por tick fica em `runOnce`.
+   *
+   *  @returns `true` só quando um job foi CONCLUÍDO com sucesso — é o sinal de
+   *  que vale emendar o próximo na hora. Falha/degradação devolve `false` de
+   *  propósito: aí o certo é esperar o tick (e o backoff), não girar em cima de
+   *  um sidecar que acabou de não entregar. */
+  private static async processNextJob(): Promise<boolean> {
     if (!this.anyProviderMightServe()) {
-      return; // breaker(s) abertos/killswitch — espera o próximo tick
+      return false; // breaker(s) abertos/killswitch — espera o próximo tick
     }
     const candidate: ImageBgJobRow | null = await (
       prisma as any
@@ -208,7 +225,7 @@ export class ImageBgWorkerService {
         userId: true,
       },
     });
-    if (!candidate) return;
+    if (!candidate) return false;
 
     // Claim CAS: só processa se NINGUÉM mudou o status desde o findFirst.
     const claimed = await (prisma as any).imageBgJob.updateMany({
@@ -219,7 +236,7 @@ export class ImageBgWorkerService {
         attempts: { increment: 1 },
       },
     });
-    if (claimed.count !== 1) return;
+    if (claimed.count !== 1) return false;
     const attempt = candidate.attempts + 1;
 
     // Teto TAMBÉM no claim: um job que DERRUBA o processo (crash nativo do
@@ -231,7 +248,7 @@ export class ImageBgWorkerService {
         `tentativas esgotadas (${candidate.attempts}) sem desfecho — processamento pode ter derrubado o processo`,
         Date.now(),
       );
-      return;
+      return false;
     }
 
     const startedAt = Date.now();
@@ -245,7 +262,7 @@ export class ImageBgWorkerService {
         `original ausente: ${errMsg(err)}`,
         startedAt,
       );
-      return;
+      return false;
     }
 
     try {
@@ -276,7 +293,7 @@ export class ImageBgWorkerService {
           attempt,
           `degradou (${result.degradeReason ?? "sem-motivo"})`,
         );
-        return;
+        return false;
       }
 
       const resultFileName = `${candidate.uploadUuid}.png`;
@@ -322,10 +339,12 @@ export class ImageBgWorkerService {
       console.log(
         `[ImageBgWorker] job ${candidate.id} concluído em ${Date.now() - startedAt}ms (tentativa ${attempt})`,
       );
+      return true;
     } catch (err) {
       // processUploadedImage não lança por falha de sidecar (degrada), então
       // aqui é erro inesperado (disco, bug) — retry com backoff mesmo assim.
       await this.handleFailure(candidate, attempt, errMsg(err));
+      return false;
     }
   }
 
