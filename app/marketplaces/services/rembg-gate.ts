@@ -26,6 +26,17 @@
  *     tempo, `acquire` devolve `null` e o chamador degrada na hora (200 + WebP +
  *     `warning`) em vez de enfileirar trabalho que ninguém vai esperar.
  *
+ * POR QUE A RESERVA DO ITEM 2 NÃO BASTOU (12/08/2026)
+ * ---------------------------------------------------
+ * A cota reservada garante que o interno CONSIGA um slot, não que ele o consiga
+ * PRIMEIRO. Como `canAdmit` não enxergava demanda interna, todo slot liberado
+ * acordava o waiter público — que, com o Desmont Hub mandando ~320 img/h 24h por
+ * dia, estava sempre pronto. Com o sidecar serializando, a "folga" virava empate
+ * ~50/50 e 100% do público nos intervalos do worker: a fila do cliente chegou a
+ * 55 min de espera. Agora `public` só entra quando NÃO há waiter interno na fila
+ * (prioridade de verdade), e `REMBG_PUBLIC_MAX_CONCURRENCY=0` desliga a lane
+ * pública por completo — ela degrada na hora, sem enfileirar.
+ *
  * Killswitch: `REMBG_GATE_DISABLED=1` volta ao comportamento anterior (sem
  * limite), seguindo a convenção dos demais kill-switches do projeto.
  *
@@ -48,6 +59,19 @@ function readPositiveInt(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+/**
+ * Igual ao acima, mas ACEITA zero — só para a cota pública. `0` é o desligamento
+ * da lane `public`: o Desmont Hub passa a receber sempre a imagem otimizada sem
+ * recorte (200 + `X-Warning`, shape já documentado) e deixa de disputar CPU com
+ * as fotos dos clientes. `readPositiveInt` trata 0 como inválido e cairia no
+ * default 1, então não dava para expressar isso por env.
+ */
+function readNonNegativeInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
 function isGateDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -75,10 +99,19 @@ class RembgGate {
     private readonly publicCapacity: number,
   ) {}
 
+  /** Há foto de usuário esperando slot? Waiter settled já saiu do array. */
+  private hasInternalWaiter(): boolean {
+    return this.waiters.some((w) => w.lane === "internal");
+  }
+
   private canAdmit(lane: RembgLane): boolean {
     if (this.inFlight >= this.capacity) return false;
-    if (lane === "public" && this.publicInFlight >= this.publicCapacity) {
-      return false;
+    if (lane === "public") {
+      if (this.publicInFlight >= this.publicCapacity) return false;
+      // Prioridade do interno: enquanto houver foto de cliente na fila, o
+      // público não toma o slot que acabou de vagar. Ele espera (e degrada no
+      // fim do orçamento) em vez de furar a fila.
+      if (this.hasInternalWaiter()) return false;
     }
     return true;
   }
@@ -136,6 +169,12 @@ class RembgGate {
     if (this.canAdmit(lane)) {
       return Promise.resolve(this.take(lane));
     }
+    // Lane desligada (cota 0): desiste JÁ. Enfileirar seria segurar a requisição
+    // por todo o orçamento (~38s) para no fim degradar do mesmo jeito — só
+    // prenderia socket e memória sem nunca poder ser admitida.
+    if (lane === "public" && this.publicCapacity === 0) {
+      return Promise.resolve(null);
+    }
     if (maxWaitMs <= 0) return Promise.resolve(null);
 
     return new Promise<RembgGateSlot | null>((resolve) => {
@@ -173,7 +212,7 @@ function getGate(): RembgGate {
     );
     const publicCapacity = Math.min(
       capacity,
-      readPositiveInt(
+      readNonNegativeInt(
         process.env.REMBG_PUBLIC_MAX_CONCURRENCY,
         DEFAULT_PUBLIC_MAX_CONCURRENCY,
       ),
@@ -195,8 +234,10 @@ export function __resetRembgGate(): void {
 /**
  * Pede um slot para chamar o sidecar.
  *
- * @param lane   `"internal"` (modal) tem prioridade; `"public"` (Desmont Hub)
- *               fica limitada à cota reservada.
+ * @param lane   `"internal"` (modal e worker) tem prioridade: enquanto houver um
+ *               interno esperando, nenhum `"public"` (Desmont Hub) é admitido.
+ *               O público ainda respeita a cota reservada, e com
+ *               `REMBG_PUBLIC_MAX_CONCURRENCY=0` desiste na hora.
  * @param maxWaitMs  Quanto ainda dá para esperar dentro do orçamento da
  *                   requisição. `<= 0` desiste imediatamente.
  * @returns o slot, ou `null` quando não deu para entrar a tempo — nesse caso o
