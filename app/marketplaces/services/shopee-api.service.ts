@@ -618,7 +618,14 @@ export class ShopeeApiService {
           timeout: 15000,
         });
         imageBuffer = Buffer.from(imageResponse.data);
-        contentType = imageResponse.headers["content-type"] || "image/jpeg";
+        // O axios 1.19 alargou o tipo de `headers[...]` para
+        // `string | number | true | string[] | AxiosHeaders`. Em runtime o
+        // content-type é string (ou ausente), então o `String()` é equivalente
+        // para todo valor real — inclusive o caso ausente, que já cai no
+        // `|| "image/jpeg"` ANTES da conversão. Só satisfaz o tipo.
+        contentType = String(
+          imageResponse.headers["content-type"] || "image/jpeg",
+        );
       }
     } else {
       // URL externa — baixar via HTTP como antes
@@ -627,7 +634,10 @@ export class ShopeeApiService {
         timeout: 15000,
       });
       imageBuffer = Buffer.from(imageResponse.data);
-      contentType = imageResponse.headers["content-type"] || "image/jpeg";
+      // Mesma conversão do ramo acima (axios 1.19 alargou o tipo do header).
+      contentType = String(
+        imageResponse.headers["content-type"] || "image/jpeg",
+      );
     }
 
     // Shopee aceita JPG/PNG — transcodar formatos não suportados (webp, gif, avif, etc.)
