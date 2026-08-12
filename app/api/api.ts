@@ -15,6 +15,7 @@ import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import fastifyCompress from "@fastify/compress";
 import { join } from "path";
+import { cacheControlFor } from "../lib/static-cache";
 import prisma from "../lib/prisma";
 import { SystemLogService } from "../services/system-log.service";
 import { userRoutes } from "../routes/user.routes";
@@ -141,9 +142,29 @@ api.register(fastifyMultipart, {
   },
 });
 
+/**
+ * Cache longo APENAS para os arquivos de upload nomeados por UUID.
+ *
+ * Antes o servidor respondia `public, max-age=0` para TODA imagem de produto:
+ * o navegador revalidava a cada exibição. Medido em produção, ~40% das
+ * requisições de `/uploads` eram 304 — round-trip só para ouvir "não mudou" —
+ * com picos de ~1.900 requisições/hora. Com `immutable`, a exibição repetida
+ * deixa de gerar requisição, a galeria pinta na hora e o egress cai.
+ *
+ * ⚠️ O escopo é ESTREITO de propósito: `logo.jpg`, `icon-192.png`, `api-docs/`
+ * e `marketplaces/` moram neste mesmo `root` e são substituídos pelo MESMO nome
+ * a cada deploy. Ver `isImmutableUploadPath` para o critério e o porquê.
+ */
 api.register(fastifyStatic, {
   root: join(process.cwd(), "public"),
   prefix: "/",
+  // Desliga o Cache-Control calculado pelo `send`: no v9 ele é aplicado DEPOIS
+  // do `setHeaders` e sobrescreveria o nosso. `cacheControlFor` devolve o valor
+  // dos dois casos — ver o comentário lá.
+  cacheControl: false,
+  setHeaders: (res, filePath) => {
+    res.setHeader("Cache-Control", cacheControlFor(filePath));
+  },
 });
 
 // Middleware de logging - deve ser registrado antes das rotas

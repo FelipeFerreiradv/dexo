@@ -90,7 +90,17 @@ export function AppHeader({ session }: AppHeaderProps) {
   useEffect(() => {
     if (!session) return;
     let active = true;
+    let inFlight = false;
     const load = async () => {
+      // EGRESS: aba em segundo plano NÃO consulta. Este era o único
+      // `setInterval` de dados do repo sem gate de visibilidade — uma aba
+      // esquecida aberta batia em `/dashboard/notifications` (5 findMany em
+      // paralelo) a cada 5min, para sempre, sem ninguém olhando. Ao voltar o
+      // foco recarrega na hora, então o usuário vê dado MAIS fresco que antes
+      // (não espera o resto do intervalo).
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (inFlight) return; // troca rápida de aba não dispara dois loads
+      inFlight = true;
       try {
         setLoadingNotif(true);
         const res = await fetch(
@@ -115,14 +125,24 @@ export function AppHeader({ session }: AppHeaderProps) {
       } catch (err) {
         console.error(err);
       } finally {
+        inFlight = false;
         if (active) setLoadingNotif(false);
       }
     };
     load();
     const id = setInterval(load, 300000); // 5 minutes
+    const onVisibilityChange = () => {
+      if (active && !document.hidden) void load();
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
       active = false;
       clearInterval(id);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
     // EGRESS: a dependência é o EMAIL, não o objeto `session`. O next-auth troca
     // a identidade de `session` a cada refresh/re-render, o que reexecutava este
