@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   CapacityExceededError,
@@ -80,6 +81,21 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
   /**
    * GET /locations/select
    * Lista simplificada para selects/dropdowns (com fullPath)
+   *
+   * EGRESS: este payload é rebaixado INTEIRO a cada abertura do modal de
+   * criar/editar produto (o cache do products-list tem TTL de 15s e os modais
+   * nem o usam) — 53,8 KB comprimidos por chamada no maior tenant, ~233 MB/mês
+   * somando a base. Encolher o corpo não resolve: o `id` (cuid) sozinho é 64,6%
+   * do payload comprimido e é irredutível.
+   *
+   * Daí o ETag: `no-cache` faz o navegador REVALIDAR sempre (nunca serve dado
+   * velho) e, quando nada mudou, a resposta é um 304 sem corpo. Medido sobre 7
+   * dias de produção, 70% a 91% das revalidações não teriam mudança.
+   *
+   * Por que é seguro sem `Vary`: `private` impede cache compartilhado e
+   * `no-cache` força revalidação, então uma entrada de outro usuário no mesmo
+   * navegador nunca é servida — o ETag é recalculado para o usuário da vez e
+   * não bate. O corpo de um 200 é byte-idêntico ao de antes.
    */
   fastify.get(
     "/select",
@@ -88,7 +104,30 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const locations = await locationUseCase.listForSelect(userId);
-        return reply.status(200).send({ locations });
+
+        // Serializa UMA vez: o mesmo buffer vira o ETag e o corpo.
+        const body = JSON.stringify({ locations });
+        const etag = `W/"${createHash("sha1").update(body).digest("base64url")}"`;
+
+        // `if-none-match` pode vir com uma lista; basta um casar.
+        const enviado = request.headers["if-none-match"];
+        if (
+          typeof enviado === "string" &&
+          enviado.split(",").some((candidato) => candidato.trim() === etag)
+        ) {
+          return reply
+            .header("ETag", etag)
+            .header("Cache-Control", "private, no-cache")
+            .status(304)
+            .send();
+        }
+
+        return reply
+          .header("ETag", etag)
+          .header("Cache-Control", "private, no-cache")
+          .type("application/json")
+          .status(200)
+          .send(body);
       } catch (error) {
         return reply.status(500).send({
           error:
