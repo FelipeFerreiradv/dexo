@@ -60,8 +60,9 @@ export const completarFiscalDaSucata: AiTool = {
   description:
     "PREPARA o preenchimento dos dados da NOTA FISCAL de uma sucata já cadastrada. NÃO altera nada agora: devolve uma proposta que o usuário confirma na tela. " +
     "Use quando ele anexar o XML da NF-e do veículo ou ditar os dados da nota. " +
-    "Copie os valores EXATAMENTE como aparecem na leitura do anexo — não arredonde, não complete e não adivinhe dígito nenhum. " +
-    "Se algum campo não estiver na nota, deixe vazio em vez de inventar.",
+    "Quando houver leitura de anexo, ela traz os campos já rotulados — 'Chave de acesso', 'CNPJ do fornecedor', 'Série', 'Data de emissão', 'Natureza da operação' e 'ICMS da nota'. " +
+    "Copie cada um EXATAMENTE como está lá: não arredonde, não reformate e não adivinhe dígito nenhum. Para a data, use o valor que a leitura marca como 'para a ferramenta'. " +
+    "Se um campo não aparecer na leitura, ele não estava na nota — deixe vazio em vez de inventar.",
   args: z
     .object({
       sucata: z

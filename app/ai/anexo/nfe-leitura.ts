@@ -37,6 +37,18 @@ const MAX_ITENS_NA_LEITURA = 40;
 const brl = (n: number): string =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
+/**
+ * `AAAA-MM-DD` → `dd/mm/aaaa`, para o lojista CONFERIR contra o papel na mão.
+ *
+ * ⚠️ Sem `new Date()` no caminho: a data já vem como texto do XML, e passar por
+ * `Date` a converteria para o fuso do servidor — `2026-07-15` viraria 14/07 num
+ * fuso negativo. É corte de string, e é o certo aqui.
+ */
+const dataBR = (iso: string): string => {
+  const [a, m, d] = iso.split("-");
+  return `${d}/${m}/${a}`;
+};
+
 /** Quantidade sem casas inúteis: `3` e não `3,00`; `2,5` continua `2,5`. */
 const qtd = (n: number): string =>
   Number.isInteger(n)
@@ -103,7 +115,36 @@ export function lerXmlDeNfe(xml: string): ResultadoDeLeituraNfe {
 
   const cabecalho = [
     meta.numero ? `Nota número ${meta.numero}` : "Nota sem número declarado",
+    meta.serie ? `Série: ${meta.serie}` : null,
     meta.emitName ? `Fornecedor: ${meta.emitName}` : null,
+    meta.emitCnpj ? `CNPJ do fornecedor: ${meta.emitCnpj}` : null,
+    // ⭐⭐ A CHAVE, EM LINHA PRÓPRIA E RÓTULO EXPLÍCITO.
+    //
+    // Ela existe aqui por um motivo específico: `completar_fiscal_da_sucata`
+    // pede ao modelo para COPIAR os valores desta leitura, e até 13/08/2026 a
+    // chave simplesmente não estava nela — o parser nunca a extraía. O lojista
+    // anexava o XML, pedia para preencher o fiscal, e recebia um cartão com o
+    // número da nota e mais nada; se o modelo tentasse a chave, ele a inventava.
+    //
+    // ⚠️ São 44 dígitos que um LLM vai TRANSCREVER, e essa continua sendo a
+    // parte frágil — por isso ela sai limpa, sem pontuação e sem quebra de
+    // linha, e por isso o dígito verificador é conferido do outro lado, na
+    // ferramenta. A rede de segurança não mudou de lugar; o que mudou é que
+    // agora existe algo verdadeiro para copiar.
+    meta.accessKey ? `Chave de acesso: ${meta.accessKey}` : null,
+    // ⚠️ OS DOIS FORMATOS NA MESMA LINHA, e não é redundância.
+    //
+    // Esta leitura tem DOIS leitores: o lojista, que confere contra a nota na
+    // mão dele e lê `15/07/2026`; e o modelo, que precisa entregar
+    // `2026-07-15` para a ferramenta. Publicar só o formato humano obrigaria o
+    // modelo a converter — e converter data é exatamente onde se troca mês por
+    // dia, num campo que ninguém reconfere depois de gravado. Publicar só o da
+    // máquina tiraria do lojista a conferência que justifica o cartão existir.
+    meta.issueDate
+      ? `Data de emissão: ${dataBR(meta.issueDate)} (para a ferramenta: ${meta.issueDate})`
+      : null,
+    meta.operationNature ? `Natureza da operação: ${meta.operationNature}` : null,
+    meta.icmsValue !== undefined ? `ICMS da nota: ${brl(meta.icmsValue)}` : null,
     `${meta.itemCount} linha(s) na nota, ${meta.groupedCount} produto(s) distinto(s)`,
     `Valor somado dos produtos: ${brl(total)}`,
   ].filter(Boolean) as string[];

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NF-e modelo 55 com o CABEÇALHO FISCAL completo.
+
+  A chave de acesso é REAL no que importa: 44 dígitos com o dígito verificador
+  fechando pelo módulo 11 (conferido com `calcularDV`). Uma chave inventada
+  tornaria inútil o teste que prova que o valor extraído aqui atravessa o
+  `parseChave` da emissão — que é justamente o encaixe que este arquivo existe
+  para provar.
+
+  O CNPJ 11.222.333/0001-81 também é válido (passa em `isValidCnpj`).
+-->
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00" Id="NFe41260711222333000181550010000123451876543218">
+    <ide>
+      <mod>55</mod>
+      <serie>1</serie>
+      <nNF>12345</nNF>
+      <dhEmi>2026-07-15T10:30:00-03:00</dhEmi>
+      <natOp>COMPRA DE VEICULO SINISTRADO PARA DESMONTE</natOp>
+    </ide>
+    <emit>
+      <CNPJ>11222333000181</CNPJ>
+      <xNome>SEGURADORA EXEMPLO S/A</xNome>
+    </emit>
+    <det nItem="1"><prod>
+      <cProd>VEIC01</cProd><cEAN>SEM GTIN</cEAN>
+      <xProd>VOLKSWAGEN GOL 1.0 2015 SINISTRADO</xProd>
+      <NCM>87032100</NCM><CFOP>1102</CFOP><uCom>UN</uCom>
+      <qCom>1.0000</qCom><vUnCom>8500.0000</vUnCom><vProd>8500.00</vProd>
+    </prod></det>
+    <total>
+      <ICMSTot>
+        <vProd>8500.00</vProd>
+        <vICMS>1234.50</vICMS>
+        <vNF>8500.00</vNF>
+      </ICMSTot>
+    </total>
+  </infNFe></NFe>
+</nfeProc>

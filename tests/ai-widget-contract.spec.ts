@@ -149,6 +149,56 @@ describe("z-index e posicionamento — o mapa levantado na Fase 0", () => {
     expect(widget).toContain("bottom-20");
   });
 
+  // -------------------------------------------------------------------------
+  // ⭐⭐ O LAUNCHER TEM DE FICAR FIXO — e o teste acima NÃO pegava a quebra.
+  //
+  // Em 13/08/2026 o badge de alerta entrou trazendo um `relative` na MESMA
+  // lista de classes do `fixed`, para "sustentar" o ponto. `fixed` e `relative`
+  // são a mesma propriedade CSS, e o Tailwind emite `relative` DEPOIS de
+  // `fixed` na ordem canônica de posicionamento: `relative` venceu, o mascote
+  // voltou para o fluxo do documento e passou a ROLAR COM A PÁGINA.
+  //
+  // ⚠️ E a asserção logo acima continuou VERDE o tempo todo, porque a string
+  // `fixed right-4 bottom-20 z-40` seguia lá. Ela provava a PRESENÇA da classe
+  // certa; o que faltava era provar a AUSÊNCIA de uma classe que a anula. É a
+  // lição desta dupla: numa cascata, presença não é efeito.
+  //
+  // (O `relative` era desnecessário desde o começo: `position: absolute`
+  // resolve contra o ancestral posicionado mais próximo, e `fixed` já é um.)
+  // -------------------------------------------------------------------------
+  const POSICIONAMENTO = /\b(relative|absolute|sticky|static)\b/;
+
+  it("⭐⭐ o launcher não carrega uma segunda classe de posicionamento", () => {
+    const codigo = lerCodigo("components/bitz/bitz-widget.tsx");
+    const inicio = codigo.indexOf("fixed right-4 bottom-20 z-40");
+    expect(inicio, "a classe do launcher sumiu").toBeGreaterThan(-1);
+
+    // Da classe do launcher até o fim do `cn(...)` dele.
+    const listaDoLauncher = codigo.slice(inicio, codigo.indexOf(")}", inicio));
+
+    expect(
+      listaDoLauncher,
+      "`relative`/`absolute`/`sticky` na lista do launcher ANULAM o `fixed` e o mascote passa a rolar com a página",
+    ).not.toMatch(POSICIONAMENTO);
+  });
+
+  it("⚠️ nenhum literal do módulo mistura duas classes de posicionamento", () => {
+    // A mesma quebra, na forma geral: duas utilitárias de `position` dentro do
+    // MESMO literal de string é sempre defeito — uma delas nunca vale.
+    for (const arquivo of [
+      "components/bitz/bitz-widget.tsx",
+      "components/bitz/bitz-panel.tsx",
+      "components/bitz/bitz-alerta.tsx",
+      "components/bitz/bitz-acao.tsx",
+    ]) {
+      const codigo = lerCodigo(arquivo);
+      for (const [literal] of codigo.matchAll(/"[^"\n]*\bfixed\b[^"\n]*"/g)) {
+        expect(literal, `${arquivo}: duas classes de position no mesmo literal`)
+          .not.toMatch(POSICIONAMENTO);
+      }
+    }
+  });
+
   it("painel docado em z-40; tela cheia em z-50 (ali ele É o modal da vez)", () => {
     expect(panel).toContain("inset-0 z-50 rounded-none");
     expect(panel).toContain("z-40 rounded-3xl border");

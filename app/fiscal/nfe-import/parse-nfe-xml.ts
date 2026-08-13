@@ -35,6 +35,37 @@ const toNum = (v: unknown): number => {
 const asString = (v: unknown): string =>
   v === null || v === undefined ? "" : String(v).trim();
 
+const soDigitos = (v: unknown): string => asString(v).replace(/\D/g, "");
+
+/**
+ * A data de emissão em `AAAA-MM-DD`.
+ *
+ * Aceita as duas gerações do leiaute: `dhEmi` do 4.00
+ * (`2026-07-15T10:30:00-03:00`) e `dEmi` do 3.10 (`2026-07-15`). O corte é por
+ * regex e não por `slice(0,10)` de propósito — um campo preenchido torto vira
+ * `undefined` em vez de virar uma data inventada de 10 caracteres.
+ */
+function dataDeEmissao(ide: Record<string, unknown>): string | undefined {
+  const bruto = asString(ide.dhEmi) || asString(ide.dEmi);
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(bruto);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Os 44 dígitos da chave, de `infNFe/@Id`.
+ *
+ * ⚠️ NÃO CONFERE O DÍGITO VERIFICADOR. Ver a nota em `nfe-import.types.ts`:
+ * conferir aqui faria uma nota com chave torta parar de importar produto, que é
+ * comportamento que já existia. Aqui só sai a chave quando ela TEM 44 dígitos —
+ * qualquer outra coisa vira `undefined`, nunca um pedaço.
+ */
+function chaveDeAcesso(infNFe: Record<string, unknown>): string | undefined {
+  // `attributeNamePrefix: "@_"`, e o valor vem como `NFe3526...` — o prefixo
+  // não tem dígito, então extrair só os dígitos já o descarta.
+  const digitos = soDigitos(infNFe["@_Id"]);
+  return digitos.length === 44 ? digitos : undefined;
+}
+
 interface GroupAcc {
   cProd: string;
   cEAN: string;
@@ -162,11 +193,29 @@ export function parseNfeXml(xml: string): NfeParsedResult {
   }
 
   const emit = (infNFe.emit ?? {}) as Record<string, unknown>;
+
+  // ⭐ O cabeçalho fiscal. TUDO opcional e nada lança: uma nota sem `Id`, sem
+  // `vICMS` ou com data em leiaute que este parser não reconhece continua
+  // importando produto exatamente como antes desta linha existir.
+  const total = (infNFe.total ?? {}) as Record<string, unknown>;
+  const icmsTot = (total.ICMSTot ?? {}) as Record<string, unknown>;
+  const vIcms = toNum(icmsTot.vICMS);
+  const cnpj = soDigitos(emit.CNPJ);
+
   return {
     items,
     meta: {
       numero: asString(ide.nNF) || undefined,
       emitName: asString(emit.xNome) || undefined,
+      accessKey: chaveDeAcesso(infNFe),
+      // 14 dígitos ou nada. Nota de pessoa física traz `CPF` e não `CNPJ`, e
+      // devolver um CPF num campo chamado `emitCnpj` seria pior que devolver
+      // vazio — quem consome grava em `Scrap.supplierCnpj`.
+      emitCnpj: cnpj.length === 14 ? cnpj : undefined,
+      serie: asString(ide.serie) || undefined,
+      issueDate: dataDeEmissao(ide),
+      operationNature: asString(ide.natOp) || undefined,
+      icmsValue: Number.isFinite(vIcms) ? round2(vIcms) : undefined,
       itemCount: dets.length,
       groupedCount: items.length,
     },

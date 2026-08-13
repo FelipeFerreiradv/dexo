@@ -209,8 +209,20 @@ export function BitzWidget({ session }: { session: Session }) {
             // bottom-20 no mobile livra a faixa onde os toasts pousam
             // (fixed bottom-4 right-4 em 17 telas).
             "fixed right-4 bottom-20 z-40 md:right-6 md:bottom-6",
-            // `relative` sustenta o ponto do badge, logo abaixo.
-            "relative inline-flex items-center justify-center rounded-full",
+            // ⛔⛔ NÃO ACRESCENTE `relative` AQUI. Já aconteceu, e o estrago é
+            // grande: `fixed` e `relative` são a MESMA propriedade CSS, e o
+            // Tailwind emite `relative` DEPOIS de `fixed` na ordem canônica de
+            // posicionamento — então `relative` vence, o botão sai da camada
+            // fixa, volta para o fluxo do documento e passa a ROLAR COM A
+            // PÁGINA. O mascote deixa de ficar no canto e some da tela.
+            //
+            // Ele entrou aqui para "sustentar" o ponto do badge, e era
+            // desnecessário: `position: absolute` resolve contra o ancestral
+            // posicionado mais próximo, e `fixed` já é um deles. O ponto abaixo
+            // se posiciona certo sem ajuda nenhuma.
+            //
+            // `tests/ai-widget-contract.spec.ts` prende isto.
+            "inline-flex items-center justify-center rounded-full",
             "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
             "transition-transform hover:scale-105 active:scale-95",
             "motion-reduce:transition-none motion-reduce:hover:scale-100",
