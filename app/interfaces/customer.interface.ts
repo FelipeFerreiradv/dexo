@@ -110,6 +110,12 @@ export interface CustomerListFilters {
   search?: string;
   page?: number;
   limit?: number;
+  /**
+   * Só clientes cadastrados a partir desta data. Serve "quantos clientes
+   * entraram esta semana?" sem trazer a base inteira para contar na memória.
+   * Servido por `@@index([userId, createdAt])`.
+   */
+  createdFrom?: Date;
 }
 
 export interface CustomerListResult {

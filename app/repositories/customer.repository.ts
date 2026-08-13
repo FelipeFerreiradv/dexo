@@ -222,6 +222,10 @@ export class CustomerRepository {
       where.OR = or;
     }
 
+    if (filters.createdFrom) {
+      where.createdAt = { gte: filters.createdFrom };
+    }
+
     const [items, total] = await Promise.all([
       prisma.customer.findMany({
         where,

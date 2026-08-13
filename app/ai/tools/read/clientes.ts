@@ -41,7 +41,7 @@ export function mascararDocumento(valor: unknown): string | null {
 export const buscarCliente: AiTool = {
   name: "buscar_cliente",
   description:
-    "Busca clientes cadastrados por nome, documento, e-mail ou telefone. " +
+    "Busca clientes cadastrados por nome, documento, e-mail ou telefone, e também responde 'quais clientes entraram hoje/esta semana' (cadastradosNosUltimosDias). " +
     "Devolve nome, cidade, telefone e o documento parcialmente mascarado. " +
     "Por privacidade, NÃO devolve CPF/CNPJ completo, RG, data de nascimento nem endereço — " +
     "se o usuário precisar desses dados, oriente a abrir o cadastro do cliente na tela Clientes.",
@@ -51,7 +51,20 @@ export const buscarCliente: AiTool = {
         .string()
         .min(2)
         .max(80)
-        .describe("Nome, documento, e-mail ou telefone do cliente."),
+        .optional()
+        .describe(
+          "Nome, documento, e-mail ou telefone do cliente. " +
+            "Pode ficar vazio SE você informar cadastradosNosUltimosDias.",
+        ),
+      cadastradosNosUltimosDias: z
+        .number()
+        .int()
+        .min(1)
+        .max(90)
+        .optional()
+        .describe(
+          'Só clientes cadastrados nos últimos N dias. Use 1 para "hoje" (últimas 24 horas). Máximo 90.',
+        ),
     })
     .strict(),
   kind: "read",
@@ -68,10 +81,46 @@ export const buscarCliente: AiTool = {
   sourceLabel: "Clientes cadastrados",
   handler: async (args, scope) => {
     const usecase = new CustomerUseCase();
-    const clientes = await usecase.search(args.consulta, scope.dataOwnerId);
+
+    // Nem busca nem período: pedir o filtro é a resposta certa. Trazer "os 10
+    // primeiros clientes" não responde pergunta nenhuma.
+    if (!args.consulta && !args.cadastradosNosUltimosDias) {
+      return {
+        precisoDeUmFiltro: true,
+        instrucao:
+          "Pergunte ao usuário QUEM ele procura (nome, telefone, documento) ou DE QUE PERÍODO. Não invente uma busca.",
+      };
+    }
+
+    // ⭐ DOIS CAMINHOS, e não um. `search` é o typeahead por nome/documento e
+    // NÃO aceita período; a listagem aceita. Usar a listagem para o caso do
+    // período é o que evita trazer a base inteira para filtrar em memória.
+    let clientes: any[];
+    let periodo: string | undefined;
+
+    if (args.cadastradosNosUltimosDias) {
+      const desde = new Date(
+        Date.now() - args.cadastradosNosUltimosDias * 24 * 60 * 60 * 1000,
+      );
+      const r = await usecase.list(
+        {
+          ...(args.consulta ? { search: args.consulta } : {}),
+          createdFrom: desde,
+          limit: MAX_ITENS,
+          page: 1,
+        },
+        scope.dataOwnerId,
+      );
+      clientes = (r as any)?.customers ?? [];
+      // Janela ROLANTE, e o rótulo diz isso — não é "desde a meia-noite".
+      periodo = `cadastrados nas últimas ${args.cadastradosNosUltimosDias * 24} horas`;
+    } else {
+      clientes = await usecase.search(args.consulta!, scope.dataOwnerId);
+    }
 
     return {
       total: clientes.length,
+      ...(periodo ? { periodo } : {}),
       // O usecase já limita em 10 (customer.usecase.ts:147); repetimos o teto
       // aqui para o contrato da tool não depender de um default do outro lado.
       itens: clientes.slice(0, MAX_ITENS).map((c: any) => ({

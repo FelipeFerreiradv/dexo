@@ -84,6 +84,7 @@ model User {
   products            Product[]
   productsCreated     Product[]           @relation("ProductCreatedBy")
   listingsCreated     ProductListing[]    @relation("ListingCreatedBy")
+  scrapsCreated       Scrap[]             @relation("ScrapCreatedBy")
   systemLogs          SystemLog[]
   locations           Location[]
   scraps              Scrap[]
@@ -1550,12 +1551,21 @@ model Scrap {
   logisticsStatus LogisticsStatus @default(IN_YARD)
   notes           String?
 
+  // Quem deu entrada no lote. TRILHA, não vínculo de negócio — e por isso
+  // nullable e sem FK física, mesma decisão de Product.createdByUserId:
+  // apagar um colaborador não pode travar o histórico dos lotes dele. As
+  // linhas anteriores à coluna ficam NULL, que é a verdade ("não se sabe"),
+  // em vez de um autor inventado.
+  // Migração: ALTER TABLE "Scrap" ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT;
+  createdByUserId String?
+
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relacionamentos
   user            User               @relation(fields: [userId], references: [id])
+  createdBy       User?              @relation("ScrapCreatedBy", fields: [createdByUserId], references: [id])
   products        Product[]
   statusEvents    ScrapStatusEvent[]
   // Vendas balcão (Conta a Receber) vinculadas diretamente a esta sucata —

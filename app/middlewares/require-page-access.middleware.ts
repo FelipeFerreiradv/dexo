@@ -57,3 +57,58 @@ export const requirePageAccess =
       pageId,
     });
   };
+
+/**
+ * ⭐ Libera quando o colaborador tem QUALQUER UMA das páginas listadas.
+ *
+ * ⚠️⚠️ EXISTE POR UM MOTIVO CONCRETO, e ignorá-lo quebra tela de gente que
+ * trabalha. Alguns endpoints de LEITURA servem mais de uma página:
+ *
+ *   - `GET /customers` e `/customers/search` alimentam a lista de Clientes **e**
+ *     o combobox de cliente do Financeiro/Orçamentos
+ *     (financeiro/components/shared/customer-combobox.tsx:61-62);
+ *   - `GET /scraps` alimenta a tela de Sucatas, o combobox de sucata do
+ *     Financeiro (product-picker-block.tsx:693) **e** o vínculo de lote no
+ *     cadastro de peça (create-product-dialog.tsx:1245).
+ *
+ * Barrá-los com `requirePageAccess("clientes")` / `("sucatas")` tiraria o
+ * combobox de quem tem Financeiro e não tem Clientes — que é uma combinação
+ * legítima e existente. Medido em produção em 12/08/2026: de 81 colaboradores,
+ * 9 têm `sucatas: false` e 6 têm `clientes: false`.
+ *
+ * A garantia que continua valendo: quem não tem NENHUMA das páginas que usam o
+ * endpoint não passa. Um colaborador só de Produtos não despeja a base de
+ * clientes.
+ *
+ * ⚠️ Use só em LEITURA compartilhada. Mutação tem uma dona só — `POST /customers`
+ * é da tela de Clientes e de mais ninguém, e ali vale `requirePageAccess`.
+ */
+export const requireAnyPageAccess =
+  (pageIds: PageId[], opts?: { fresh?: boolean }) =>
+  async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = (request as any).user;
+    if (!user) return;
+    if (!user.parentUserId) return;
+
+    let access = user;
+    if (opts?.fresh) {
+      try {
+        const fresh = await prisma.user.findUnique({
+          where: { id: user.id },
+          select: { parentUserId: true, role: true, pagePermissions: true },
+        });
+        if (fresh) access = { ...user, ...fresh };
+      } catch {
+        // Falha de leitura não abre nem fecha o acesso por acidente.
+      }
+    }
+
+    if (pageIds.some((p) => hasPageAccess(access, p))) return;
+
+    return reply.status(403).send({
+      message:
+        "Seu acesso a esta área foi removido pelo administrador da conta.",
+      code: "PAGE_FORBIDDEN",
+      pageId: pageIds[0],
+    });
+  };

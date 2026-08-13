@@ -12,6 +12,7 @@
 
 import { CustomerUseCase } from "../../usecases/customer.usecase";
 import { ProductUseCase } from "../../usecases/product.usercase";
+import { ScrapUseCase } from "../../usecases/scrap.usercase";
 import type { AiScope } from "../core/scope";
 import { contarMemorias, criarMemoria } from "../memoria/memoria.service";
 import {
@@ -155,6 +156,67 @@ const EXECUTORES: Record<AiAcaoTipo, Executor> = {
       userId: scope.dataOwnerId,
     } as any);
     return { resultId: (cliente as any)?.id ?? null };
+  },
+
+  /**
+   * ⭐ DAR ENTRADA NUMA SUCATA. Embrulho fino de `ScrapUseCase.create` — o mesmo
+   * usecase que a tela de Sucatas chama (scrap.routes.ts:27), com as mesmas
+   * validações de marca, modelo, chassi e chave de acesso.
+   *
+   * ⚠️⚠️ SÓ O `resultId` VOLTA, e aqui NÃO EXISTE REDE DE SEGURANÇA — por isso
+   * o cuidado é maior, não menor.
+   *
+   * `ScrapRepository.create` termina com um `include` (scrap.repository.ts:140-143)
+   * e o objeto devolvido carrega `chassis`, `renavam`, `engineNumber` e `notes`
+   * — quatro campos de `CAMPOS_PROIBIDOS`. Mas a varredura de
+   * `acharCampoProibido` roda no TOOL-RUNNER e só sobre `paraOModelo`
+   * (tool-runner.ts:313 substitui o resultado por ele antes da checagem em
+   * :340). O executor roda depois, na rota de confirmação, e o que ele devolve
+   * NUNCA é escaneado.
+   *
+   * ⭐ Quem barra é o TIPO: `ResultadoDaExecucao` é `{ resultId; relatorio? }`.
+   * Não afrouxe esse tipo, e não devolva o objeto do usecase "por conveniência":
+   * seria identificação veicular saindo na resposta HTTP sem nada para pegar.
+   *
+   * ⭐ Sem efeito colateral a declarar: o insert não gera peça, não mexe em
+   * estoque e não lança nada no financeiro. É o motivo de o cartão poder dizer
+   * "a sucata nasce vazia" sem ressalva.
+   */
+  /**
+   * ⭐ VINCULAR A PEÇA AO LOTE. Embrulho fino de `ProductUseCase.linkScrap`.
+   *
+   * ⚠️ NÃO usa `update()`, e isso é escolha do usecase, não descuido:
+   * `linkScrap` (product.usercase.ts:694-706) evita o caminho de update DE
+   * PROPÓSITO porque `scrapId` não afeta anúncio nem estoque — passar por lá
+   * dispararia limpeza de override, stock log e sync de marketplace por uma
+   * mudança que não muda nada disso. É o motivo de o cartão poder prometer
+   * "não vai para marketplace nenhum".
+   *
+   * A guarda de tenant da sucata está dentro do repositório
+   * (product.repository.ts:1008-1021) e é refeita aqui pelo `dataOwnerId`.
+   */
+  "produto.vincular-sucata": async (payload, scope) => {
+    const usecase = new ProductUseCase();
+    await usecase.linkScrap(
+      payload.produtoId,
+      payload.sucataId,
+      scope.dataOwnerId,
+    );
+    return { resultId: payload.produtoId };
+  },
+
+  "sucata.criar": async (payload, scope) => {
+    const usecase = new ScrapUseCase();
+    const sucata = await usecase.create({
+      ...payload.sucata,
+      // ⭐ O tenant entra AQUI, do escopo. O payload nunca o carrega.
+      userId: scope.dataOwnerId,
+      // ⚠️ E o AUTOR é o ator, não o tenant — senão a tela de Sucatas diria que
+      // o dono da conta cadastrou o lote que o balconista ditou ao Bitz. Foi
+      // exatamente o achado #9 da Fase 9, para `Product`.
+      createdByUserId: scope.actorId,
+    } as any);
+    return { resultId: (sucata as any)?.id ?? null };
   },
 
   /**

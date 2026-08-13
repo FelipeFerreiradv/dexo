@@ -453,6 +453,11 @@ describe("⭐ permissão por página, dentro da conversa", () => {
       buscar_cliente: "clientes",
       buscar_localizacao: "localizacoes",
       diagnostico_operacional: "logs",
+      // ⭐ "produtos", e NÃO "logs" como o diagnóstico: peça sem anúncio e peça
+      // sem localização são dado de CATÁLOGO. Atrás de `logs`, quem libera
+      // Produtos para o balconista e esconde Logs perderia a pergunta mais
+      // banal que ele faz — e quem tem só Logs veria o catálogo inteiro.
+      pendencias_do_catalogo: "produtos",
     };
     for (const tool of READ_TOOLS) {
       expect(tool.page, tool.name).toBe(esperado[tool.name]);

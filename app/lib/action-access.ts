@@ -30,6 +30,8 @@ export type ActionId =
   | "bitz.atualizar-preco"
   | "bitz.ajustar-estoque"
   | "bitz.criar-cliente"
+  | "bitz.criar-sucata"
+  | "bitz.vincular-sucata"
   // Fase 11 — ensinar uma regra da loja ao Bitz. Ver a nota em ACTION_DEFS.
   | "bitz.lembrar";
 
@@ -89,6 +91,16 @@ export const ACTION_DEFS: ActionDef[] = [
     id: "bitz.criar-cliente",
     label: "Bitz: cadastrar cliente",
     hint: "Deixa o Bitz preparar o cadastro de um cliente novo. Nada é salvo sem o clique de confirmação.",
+  },
+  {
+    id: "bitz.criar-sucata",
+    label: "Bitz: dar entrada em sucata",
+    hint: "Deixa o Bitz preparar a entrada de um veículo comprado para desmontar. A sucata nasce vazia — nenhuma peça é criada. Nada é salvo sem o clique de confirmação.",
+  },
+  {
+    id: "bitz.vincular-sucata",
+    label: "Bitz: dizer de qual sucata a peça veio",
+    hint: "Deixa o Bitz preparar o vínculo entre uma peça e o lote de onde ela saiu. Não mexe em preço, estoque nem anúncio — só na origem da peça. Exige acesso a Produtos E a Sucatas.",
   },
   // ⚠️ ESTA CHAVE NÃO LIBERA COLABORADOR, e a nota está aqui para ninguém achar
   // que libera. Ensinar uma regra é privativo do ADMINISTRADOR (decisão do dono

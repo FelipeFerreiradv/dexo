@@ -87,6 +87,7 @@ function mapPrismaToScrap(
     status: item.status,
     logisticsStatus: item.logisticsStatus,
     notes: item.notes ?? undefined,
+    createdByUserId: item.createdByUserId ?? undefined,
 
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -95,9 +96,39 @@ function mapPrismaToScrap(
   };
 }
 
+/**
+ * ⭐ TENANT GUARD DA LOCALIZAÇÃO. Espelha o que `Product.scrapId` já faz
+ * (product.repository.ts:1008-1021), e existe pelo mesmo motivo.
+ *
+ * `Scrap.locationId` é FK para `Location` e o banco **não** garante que
+ * `Scrap.userId == Location.userId`. Sem esta checagem, um payload forjado
+ * pendura a sucata numa prateleira de OUTRO tenant — e a partir daí ela aparece
+ * na contagem de ocupação daquela localização, numa tela que o dono da
+ * prateleira abre achando que é dele.
+ *
+ * No-op para o caminho legítimo (mesma conta) e para sucata sem localização.
+ */
+async function assertLocalizacaoDoTenant(
+  locationId: string | null | undefined,
+  userId: string | null | undefined,
+): Promise<void> {
+  if (!locationId || !userId) return;
+  const propria = await prisma.location.findFirst({
+    where: { id: locationId, userId },
+    select: { id: true },
+  });
+  if (!propria) {
+    throw new Error(
+      "Localização inválida: localização não encontrada para este usuário",
+    );
+  }
+}
+
 export class ScrapRepositoryPrisma implements ScrapRepository {
   async create(data: ScrapCreate): Promise<Scrap> {
     try {
+      await assertLocalizacaoDoTenant(data.locationId, data.userId);
+
       const result = await prisma.scrap.create({
         data: {
           userId: data.userId,
@@ -135,6 +166,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           status: data.status ?? "AVAILABLE",
           logisticsStatus: data.logisticsStatus ?? "IN_YARD",
           notes: data.notes ?? null,
+          createdByUserId: data.createdByUserId ?? null,
         },
         include: {
           location: { select: { code: true } },
@@ -536,6 +568,9 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         });
         if (!owner) throw new Error("Sucata não encontrada para este usuário");
       }
+
+      // O PUT também pode trocar a prateleira — mesmo furo do create.
+      await assertLocalizacaoDoTenant(data.locationId, userId);
 
       const result = await prisma.scrap.update({
         where: { id },

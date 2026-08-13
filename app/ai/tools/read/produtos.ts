@@ -21,6 +21,8 @@ import { money, num, texto } from "../serialize";
 
 /** Teto de itens por consulta. Sem isto, `limit` não tem máximo em camada nenhuma. */
 const MAX_ITENS = 20;
+/** Teto da janela de "cadastradas recentemente". Três meses cobre o uso real. */
+const MAX_DIAS = 90;
 
 /**
  * Projeção do produto para o modelo.
@@ -79,15 +81,18 @@ export const buscarProduto: AiTool = {
     "Entende abreviação de autopeça: 'fecha tras esq palio' encontra 'Fechadura Traseira Esquerda Palio'. " +
     "Buscar por um código (SKU, part number) faz busca exata — se não existir, o resultado é vazio, e isso é a resposta correta. " +
     "Devolve preço de venda, estoque, localização e, para cada anúncio, EM QUE CANAL ele está e a situação dele " +
-    "(Mercado Livre, Shopee, Magalu, OLX e Facebook). NÃO devolve preço de custo nem margem.",
+    "(Mercado Livre, Shopee, Magalu, OLX e Facebook). NÃO devolve preço de custo nem margem. " +
+    "Também responde 'o que foi cadastrado hoje/esta semana' — para isso use cadastradasNosUltimosDias, com ou sem consulta.",
   args: z
     .object({
       consulta: z
         .string()
         .min(1)
         .max(120)
+        .optional()
         .describe(
-          "O que procurar: nome da peça, SKU, part number, marca+modelo.",
+          "O que procurar: nome da peça, SKU, part number, marca+modelo. " +
+            "Pode ficar vazio SE você informar cadastradasNosUltimosDias.",
         ),
       limite: z
         .number()
@@ -100,6 +105,15 @@ export const buscarProduto: AiTool = {
         .boolean()
         .optional()
         .describe("true para trazer só peças com estoque disponível."),
+      cadastradasNosUltimosDias: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_DIAS)
+        .optional()
+        .describe(
+          `Só peças cadastradas nos últimos N dias. Use 1 para "hoje" (últimas 24 horas). Máximo ${MAX_DIAS}.`,
+        ),
     })
     .strict(),
   kind: "read",
@@ -126,17 +140,44 @@ export const buscarProduto: AiTool = {
     const limite = Math.min(args.limite ?? 10, MAX_ITENS);
     const usecase = new ProductUseCase();
 
+    // ⚠️ Sem nenhum dos dois isto viraria "traga as 10 primeiras peças do
+    // catálogo", que não é resposta para pergunta nenhuma — e num catálogo de
+    // 79 mil peças é ruído caro. É resultado de NEGÓCIO, não erro de sistema:
+    // a tool devolve o que falta em vez de lançar (o tool-runner traduziria
+    // qualquer exceção para "a consulta falhou, tente de novo").
+    if (!args.consulta && !args.cadastradasNosUltimosDias) {
+      return {
+        precisoDeUmFiltro: true,
+        instrucao:
+          "Pergunte ao usuário O QUE ele quer procurar (nome da peça, SKU) ou DE QUE PERÍODO. Não invente uma busca.",
+      };
+    }
+
+    const desde = args.cadastradasNosUltimosDias
+      ? new Date(Date.now() - args.cadastradasNosUltimosDias * 24 * 60 * 60 * 1000)
+      : undefined;
+
     const { products, total } = await usecase.listProducts({
       userId: scope.dataOwnerId,
-      search: args.consulta,
+      ...(args.consulta ? { search: args.consulta } : {}),
       limit: limite,
       page: 1,
       ...(args.somenteComEstoque ? { stockStatus: "IN_STOCK" as const } : {}),
+      ...(desde ? { createdFrom: desde } : {}),
     });
 
     return {
       total,
       exibidos: products.length,
+      ...(desde
+        ? {
+            // ⚠️ JANELA ROLANTE, e o rótulo diz isso. "1 dia" são as últimas 24
+            // horas, não "desde a meia-noite" — o corte por dia civil já
+            // causou confusão no relatório de vendas ("quanto vendi ontem"
+            // passando a incluir hoje), e não vale importar aquele problema.
+            periodo: `cadastradas nas últimas ${args.cadastradasNosUltimosDias! * 24} horas`,
+          }
+        : {}),
       // Truncamento é dito em voz alta: "achei 3" quando existem 340 é uma
       // resposta errada com cara de certa.
       observacao:

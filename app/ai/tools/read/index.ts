@@ -17,6 +17,7 @@ import { buscarSucata, detalheSucata } from "./sucatas";
 import { buscarOrcamento, contasAPagar, contasAReceber } from "./financeiro";
 import { relatorioEstoque, relatorioVendas } from "./relatorios";
 import { diagnosticoOperacional } from "./diagnostico";
+import { pendenciasDoCatalogo } from "./catalogo-pendencias";
 
 export const READ_TOOLS: AiTool[] = [
   buscarProduto,
@@ -32,6 +33,7 @@ export const READ_TOOLS: AiTool[] = [
   buscarLocalizacao,
   buscarOrcamento,
   diagnosticoOperacional,
+  pendenciasDoCatalogo,
 ];
 
 let cache: Map<string, AiTool> | null = null;

@@ -1,0 +1,38 @@
+-- AUTORIA DA SUCATA: quem deu entrada no lote.
+--
+-- ⭐ O PROBLEMA: `Scrap` nunca teve autor. A tela de Sucatas mostra quando o
+-- lote entrou, mas não QUEM o cadastrou — nem quando foi o Bitz. É a mesma
+-- lacuna que já se consertou para `Product` (`Product.createdByUserId`), onde a
+-- coluna "Criado por" mostrava "—" para tudo que o agente cadastrava,
+-- indistinguível de registro legado ou de importação.
+--
+-- ⭐ NULLABLE E SEM DEFAULT, de propósito. As linhas que já existem NÃO têm
+-- autor conhecido, e inventar um (o dono da conta, por exemplo) seria pior que
+-- deixar vazio: a tela passaria a afirmar que o administrador cadastrou 46 mil
+-- sucatas que vieram de importação. `NULL` diz a verdade — "não se sabe".
+--
+-- ⭐ SEM FOREIGN KEY, espelhando `Product.createdByUserId`. O autor é uma
+-- TRILHA, não um vínculo de negócio: apagar um colaborador não pode apagar nem
+-- travar o histórico dos lotes que ele deu entrada. E sem FK não há verificação
+-- de integridade referencial no INSERT, que é o caminho quente do importador.
+--
+-- ⭐ SEM ÍNDICE. Ninguém filtra sucata por autor — a coluna é para EXIBIR na
+-- linha que já foi buscada por outro critério. Índice aqui seria custo de
+-- escrita permanente por uma consulta que não existe.
+--
+-- 100% ADITIVA: coluna nova, nullable, sem default, sem FK, sem índice. Nenhuma
+-- linha existente muda, nenhuma consulta atual muda de plano.
+--
+-- ⚠️⚠️ RODAR ANTES DO DEPLOY DO CÓDIGO, E NÃO É FORMALIDADE.
+-- O Prisma expande `SELECT` em LISTA NOMINAL DE COLUNAS. Assim que o código
+-- novo subir, TODA leitura de sucata passa a pedir `"createdByUserId"` — e se a
+-- coluna não existir, o Postgres recusa a query inteira. Não degrada: quebra a
+-- tela de Sucatas, o pipeline, o balcão e o detalhe do lote de uma vez.
+--
+-- ORDEM: este SQL  →  `npx prisma generate`  →  deploy do código.
+
+ALTER TABLE "Scrap" ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT;
+
+-- Conferência (esperado: 1)
+-- SELECT COUNT(*) FROM information_schema.columns
+--  WHERE table_name = 'Scrap' AND column_name = 'createdByUserId';

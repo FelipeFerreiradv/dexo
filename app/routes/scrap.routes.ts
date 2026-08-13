@@ -1,7 +1,41 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ScrapUseCase } from "../usecases/scrap.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import {
+  requireAnyPageAccess,
+  requirePageAccess,
+} from "../middlewares/require-page-access.middleware";
 import { ScrapStatus, LogisticsStatus } from "@prisma/client";
+
+/**
+ * ⭐ Os valores que o Prisma aceita nestes dois enums.
+ *
+ * ⚠️ Sem esta validação `body.status` ia CRU para o `prisma.scrap.create`, e um
+ * valor fora do enum estourava em **500** — erro de servidor para o que é erro
+ * de quem chamou. O GET já validava (`:117-138`) e o PATCH também
+ * (`VALID_LOGISTICS`, scrap.usercase.ts:190); só o POST e o PUT não.
+ */
+const STATUS_VALIDOS = Object.values(ScrapStatus) as string[];
+const LOGISTICA_VALIDOS = Object.values(LogisticsStatus) as string[];
+
+/** Devolve a mensagem de erro, ou `null` quando está tudo certo. */
+function conferirEnums(body: any): string | null {
+  if (
+    body?.status !== undefined &&
+    body?.status !== null &&
+    !STATUS_VALIDOS.includes(String(body.status))
+  ) {
+    return `status inválido. Valores aceitos: ${STATUS_VALIDOS.join(", ")}`;
+  }
+  if (
+    body?.logisticsStatus !== undefined &&
+    body?.logisticsStatus !== null &&
+    !LOGISTICA_VALIDOS.includes(String(body.logisticsStatus))
+  ) {
+    return `logisticsStatus inválido. Valores aceitos: ${LOGISTICA_VALIDOS.join(", ")}`;
+  }
+  return null;
+}
 
 export const scrapRoutes = async (fastify: FastifyInstance) => {
   const scrapUseCase = new ScrapUseCase();
@@ -12,7 +46,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.post(
     "/",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = request.body as any;
       const user = (request as any).user;
@@ -22,8 +56,14 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
       if (!body.model || typeof body.model !== "string")
         return reply.status(400).send({ error: "Modelo é obrigatório" });
 
+      const enumInvalido = conferirEnums(body);
+      if (enumInvalido) return reply.status(400).send({ error: enumInvalido });
+
       try {
         const data = await scrapUseCase.create({
+          // ⚠️ O ATOR, não o tenant. `dataOwnerId` é o admin pai para todo
+          // colaborador — gravá-lo aqui diria que o dono cadastrou tudo.
+          createdByUserId: user?.id ?? null,
           userId: user?.dataOwnerId,
           brand: body.brand,
           model: body.model,
@@ -76,7 +116,9 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes("Usuário não encontrado"))
           return reply.status(401).send({ error: msg });
-        if (msg.includes("obrigat"))
+        // "Localização inválida" e "Chassi deve conter…" são erro de QUEM
+        // CHAMOU, não do servidor: 400, nunca 500.
+        if (msg.includes("obrigat") || msg.includes("inválid"))
           return reply.status(400).send({ error: msg });
         return reply.status(500).send({ error: msg || "Erro ao criar sucata" });
       }
@@ -97,7 +139,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
     };
   }>(
     "/",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requireAnyPageAccess(["sucatas", "produtos", "financeiro"])] },
     async (
       request: FastifyRequest<{
         Querystring: {
@@ -171,7 +213,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/pipeline",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -196,7 +238,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get<{ Querystring: { q?: string; limit?: string } }>(
     "/balcao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (
       request: FastifyRequest<{ Querystring: { q?: string; limit?: string } }>,
       reply: FastifyReply,
@@ -225,7 +267,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
@@ -265,12 +307,15 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.put(
     "/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
         const body = request.body as any;
         const userId = (request as any).user?.dataOwnerId as string;
+
+        const enumInvalido = conferirEnums(body);
+        if (enumInvalido) return reply.status(400).send({ error: enumInvalido });
 
         const updated = await scrapUseCase.update(
           id,
@@ -328,6 +373,10 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
           error instanceof Error ? error.message : "Erro ao atualizar sucata";
         if (msg.includes("não encontrada"))
           return reply.status(404).send({ error: msg });
+        // Localização de outro dono, chassi de 17, chave de 44 — erro de quem
+        // chamou. 500 aqui mandava o cliente procurar problema no servidor.
+        if (msg.includes("inválid") || msg.includes("deve conter"))
+          return reply.status(400).send({ error: msg });
         return reply.status(500).send({ error: msg });
       }
     },
@@ -340,7 +389,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.patch(
     "/:id/logistics-status",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
@@ -374,7 +423,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.delete(
     "/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("sucatas")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };

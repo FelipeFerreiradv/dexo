@@ -79,18 +79,18 @@ describe("⭐ nenhuma tool aceita o tenant como argumento", () => {
 });
 
 describe("declaração das tools", () => {
-  it("as 13 tools de leitura estão registradas", () => {
-    expect(READ_TOOLS).toHaveLength(13);
-    expect(getReadToolRegistry().size).toBe(13);
+  it("as 14 tools de leitura estão registradas", () => {
+    expect(READ_TOOLS).toHaveLength(14);
+    expect(getReadToolRegistry().size).toBe(14);
   });
 
-  it("7 consultivas + 6 de escrita, e o registry completo tem 26", () => {
+  it("7 consultivas + 8 de escrita, e o registry completo tem 29", () => {
     expect(ADVISORY_TOOLS).toHaveLength(7);
-    expect(WRITE_TOOLS).toHaveLength(6);
-    expect(ALL_TOOLS).toHaveLength(26);
+    expect(WRITE_TOOLS).toHaveLength(8);
+    expect(ALL_TOOLS).toHaveLength(29);
     // `buildRegistry` lançaria em nome duplicado; o tamanho prova que não houve
     // colisão entre os três conjuntos.
-    expect(getToolRegistry().size).toBe(26);
+    expect(getToolRegistry().size).toBe(29);
   });
 
   // -------------------------------------------------------------------------
@@ -249,15 +249,28 @@ describe("conversão do schema para o modelo", () => {
   });
 
   it("marca como obrigatório só o que é mesmo", () => {
-    const p: any = toolParameters(
-      READ_TOOLS.find((t) => t.name === "buscar_produto")!,
-    );
-    expect(p.required).toEqual(["consulta"]);
-
     const rel: any = toolParameters(
       READ_TOOLS.find((t) => t.name === "relatorio_vendas")!,
     );
     expect(rel.required).toEqual(["dimensao"]);
+
+    // Escrita: o modelo do veículo é o único campo sem o qual não dá para
+    // cadastrar sucata — a marca sai do catálogo e o resto é opcional.
+    const suc: any = toolParameters(
+      WRITE_TOOLS.find((t) => t.name === "cadastrar_sucata")!,
+    );
+    expect(suc.required).toEqual(["modelo"]);
+
+    // ⚠️ `buscar_produto` passou a NÃO ter campo obrigatório: `consulta` virou
+    // opcional para caber "o que foi cadastrado hoje?", que não tem termo de
+    // busca. Quem exige "pelo menos um dos dois" é o HANDLER, e não o schema —
+    // o conversor de schema desta casa não suporta `.refine()` (ele viraria
+    // `ZodEffects` e o parâmetro sairia como `{}`, que outro teste aqui proíbe).
+    const p: any = toolParameters(
+      READ_TOOLS.find((t) => t.name === "buscar_produto")!,
+    );
+    expect(p.required).toBeUndefined();
+    expect(Object.keys(p.properties)).toContain("cadastradasNosUltimosDias");
   });
 
   it("a definição enviada ao provedor carrega nome, descrição e parâmetros", () => {

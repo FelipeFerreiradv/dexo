@@ -22,6 +22,23 @@ export type AiAcaoTipo =
   | "produto.estoque"
   | "cliente.criar"
   /**
+   * ⭐ DAR ENTRADA NUMA SUCATA. Sem efeito colateral: `ScrapRepository.create`
+   * é um insert puro (scrap.repository.ts:99-152) — não gera peça, não mexe em
+   * estoque e não lança nada no financeiro. É a ação de escrita mais barata de
+   * desfazer do conjunto, porque não há nada pendurado nela ainda.
+   */
+  | "sucata.criar"
+  /**
+   * ⭐ VINCULAR UMA PEÇA AO LOTE DE ONDE ELA SAIU. Fecha o ciclo do desmonte:
+   * dar entrada no veículo → cadastrar as peças → dizer de qual carro vieram.
+   *
+   * ⚠️ NÃO mexe em anúncio nem em estoque, e isso é garantia do usecase, não
+   * suposição: `linkScrap` (product.usercase.ts:694-706) evita `update()` DE
+   * PROPÓSITO justamente para não disparar limpeza de override, stock log nem
+   * sync de marketplace. É o que permite o cartão dizer "não mexe no anúncio".
+   */
+  | "produto.vincular-sucata"
+  /**
    * ⭐ ENSINAR UMA REGRA DA LOJA (Fase 11). A única ação que NÃO escreve em
    * tabela de negócio — o que ela grava é uma anotação do próprio agente.
    *
@@ -69,6 +86,8 @@ export const ACAO_EXIGE_PERMISSAO = {
   "produto.preco": "bitz.atualizar-preco",
   "produto.estoque": "bitz.ajustar-estoque",
   "cliente.criar": "bitz.criar-cliente",
+  "sucata.criar": "bitz.criar-sucata",
+  "produto.vincular-sucata": "bitz.vincular-sucata",
   "memoria.criar": "bitz.lembrar",
 } as const satisfies Record<AiAcaoTipo, string>;
 
@@ -102,6 +121,8 @@ export const FAMILIA_DA_ACAO: Record<AiAcaoTipo, string> = {
   "produto.preco": "produto.preco",
   "produto.estoque": "produto.estoque",
   "cliente.criar": "cliente.cadastro",
+  "sucata.criar": "sucata.cadastro",
+  "produto.vincular-sucata": "produto.vinculo",
   "memoria.criar": "memoria.cadastro",
 };
 

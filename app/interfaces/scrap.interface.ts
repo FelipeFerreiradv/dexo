@@ -53,6 +53,8 @@ export interface Scrap {
   status: ScrapStatus;
   logisticsStatus: LogisticsStatus;
   notes?: string;
+  /** Quem deu entrada. Ausente nas linhas anteriores à coluna — e isso é a verdade. */
+  createdByUserId?: string;
 
   // Timestamps
   createdAt: Date;
@@ -64,6 +66,12 @@ export interface Scrap {
 
 export interface ScrapCreate {
   userId: string;
+  /**
+   * Quem deu entrada no lote — o ATOR, não o dono da conta. Num tenant com
+   * colaboradores, `userId` é sempre o admin pai; sem este campo a tela não tem
+   * como distinguir quem de fato cadastrou.
+   */
+  createdByUserId?: string | null;
 
   brand: string;
   model: string;

@@ -4,10 +4,19 @@ vi.mock("../app/lib/prisma", () => ({ default: {} }));
 
 const criarProdutoMock = vi.fn();
 const atualizarProdutoMock = vi.fn();
+const vincularSucataMock = vi.fn();
 vi.mock("../app/usecases/product.usercase", () => ({
   ProductUseCase: class {
     create = (...a: any[]) => criarProdutoMock(...a);
     update = (...a: any[]) => atualizarProdutoMock(...a);
+    linkScrap = (...a: any[]) => vincularSucataMock(...a);
+  },
+}));
+
+const criarSucataMock = vi.fn();
+vi.mock("../app/usecases/scrap.usercase", () => ({
+  ScrapUseCase: class {
+    create = (...a: any[]) => criarSucataMock(...a);
   },
 }));
 
@@ -267,7 +276,37 @@ describe("contrato", () => {
     ).rejects.toThrow(/desconhecida/i);
   });
 
-  it("os tipos executáveis são exatamente os cinco declarados", () => {
+  it("⭐ sucata: o tenant vem do escopo e o AUTOR é o ator", async () => {
+    criarSucataMock.mockResolvedValue({ id: "s-1" });
+    await executarAcao(
+      "sucata.criar",
+      { sucata: { brand: "VW", model: "Gol" } },
+      escopo(),
+    );
+
+    const arg = criarSucataMock.mock.calls[0][0];
+    expect(arg.userId).toBe("tenant-1");
+    // ⚠️ Sem isto a tela de Sucatas mostraria o dono da conta como autor de
+    // tudo que o balconista ditar ao Bitz.
+    expect(arg.createdByUserId).toBe("ator-9");
+  });
+
+  it("⭐ vínculo com sucata usa linkScrap — NÃO update (que dispararia sync)", async () => {
+    vincularSucataMock.mockResolvedValue({ id: "p-1" });
+    const r = await executarAcao(
+      "produto.vincular-sucata",
+      { produtoId: "p-1", sucataId: "s-9" },
+      escopo(),
+    );
+
+    expect(vincularSucataMock).toHaveBeenCalledWith("p-1", "s-9", "tenant-1");
+    // O caminho de update é o que limpa override, grava stock log e sincroniza
+    // marketplace. Nada disso deve acontecer por trocar a origem da peça.
+    expect(atualizarProdutoMock).not.toHaveBeenCalled();
+    expect(r.resultId).toBe("p-1");
+  });
+
+  it("os tipos executáveis são exatamente os oito declarados", () => {
     expect([...TIPOS_EXECUTAVEIS].sort()).toEqual([
       "cliente.criar",
       // Fase 11 — a única que não escreve em tabela de negócio. O executor dela
@@ -277,6 +316,12 @@ describe("contrato", () => {
       "produto.criar-lote",
       "produto.estoque",
       "produto.preco",
+      // Vincular a peça ao lote. NÃO passa por `update()`, então não dispara
+      // sync de marketplace nem stock log.
+      "produto.vincular-sucata",
+      // Dar entrada num lote de sucata. Sem efeito colateral: o insert não gera
+      // peça, não mexe em estoque e não lança nada no financeiro.
+      "sucata.criar",
     ]);
   });
 });
