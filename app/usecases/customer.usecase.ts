@@ -147,6 +147,14 @@ export class CustomerUseCase {
     return this.repo.search(q, userId, 10);
   }
 
+  /**
+   * Busca enxuta: mesmo critério, cinco colunas. Ver `searchLean` no
+   * repositório para o porquê de ser um método separado.
+   */
+  async searchLean(q: string, userId: string, limit = 10) {
+    return this.repo.searchLean(q, userId, limit);
+  }
+
   async delete(id: string, userId: string): Promise<void> {
     await this.repo.delete(id, userId);
   }

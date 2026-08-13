@@ -172,9 +172,16 @@ export const buscaGeral: AiTool = {
       }),
 
       area("clientes", "clientes", async () => {
-        const clientes = await new CustomerUseCase().search(
+        // ⭐ `searchLean` e não `search`: mesmo critério de busca, cinco
+        // colunas em vez das quarenta e duas do `Customer` inteiro. A versão
+        // completa trazia CPF, RG, data de nascimento e o endereço para uma
+        // lista que mostra nome e cidade — achado da auditoria de egress de
+        // 13/08/2026. O método é novo e aditivo; o combobox de cliente e a tool
+        // `buscar_cliente` continuam usando `search` sem uma linha de mudança.
+        const clientes = await new CustomerUseCase().searchLean(
           termo,
           scope.dataOwnerId,
+          MAX_POR_AREA,
         );
         const lista = Array.isArray(clientes) ? clientes : [];
         return {

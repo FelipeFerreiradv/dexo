@@ -20,7 +20,10 @@ import { BitzMascot } from "./bitz-mascot";
 import { BitzMemorias } from "./bitz-memorias";
 import { BitzMessage, BitzStreaming, BitzThinking } from "./bitz-message";
 import { jaPassou, marcarPassou } from "./bitz-onboarding";
-import { fraseDeCorrecao, type BitzPanelMode } from "./bitz-constants";
+import { type BitzPanelMode } from "./bitz-constants";
+// ⚠️ Arquivo próprio de propósito — ver o cabeçalho dele. Em `bitz-constants`
+// esta função pegava carona no shell de todas as páginas.
+import { fraseDeCorrecao } from "./bitz-correcao";
 
 interface BitzPanelProps {
   open: boolean;

@@ -182,6 +182,39 @@ describe("z-index e posicionamento — o mapa levantado na Fase 0", () => {
     ).not.toMatch(POSICIONAMENTO);
   });
 
+  // -------------------------------------------------------------------------
+  // ⭐ A FRONTEIRA DO SHELL — a promessa central do módulo.
+  //
+  // `bitz-root.tsx` é o único arquivo do Bitz carregado ESTATICAMENTE em toda
+  // página do ERP; todo o resto entra por `dynamic()`, depois do primeiro
+  // clique. Tudo o que `bitz-root` importa é baixado por todo lojista, em toda
+  // navegação, inclusive por quem nunca contratou o módulo.
+  //
+  // ⚠️ Isso já foi furado: `fraseDeCorrecao` (P3.1) nasceu em
+  // `bitz-constants.ts` — que `bitz-root` importa por causa de
+  // `AI_MODULE_ENABLED` — e passou a viajar no shell. Poucos bytes, fronteira
+  // errada. O teste abaixo prende o TAMANHO da superfície estática.
+  // -------------------------------------------------------------------------
+  it("⭐ o shell importa um módulo só do Bitz, e ele é o das constantes", () => {
+    const root = lerCodigo("components/bitz/bitz-root.tsx");
+    const estaticos = [...root.matchAll(/^import[^;]*from\s+"(\.\/[^"]+)"/gm)]
+      .map((m) => m[1])
+      .filter((p) => !p.includes("type "));
+
+    expect(estaticos).toEqual(["./bitz-constants"]);
+    // O widget e o painel entram por `dynamic()`, não por import estático.
+    expect(root).toMatch(/dynamic\(/);
+  });
+
+  it("⚠️ o módulo do shell só carrega constante — nada de lógica de painel", () => {
+    const consts = lerCodigo("components/bitz/bitz-constants.ts");
+    // Só `export const` e `export type`. Uma `export function` aqui é uma
+    // função viajando para todas as páginas do ERP.
+    expect(consts, "função exportada no módulo do shell").not.toMatch(
+      /export\s+function/,
+    );
+  });
+
   it("⚠️ nenhum literal do módulo mistura duas classes de posicionamento", () => {
     // A mesma quebra, na forma geral: duas utilitárias de `position` dentro do
     // MESMO literal de string é sempre defeito — uma delas nunca vale.

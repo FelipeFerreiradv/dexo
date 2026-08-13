@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // ===========================================================================
 // P3.3 — a busca geral, para quando o lojista NÃO sabe o que o código é.
@@ -28,7 +30,17 @@ vi.mock("../app/marketplaces/usecases/order.usercase", () => ({
 }));
 vi.mock("../app/usecases/customer.usecase", () => ({
   CustomerUseCase: class {
-    search = (...a: any[]) => searchCustomersMock(...a);
+    // ⭐ `searchLean`, e o nome importa: a auditoria de egress de 13/08/2026
+    // trocou o `search` (42 colunas do `Customer`, com CPF, RG e endereço) por
+    // uma busca de cinco colunas. O `search` cheio continua existindo para o
+    // combobox de cliente e para `buscar_cliente`, que mostra o documento
+    // mascarado — este mock existir sozinho prova que a busca geral não o usa.
+    searchLean = (...a: any[]) => searchCustomersMock(...a);
+    search = () => {
+      throw new Error(
+        "busca_geral não pode usar `search`: ele traz o Customer inteiro, com CPF e endereço",
+      );
+    };
   },
 }));
 vi.mock("../app/usecases/scrap.usercase", () => ({
@@ -183,7 +195,27 @@ describe("⭐ isolamento e privacidade", () => {
       expect.objectContaining({ userId: "t1" }),
     );
     expect(getOrdersMock).toHaveBeenCalledWith("t1", expect.anything());
-    expect(searchCustomersMock).toHaveBeenCalledWith("4520-A", "t1");
+    expect(searchCustomersMock).toHaveBeenCalledWith("4520-A", "t1", 3);
+  });
+
+  it("⭐⭐ o documento do cliente NÃO SAI DO BANCO — não é só filtrado depois", () => {
+    // A versão anterior desta tool lia o `Customer` inteiro (42 colunas: CPF,
+    // RG, nascimento, endereço completo, 13 campos de entrega) e projetava três
+    // deles em JavaScript. O dado não chegava ao modelo, mas trafegava do
+    // Supabase até a API a cada busca. Agora a projeção é do lado do banco.
+    const repo = readFileSync(
+      join(__dirname, "..", "app/repositories/customer.repository.ts"),
+      "utf8",
+    );
+    const lean = repo.slice(repo.indexOf("async searchLean"));
+    const select = lean.slice(lean.indexOf("select: {"), lean.indexOf("}) as any"));
+
+    for (const proibido of ["cpf", "cnpj", "rg", "birthDate", "address", "delivery"]) {
+      expect(select, `\`${proibido}\` na projeção da busca geral`).not.toContain(
+        proibido,
+      );
+    }
+    expect(select).toContain("city: true");
   });
 
   it("⚠️ NÃO devolve documento do cliente, nem mascarado", async () => {

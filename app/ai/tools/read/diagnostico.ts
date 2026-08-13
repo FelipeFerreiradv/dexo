@@ -23,6 +23,7 @@
 import { z } from "zod";
 
 import prisma from "../../../lib/prisma";
+import type { OrderIngestionIssueReason } from "../../../marketplaces/services/order-ingestion-issue.service";
 import type { AiTool } from "../registry";
 import { dataHora, texto } from "../serialize";
 
@@ -31,15 +32,55 @@ const MAX_HORAS = 168; // 7 dias
 
 const ESCOPOS = ["tudo", "pedidos", "anuncios", "sincronizacao"] as const;
 
-/** Motivo da pendência em português. Espelha o `descreveMotivo` da rota. */
-const MOTIVO: Record<string, string> = {
+/**
+ * Motivo da pendência em português. Espelha o `descreveMotivo` da tela de
+ * Pedidos (`order.routes.ts:65-86`).
+ *
+ * ⚠️⚠️ ESTE MAPA JÁ ESTEVE ERRADO, E O ERRO ERA INVISÍVEL. Ele nasceu com
+ * quatro chaves — `PRODUCT_NOT_FOUND`, `NO_ITEMS`, `ACCOUNT_ERROR` e `UNKNOWN`
+ * —, das quais só a primeira existe de verdade: o vocabulário real é o
+ * `OrderIngestionIssueReason` de `order-ingestion-issue.service.ts:8-24`, com
+ * OITO motivos. As outras três eram invenção minha.
+ *
+ * O efeito prático apareceu no primeiro teste com dados reais: as 12 pendências
+ * da loja são todas `NO_LINKED_ITEMS`, que não estava no mapa — então o
+ * `?? i.reason` do fim caía no código cru e o lojista lia
+ * "Motivo: NO_LINKED_ITEMS" no chat. O agente existe justamente para NÃO falar
+ * assim.
+ *
+ * ⭐ Por isso o mapa agora é `Record<OrderIngestionIssueReason, string>` e não
+ * `Record<string, string>`: acrescentar um motivo novo àquele union sem escrever
+ * o texto aqui PARA DE COMPILAR. É a única forma de este arquivo não voltar a
+ * divergir em silêncio.
+ *
+ * ⚠️ Os textos são os MESMOS da tela, de propósito. O lojista pergunta ao Bitz e
+ * depois abre Pedidos para resolver; ler duas descrições diferentes do mesmo
+ * problema faria ele achar que são dois problemas.
+ */
+const MOTIVO: Record<OrderIngestionIssueReason, string> = {
+  NO_LINKED_ITEMS:
+    "o anúncio vendido não está vinculado a nenhum produto do seu estoque",
+  PARTIAL_LINK:
+    "parte dos itens deste pedido não está vinculada a produtos do seu estoque — esses itens não baixaram estoque",
   PRODUCT_NOT_FOUND:
-    "nenhuma peça do catálogo casou com o item vendido (o SKU do anúncio não bate com nenhum SKU cadastrado)",
-  NO_ITEMS: "o marketplace não devolveu itens para este pedido",
-  ACCOUNT_ERROR:
-    "a conta do marketplace estava com erro no momento da importação",
-  UNKNOWN: "erro não classificado",
+    "o SKU do anúncio vendido não corresponde a nenhum produto do seu estoque",
+  ITEM_WITHOUT_SKU:
+    "o anúncio vendido está sem SKU no marketplace e não está vinculado a um produto",
+  STOCK_DEDUCTION_FAILED:
+    "o pedido entrou, mas a baixa de estoque falhou. Estamos tentando novamente",
+  FETCH_FAILED: "não conseguimos buscar este pedido no marketplace",
+  UNKNOWN_STATUS: "este pedido está num status que ainda não sabemos tratar",
+  INGEST_FAILED:
+    "houve uma falha inesperada ao importar este pedido. Estamos tentando novamente",
 };
+
+// ⭐ SUGESTÃO REGISTRADA, NÃO IMPLEMENTADA: o conserto definitivo é exportar
+// `descreveMotivo` de `order-ingestion-issue.service.ts` — que já é o dono do
+// vocabulário — e fazer a rota E esta tool consumirem a MESMA função. Aí não
+// existiria divergência possível, em vez de existirem duas cópias que um teste
+// compara. Não foi feito agora porque exigiria mexer em `order.routes.ts`, que
+// está fora do escopo desta branch, e o ganho é de manutenção, não de
+// comportamento: o teste abaixo já barra a divergência.
 
 export const diagnosticoOperacional: AiTool = {
   name: "diagnostico_operacional",
@@ -126,7 +167,11 @@ export const diagnosticoOperacional: AiTool = {
           canal: i.platform,
           conta: i.marketplaceAccount?.accountName ?? null,
           pedidoNoMarketplace: i.externalOrderId,
-          motivo: MOTIVO[i.reason] ?? i.reason,
+          // ⚠️ O `??` continua: `reason` é String livre no banco (não enum do
+          // Prisma), então um motivo gravado por uma versão futura ainda chega
+          // aqui. Cair no código cru é feio, mas é melhor que devolver vazio —
+          // e agora é caminho de exceção, não o caso mais comum da base.
+          motivo: MOTIVO[i.reason as OrderIngestionIssueReason] ?? i.reason,
           tentativas: i.attempts,
           desde: dataHora(i.createdAt),
           // O reconciliador automático só processa OPEN

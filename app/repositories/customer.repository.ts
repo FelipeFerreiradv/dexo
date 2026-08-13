@@ -280,6 +280,71 @@ export class CustomerRepository {
     return items.map(toCustomer);
   }
 
+  /**
+   * ⭐ A MESMA BUSCA, TRAZENDO CINCO COLUNAS EM VEZ DE QUARENTA E DUAS.
+   *
+   * Auditoria de egress de 13/08/2026: `search` acima roda sem `select`, então
+   * traz o `Customer` INTEIRO — CPF, RG, data de nascimento, estado civil,
+   * inscrição estadual, o endereço completo e os treze campos de entrega —
+   * para quem só precisa mostrar nome e cidade numa lista de desambiguação.
+   *
+   * ⚠️ POR QUE UM MÉTODO NOVO E NÃO UM `select` NO `search`. Aquele método tem
+   * outros dois consumidores: o combobox de cliente do Financeiro/Orçamentos
+   * (`GET /customers/search`, customer.routes.ts:102) e a tool
+   * `buscar_cliente`, que precisa de `cpf`/`cnpj` para exibir o documento
+   * mascarado. Cortar coluna lá dentro seria mexer no que a tela desenha —
+   * exatamente o tipo de risco que a regra de não-regressão proíbe. Aqui nada
+   * existente muda: quem não chamar este método continua byte-idêntico.
+   *
+   * Ganho por chamada: as mesmas até 10 linhas, sem os dados pessoais que
+   * ninguém ia ler. Menos tráfego entre o banco e a API, e um caminho a menos
+   * por onde documento de cliente passeia sem motivo.
+   */
+  async searchLean(
+    q: string,
+    userId: string,
+    limit = 10,
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      razaoSocial: string | null;
+      personType: string | null;
+      city: string | null;
+    }>
+  > {
+    const term = (q ?? "").trim();
+    if (!term) return [];
+    const termDigits = term.replace(/\D/g, "");
+
+    // ⚠️ O `where` é o MESMO do `search`, montado do mesmo jeito. Divergir aqui
+    // faria a busca geral achar um cliente que a busca específica não acha —
+    // e o lojista veria o sistema se contradizer.
+    const or: any[] = [
+      { name: { contains: term, mode: "insensitive" } },
+      { razaoSocial: { contains: term, mode: "insensitive" } },
+      { nomeFantasia: { contains: term, mode: "insensitive" } },
+      { email: { contains: term, mode: "insensitive" } },
+    ];
+    if (termDigits.length > 0) {
+      or.push({ cpf: { contains: termDigits } });
+      or.push({ cnpj: { contains: termDigits } });
+    }
+
+    return prisma.customer.findMany({
+      where: { userId, OR: or },
+      take: limit,
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        razaoSocial: true,
+        personType: true,
+        city: true,
+      },
+    }) as any;
+  }
+
   async delete(id: string, userId: string): Promise<void> {
     const result = await prisma.customer.deleteMany({
       where: { id, userId },

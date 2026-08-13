@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { fraseDeCorrecao } from "../components/bitz/bitz-constants";
+import { fraseDeCorrecao } from "../components/bitz/bitz-correcao";
 
 const raiz = join(__dirname, "..");
 
