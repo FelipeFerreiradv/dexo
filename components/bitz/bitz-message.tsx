@@ -10,6 +10,7 @@ import type { BitzChatMessage } from "@/hooks/use-bitz-chat";
 import type { BitzAcao } from "@/hooks/use-bitz-acao";
 import { BitzAcaoCard } from "./bitz-acao";
 import { BitzMascot } from "./bitz-mascot";
+import { BitzOpcoes } from "./bitz-opcoes";
 import { BitzSources } from "./bitz-sources";
 
 /**
@@ -115,6 +116,9 @@ const BOLHA_ENTRANDO =
 export function BitzMessage({
   message,
   aoDecidirAcao,
+  aoEscolherOpcao,
+  ehUltima,
+  aguardando,
 }: {
   message: BitzChatMessage;
   aoDecidirAcao?: (
@@ -122,6 +126,12 @@ export function BitzMessage({
     status: "confirmada" | "cancelada",
     relatorio?: BitzAcao["relatorio"],
   ) => void;
+  /** Manda a frase da opção como se o lojista a tivesse digitado. */
+  aoEscolherOpcao?: (texto: string) => void;
+  /** Só a última bolha oferece escolha — ver o comentário em `bitz-opcoes`. */
+  ehUltima?: boolean;
+  /** Turno em andamento: clicar agora atropelaria a resposta que vem vindo. */
+  aguardando?: boolean;
 }) {
   const isUser = message.role === "user";
 
@@ -186,6 +196,18 @@ export function BitzMessage({
               <BitzAcaoCard key={a.id} acao={a} aoDecidir={aoDecidirAcao} />
             ))}
           </div>
+        ) : null}
+
+        {/* ⚠️ SÓ NA ÚLTIMA BOLHA. Opção de uma pergunta antiga é armadilha: o
+            lojista rola a conversa, clica no que parecia certo três turnos
+            atrás e manda uma frase sem contexto. Mesma classe de defeito do
+            cartão que ressuscitava ao reabrir o painel. */}
+        {ehUltima && message.opcoes?.length && aoEscolherOpcao ? (
+          <BitzOpcoes
+            opcoes={message.opcoes}
+            aoEscolher={aoEscolherOpcao}
+            desabilitado={aguardando}
+          />
         ) : null}
       </div>
     </div>

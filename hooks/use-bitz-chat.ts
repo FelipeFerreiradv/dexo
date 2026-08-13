@@ -9,6 +9,7 @@ import {
   type BitzStreamEvent,
 } from "@/lib/ndjson-stream";
 import { lerAcoes, type BitzAcao } from "@/hooks/use-bitz-acao";
+import { lerOpcoes, type BitzOpcao } from "@/components/bitz/bitz-opcoes";
 
 /** O que foi anexado a uma pergunta. Só o rótulo — a leitura já foi ao servidor. */
 export interface BitzMensagemAnexo {
@@ -39,6 +40,8 @@ export interface BitzChatMessage {
    * explicou, e não flutuando no rodapé como se fosse de outra pergunta.
    */
   acoes?: BitzAcao[];
+  /** Escolhas clicáveis de uma desambiguação. Só a última bolha as mostra. */
+  opcoes?: BitzOpcao[];
 }
 
 /** O que o composer entrega junto da pergunta. */
@@ -160,6 +163,7 @@ export function useBitzChat() {
         errorCode: string | null,
         sources: unknown[] = [],
         acoes: BitzAcao[] = [],
+        opcoes: BitzOpcao[] = [],
       ) => {
         setMessages((prev) => [
           ...prev,
@@ -172,6 +176,7 @@ export function useBitzChat() {
             // Ausente quando não houve proposta: a bolha de uma consulta
             // continua exatamente como era.
             ...(acoes.length ? { acoes } : {}),
+            ...(opcoes.length ? { opcoes } : {}),
           },
         ]);
       };
@@ -226,6 +231,7 @@ export function useBitzChat() {
             data?.degraded ? "degraded" : null,
             data?.message?.sources ?? [],
             lerAcoes(data?.acoes),
+            lerOpcoes(data?.opcoes),
           );
           return;
         }
@@ -268,6 +274,7 @@ export function useBitzChat() {
                 evento.degraded ? "degraded" : null,
                 evento.message?.sources ?? [],
                 lerAcoes(evento.acoes),
+                lerOpcoes(evento.opcoes),
               );
               break;
             default:

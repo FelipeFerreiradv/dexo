@@ -75,6 +75,13 @@ export type BitzStreamEvent =
        * turno de consulta continua idêntico ao de antes.
        */
       acoes?: unknown[];
+      /**
+       * Escolhas clicáveis de uma desambiguação.
+       *
+       * ⭐ Nascem no SERVIDOR, a partir de dado do tenant — nunca de texto que
+       * o modelo escreveu. Ausente na esmagadora maioria dos turnos.
+       */
+      opcoes?: unknown[];
     };
 
 /**

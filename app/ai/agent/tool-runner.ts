@@ -24,6 +24,7 @@
 import type { ZodError } from "zod";
 
 import type { AiAcaoProposta } from "../acoes/acao.types";
+import type { AiOpcao } from "../tools/registry";
 import { auditToolCall, auditToolDenied } from "../audit/ai-audit";
 import type { AiScope } from "../core/scope";
 import type { AiToolCall } from "../core/types";
@@ -58,6 +59,13 @@ export interface ToolRunResult {
    * só precisa saber que a proposta existe; quem precisa dos campos é a tela.
    */
   acao?: AiAcaoProposta;
+  /**
+   * ⭐ SÓ EM TOOL DE ESCRITA: escolhas clicáveis para desambiguar.
+   *
+   * Mesmo trajeto de `acao` e pelo mesmo motivo: não entra em `content`, então
+   * não viaja ao provedor de IA.
+   */
+  opcoes?: AiOpcao[];
 }
 
 export interface ToolRunContext {
@@ -117,6 +125,16 @@ export const CAMPOS_PROIBIDOS = [
 ] as const;
 
 const PROIBIDOS = new Set<string>(CAMPOS_PROIBIDOS);
+
+/**
+ * Teto de escolhas por turno.
+ *
+ * Não é limite técnico: é de leitura. Doze botões numa bolha de chat não são
+ * uma escolha, são uma lista — e a partir daí a tela de Sucatas resolve melhor.
+ * Quando a tool tiver mais candidatos que isto, ela deve pedir um filtro
+ * melhor, não despejar tudo.
+ */
+const MAX_OPCOES = 6;
 
 /**
  * Varre o resultado procurando chave proibida.
@@ -292,6 +310,7 @@ export async function runTool(
   // 4. Execução. O `scope` é o único caminho do tenant para dentro do handler.
   let resultado: unknown;
   let acao: AiAcaoProposta | undefined;
+  let opcoes: AiOpcao[] | undefined;
   try {
     resultado = await tool.handler(parsed.data, scope, { conversationId });
 
@@ -311,6 +330,23 @@ export async function runTool(
         );
       }
       acao = bruto.acao ?? undefined;
+      // ⚠️ ALLOWLIST de forma, não `as`: só passa o que tem os dois campos de
+      // texto. Uma tool que devolvesse objeto estranho aqui viraria um botão
+      // vazio na tela do lojista.
+      opcoes = Array.isArray(bruto.opcoes)
+        ? bruto.opcoes
+            .filter(
+              (o: any) =>
+                o &&
+                typeof o.rotulo === "string" &&
+                typeof o.enviar === "string",
+            )
+            .slice(0, MAX_OPCOES)
+            .map((o: any) => ({
+              rotulo: String(o.rotulo).slice(0, 120),
+              enviar: String(o.enviar).slice(0, 200),
+            }))
+        : undefined;
       resultado = bruto.paraOModelo;
     }
   } catch (err) {
@@ -387,5 +423,6 @@ export async function runTool(
     content: truncateToolResult(texto),
     ms,
     ...(acao ? { acao } : {}),
+    ...(opcoes?.length ? { opcoes } : {}),
   };
 }

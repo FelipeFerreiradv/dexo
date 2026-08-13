@@ -15,6 +15,7 @@
 
 import prisma from "../../lib/prisma";
 import type { AiAcaoProposta } from "../acoes/acao.types";
+import type { AiOpcao } from "../tools/registry";
 import {
   auditChatTurn,
   auditProviderError,
@@ -309,6 +310,13 @@ export interface AiTurnResult {
    * de consulta byte a byte igual ao de antes desta fase.
    */
   acoes?: AiAcaoProposta[];
+  /**
+   * ⭐ ESCOLHAS CLICÁVEIS deste turno, quando o Bitz precisou desambiguar.
+   *
+   * Ausente na esmagadora maioria dos turnos — como `acoes`, a ausência é o que
+   * mantém o contrato de um turno normal idêntico ao de antes.
+   */
+  opcoes?: AiOpcao[];
 }
 
 /**
@@ -785,6 +793,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
   const trilha: Array<{ name: string; ok: boolean; ms: number }> = [];
   /** Propostas de escrita deste turno. NADA foi escrito — ver `AiTurnResult`. */
   const acoes: AiAcaoProposta[] = [];
+  const opcoes: AiOpcao[] = [];
   let rodadas = 0;
 
   while (
@@ -825,6 +834,7 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
       // a tela desenhar o cartão de confirmação, e não para o contexto do
       // modelo. Ver `ToolRunResult.acao`.
       if (r.acao) acoes.push(r.acao);
+      if (r.opcoes?.length) opcoes.push(...r.opcoes);
       messages.push({
         role: "tool",
         content: r.content,
@@ -954,5 +964,6 @@ export async function runTurn(input: AiTurnInput): Promise<AiTurnResult> {
     // Ausente quando não houve proposta: um turno de consulta continua
     // devolvendo exatamente o objeto de antes da Fase 9.
     ...(acoes.length ? { acoes } : {}),
+    ...(opcoes.length ? { opcoes } : {}),
   };
 }

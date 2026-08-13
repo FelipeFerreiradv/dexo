@@ -477,6 +477,8 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
             // Propostas de escrita deste turno. Ausente quando não houve —
             // o quadro `fim` de um turno de consulta não muda.
             ...(result.acoes ? { acoes: result.acoes } : {}),
+            // Escolhas clicáveis de desambiguação. Mesma regra da ausência.
+            ...(result.opcoes ? { opcoes: result.opcoes } : {}),
           });
         } catch (error) {
           // Os cabeçalhos já foram; não existe mais status para mudar. A falha
@@ -523,6 +525,7 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
           degraded: result.degraded,
           usage: result.usage,
           ...(result.acoes ? { acoes: result.acoes } : {}),
+          ...(result.opcoes ? { opcoes: result.opcoes } : {}),
         });
       } catch (error) {
         // runTurn não deveria lançar. Se lançar, o erro morre AQUI: o chat

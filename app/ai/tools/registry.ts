@@ -39,6 +39,26 @@ export type AiToolKind = "read" | "advisory" | "write";
  * IA a cada turno seguinte da conversa, junto com o histórico. Ele não precisa
  * disso para dizer "preparei aqui, confirma no cartão".
  */
+/**
+ * ⭐ UMA ESCOLHA CLICÁVEL, quando o Bitz precisa desambiguar.
+ *
+ * O caso real: o pátio tem três Gol e o lojista disse só "Gol". Antes desta
+ * fase o agente listava os três em PROSA e o lojista redigitava a placa — o
+ * ponto exato em que o chat perde para a tela.
+ *
+ * ⚠️⚠️ `enviar` VIRA UMA MENSAGEM DO USUÁRIO ao ser clicado, e por isso ele só
+ * pode nascer de código do SERVIDOR, a partir de dado do banco. NUNCA monte
+ * opções com texto que o modelo produziu: seria dar a ele um canal para
+ * escrever o próprio próximo prompt, com a legitimidade de um clique humano.
+ * As tools montam estas opções a partir do que leram do tenant, e é só.
+ */
+export interface AiOpcao {
+  /** O que o lojista LÊ no botão. */
+  rotulo: string;
+  /** O que é enviado como mensagem quando ele clica. */
+  enviar: string;
+}
+
 export interface AiWriteToolResult {
   /**
    * A proposta gravada — ou `null` quando não houve o que propor.
@@ -52,6 +72,13 @@ export interface AiWriteToolResult {
    */
   acao: import("../acoes/acao.types").AiAcaoProposta | null;
   paraOModelo: Record<string, unknown>;
+  /**
+   * ⭐ Escolhas clicáveis para a tela, quando a tool encontrou mais de um alvo
+   * possível. Como `acao`, sai por FORA do `content` e nunca vai ao provedor —
+   * o modelo já recebe as opções em texto na sua instrução, e mandá-las duas
+   * vezes seria pagar o mesmo token duas vezes.
+   */
+  opcoes?: AiOpcao[];
 }
 
 /** Contexto de execução que não é escopo nem argumento. */

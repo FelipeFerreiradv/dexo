@@ -379,11 +379,14 @@ export function BitzPanel({
                 )
               ) : (
                 <div className="flex flex-col gap-3 p-4">
-                  {messages.map((m) => (
+                  {messages.map((m, i) => (
                     <BitzMessage
                       key={m.id}
                       message={m}
                       aoDecidirAcao={decidirAcao}
+                      aoEscolherOpcao={perguntar}
+                      ehUltima={i === messages.length - 1}
+                      aguardando={pending}
                     />
                   ))}
                   {/* Enquanto o turno corre: o texto ao vivo quando já há

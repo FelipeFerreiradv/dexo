@@ -579,6 +579,79 @@ describe("⭐ P1.2 — vincular a peça ao lote de onde ela saiu", () => {
     expect(r.content).toContain("XYZ9K88");
   });
 
+  it("⭐⭐ P1.4 — a ambiguidade vira BOTÕES, um por candidata", async () => {
+    comPecaELote([
+      LOTE,
+      { ...LOTE, id: "s10", plate: "XYZ9K88" },
+      { ...LOTE, id: "s11", nickname: "Gol bola azul", plate: null },
+    ]);
+
+    const r = await chamar("vincular_peca_a_sucata", {
+      sku: "4821",
+      sucata: "Gol",
+    });
+
+    const opcoes = r.opcoes as Array<{ rotulo: string; enviar: string }>;
+    expect(opcoes).toHaveLength(3);
+    // O rótulo é o que o lojista LÊ.
+    expect(opcoes[0].rotulo).toContain("ABC1D23");
+    // ⚠️ E o envio reconstrói a frase inteira: mandar só a placa obrigaria o
+    // modelo a lembrar de qual peça se falava, que é onde ele erra.
+    expect(opcoes[0].enviar).toContain("4821");
+    expect(opcoes[0].enviar).toContain("ABC1D23");
+  });
+
+  it("⭐ o botão usa o identificador MAIS ESPECÍFICO, senão vira laço", async () => {
+    // Reenviar "Gol 2015" cairia na mesma pergunta para sempre. Placa primeiro,
+    // apelido depois — o que sobra é justamente o termo que gerou a ambiguidade.
+    comPecaELote([
+      { ...LOTE, id: "s11", nickname: "Gol bola azul", plate: null },
+      { ...LOTE, id: "s12", plate: "XYZ9K88", nickname: null },
+    ]);
+
+    const r = await chamar("vincular_peca_a_sucata", {
+      sku: "4821",
+      sucata: "Gol",
+    });
+
+    const opcoes = r.opcoes as Array<{ rotulo: string; enviar: string }>;
+    expect(opcoes[0].enviar).toContain("Gol bola azul");
+    expect(opcoes[1].enviar).toContain("XYZ9K88");
+  });
+
+  it("⭐⭐ as opções NÃO viajam para o provedor de IA", async () => {
+    comPecaELote([LOTE, { ...LOTE, id: "s10", plate: "XYZ9K88" }]);
+    const r = await chamar("vincular_peca_a_sucata", {
+      sku: "4821",
+      sucata: "Gol",
+    });
+
+    // `content` é o que vai ao modelo. As opções saem por FORA, como a `acao` —
+    // o modelo já recebe a lista na instrução, e mandá-la duas vezes seria
+    // pagar o mesmo token duas vezes.
+    const paraOModelo = JSON.parse(r.content);
+    expect(paraOModelo.opcoes).toBeUndefined();
+    expect(r.opcoes).toBeTruthy();
+  });
+
+  it("⭐ o modelo é MANDADO não repetir a lista, já que os botões aparecem", async () => {
+    comPecaELote([LOTE, { ...LOTE, id: "s10", plate: "XYZ9K88" }]);
+    const r = await chamar("vincular_peca_a_sucata", {
+      sku: "4821",
+      sucata: "Gol",
+    });
+    expect(r.content).toMatch(/botões de escolha já aparecem/i);
+  });
+
+  it("caso SEM ambiguidade não gera botão nenhum", async () => {
+    comPecaELote();
+    const r = await chamar("vincular_peca_a_sucata", {
+      sku: "4821",
+      sucata: "ABC1D23",
+    });
+    expect(r.opcoes).toBeUndefined();
+  });
+
   it("sucata não encontrada pergunta a placa", async () => {
     comPecaELote([]);
     const r = await chamar("vincular_peca_a_sucata", {

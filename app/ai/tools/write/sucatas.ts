@@ -36,7 +36,12 @@ import {
   type AiAcaoPreview,
 } from "../../acoes/acao.types";
 import type { AiScope } from "../../core/scope";
-import type { AiTool, AiToolContext, AiWriteToolResult } from "../registry";
+import type {
+  AiOpcao,
+  AiTool,
+  AiToolContext,
+  AiWriteToolResult,
+} from "../registry";
 
 /** Teto de valor. Não é regra de negócio: é rede contra dedo escorregado. */
 const MAX_VALOR = 9_999_999;
@@ -107,9 +112,22 @@ export function marcasDoModelo(
   return indice.get(normalizeVehicleTerm(modelo ?? "")) ?? [];
 }
 
-/** Resposta de negócio: nada foi proposto, e o modelo tem de perguntar. */
-function semProposta(instrucao: string): AiWriteToolResult {
-  return { acao: null, paraOModelo: { proposta: "faltou_dado", instrucao } };
+/**
+ * Resposta de negócio: nada foi proposto, e o modelo tem de perguntar.
+ *
+ * ⭐ `opcoes` acompanha a pergunta quando o servidor SABE quais são as respostas
+ * possíveis. Elas viram botões na bolha — e é aí que o chat deixa de perder
+ * para a tela: em vez de reler três placas e redigitar uma, o lojista clica.
+ */
+function semProposta(
+  instrucao: string,
+  opcoes?: AiOpcao[],
+): AiWriteToolResult {
+  return {
+    acao: null,
+    paraOModelo: { proposta: "faltou_dado", instrucao },
+    ...(opcoes?.length ? { opcoes } : {}),
+  };
 }
 
 /**
@@ -350,6 +368,17 @@ async function acharPecaPorSku(sku: string, scope: AiScope) {
   return itens.find((p) => String(p?.sku ?? "").toLowerCase() === alvo) ?? null;
 }
 
+/**
+ * O identificador MAIS ESPECÍFICO do lote, para o clique voltar sem ambiguidade.
+ *
+ * ⚠️ Placa primeiro, apelido depois: o que sobra ("Gol 2015") é justamente o
+ * termo que gerou a ambiguidade, e reenviá-lo cairia na mesma pergunta — um
+ * laço em que o botão nunca resolve nada.
+ */
+function identificadorDaSucata(s: any): string {
+  return s?.plate || s?.nickname || `${s?.brand ?? ""} ${s?.model ?? ""}`.trim();
+}
+
 /** Como o cartão nomeia um lote. */
 function rotuloDaSucata(s: any): string {
   const base = [s?.brand, s?.model, s?.year].filter(Boolean).join(" ");
@@ -451,7 +480,19 @@ export const vincularPecaASucata: AiTool = {
       const lista = candidatas.map(rotuloDaSucata).join(" | ");
       return semProposta(
         `Achei ${candidatas.length} sucatas que casam com "${args.sucata}": ${lista}. ` +
-          "Pergunte ao usuário QUAL DELAS é a certa, listando as opções. NÃO escolha por conta própria.",
+          "Pergunte ao usuário QUAL DELAS é a certa. Os botões de escolha já aparecem na tela — " +
+          "seja breve e NÃO repita a lista inteira em texto. NÃO escolha por conta própria.",
+        // ⭐ Os botões. O `enviar` reconstrói a frase inteira porque o turno
+        // seguinte é independente: o modelo relê o histórico, mas mandar só
+        // "ABC1D23" o obrigaria a lembrar de qual peça se falava — e é
+        // exatamente aí que ele erra.
+        //
+        // ⚠️ Rótulo e envio saem de dado do BANCO (`rotuloDaSucata` sobre a
+        // linha lida), nunca de texto que o modelo escreveu.
+        candidatas.map((s) => ({
+          rotulo: rotuloDaSucata(s),
+          enviar: `Vincular a peça ${peca.sku} à sucata ${identificadorDaSucata(s)}`,
+        })),
       );
     }
 
