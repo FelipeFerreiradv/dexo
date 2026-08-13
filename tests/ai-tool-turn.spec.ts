@@ -190,6 +190,38 @@ describe("seleção do subconjunto", () => {
     expect(nomes.length).toBeGreaterThan(0);
   });
 
+  // -------------------------------------------------------------------------
+  // ⭐⭐ O CÓDIGO SOLTO — o caso que o conjunto padrão existe para pegar.
+  //
+  // O lojista lê "4520-A" numa etiqueta e digita só isso. Por definição não
+  // casa palavra-chave nenhuma: código não tem verbo nem substantivo. Antes de
+  // 13/08/2026 esse turno recebia quatro tools e nenhuma delas sabia responder
+  // "em que área isso aparece?" — o modelo adivinhava entre peça e pedido e,
+  // errando, dizia "não achei" sobre um lugar onde nunca olhou.
+  // -------------------------------------------------------------------------
+  it("⭐⭐ um código solto oferece a busca geral", () => {
+    for (const codigo of ["4520-A", "112233445566", "ABC1D23"]) {
+      const nomes = selectTools(codigo, registry).map((t) => t.name);
+      expect(nomes, `código "${codigo}"`).toContain("busca_geral");
+    }
+  });
+
+  it("⚠️ mas as buscas específicas continuam liderando o cardápio", () => {
+    // A geral devolve MUITO menos detalhe que a específica. Ela é a saída para
+    // quando nenhuma das duas serve, não a primeira opção.
+    const nomes = selectTools("4520-A", registry).map((t) => t.name);
+    expect(nomes.indexOf("busca_geral")).toBeGreaterThan(
+      nomes.indexOf("buscar_produto"),
+    );
+  });
+
+  it("⚠️ quem JÁ disse a área não é desviado para a geral", () => {
+    // "acha o pedido 123" casa palavra-chave de pedido, então nem chega ao
+    // conjunto padrão — e `buscar_pedido` vem na frente.
+    const nomes = selectTools("acha o pedido 123", registry).map((t) => t.name);
+    expect(nomes[0]).toBe("buscar_pedido");
+  });
+
   it("nunca passa do teto", () => {
     const nomes = selectTools(
       "peça produto pedido cliente sucata orçamento localização estoque financeiro anúncio relatório erro",

@@ -36,12 +36,31 @@ export const MAX_TOOLS_PER_TURN = 8;
  * O que vai quando nada casa.
  *
  * "Me mostra o que tá pegando" não tem palavra-chave, mas é uma pergunta
- * legítima. Estas quatro cobrem o grosso do que se pergunta sem contexto:
- * achar uma peça, achar uma venda, ver o caixa e ver o que está quebrado.
+ * legítima. Estas cobrem o grosso do que se pergunta sem contexto: achar uma
+ * peça, achar uma venda, descobrir o que é um código solto, ver o caixa e ver o
+ * que está quebrado.
+ *
+ * ⭐⭐ `busca_geral` ENTROU AQUI DE PROPÓSITO, e este é o lugar onde ela mais
+ * rende. O caso que ela existe para resolver — o lojista digita só `4520-A`,
+ * lido de uma etiqueta, sem dizer o que é — não casa palavra-chave NENHUMA, por
+ * definição: um código solto não tem verbo nem substantivo. Ou seja, a pergunta
+ * mais característica dela caía exatamente neste conjunto padrão, onde ela não
+ * estava, e o modelo tinha de adivinhar a área entre `buscar_produto` e
+ * `buscar_pedido` — errando, respondia "não achei" sobre um lugar onde nunca
+ * olhou.
+ *
+ * ⚠️ TERCEIRA, E NÃO PRIMEIRA. Num desmanche a maior parte do que se digita sem
+ * contexto ainda é peça ou venda, e a busca específica devolve MUITO mais
+ * detalhe que a geral. As duas específicas continuam liderando o cardápio; a
+ * geral fica logo atrás, para o caso em que nenhuma das duas serve.
+ *
+ * ⚠️ O custo é uma definição de tool a mais nos turnos sem correspondência —
+ * decisão consciente do dono, tomada em 13/08/2026.
  */
 export const TOOLS_PADRAO = [
   "buscar_produto",
   "buscar_pedido",
+  "busca_geral",
   "contas_a_receber",
   "diagnostico_operacional",
 ];
