@@ -458,6 +458,14 @@ describe("⭐ permissão por página, dentro da conversa", () => {
       // Produtos para o balconista e esconde Logs perderia a pergunta mais
       // banal que ele faz — e quem tem só Logs veria o catálogo inteiro.
       pendencias_do_catalogo: "produtos",
+      // ⭐ A busca geral olha QUATRO áreas, mas `page` é UM PageId só — e é ele
+      // que o tool-runner usa como porta. "produtos" foi medido, não escolhido:
+      // dos 81 colaboradores em produção, é a única página que NINGUÉM tem
+      // desligada (financeiro está desligada para 15, dashboard para 11). As
+      // outras três áreas são conferidas uma a uma DENTRO do handler, e a que
+      // o ator não pode ver sai na lista `naoProcuradoEm` com o motivo — nunca
+      // como "não existe".
+      busca_geral: "produtos",
     };
     for (const tool of READ_TOOLS) {
       expect(tool.page, tool.name).toBe(esperado[tool.name]);

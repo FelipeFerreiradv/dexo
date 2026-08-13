@@ -18,6 +18,7 @@ import { buscarOrcamento, contasAPagar, contasAReceber } from "./financeiro";
 import { relatorioEstoque, relatorioVendas } from "./relatorios";
 import { diagnosticoOperacional } from "./diagnostico";
 import { pendenciasDoCatalogo } from "./catalogo-pendencias";
+import { buscaGeral } from "./busca-geral";
 
 export const READ_TOOLS: AiTool[] = [
   buscarProduto,
@@ -34,6 +35,11 @@ export const READ_TOOLS: AiTool[] = [
   buscarOrcamento,
   diagnosticoOperacional,
   pendenciasDoCatalogo,
+  // ⭐ POR ÚLTIMO DE PROPÓSITO. A ordem desta lista é o desempate da seleção por
+  // palavra-chave: num empate, a busca ESPECÍFICA da área tem de vencer a geral.
+  // Quem já disse "acha o pedido 123" merece `buscar_pedido`, com todo o
+  // detalhe; a geral existe para quem NÃO sabe o que o código é.
+  buscaGeral,
 ];
 
 let cache: Map<string, AiTool> | null = null;

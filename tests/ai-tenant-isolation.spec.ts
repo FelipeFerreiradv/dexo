@@ -304,6 +304,10 @@ describe("⭐ nenhum argumento do modelo troca a loja", () => {
         sku: "001",
         id: "x1",
         dimensao: "plataforma",
+        // `busca_geral` (P3.3). Sem isto a varredura não chegaria a rodar as
+        // quatro consultas dela — sairia cedo pelo `precisoDeUmTermo` e
+        // "passaria" sem provar nada.
+        termo: "x",
       };
       espiao.listProducts.mockResolvedValue({
         products: [{ id: "p1", sku: "001" }],

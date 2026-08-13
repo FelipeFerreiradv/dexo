@@ -115,9 +115,19 @@ export function useBitzAcao(
   /** Impede duas requisições do mesmo clique duplo antes da primeira voltar. */
   const emVooRef = React.useRef(false);
 
+  /**
+   * ⭐ Devolve `true` só quando o servidor confirmou o desfecho.
+   *
+   * Existe por causa do botão "Corrigir" (P3.1): ele CANCELA a proposta antes de
+   * abrir o campo para o lojista reditar. Se o cancelamento falhar e a correção
+   * seguisse assim mesmo, a proposta velha ficaria pendente ao lado da nova — e
+   * duas propostas quase idênticas na tela é o convite para confirmar a errada.
+   *
+   * Aditivo: quem já chamava isto ignorando o retorno continua idêntico.
+   */
   const chamar = React.useCallback(
-    async (caminho: "confirmar" | "cancelar") => {
-      if (emVooRef.current) return;
+    async (caminho: "confirmar" | "cancelar"): Promise<boolean> => {
+      if (emVooRef.current) return false;
       emVooRef.current = true;
       setErro(null);
       setEstado("enviando");
@@ -139,7 +149,7 @@ export function useBitzAcao(
               : "Não consegui concluir. Nada foi alterado.",
           );
           setEstado("erro");
-          return;
+          return false;
         }
 
         const decidido = caminho === "confirmar" ? "confirmada" : "cancelada";
@@ -156,6 +166,7 @@ export function useBitzAcao(
         setEstado(decidido);
         // Sobe para a mensagem ANTES de qualquer remontagem possível.
         opts?.aoDecidir?.(acaoId, decidido, data?.relatorio);
+        return true;
       } catch {
         // ⚠️ Rede caiu DEPOIS de o servidor ter executado? Pode ter acontecido.
         // Por isso a mensagem não afirma que nada mudou: ela manda conferir. A
@@ -164,6 +175,7 @@ export function useBitzAcao(
           "Perdi a conexão antes de saber o resultado. Confira na tela do sistema antes de tentar de novo.",
         );
         setEstado("erro");
+        return false;
       } finally {
         emVooRef.current = false;
       }

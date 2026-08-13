@@ -79,18 +79,18 @@ describe("⭐ nenhuma tool aceita o tenant como argumento", () => {
 });
 
 describe("declaração das tools", () => {
-  it("as 14 tools de leitura estão registradas", () => {
-    expect(READ_TOOLS).toHaveLength(14);
-    expect(getReadToolRegistry().size).toBe(14);
+  it("as 15 tools de leitura estão registradas", () => {
+    expect(READ_TOOLS).toHaveLength(15);
+    expect(getReadToolRegistry().size).toBe(15);
   });
 
-  it("7 consultivas + 10 de escrita, e o registry completo tem 31", () => {
+  it("7 consultivas + 10 de escrita, e o registry completo tem 32", () => {
     expect(ADVISORY_TOOLS).toHaveLength(7);
     expect(WRITE_TOOLS).toHaveLength(10);
-    expect(ALL_TOOLS).toHaveLength(31);
+    expect(ALL_TOOLS).toHaveLength(32);
     // `buildRegistry` lançaria em nome duplicado; o tamanho prova que não houve
     // colisão entre os três conjuntos.
-    expect(getToolRegistry().size).toBe(31);
+    expect(getToolRegistry().size).toBe(32);
   });
 
   // -------------------------------------------------------------------------

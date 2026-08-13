@@ -1,7 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { AlertTriangle, ArrowRight, Check, Loader2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  Loader2,
+  Pencil,
+  X,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useBitzAcao, type BitzAcao } from "@/hooks/use-bitz-acao";
@@ -24,6 +31,7 @@ import { useBitzAcao, type BitzAcao } from "@/hooks/use-bitz-acao";
 export function BitzAcaoCard({
   acao,
   aoDecidir,
+  aoCorrigir,
 }: {
   acao: BitzAcao;
   aoDecidir?: (
@@ -31,6 +39,11 @@ export function BitzAcaoCard({
     status: "confirmada" | "cancelada",
     relatorio?: BitzAcao["relatorio"],
   ) => void;
+  /**
+   * O lojista quer refazer com um campo diferente (P3.1). Recebe o título da
+   * proposta para o painel montar a frase inicial no campo de escrita.
+   */
+  aoCorrigir?: (titulo: string) => void;
 }) {
   const { estado, erro, confirmar, cancelar } = useBitzAcao(acao.id, {
     decidida: acao.decidida,
@@ -39,6 +52,21 @@ export function BitzAcaoCard({
 
   const decidido = estado === "confirmada" || estado === "cancelada";
   const enviando = estado === "enviando";
+
+  /**
+   * ⭐ "CORRIGIR" É CANCELAR + ABRIR O CAMPO. Nenhuma rota nova, nenhum estado
+   * novo — e é essa reciclagem que fecha o buraco: sem o cancelamento, a
+   * proposta velha ficaria pendente ao lado da nova, e duas propostas quase
+   * idênticas na tela são o convite para confirmar a errada.
+   *
+   * ⚠️ E SÓ ABRE O CAMPO SE O CANCELAMENTO DEU CERTO. Cancelamento que falhou
+   * deixa a proposta viva; seguir para a correção ali seria criar exatamente o
+   * par de propostas que este botão existe para evitar. O erro já aparece no
+   * cartão pelo caminho de sempre.
+   */
+  const corrigir = async () => {
+    if (await cancelar()) aoCorrigir?.(acao.preview.titulo);
+  };
 
   return (
     <div
@@ -205,6 +233,29 @@ export function BitzAcaoCard({
               )}
               Confirmar
             </button>
+            {/* ⭐ O CAMINHO DE CORREÇÃO (P3.1). Sem ele, trocar UM campo custava
+                reditar a frase inteira — e num cadastro de sucata com marca,
+                modelo, ano, cor, placa e custo, ditar tudo de novo por causa da
+                cor é o tipo de atrito que faz o lojista voltar para o
+                formulário. Fica ANTES de "Cancelar": é o que ele quer com mais
+                frequência quando a proposta não está certa. */}
+            {aoCorrigir && (
+              <button
+                type="button"
+                onClick={corrigir}
+                disabled={enviando}
+                title="Cancela esta proposta e abre o campo para você dizer o que muda"
+                className={cn(
+                  "text-foreground hover:bg-accent border-border/60 inline-flex items-center gap-1.5 border",
+                  "rounded-full px-3 py-1.5 text-xs transition disabled:opacity-50",
+                  "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                  "motion-reduce:transition-none",
+                )}
+              >
+                <Pencil className="size-3.5" />
+                Corrigir
+              </button>
+            )}
             <button
               type="button"
               onClick={cancelar}

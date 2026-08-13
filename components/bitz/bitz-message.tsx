@@ -117,6 +117,7 @@ export function BitzMessage({
   message,
   aoDecidirAcao,
   aoEscolherOpcao,
+  aoCorrigirAcao,
   ehUltima,
   aguardando,
 }: {
@@ -128,6 +129,8 @@ export function BitzMessage({
   ) => void;
   /** Manda a frase da opção como se o lojista a tivesse digitado. */
   aoEscolherOpcao?: (texto: string) => void;
+  /** "Corrigir" no cartão: cancela a proposta e abre o campo já escrito. */
+  aoCorrigirAcao?: (titulo: string) => void;
   /** Só a última bolha oferece escolha — ver o comentário em `bitz-opcoes`. */
   ehUltima?: boolean;
   /** Turno em andamento: clicar agora atropelaria a resposta que vem vindo. */
@@ -193,7 +196,16 @@ export function BitzMessage({
         {message.acoes?.length ? (
           <div className="mt-2.5 flex flex-col gap-2">
             {message.acoes.map((a) => (
-              <BitzAcaoCard key={a.id} acao={a} aoDecidir={aoDecidirAcao} />
+              <BitzAcaoCard
+                key={a.id}
+                acao={a}
+                aoDecidir={aoDecidirAcao}
+                // ⚠️ SÓ NA ÚLTIMA BOLHA, pela mesma razão das opções clicáveis:
+                // corrigir uma proposta de três turnos atrás abriria o campo com
+                // uma frase que o modelo leria fora de contexto — e a proposta
+                // já teria sido cancelada de graça.
+                aoCorrigir={ehUltima ? aoCorrigirAcao : undefined}
+              />
             ))}
           </div>
         ) : null}

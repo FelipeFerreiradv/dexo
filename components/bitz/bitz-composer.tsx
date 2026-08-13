@@ -20,6 +20,17 @@ interface BitzComposerProps {
   onValueChange: (v: string) => void;
   autoFocus?: boolean;
   /**
+   * Contador que, ao mudar, PÕE O FOCO NO CAMPO COM O CURSOR NO FIM.
+   *
+   * ⭐ Existe por causa do "Corrigir" do cartão (P3.1): sem ele o texto aparece
+   * no campo mas o foco fica no botão, e o lojista tem de clicar no campo antes
+   * de continuar a frase — o toque a mais que o botão existe para poupar.
+   *
+   * É um CONTADOR e não um booleano porque duas correções seguidas precisam
+   * disparar duas vezes; um booleano só mudaria de valor na primeira.
+   */
+  focarNoFim?: number;
+  /**
    * Abre a gravação de voz (Fase 7).
    *
    * ⭐ `undefined` mantém o microfone como placeholder "em breve", e é assim
@@ -75,6 +86,7 @@ export function BitzComposer({
   value,
   onValueChange,
   autoFocus,
+  focarNoFim,
   onMicrofone,
   onArquivo,
   aceita,
@@ -88,6 +100,19 @@ export function BitzComposer({
   React.useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
+
+  // ⚠️ O CURSOR VAI PARA O FIM, e isso é o ponto. `focus()` sozinho pode devolver
+  // a seleção anterior — que num campo recém-preenchido de fora é a posição 0, e
+  // o lojista digitaria a correção ANTES da frase, produzindo uma pergunta
+  // embaralhada. `focarNoFim` na lista, e não `value`: o efeito só pode disparar
+  // quando alguém PEDIU o foco, nunca a cada tecla digitada.
+  React.useEffect(() => {
+    if (!focarNoFim) return;
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [focarNoFim]);
 
   const submit = () => {
     const texto = value.trim();

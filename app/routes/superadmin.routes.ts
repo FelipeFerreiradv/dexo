@@ -7,6 +7,7 @@ import { UserUseCase } from "../usecases/user.usercase";
 import { toPublicUser } from "../lib/user-serializer";
 import { SystemLogService } from "../services/system-log.service";
 import { clearAiEntitlementCache } from "../ai/entitlement/ai-entitlement.service";
+import { consumoDeIaPorCliente } from "../ai/quota/ai-consumo.service";
 
 /**
  * Teto de sanidade para o campo de teto diário do Bitz.
@@ -314,6 +315,42 @@ export const superadminRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao atualizar usuário",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /superadmin/ai-consumo?dias=30 — quanto cada cliente usou o Bitz.
+   *
+   * ⭐ CONSUMO, NÃO CUSTO EM REAIS. O porquê está inteiro em
+   * `ai/quota/ai-consumo.service.ts`, e o resumo é: não existe tabela de preço
+   * por token no sistema, e chumbar uma aqui produziria um número de dinheiro
+   * que fica errado em silêncio — num painel usado justamente para decidir
+   * preço de plano.
+   *
+   * ⚠️ NENHUM CONTEÚDO DE CONVERSA SAI DAQUI. A equipe Dexo vê quanto o cliente
+   * usou; o que ele perguntou é dele. A projeção é só de contadores.
+   *
+   * Mesmo par de guardas do resto do arquivo — `requireSuperadmin` é a porta.
+   */
+  fastify.get<{ Querystring: { dias?: string } }>(
+    "/ai-consumo",
+    { preHandler: [authMiddleware, requireSuperadmin] },
+    async (request, reply) => {
+      try {
+        const dias = Number(request.query?.dias);
+        return reply
+          .status(200)
+          .send(
+            await consumoDeIaPorCliente(Number.isFinite(dias) ? dias : 30),
+          );
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao apurar o consumo de IA",
         });
       }
     },

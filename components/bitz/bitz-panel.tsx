@@ -20,7 +20,7 @@ import { BitzMascot } from "./bitz-mascot";
 import { BitzMemorias } from "./bitz-memorias";
 import { BitzMessage, BitzStreaming, BitzThinking } from "./bitz-message";
 import { jaPassou, marcarPassou } from "./bitz-onboarding";
-import type { BitzPanelMode } from "./bitz-constants";
+import { fraseDeCorrecao, type BitzPanelMode } from "./bitz-constants";
 
 interface BitzPanelProps {
   open: boolean;
@@ -194,6 +194,24 @@ export function BitzPanel({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, pending, streaming?.content]);
+
+  /**
+   * ⭐ O CAMINHO DE CORREÇÃO (P3.1). A proposta já foi cancelada pelo cartão
+   * quando isto roda; aqui só sobra abrir o campo com a frase começada.
+   *
+   * ⚠️ A FRASE NÃO É ENVIADA — ela fica no campo, esperando o lojista completar.
+   * Mandar sozinha gastaria uma mensagem da cota dele para o Bitz responder
+   * "corrigir o quê?".
+   *
+   * "Refaz" e não "corrige": o que vem a seguir é uma proposta NOVA, e o modelo
+   * tem a frase original na conversa para reaproveitar os campos que estavam
+   * certos. É isso que evita reditar marca, modelo, ano e placa por causa da cor.
+   */
+  const [pedidoDeFoco, setPedidoDeFoco] = React.useState(0);
+  const corrigirAcao = React.useCallback((titulo: string) => {
+    setDraft(fraseDeCorrecao(titulo));
+    setPedidoDeFoco((n) => n + 1);
+  }, []);
 
   const perguntar = (texto: string) => {
     setDraft("");
@@ -409,6 +427,7 @@ export function BitzPanel({
                       message={m}
                       aoDecidirAcao={decidirAcao}
                       aoEscolherOpcao={perguntar}
+                      aoCorrigirAcao={corrigirAcao}
                       ehUltima={i === messages.length - 1}
                       aguardando={pending}
                     />
@@ -455,6 +474,7 @@ export function BitzPanel({
               onSend={perguntar}
               disabled={pending}
               autoFocus={open}
+              focarNoFim={pedidoDeFoco}
               onMicrofone={audioDisponivel ? voz.gravar : undefined}
               onArquivo={anexo.escolher}
               aceita={extensoesAceitas}
