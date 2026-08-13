@@ -317,6 +317,14 @@ describe("⭐⭐ seleção: as frases REAIS do lojista", () => {
     ["cria os produtos que eu tirei do gol", "cadastrar_pecas_em_massa"],
     ["corrige a quantidade em estoque", "ajustar_estoque_produto"],
     ["chegou mais 3 unidades no estoque", "ajustar_estoque_produto"],
+    // ⚠️ O par destas com "me mostra os anuncios pausados" (em SO_CONSULTA) é o
+    // que prende a fronteira: a chave `pausa o` casa o IMPERATIVO e não casa o
+    // ADJETIVO "pausados". Uma chave `pausa` solta passaria a oferecer uma tool
+    // que propõe tirar a peça do ar numa pergunta que só queria ver a lista.
+    ["pausa o anuncio da 4821", "pausar_ou_reativar_anuncio"],
+    ["pausa os anuncios dessa peca", "pausar_ou_reativar_anuncio"],
+    ["reativa o anuncio do cubo de roda", "pausar_ou_reativar_anuncio"],
+    ["coloca o anuncio de volta no ar", "pausar_ou_reativar_anuncio"],
   ];
 
   it.each(PEDE_ESCRITA)("'%s' oferece %s", (frase, esperada) => {

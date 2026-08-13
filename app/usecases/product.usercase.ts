@@ -588,7 +588,17 @@ export class ProductUseCase {
     // Opcional (default = comportamento atual): forceRemote força a chamada
     // à API mesmo quando o status local já é o desejado — usado pelo
     // cancelamento de pedido marketplace (status local pode estar stale).
-    opts?: { forceRemote?: boolean },
+    //
+    // ⭐ `pularPlataformas` deixa o chamador excluir canais desta operação, e
+    // existe por um motivo concreto: na OLX **pausar é EXCLUIR** o anúncio
+    // (`updateListingStatus` chama `OlxApiService.deleteAd`), e republicar cria
+    // um anúncio NOVO, perdendo endereço e visualizações. O Bitz tem regra de
+    // não apagar nada, então ele pausa nos outros quatro canais e deixa a OLX
+    // para a tela, onde a pessoa vê o que está fazendo.
+    //
+    // ⚠️ Sem `pularPlataformas` o comportamento é BYTE-IDÊNTICO ao de antes —
+    // a tela de Produtos e a baixa de estoque continuam pausando tudo.
+    opts?: { forceRemote?: boolean; pularPlataformas?: Platform[] },
   ): Promise<{
     success: boolean;
     message: string;
@@ -611,9 +621,12 @@ export class ProductUseCase {
       }
 
       const listings = await this.getProductListings(productId);
+      const pular = new Set(opts?.pularPlataformas ?? []);
       const publishable = listings.filter(
         (l) =>
-          l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
+          l.externalListingId &&
+          !l.externalListingId.startsWith("PENDING_") &&
+          !pular.has(l.marketplaceAccount?.platform as Platform),
       );
 
       if (publishable.length === 0) {

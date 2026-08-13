@@ -84,13 +84,13 @@ describe("declaração das tools", () => {
     expect(getReadToolRegistry().size).toBe(14);
   });
 
-  it("7 consultivas + 8 de escrita, e o registry completo tem 29", () => {
+  it("7 consultivas + 9 de escrita, e o registry completo tem 30", () => {
     expect(ADVISORY_TOOLS).toHaveLength(7);
-    expect(WRITE_TOOLS).toHaveLength(8);
-    expect(ALL_TOOLS).toHaveLength(29);
+    expect(WRITE_TOOLS).toHaveLength(9);
+    expect(ALL_TOOLS).toHaveLength(30);
     // `buildRegistry` lançaria em nome duplicado; o tamanho prova que não houve
     // colisão entre os três conjuntos.
-    expect(getToolRegistry().size).toBe(29);
+    expect(getToolRegistry().size).toBe(30);
   });
 
   // -------------------------------------------------------------------------

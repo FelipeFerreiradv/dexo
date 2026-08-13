@@ -14,6 +14,7 @@
 // `ai-write-tools.spec.ts` falha antes disso.
 
 import type { AiTool } from "../registry";
+import { pausarOuReativarAnuncio } from "./anuncios";
 import { cadastrarCliente } from "./clientes";
 import { lembrarPreferencia } from "./memoria";
 import {
@@ -32,6 +33,9 @@ export const WRITE_TOOLS: AiTool[] = [
   cadastrarCliente,
   cadastrarSucata,
   vincularPecaASucata,
+  // ⭐ A primeira que toca o CANAL, e não o catálogo. Ao confirmar, a peça sai
+  // do ar (ou volta) no marketplace na hora.
+  pausarOuReativarAnuncio,
   // ⭐ A única que não escreve em tabela de negócio: ela ensina uma REGRA ao
   // agente. Passa pelo mesmo cartão porque o alcance é maior, não menor — o que
   // se ensina vale para a equipe inteira, em todo turno, até alguém apagar.

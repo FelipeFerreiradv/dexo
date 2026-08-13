@@ -32,6 +32,7 @@ export type ActionId =
   | "bitz.criar-cliente"
   | "bitz.criar-sucata"
   | "bitz.vincular-sucata"
+  | "bitz.pausar-anuncio"
   // Fase 11 — ensinar uma regra da loja ao Bitz. Ver a nota em ACTION_DEFS.
   | "bitz.lembrar";
 
@@ -96,6 +97,11 @@ export const ACTION_DEFS: ActionDef[] = [
     id: "bitz.criar-sucata",
     label: "Bitz: dar entrada em sucata",
     hint: "Deixa o Bitz preparar a entrada de um veículo comprado para desmontar. A sucata nasce vazia — nenhuma peça é criada. Nada é salvo sem o clique de confirmação.",
+  },
+  {
+    id: "bitz.pausar-anuncio",
+    label: "Bitz: pausar / reativar anúncio",
+    hint: "Deixa o Bitz preparar a pausa ou a reativação dos anúncios de uma peça. ATENÇÃO: ao confirmar, a peça sai do ar (ou volta) no marketplace na hora. A OLX fica de fora do pausar, porque lá pausar exclui o anúncio.",
   },
   {
     id: "bitz.vincular-sucata",

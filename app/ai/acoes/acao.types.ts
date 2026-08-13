@@ -39,6 +39,16 @@ export type AiAcaoTipo =
    */
   | "produto.vincular-sucata"
   /**
+   * ⭐ PAUSAR OU REATIVAR os anúncios de uma peça. A primeira ação do Bitz que
+   * toca o CANAL, e não o catálogo.
+   *
+   * ⚠️⚠️ A OLX fica de fora do PAUSAR, e é a regra "o Bitz não apaga" aplicada:
+   * lá pausar chama `deleteAd` e destrói o anúncio. A exclusão vem no payload
+   * (`pularOlx`), não recalculada na confirmação — o que o lojista leu no
+   * cartão é o que executa, mesmo meia hora depois.
+   */
+  | "anuncio.situacao"
+  /**
    * ⭐ ENSINAR UMA REGRA DA LOJA (Fase 11). A única ação que NÃO escreve em
    * tabela de negócio — o que ela grava é uma anotação do próprio agente.
    *
@@ -88,6 +98,7 @@ export const ACAO_EXIGE_PERMISSAO = {
   "cliente.criar": "bitz.criar-cliente",
   "sucata.criar": "bitz.criar-sucata",
   "produto.vincular-sucata": "bitz.vincular-sucata",
+  "anuncio.situacao": "bitz.pausar-anuncio",
   "memoria.criar": "bitz.lembrar",
 } as const satisfies Record<AiAcaoTipo, string>;
 
@@ -123,6 +134,7 @@ export const FAMILIA_DA_ACAO: Record<AiAcaoTipo, string> = {
   "cliente.criar": "cliente.cadastro",
   "sucata.criar": "sucata.cadastro",
   "produto.vincular-sucata": "produto.vinculo",
+  "anuncio.situacao": "anuncio.situacao",
   "memoria.criar": "memoria.cadastro",
 };
 

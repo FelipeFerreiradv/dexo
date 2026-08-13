@@ -10,6 +10,8 @@
 // payload, nunca de algo que o modelo tenha produzido. O payload guardado na
 // proposta carrega só os campos de negócio.
 
+import { Platform } from "@prisma/client";
+
 import { CustomerUseCase } from "../../usecases/customer.usecase";
 import { ProductUseCase } from "../../usecases/product.usercase";
 import { ScrapUseCase } from "../../usecases/scrap.usercase";
@@ -195,6 +197,29 @@ const EXECUTORES: Record<AiAcaoTipo, Executor> = {
    * A guarda de tenant da sucata está dentro do repositório
    * (product.repository.ts:1008-1021) e é refeita aqui pelo `dataOwnerId`.
    */
+  /**
+   * ⭐ PAUSAR / REATIVAR os anúncios. Embrulho fino de
+   * `ProductUseCase.pauseListings` — o MESMO método que o botão da tela de
+   * Produtos usa (product.routes.ts:1459), com a mesma idempotência e o mesmo
+   * agregado de resultado.
+   *
+   * ⚠️⚠️ `pularPlataformas: [OLX]` vem do PAYLOAD, não é recalculado aqui.
+   * Entre a proposta e o clique passa até meia hora; se alguém publicasse a
+   * peça na OLX nesse intervalo e a exclusão fosse recalculada agora, o clique
+   * executaria uma operação que o lojista não leu. O que ele confirmou é o que
+   * roda.
+   */
+  "anuncio.situacao": async (payload, scope) => {
+    const usecase = new ProductUseCase();
+    await usecase.pauseListings(
+      payload.produtoId,
+      scope.dataOwnerId,
+      payload.situacao,
+      payload.pularOlx ? { pularPlataformas: [Platform.OLX] } : undefined,
+    );
+    return { resultId: payload.produtoId };
+  },
+
   "produto.vincular-sucata": async (payload, scope) => {
     const usecase = new ProductUseCase();
     await usecase.linkScrap(

@@ -306,8 +306,11 @@ describe("contrato", () => {
     expect(r.resultId).toBe("p-1");
   });
 
-  it("os tipos executáveis são exatamente os oito declarados", () => {
+  it("os tipos executáveis são exatamente os nove declarados", () => {
     expect([...TIPOS_EXECUTAVEIS].sort()).toEqual([
+      // A única que toca o CANAL e não o catálogo. A OLX fica de fora do
+      // pausar, e a exclusão vem do payload.
+      "anuncio.situacao",
       "cliente.criar",
       // Fase 11 — a única que não escreve em tabela de negócio. O executor dela
       // é exercido em `ai-memoria.spec.ts`, com a memória mockada.
