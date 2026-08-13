@@ -14,9 +14,11 @@ vi.mock("../app/usecases/product.usercase", () => ({
 }));
 
 const criarSucataMock = vi.fn();
+const atualizarSucataMock = vi.fn();
 vi.mock("../app/usecases/scrap.usercase", () => ({
   ScrapUseCase: class {
     create = (...a: any[]) => criarSucataMock(...a);
+    update = (...a: any[]) => atualizarSucataMock(...a);
   },
 }));
 
@@ -61,6 +63,12 @@ beforeEach(() => {
   }));
   atualizarProdutoMock.mockReset().mockResolvedValue({});
   criarClienteMock.mockReset().mockResolvedValue({ id: "c1" });
+  // ⚠️ Sem estes dois, `mock.calls[0]` de um teste era a chamada do teste
+  // ANTERIOR — e a asserção passava ou falhava por contágio, não pelo que o
+  // executor fez. Pegou dois testes de uma vez.
+  criarSucataMock.mockReset().mockResolvedValue({ id: "s-1" });
+  atualizarSucataMock.mockReset().mockResolvedValue({ id: "s-1" });
+  vincularSucataMock.mockReset().mockResolvedValue({ id: "p-1" });
 });
 
 describe("⭐ o tenant sai do ESCOPO, nunca do payload", () => {
@@ -291,6 +299,36 @@ describe("contrato", () => {
     expect(arg.createdByUserId).toBe("ator-9");
   });
 
+  it("⭐ fiscal: a data vira Date no EXECUTOR, não na tool", async () => {
+    // O payload da proposta é JSON e dorme até meia hora no banco — um `Date`
+    // não sobrevive à ida e à volta. A conversão mora aqui, no último momento.
+    atualizarSucataMock.mockResolvedValue({ id: "s-1" });
+    await executarAcao(
+      "sucata.fiscal",
+      {
+        sucataId: "s-1",
+        fiscal: { accessKey: "1".repeat(44), issueDate: "2026-08-13" },
+      },
+      escopo(),
+    );
+
+    const [id, dados, tenant] = atualizarSucataMock.mock.calls[0];
+    expect(id).toBe("s-1");
+    expect(dados.issueDate).toBeInstanceOf(Date);
+    expect(dados.accessKey).toBe("1".repeat(44));
+    expect(tenant).toBe("tenant-1");
+  });
+
+  it("fiscal sem data não inventa uma", async () => {
+    atualizarSucataMock.mockResolvedValue({ id: "s-1" });
+    await executarAcao(
+      "sucata.fiscal",
+      { sucataId: "s-1", fiscal: { nfeNumber: "123" } },
+      escopo(),
+    );
+    expect(atualizarSucataMock.mock.calls[0][1].issueDate).toBeUndefined();
+  });
+
   it("⭐ vínculo com sucata usa linkScrap — NÃO update (que dispararia sync)", async () => {
     vincularSucataMock.mockResolvedValue({ id: "p-1" });
     const r = await executarAcao(
@@ -306,7 +344,7 @@ describe("contrato", () => {
     expect(r.resultId).toBe("p-1");
   });
 
-  it("os tipos executáveis são exatamente os nove declarados", () => {
+  it("os tipos executáveis são exatamente os dez declarados", () => {
     expect([...TIPOS_EXECUTAVEIS].sort()).toEqual([
       // A única que toca o CANAL e não o catálogo. A OLX fica de fora do
       // pausar, e a exclusão vem do payload.
@@ -325,6 +363,8 @@ describe("contrato", () => {
       // Dar entrada num lote de sucata. Sem efeito colateral: o insert não gera
       // peça, não mexe em estoque e não lança nada no financeiro.
       "sucata.criar",
+      // Copia o bloco fiscal da nota para o cadastro do lote. Não emite nada.
+      "sucata.fiscal",
     ]);
   });
 });

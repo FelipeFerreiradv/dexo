@@ -49,6 +49,14 @@ export type AiAcaoTipo =
    */
   | "anuncio.situacao"
   /**
+   * ⭐ GRAVAR O BLOCO FISCAL de uma sucata a partir da nota.
+   *
+   * ⚠️ Não emite nem altera nota nenhuma — só copia para o cadastro do lote o
+   * que veio do XML. A chave e o CNPJ chegam com dígito verificador conferido;
+   * o resto o lojista confere no cartão, com a nota na mão.
+   */
+  | "sucata.fiscal"
+  /**
    * ⭐ ENSINAR UMA REGRA DA LOJA (Fase 11). A única ação que NÃO escreve em
    * tabela de negócio — o que ela grava é uma anotação do próprio agente.
    *
@@ -99,6 +107,7 @@ export const ACAO_EXIGE_PERMISSAO = {
   "sucata.criar": "bitz.criar-sucata",
   "produto.vincular-sucata": "bitz.vincular-sucata",
   "anuncio.situacao": "bitz.pausar-anuncio",
+  "sucata.fiscal": "bitz.fiscal-sucata",
   "memoria.criar": "bitz.lembrar",
 } as const satisfies Record<AiAcaoTipo, string>;
 
@@ -135,6 +144,7 @@ export const FAMILIA_DA_ACAO: Record<AiAcaoTipo, string> = {
   "sucata.criar": "sucata.cadastro",
   "produto.vincular-sucata": "produto.vinculo",
   "anuncio.situacao": "anuncio.situacao",
+  "sucata.fiscal": "sucata.fiscal",
   "memoria.criar": "memoria.cadastro",
 };
 

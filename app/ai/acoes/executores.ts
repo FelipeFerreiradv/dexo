@@ -230,6 +230,28 @@ const EXECUTORES: Record<AiAcaoTipo, Executor> = {
     return { resultId: payload.produtoId };
   },
 
+  /**
+   * ⭐ GRAVAR O BLOCO FISCAL. Embrulho fino de `ScrapUseCase.update`, o mesmo
+   * que a tela de Sucatas usa — inclusive a validação de 44 dígitos da chave,
+   * que aqui é a segunda barreira (a tool já conferiu o dígito verificador).
+   *
+   * ⚠️ A data chega como `AAAA-MM-DD` e vira `Date` AQUI, não na tool: o
+   * payload da proposta é JSON e um `Date` não sobrevive à ida ao banco.
+   */
+  "sucata.fiscal": async (payload, scope) => {
+    const usecase = new ScrapUseCase();
+    const { issueDate, ...resto } = payload.fiscal ?? {};
+    await usecase.update(
+      payload.sucataId,
+      {
+        ...resto,
+        ...(issueDate ? { issueDate: new Date(`${issueDate}T00:00:00`) } : {}),
+      } as any,
+      scope.dataOwnerId,
+    );
+    return { resultId: payload.sucataId };
+  },
+
   "sucata.criar": async (payload, scope) => {
     const usecase = new ScrapUseCase();
     const sucata = await usecase.create({

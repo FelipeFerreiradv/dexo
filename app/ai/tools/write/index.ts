@@ -16,6 +16,7 @@
 import type { AiTool } from "../registry";
 import { pausarOuReativarAnuncio } from "./anuncios";
 import { cadastrarCliente } from "./clientes";
+import { completarFiscalDaSucata } from "./fiscal-sucata";
 import { lembrarPreferencia } from "./memoria";
 import {
   ajustarEstoqueDoProduto,
@@ -33,6 +34,7 @@ export const WRITE_TOOLS: AiTool[] = [
   cadastrarCliente,
   cadastrarSucata,
   vincularPecaASucata,
+  completarFiscalDaSucata,
   // ⭐ A primeira que toca o CANAL, e não o catálogo. Ao confirmar, a peça sai
   // do ar (ou volta) no marketplace na hora.
   pausarOuReativarAnuncio,

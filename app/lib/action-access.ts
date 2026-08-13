@@ -33,6 +33,7 @@ export type ActionId =
   | "bitz.criar-sucata"
   | "bitz.vincular-sucata"
   | "bitz.pausar-anuncio"
+  | "bitz.fiscal-sucata"
   // Fase 11 — ensinar uma regra da loja ao Bitz. Ver a nota em ACTION_DEFS.
   | "bitz.lembrar";
 
@@ -97,6 +98,11 @@ export const ACTION_DEFS: ActionDef[] = [
     id: "bitz.criar-sucata",
     label: "Bitz: dar entrada em sucata",
     hint: "Deixa o Bitz preparar a entrada de um veículo comprado para desmontar. A sucata nasce vazia — nenhuma peça é criada. Nada é salvo sem o clique de confirmação.",
+  },
+  {
+    id: "bitz.fiscal-sucata",
+    label: "Bitz: preencher a nota fiscal da sucata",
+    hint: "Deixa o Bitz copiar para o cadastro do lote os dados da NF-e do veículo (chave, CNPJ, número, série, data, ICMS). Não emite nem altera nota nenhuma.",
   },
   {
     id: "bitz.pausar-anuncio",
