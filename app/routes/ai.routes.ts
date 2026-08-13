@@ -10,6 +10,7 @@ import {
   type AiTurnAnexo,
 } from "../ai/agent/orchestrator";
 import { AI_CONSTANTS } from "../ai/core/ai-constants";
+import { contarAlertas } from "../ai/alertas/alertas.service";
 import { cancelarAcao, confirmarAcao } from "../ai/acoes/acao.service";
 import {
   ACAO_EXIGE_ADMIN,
@@ -129,6 +130,36 @@ export const aiRoutes = async (fastify: FastifyInstance) => {
         // `/ai/memorias`, que conferem `isAdmin` por conta própria.
         memorias: !request.user.parentUserId,
       });
+    },
+  );
+
+  /**
+   * GET /ai/alertas — o que está quebrado AGORA, em números. Fase 12.
+   *
+   * ⭐ É o que acende o badge do mascote, e por isso é a rota mais barata do
+   * módulo: DUAS contagens, nenhuma linha, nenhum token, nenhuma chamada ao
+   * provedor. Medido em produção na loja com mais pendências: 0,3 ms de banco.
+   *
+   * ⚠️ O QUE ELA CONTA E O QUE ELA SE RECUSA A CONTAR está decidido — e
+   * justificado com o número medido — em `ai/alertas/alertas.service.ts`. O
+   * resumo: só entra o que é inequivocamente DEFEITO. Peça sem anúncio é escolha
+   * comercial, e anúncio com erro é backlog de três meses; nenhum dos dois
+   * merece um ponto vermelho permanente sobre o mascote.
+   *
+   * ⭐ A PERMISSÃO É POR CAMPO, e não por rota. Um badge que diz "61 problemas"
+   * para quem não pode abrir Pedidos já vazou o número — então cada contagem sai
+   * `null` para quem não vê a página dela, e o cliente simplesmente não tem o
+   * que mostrar. Esconder no navegador nunca foi permissão.
+   */
+  fastify.get(
+    "/alertas",
+    { preHandler: [authMiddleware, requireAiEnabled] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const scope = scopeFromRequest(request);
+      if (!scope) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      return reply.send(await contarAlertas(scope));
     },
   );
 

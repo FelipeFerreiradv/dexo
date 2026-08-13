@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import type { Session } from "next-auth";
 
 import { cn } from "@/lib/utils";
+import { useBitzAlertas } from "@/hooks/use-bitz-alertas";
 import { useBitzEntitlement } from "@/hooks/use-bitz-entitlement";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { type BitzPanelMode } from "./bitz-constants";
@@ -78,6 +79,17 @@ export function BitzWidget({ session }: { session: Session }) {
   const relogio = React.useRef<number | null>(null);
 
   const usuarioId = session.user.id;
+
+  /**
+   * ⭐ O BADGE. Só acende para o que é inequivocamente DEFEITO — venda que não
+   * virou pedido (estoque não baixado) e conta com autorização caída —, e só
+   * quando algum desses números SUBIU desde a última vez que o lojista
+   * dispensou. O porquê de cada exclusão está medido em
+   * `app/ai/alertas/alertas.service.ts`; a catraca, em `bitz-alerta-catraca.ts`.
+   *
+   * `enabled` como gatilho: quem não contratou o módulo não faz a consulta.
+   */
+  const alerta = useBitzAlertas(enabled, usuarioId);
 
   const abrirDeFato = React.useCallback(() => {
     if (relogio.current !== null) {
@@ -186,14 +198,19 @@ export function BitzWidget({ session }: { session: Session }) {
             void import("./bitz-panel").catch(() => {});
           }}
           onAnimationEnd={() => setGreeting(false)}
-          aria-label="Abrir o Bitz, assistente do Dexo"
+          aria-label={
+            alerta.avisar
+              ? "Abrir o Bitz, assistente do Dexo — há um problema novo na operação"
+              : "Abrir o Bitz, assistente do Dexo"
+          }
           className={cn(
             // z-40: acima de todo conteúdo em árvore (máx. z-30) e abaixo de
             // todo Radix (z-50) e de todo toast (z-[100]).
             // bottom-20 no mobile livra a faixa onde os toasts pousam
             // (fixed bottom-4 right-4 em 17 telas).
             "fixed right-4 bottom-20 z-40 md:right-6 md:bottom-6",
-            "inline-flex items-center justify-center rounded-full",
+            // `relative` sustenta o ponto do badge, logo abaixo.
+            "relative inline-flex items-center justify-center rounded-full",
             "focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none",
             "transition-transform hover:scale-105 active:scale-95",
             "motion-reduce:transition-none motion-reduce:hover:scale-100",
@@ -204,6 +221,21 @@ export function BitzWidget({ session }: { session: Session }) {
           )}
         >
           <BitzMascot size={56} aura priority />
+
+          {/* ⭐ UM PONTO, E NÃO UM NÚMERO. Somar "61 pendências" com "2 contas
+              caídas" daria um "63" que não é nada: são unidades diferentes, e o
+              badge só acende na SUBIDA, então o total nem seria o que mudou. O
+              ponto diz "olha aqui"; a faixa dentro do painel diz o quê, e o
+              `diagnostico_operacional` diz o resto. */}
+          {alerta.avisar && (
+            <span
+              aria-hidden
+              className={cn(
+                "bg-destructive absolute top-0.5 right-0.5 size-3.5 rounded-full",
+                "border-background border-2",
+              )}
+            />
+          )}
         </button>
       )}
 
@@ -225,6 +257,11 @@ export function BitzWidget({ session }: { session: Session }) {
           onModeChange={setMode}
           userName={session.user?.name}
           usuarioId={usuarioId}
+          // ⭐ O alerta desce do widget em vez de o painel ter o próprio hook:
+          // são DOIS lugares mostrando a MESMA decisão, e com dois hooks
+          // dispensar na faixa deixaria o ponto do mascote aceso.
+          alerta={alerta.avisar ? alerta.contagem : null}
+          onAlertaVisto={alerta.marcarVisto}
         />
       )}
     </>

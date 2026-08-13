@@ -82,7 +82,15 @@ const TEMAS = [
     label: "Sucatas",
     perguntas: [
       "Quantas peças saíram da última sucata?",
-      "Como eu cadastro uma sucata nova?",
+      // ⚠️ AQUI HAVIA "Como eu cadastro uma sucata nova?", E ELA FICOU ERRADA
+      // NO DIA EM QUE `cadastrar_sucata` PASSOU A EXISTIR. A seleção de tools é
+      // por palavra-chave, e "cadastr" + "sucata" somam os 2 pontos que uma
+      // tool de ESCRITA precisa: o chip de documentação passaria a oferecer um
+      // cadastro sem nenhum dado, e o lojista queimaria um turno para receber
+      // "qual é o modelo?". "Desmembramento" pergunta a mesma coisa — é o
+      // título da própria página da base de conhecimento — sem pisar em
+      // palavra de escrita.
+      "Como funciona o desmembramento de uma sucata?",
       "Quanto já recuperei de uma sucata?",
     ],
   },

@@ -9,6 +9,8 @@ import { useBitzChat } from "@/hooks/use-bitz-chat";
 import { useBitzAnexo } from "@/hooks/use-bitz-anexo";
 import { useBitzAudio } from "@/hooks/use-bitz-audio";
 import { useBitzCapacidades } from "@/hooks/use-bitz-capacidades";
+import { BitzAlerta } from "./bitz-alerta";
+import type { ContagemDeAlertas } from "./bitz-alerta-catraca";
 import { BitzAnexo } from "./bitz-anexo";
 import { BitzApresentacao } from "./bitz-apresentacao";
 import { BitzComposer } from "./bitz-composer";
@@ -28,6 +30,13 @@ interface BitzPanelProps {
   userName?: string | null;
   /** Chave do marco de apresentação. Ver `bitz-onboarding.ts`. */
   usuarioId: string;
+  /**
+   * Os números que acenderam o badge do mascote, ou `null` quando não há o que
+   * avisar. Descem do widget para os dois lugares mostrarem a MESMA decisão.
+   */
+  alerta?: ContagemDeAlertas | null;
+  /** O lojista viu (ou perguntou). Apaga o badge lá em cima também. */
+  onAlertaVisto?: () => void;
 }
 
 /**
@@ -62,6 +71,8 @@ export function BitzPanel({
   onModeChange,
   userName,
   usuarioId,
+  alerta,
+  onAlertaVisto,
 }: BitzPanelProps) {
   const { messages, pending, streaming, send, reset, decidirAcao } =
     useBitzChat();
@@ -336,6 +347,19 @@ export function BitzPanel({
                 </IconBtn>
               </DialogPrimitive.Close>
             </header>
+          )}
+
+          {/* ⚠️ NUNCA DURANTE A APRESENTAÇÃO. Aquela tela é a primeira
+              impressão do produto e não divide espaço com barra nenhuma — é a
+              mesma razão pela qual o cabeçalho some ali. E, na prática, quem
+              está vendo o Bitz pela primeira vez não vai resolver pendência de
+              importação neste segundo. */}
+          {!apresentando && alerta && (
+            <BitzAlerta
+              contagem={alerta}
+              onPerguntar={perguntar}
+              onDispensar={() => onAlertaVisto?.()}
+            />
           )}
 
           <div
