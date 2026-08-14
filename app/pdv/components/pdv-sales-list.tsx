@@ -29,6 +29,7 @@ import {
 } from "@/app/financeiro/components/shared/sale-status-filter";
 import { SaleTimelineSheet } from "@/app/financeiro/components/shared/sale-timeline-sheet";
 import { isSaleTimelineUiEnabled } from "@/app/financeiro/lib/sale-timeline-client";
+import { describeCancelReason } from "@/app/financeiro/lib/cancel-reasons";
 import {
   paymentMethodLabel,
   paymentMethodsSummary,
@@ -65,6 +66,10 @@ export interface PdvSaleRow {
   // Fase 1.1 — linhas de pagamento quando a venda teve mais de uma forma.
   // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
   payments?: { method: string; amount: number }[];
+  // BLOCO D — motivo do cancelamento. Ausente em tudo que não foi cancelado
+  // com motivo informado.
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
 }
 
 interface Props {
@@ -260,7 +265,16 @@ export function PdvSalesList({
                     )}
                   </TableCell>
                   <TableCell>
+                    {/* BLOCO D — o motivo vira tooltip do badge, igual ao
+                        Financeiro. Sem motivo, title fica undefined e o badge
+                        é o de sempre. */}
                     <span
+                      title={
+                        describeCancelReason(
+                          r.cancelReasonCode,
+                          r.cancelReason,
+                        ) ?? undefined
+                      }
                       className={cn(
                         "inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
                         STATUS_STYLES[r.status] ?? STATUS_STYLES.PENDENTE,

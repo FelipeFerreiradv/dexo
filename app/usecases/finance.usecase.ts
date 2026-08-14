@@ -25,6 +25,11 @@ import {
   diffSaleFields,
   isSaleTimelineEnabled,
 } from "../financeiro/lib/sale-timeline";
+import {
+  describeCancelReason,
+  isCancelReasonEnabled,
+  type NormalizedCancelReason,
+} from "../financeiro/lib/cancel-reasons";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
   FinanceRepository,
@@ -983,6 +988,10 @@ export class FinanceUseCase {
     // Bloco E (aditivo): operador da ação, para auditoria. Ausente ⇒ nada é
     // logado ⇒ comportamento byte-idêntico ao atual.
     actor?: FinanceActor,
+    // BLOCO D (aditivo): motivo JÁ NORMALIZADO pela rota (o body é `any`; a
+    // fronteira de tipo fica em `cancel-reasons.ts`). Ausente ou com a flag
+    // desligada ⇒ o `data` do UPDATE fica byte-idêntico ao de hoje.
+    cancelReason?: NormalizedCancelReason,
   ): Promise<FinanceEntry> {
     const current = await this.repo.findById("receivable", id, userId);
     if (!current) {
@@ -1023,11 +1032,33 @@ export class FinanceUseCase {
           // idempotência no topo do método roda fora da transação.
           // Esta é a PRIMEIRA escrita da tx — o perdedor bloqueia aqui, antes de
           // restaurar estoque e antes de cancelar as parcelas filhas.
+          //
+          // BLOCO D — o motivo entra NA MESMA ESCRITA que grava CANCELADA, e
+          // não num log pós-commit: se o operador se deu ao trabalho de dizer
+          // por que cancelou, esse dado tem de ter a mesma durabilidade do
+          // cancelamento. `cancelledAt` é gravado mesmo sem motivo informado —
+          // "cancelada sem justificativa" continua sendo um fato com data.
+          //
+          // Flag ausente ⇒ `motivo` é {} e o `data` fica byte-idêntico ao de
+          // hoje. Isso não é só compatibilidade: com as colunas ainda não
+          // criadas, escrever aqui derrubaria a transação inteira e a venda
+          // NÃO seria cancelada (ver o cabeçalho do DDL).
+          const motivo = isCancelReasonEnabled()
+            ? {
+                cancelledAt: new Date(),
+                ...(cancelReason?.code
+                  ? { cancelReasonCode: cancelReason.code }
+                  : {}),
+                ...(cancelReason?.note
+                  ? { cancelReason: cancelReason.note }
+                  : {}),
+              }
+            : {};
           updated = await this.repo.update(
             "receivable",
             id,
             userId,
-            { status: "CANCELADA" },
+            { status: "CANCELADA", ...motivo },
             tx,
             { statusIs: "PAGA" },
           );
@@ -1126,15 +1157,26 @@ export class FinanceUseCase {
     // rastro nenhum de QUEM fez. Best-effort e pós-commit: a venda já foi
     // estornada e uma falha de log jamais pode desfazê-la.
     // BLOCO H — cancelamento na timeline, com o motivo quando houver.
+    // O motivo já está gravado em coluna (dentro da tx); aqui ele só é
+    // REPETIDO para a leitura, porque quem abre o histórico não deve precisar
+    // abrir a venda para saber o porquê.
+    const motivoTexto = describeCancelReason(
+      cancelReason?.code,
+      cancelReason?.note,
+    );
     recordSaleEvent({
       receivableId: id,
       userId,
       type: "REVERSED",
-      message: "Venda cancelada (estorno)",
+      message: motivoTexto
+        ? `Venda cancelada (estorno) — ${motivoTexto}`
+        : "Venda cancelada (estorno)",
       details: {
         totalAmount: Number(current.totalAmount),
         itemCount: items.length,
         restoredProducts: restorations.length,
+        ...(cancelReason?.code ? { cancelReasonCode: cancelReason.code } : {}),
+        ...(cancelReason?.note ? { cancelReason: cancelReason.note } : {}),
       },
       actor,
     });
@@ -1145,6 +1187,8 @@ export class FinanceUseCase {
       itemCount: items.length,
       customerId: current.customerId,
       restoredProducts: restorations.length,
+      ...(cancelReason?.code ? { cancelReasonCode: cancelReason.code } : {}),
+      ...(cancelReason?.note ? { cancelReason: cancelReason.note } : {}),
     });
 
     return updated!;

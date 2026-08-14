@@ -69,6 +69,15 @@ import {
 } from "./shared/sale-status-filter";
 import { SaleTimelineSheet } from "./shared/sale-timeline-sheet";
 import { isSaleTimelineUiEnabled } from "../lib/sale-timeline-client";
+import {
+  CancelReasonField,
+  EMPTY_CANCEL_REASON,
+  type CancelReasonValue,
+} from "./shared/cancel-reason-field";
+import {
+  describeCancelReason,
+  isCancelReasonUiEnabled,
+} from "../lib/cancel-reasons";
 
 interface FinanceRow {
   id: string;
@@ -92,6 +101,11 @@ interface FinanceRow {
   // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
   payments?: { method: string; amount: number }[];
   status: "PENDENTE" | "PAGA" | "VENCIDA" | "CANCELADA";
+  // BLOCO D — motivo do cancelamento. Ausente em tudo que não foi cancelado
+  // com motivo informado. Só leitura: o formulário de edição não os conhece
+  // (`row-to-form.ts` é uma tabela explícita, não um spread da linha).
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
   customer: { id: string; name: string; cpf: string | null } | null;
   unidadeId?: string | null;
   unidade?: { id: string; name: string } | null;
@@ -161,6 +175,9 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   // Bloco E — alvo do estorno e id em voo (a linha vira spinner).
   const [reverseTarget, setReverseTarget] = useState<FinanceRow | null>(null);
   const [reversingId, setReversingId] = useState<string | null>(null);
+  // BLOCO D — motivo do cancelamento. Zerado ao abrir e ao fechar: motivo de
+  // uma venda jamais pode vazar para a próxima.
+  const [motivo, setMotivo] = useState<CancelReasonValue>(EMPTY_CANCEL_REASON);
   // Id em voo do "marcar como paga" — o botão não tinha guarda nenhuma e o
   // duplo clique disparava dois POST /pay (ver handleMarkPaid).
   const [payingId, setPayingId] = useState<string | null>(null);
@@ -351,7 +368,12 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     if (!email) return;
     setReversingId(reverseTarget.id);
     try {
-      await reverseSale(reverseTarget.id, email);
+      // BLOCO D: com a flag de UI desligada `motivo` nunca sai do vazio, e o
+      // helper monta a requisição SEM body — byte-idêntica à de antes.
+      await reverseSale(reverseTarget.id, email, {
+        cancelReasonCode: motivo.code,
+        cancelReason: motivo.note,
+      });
       onToast(
         "Venda estornada — estoque devolvido e anúncios reabertos.",
         "success",
@@ -521,7 +543,17 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                         : "—"}
                     </TableCell>
                     <TableCell>
+                      {/* BLOCO D — o motivo vira tooltip do próprio badge: a
+                          pergunta "cancelada por quê?" se responde onde ela
+                          nasce, sem abrir nada. Sem motivo, o badge é o de
+                          sempre (title undefined). */}
                       <span
+                        title={
+                          describeCancelReason(
+                            r.cancelReasonCode,
+                            r.cancelReason,
+                          ) ?? undefined
+                        }
                         className={cn(
                           "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
                           STATUS_STYLES[r.status],
@@ -708,7 +740,11 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       {/* Bloco E — confirmação do estorno. */}
       <AlertDialog
         open={!!reverseTarget}
-        onOpenChange={(o) => !o && setReverseTarget(null)}
+        onOpenChange={(o) => {
+          if (o) return;
+          setReverseTarget(null);
+          setMotivo(EMPTY_CANCEL_REASON);
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -721,6 +757,15 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
               tem prazo próprio e é feito em Notas Fiscais.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* BLOCO D — fora da Description: o campo é interativo, e a
+              AlertDialogDescription vira o `aria-describedby` do diálogo. */}
+          {isCancelReasonUiEnabled() && (
+            <CancelReasonField
+              value={motivo}
+              onChange={setMotivo}
+              disabled={reversingId !== null}
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reversingId !== null}>
               Voltar

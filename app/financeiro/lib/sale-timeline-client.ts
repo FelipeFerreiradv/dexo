@@ -76,21 +76,28 @@ export async function fetchSaleTimeline(
 
 export type SaleEventTone = "neutral" | "success" | "danger" | "info";
 
-const TIPO_ROTULO: Record<string, string> = {
+// Protótipo NULO: com objeto literal comum, um `type` vindo do banco valendo
+// "toString" devolveria uma FUNÇÃO em vez de cair no `?? type`, e o React
+// estouraria ao renderizá-la. O tipo é texto livre no schema justamente para
+// aceitar valores novos — então tratar valor inesperado é obrigação daqui.
+const TIPO_ROTULO: Record<string, string> = Object.assign(Object.create(null), {
   CREATED: "Criada",
   UPDATED: "Alterada",
   PAID: "Recebida",
   REVERSED: "Cancelada",
   FISCAL_EMITTED: "Nota fiscal",
-};
+});
 
-const TIPO_TOM: Record<string, SaleEventTone> = {
-  CREATED: "neutral",
-  UPDATED: "info",
-  PAID: "success",
-  REVERSED: "danger",
-  FISCAL_EMITTED: "info",
-};
+const TIPO_TOM: Record<string, SaleEventTone> = Object.assign(
+  Object.create(null),
+  {
+    CREATED: "neutral",
+    UPDATED: "info",
+    PAID: "success",
+    REVERSED: "danger",
+    FISCAL_EMITTED: "info",
+  },
+);
 
 /** Rótulo curto do evento. Tipo desconhecido volta cru — nunca vira "—". */
 export function saleEventLabel(type: string): string {

@@ -58,6 +58,14 @@ export interface FinanceEntry {
   installmentNumber?: number | null;
   installmentTotal?: number | null;
 
+  // ── BLOCO D: motivo do cancelamento ──
+  // Preenchidos só por `POST /receivables/:id/reverse`, e só com a flag
+  // ligada. NULL em toda conta não cancelada, em todo cancelamento sem motivo
+  // informado e em qualquer conta a PAGAR (o conceito não se aplica lá).
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  cancelledAt?: Date | null;
+
   // Preenchidos só na conta-ENTRADA de uma venda parcelada, e só na listagem
   // do PDV (agregado das filhas). Servem para a tela mostrar o TAMANHO DA
   // VENDA (`totalAmount + installmentsAmount`) sem inflar o caixa do dia, que

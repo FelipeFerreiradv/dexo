@@ -96,6 +96,12 @@ function toEntry(raw: any): FinanceEntry {
     parentReceivableId: raw.parentReceivableId ?? null,
     installmentNumber: raw.installmentNumber ?? null,
     installmentTotal: raw.installmentTotal ?? null,
+    // BLOCO D — motivo do cancelamento. NULL em conta não cancelada, em
+    // cancelamento sem motivo e em toda conta a pagar (mesmo tratamento que o
+    // `parentReceivableId` já recebia).
+    cancelReasonCode: raw.cancelReasonCode ?? null,
+    cancelReason: raw.cancelReason ?? null,
+    cancelledAt: raw.cancelledAt ?? null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     customer: raw.customer
@@ -729,6 +735,18 @@ export class FinanceRepository {
           paymentMethod: true,
           createdAt: true,
           updatedAt: true,
+          // BLOCO D — motivo do cancelamento, para a lista explicar o porquê
+          // sem exigir que o operador abra a venda. SÓ receivable: as colunas
+          // não existem em Payable, e pedi-las lá quebraria a consulta.
+          // Três colunas nuláveis (NULL na esmagadora maioria das linhas) por
+          // uma pergunta que hoje não tem resposta na tela: "cancelada por quê?"
+          ...(kind === "receivable"
+            ? {
+                cancelReasonCode: true,
+                cancelReason: true,
+                cancelledAt: true,
+              }
+            : {}),
           customer: {
             select: { id: true, name: true, cpf: true, email: true },
           },

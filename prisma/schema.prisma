@@ -1040,6 +1040,22 @@ model Receivable {
   installmentNumber  Int?
   installmentTotal   Int?
 
+  // ── BLOCO D: motivo do cancelamento ──
+  // Gravados SÓ pelo `POST /:id/reverse`, DENTRO da mesma transação que grava
+  // CANCELADA. Em coluna, e não apenas no log: informar o motivo é OPCIONAL
+  // (decisão de produto), mas o motivo que o operador digitou não pode se
+  // perder numa falha de auditoria — que é best-effort por natureza.
+  //
+  // Todos NULÁVEIS: conta não cancelada nunca os tem, e cancelamento sem
+  // motivo informado é um caso válido.
+  //
+  // As parcelas filhas canceladas junto NÃO herdam estes campos: o motivo é da
+  // VENDA (a conta-entrada, que carrega os itens), e replicá-lo faria um
+  // `GROUP BY cancelReasonCode` contar a mesma decisão N+1 vezes.
+  cancelReasonCode String? // vocabulário de app/financeiro/lib/cancel-reasons.ts
+  cancelReason     String? // observação livre do operador (<= 500 chars)
+  cancelledAt      DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

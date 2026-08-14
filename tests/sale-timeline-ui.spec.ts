@@ -74,6 +74,14 @@ describe("Rótulo e tom — tipo desconhecido nunca some", () => {
     expect(saleEventTone("SHIPPED")).toBe("neutral");
   });
 
+  it("nome herdado do Object não vira rótulo-função", () => {
+    // Com tabela de protótipo comum, `TIPO_ROTULO["toString"]` devolveria uma
+    // FUNÇÃO em vez de cair no fallback — e o React estoura ao renderizá-la.
+    expect(saleEventLabel("toString")).toBe("toString");
+    expect(saleEventLabel("constructor")).toBe("constructor");
+    expect(saleEventTone("toString")).toBe("neutral");
+  });
+
   it("o tom acompanha a natureza do evento", () => {
     expect(saleEventTone("PAID")).toBe("success");
     expect(saleEventTone("REVERSED")).toBe("danger");

@@ -18,6 +18,7 @@ import { renderFinanceReport } from "../reports/finance-report";
 import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
 import { parseCompanyIdParam } from "./fiscal.routes";
 import { listSaleTimeline } from "../financeiro/lib/sale-timeline";
+import { normalizeCancelReason } from "../financeiro/lib/cancel-reasons";
 
 /**
  * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
@@ -380,12 +381,23 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
+        // BLOCO D — motivo OPCIONAL. O body pode não existir (o cliente só o
+        // envia quando há motivo, para manter a requisição sem motivo
+        // byte-idêntica à de hoje); `normalizeCancelReason` trata isso e
+        // descarta código fora do vocabulário. Nada aqui pode IMPEDIR um
+        // cancelamento — nem body inválido, nem observação gigante.
+        const motivo = normalizeCancelReason(request.body);
         // Auditoria: quem OPEROU (request.user.id), não o dono dos dados —
         // num tenant com colaboradores, dataOwnerId é sempre o admin.
-        const entry = await useCase.reverse(id, userId, {
-          id: (request as any).user?.id,
-          name: (request as any).user?.name ?? null,
-        });
+        const entry = await useCase.reverse(
+          id,
+          userId,
+          {
+            id: (request as any).user?.id,
+            name: (request as any).user?.name ?? null,
+          },
+          motivo,
+        );
         // Bloco B (aditivo): informa o que aconteceu com as parcelas. As em
         // aberto foram canceladas junto; as já RECEBIDAS ficaram como estão —
         // é dinheiro que entrou, e a devolução é decisão do operador. Sem

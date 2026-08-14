@@ -35,6 +35,12 @@ import {
 import { printReceipt } from "@/app/financeiro/lib/print-receipt";
 import { reverseSale } from "@/app/financeiro/lib/reverse-sale";
 import {
+  CancelReasonField,
+  EMPTY_CANCEL_REASON,
+  type CancelReasonValue,
+} from "@/app/financeiro/components/shared/cancel-reason-field";
+import { isCancelReasonUiEnabled } from "@/app/financeiro/lib/cancel-reasons";
+import {
   buildSaleActions,
   emittedDocsFor,
   type FiscalDocSummary,
@@ -107,6 +113,9 @@ export function PdvSaleActions({
   const [docs, setDocs] = useState<FiscalDocSummary[] | undefined>(undefined);
   const [busy, setBusy] = useState<SaleActionKind | null>(null);
   const [confirmReverse, setConfirmReverse] = useState(false);
+  // BLOCO D — motivo do cancelamento. Zerado toda vez que o diálogo abre:
+  // motivo de uma venda jamais pode vazar para a próxima.
+  const [motivo, setMotivo] = useState<CancelReasonValue>(EMPTY_CANCEL_REASON);
 
   // Egress: o lookup das notas só acontece quando o operador ABRE o menu
   // desta linha — não é um fan-out de 10 requests ao carregar o livro do dia.
@@ -125,6 +134,7 @@ export function PdvSaleActions({
     async (action: SaleAction) => {
       // Ação destrutiva: nunca executa direto do menu — passa pela confirmação.
       if (action.kind === "reverse") {
+        setMotivo(EMPTY_CANCEL_REASON);
         setConfirmReverse(true);
         return;
       }
@@ -205,7 +215,12 @@ export function PdvSaleActions({
     }
     setBusy("reverse");
     try {
-      await reverseSale(saleId, email);
+      // BLOCO D: com a flag de UI desligada `motivo` nunca sai do vazio, e o
+      // helper monta a requisição SEM body — byte-idêntica à de antes.
+      await reverseSale(saleId, email, {
+        cancelReasonCode: motivo.code,
+        cancelReason: motivo.note,
+      });
       onToast(
         "Venda cancelada — estoque devolvido e anúncios reabertos.",
         "success",
@@ -217,7 +232,7 @@ export function PdvSaleActions({
     } finally {
       setBusy(null);
     }
-  }, [saleId, session?.user?.email, onToast, onReversed]);
+  }, [saleId, session?.user?.email, onToast, onReversed, motivo]);
 
   const actions = buildSaleActions({
     status,
@@ -343,6 +358,15 @@ export function PdvSaleActions({
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {/* BLOCO D — fora da Description: o campo é interativo, e a
+            AlertDialogDescription vira o `aria-describedby` do diálogo. */}
+        {isCancelReasonUiEnabled() && (
+          <CancelReasonField
+            value={motivo}
+            onChange={setMotivo}
+            disabled={busy === "reverse"}
+          />
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy === "reverse"}>
             Voltar

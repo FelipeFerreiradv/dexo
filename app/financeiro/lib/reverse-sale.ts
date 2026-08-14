@@ -21,13 +21,41 @@ export class ReverseForbiddenError extends Error {
   }
 }
 
-export async function reverseSale(id: string, email: string): Promise<void> {
-  // Sem Content-Type: o POST não tem body, e declarar JSON vazio derruba a
-  // requisição no parse do Fastify (FST_ERR_CTP_EMPTY_JSON_BODY) — mesmo
-  // contrato do POST /pay e do POST /nfce.
+/** BLOCO D — motivo OPCIONAL do cancelamento. */
+export interface CancelReasonPayload {
+  /** Código do vocabulário (app/financeiro/lib/cancel-reasons.ts). */
+  cancelReasonCode?: string | null;
+  /** Observação livre do operador. */
+  cancelReason?: string | null;
+}
+
+export async function reverseSale(
+  id: string,
+  email: string,
+  reason?: CancelReasonPayload,
+): Promise<void> {
+  const nota = reason?.cancelReason?.trim() || null;
+  const codigo = reason?.cancelReasonCode || null;
+  const temMotivo = Boolean(codigo || nota);
+
+  // SEM motivo a requisição é BYTE-IDÊNTICA à de antes do BLOCO D: nenhum
+  // Content-Type e nenhum body. Não é preciosismo — declarar JSON com body
+  // vazio derruba a requisição no parse do Fastify
+  // (FST_ERR_CTP_EMPTY_JSON_BODY), mesmo contrato do POST /pay e do /nfce.
+  // COM motivo, aí sim vai um JSON de verdade (não-vazio), que o parser
+  // aceita normalmente.
   const res = await fetch(
     `${getApiBaseUrl()}/finance/receivables/${id}/reverse`,
-    { method: "POST", headers: { email } },
+    temMotivo
+      ? {
+          method: "POST",
+          headers: { email, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(codigo ? { cancelReasonCode: codigo } : {}),
+            ...(nota ? { cancelReason: nota } : {}),
+          }),
+        }
+      : { method: "POST", headers: { email } },
   );
   if (res.ok) return;
 
