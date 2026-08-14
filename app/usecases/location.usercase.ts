@@ -561,6 +561,12 @@ export class LocationUseCase {
     userId: string,
     movingProductId?: string,
   ): Promise<void> {
+    // Sem dono resolvido não há escopo de tenant: o `userId: undefined` do
+    // Prisma vira "sem filtro" e a consulta enxergaria localização alheia.
+    // Nenhuma rota atual chega aqui sem `dataOwnerId` (o authMiddleware sempre
+    // preenche), mas o método não pode depender disso para ser seguro.
+    if (!locationId || !userId) return;
+
     if (movingProductId) {
       const atual = await prisma.product.findFirst({
         where: { id: movingProductId, userId },

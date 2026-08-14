@@ -239,6 +239,17 @@ describe("issue #273 — capacidade validada no servidor", () => {
     expect(productCountMock).not.toHaveBeenCalled();
   });
 
+  it("sem dono resolvido, não consulta nada — `userId` undefined no Prisma viraria consulta sem escopo de tenant", async () => {
+    const { LocationUseCase } =
+      await import("../app/usecases/location.usercase");
+    await new LocationUseCase().assertHasRoomForOne(
+      "loc-qualquer",
+      undefined as unknown as string,
+    );
+    expect(locationFindFirstMock).not.toHaveBeenCalled();
+    expect(productCountMock).not.toHaveBeenCalled();
+  });
+
   // ── Edição: o caso que protege as 209 peças já presas ─────────────────────
   it("PUT: reeditar peça que JÁ está na localização NÃO bloqueia, mesmo estourada", async () => {
     // A peça já mora na localização, que está muito acima do limite (148/55).
