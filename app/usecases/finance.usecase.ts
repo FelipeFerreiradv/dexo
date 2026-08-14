@@ -20,6 +20,11 @@ import {
   type PaymentLine,
 } from "../lib/payment-methods";
 import prisma from "../lib/prisma";
+import {
+  recordSaleEvent,
+  diffSaleFields,
+  isSaleTimelineEnabled,
+} from "../financeiro/lib/sale-timeline";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
   FinanceRepository,
@@ -454,6 +459,9 @@ export class FinanceUseCase {
   async create(
     kind: FinanceKind,
     data: FinanceEntryCreate,
+    // BLOCO H (aditivo): operador da ação, para a timeline. Ausente ⇒ nada
+    // é registrado e o comportamento é byte-idêntico ao atual.
+    actor?: FinanceActor,
   ): Promise<FinanceEntry> {
     if (!data.userId) throw new Error("Usuário não encontrado");
 
@@ -496,7 +504,7 @@ export class FinanceUseCase {
         await this.assertUnidade(data.unidadeId, data.userId);
 
       const { newCustomer, ...rest } = data;
-      return prisma.$transaction(async (tx) => {
+      const criadaQuick = await prisma.$transaction(async (tx) => {
         const customer = await this.customerUseCase.createWithTx(tx, {
           userId: data.userId,
           name: newCustomer.name,
@@ -508,13 +516,18 @@ export class FinanceUseCase {
           tx,
         );
       });
+      // Pós-commit: a venda já existe. Falha de auditoria não pode desfazê-la.
+      this.registrarCriacao(kind, criadaQuick, actor);
+      return criadaQuick;
     }
 
     // ── Fluxo atual — 100% inalterado ──
     this.validate(data);
     await this.assertCustomer(data.customerId, data.userId);
     if (data.unidadeId) await this.assertUnidade(data.unidadeId, data.userId);
-    return this.repo.create(kind, data);
+    const criada = await this.repo.create(kind, data);
+    this.registrarCriacao(kind, criada, actor);
+    return criada;
   }
 
   async update(
@@ -522,6 +535,8 @@ export class FinanceUseCase {
     id: string,
     userId: string,
     data: FinanceEntryUpdate,
+    // BLOCO H (aditivo): ausente ⇒ evento sem autor.
+    actor?: FinanceActor,
   ): Promise<FinanceEntry> {
     if (data.customerId) {
       await this.assertCustomer(data.customerId, userId);
@@ -548,7 +563,33 @@ export class FinanceUseCase {
       data = this.applyPredominantMethod(data);
     }
 
-    return this.repo.update(kind, id, userId, data);
+    // BLOCO H — o "o quê mudou" precisa do ANTES. Só lê quando a timeline
+    // está ligada E é receivable: fora disso, nenhuma consulta extra.
+    const querAuditar = kind === "receivable" && isSaleTimelineEnabled();
+    const antes = querAuditar
+      ? await this.repo.findById(kind, id, userId)
+      : null;
+
+    const atualizada = await this.repo.update(kind, id, userId, data);
+
+    if (antes) {
+      const campos = diffSaleFields(
+        antes as unknown as Record<string, unknown>,
+        data as unknown as Record<string, unknown>,
+      );
+      recordSaleEvent({
+        receivableId: id,
+        userId,
+        type: "UPDATED",
+        message:
+          campos.length > 0
+            ? `Venda alterada: ${campos.join(", ")}`
+            : "Venda alterada",
+        details: { fields: campos },
+        actor,
+      });
+    }
+    return atualizada;
   }
 
   /**
@@ -567,10 +608,40 @@ export class FinanceUseCase {
    * Para payable OU receivable SEM itens: caminho atual idêntico (sem tx,
    * sem estoque) — preserva 100% o fluxo da Fase 1.
    */
+  /**
+   * BLOCO H — evento de criação. Só receivable: a timeline é da VENDA.
+   * Best-effort e pós-commit, como todo o resto da auditoria.
+   */
+  private registrarCriacao(
+    kind: FinanceKind,
+    entry: FinanceEntry,
+    actor?: FinanceActor,
+  ): void {
+    if (kind !== "receivable") return;
+    const itens = Array.isArray(entry.items) ? entry.items.length : 0;
+    recordSaleEvent({
+      receivableId: entry.id,
+      userId: entry.userId,
+      type: "CREATED",
+      message:
+        itens > 0
+          ? `Venda criada com ${itens} ${itens === 1 ? "item" : "itens"}`
+          : "Conta a receber criada",
+      details: {
+        totalAmount: Number(entry.totalAmount),
+        itemCount: itens,
+        paymentMethod: entry.paymentMethod ?? null,
+      },
+      actor,
+    });
+  }
+
   async markPaid(
     kind: FinanceKind,
     id: string,
     userId: string,
+    // BLOCO H (aditivo): ausente ⇒ evento sem autor, comportamento idêntico.
+    actor?: FinanceActor,
   ): Promise<FinanceEntry> {
     const current = await this.repo.findById(kind, id, userId);
     if (!current) throw new Error("Registro financeiro não encontrado");
@@ -707,6 +778,19 @@ export class FinanceUseCase {
       receivableId: id,
       userId,
       logPrefix: "[FinanceUseCase]",
+    });
+
+    // BLOCO H — recebimento na timeline. Pós-commit e best-effort.
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "PAID",
+      message: "Venda recebida — estoque baixado",
+      details: {
+        totalAmount: Number(current.totalAmount),
+        productsDeducted: deductions.length,
+      },
+      actor,
     });
 
     return updated!;
@@ -1041,6 +1125,20 @@ export class FinanceUseCase {
     // devolve estoque, reabre anúncios e move dinheiro. Até agora não deixava
     // rastro nenhum de QUEM fez. Best-effort e pós-commit: a venda já foi
     // estornada e uma falha de log jamais pode desfazê-la.
+    // BLOCO H — cancelamento na timeline, com o motivo quando houver.
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "REVERSED",
+      message: "Venda cancelada (estorno)",
+      details: {
+        totalAmount: Number(current.totalAmount),
+        itemCount: items.length,
+        restoredProducts: restorations.length,
+      },
+      actor,
+    });
+
     logFinanceAction(actor, "SALE_REVERSED", "Venda cancelada (estorno)", {
       receivableId: id,
       totalAmount: Number(current.totalAmount),
@@ -1374,6 +1472,23 @@ export class FinanceUseCase {
           : emission.success
             ? ("processing" as const)
             : ("error" as const);
+
+    // BLOCO H — só a emissão AUTORIZADA vira evento. Tentativa que falhou,
+    // rejeição e reemissão idempotente não são fato da venda: poluiriam a
+    // timeline do operador com ruído do pipeline fiscal.
+    if (emission.status === "AUTHORIZED") {
+      recordSaleEvent({
+        receivableId,
+        userId,
+        type: "FISCAL_EMITTED",
+        message: `NFC-e autorizada${emission.numero ? ` nº ${emission.numero}` : ""}`,
+        details: {
+          modelo: "65",
+          numero: emission.numero ?? null,
+          serie: emission.serie ?? null,
+        },
+      });
+    }
 
     return {
       state,

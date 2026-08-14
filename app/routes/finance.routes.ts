@@ -17,6 +17,7 @@ import {
 import { renderFinanceReport } from "../reports/finance-report";
 import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
 import { parseCompanyIdParam } from "./fiscal.routes";
+import { listSaleTimeline } from "../financeiro/lib/sale-timeline";
 
 /**
  * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
@@ -204,7 +205,16 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
-        const entry = await useCase.create(kind, { ...body, userId });
+        // BLOCO H — quem OPEROU (request.user.id), não o dono dos dados:
+        // num tenant com colaboradores, dataOwnerId é sempre o admin.
+        const entry = await useCase.create(
+          kind,
+          { ...body, userId },
+          {
+            id: (request as any).user?.id,
+            name: (request as any).user?.name ?? null,
+          },
+        );
         return reply.status(201).send({ entry });
       } catch (error) {
         const message =
@@ -261,7 +271,10 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           if (UPDATABLE_FIELDS.has(k)) data[k] = v;
         }
 
-        const entry = await useCase.update(kind, id, userId, data);
+        const entry = await useCase.update(kind, id, userId, data, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
         return reply.status(200).send({ entry });
       } catch (error) {
         const message =
@@ -277,7 +290,10 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const entry = await useCase.markPaid(kind, id, userId);
+        const entry = await useCase.markPaid(kind, id, userId, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
         return reply.status(200).send({ entry });
       } catch (error) {
         const message =
@@ -393,6 +409,39 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             ? 400
             : 500;
         return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── BLOCO H — timeline da venda ──
+  // Somente leitura, escopada por dataOwnerId no repositório (nunca no
+  // caller). Paginada por cursor de data: uma venda muito editada não pode
+  // virar payload sem fim. Com a flag desligada devolve [] — o que torna
+  // seguro subir o código ANTES do DDL.
+  fastify.get(
+    "/receivables/:id/timeline",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const { limit, before } = request.query as {
+          limit?: string;
+          before?: string;
+        };
+        const antes = before ? new Date(before) : undefined;
+        const events = await listSaleTimeline(id, userId, {
+          limit: limit ? parseInt(limit) : undefined,
+          before: antes && !isNaN(antes.getTime()) ? antes : undefined,
+        });
+        return reply.status(200).send({ events });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao consultar o histórico da venda",
+        });
       }
     },
   );

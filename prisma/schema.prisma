@@ -1048,6 +1048,7 @@ model Receivable {
   unidade  Unidade?            @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
   items    ReceivableItem[]
   payments ReceivablePayment[]
+  events   ReceivableEvent[]
   budget   Budget?             @relation(fields: [budgetId], references: [id], onDelete: SetNull)
 
   parent   Receivable?  @relation("ReceivableSplit", fields: [parentReceivableId], references: [id], onDelete: SetNull)
@@ -1163,6 +1164,44 @@ model ReceivablePayment {
   receivable Receivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
 
   @@index([receivableId])
+}
+
+// BLOCO H — histórico da venda, legível pelo OPERADOR.
+//
+// Tabela dedicada em vez de `SystemLog` por uma razão concreta: existe rota
+// que apaga logs antigos (90 dias por padrão), então o histórico da venda
+// sumiria sozinho. Aqui ele dura o que a venda durar.
+//
+// `type` é String, não enum: um tipo de evento novo não pode exigir
+// `ALTER TYPE` no Postgres. Mesma escolha de `ReceivablePayment.method` e de
+// `SystemLog.action`.
+//
+// `actorName` é SNAPSHOT de propósito — o nome do colaborador muda, o
+// histórico não. Sem ele, renomear alguém reescreveria o passado.
+//
+// LGPD/egress: `details` guarda o MÍNIMO para a linha do tempo fazer sentido
+// (valores, contagens, ids). Nada de CPF, endereço ou payload de cliente.
+model ReceivableEvent {
+  id           String   @id @default(cuid())
+  receivableId String
+  // Dono dos dados (o admin do tenant). Escopo de toda leitura.
+  userId       String
+  // Quem OPEROU — colaborador ou o próprio admin. NULL = ação de sistema
+  // (ex.: rotina automática), que é diferente de "não sabemos".
+  actorId      String?
+  actorName    String?
+  // CREATED | UPDATED | PAID | REVERSED | FISCAL_EMITTED
+  type         String
+  // Texto pronto para o operador ler. A tela NÃO monta frase a partir do tipo.
+  message      String?
+  details      Json?
+  createdAt    DateTime @default(now())
+
+  receivable Receivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  // A leitura da timeline é sempre (venda, mais recente primeiro).
+  @@index([receivableId, createdAt])
+  @@index([userId, createdAt])
 }
 
 // Orçamento (proposta de venda ao cliente). Espelha Receivable/ReceivableItem
