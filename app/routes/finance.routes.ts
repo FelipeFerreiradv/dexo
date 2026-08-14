@@ -19,6 +19,7 @@ import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
 import { parseCompanyIdParam } from "./fiscal.routes";
 import { listSaleTimeline } from "../financeiro/lib/sale-timeline";
 import { normalizeCancelReason } from "../financeiro/lib/cancel-reasons";
+import { normalizeSellerId } from "../financeiro/lib/sale-seller";
 
 /**
  * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
@@ -205,12 +206,23 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const body = request.body as any;
+        // BLOCO B — o vendedor sai do spread e volta NORMALIZADO. Tirá-lo do
+        // `...body` não é preciosismo: sem isso, com a flag desligada o valor
+        // cru do formulário chegaria ao repositório assim mesmo, e a coluna
+        // (que pode nem existir no banco ainda) seria escrita.
+        const { sellerUserId: sellerBruto, ...body } = (request.body ??
+          {}) as any;
+        const sellerUserId =
+          kind === "receivable" ? normalizeSellerId(sellerBruto) : undefined;
         // BLOCO H — quem OPEROU (request.user.id), não o dono dos dados:
         // num tenant com colaboradores, dataOwnerId é sempre o admin.
         const entry = await useCase.create(
           kind,
-          { ...body, userId },
+          {
+            ...body,
+            userId,
+            ...(sellerUserId !== undefined ? { sellerUserId } : {}),
+          },
           {
             id: (request as any).user?.id,
             name: (request as any).user?.name ?? null,
@@ -270,6 +282,20 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         const data: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(body)) {
           if (UPDATABLE_FIELDS.has(k)) data[k] = v;
+        }
+
+        // BLOCO B — vendedor. FORA da whitelist genérica de propósito: ela
+        // vale para os dois kinds, e a coluna só existe em Receivable — um
+        // `sellerUserId` num PUT de conta a pagar quebraria o update. Aqui o
+        // campo entra normalizado e só no kind certo.
+        //
+        // `undefined` (chave ausente no formulário) NÃO vira `null`: seria um
+        // PUT sem o campo apagando o vendedor de uma venda antiga.
+        if (kind === "receivable") {
+          const seller = normalizeSellerId(
+            (body as Record<string, unknown>).sellerUserId,
+          );
+          if (seller !== undefined) data.sellerUserId = seller;
         }
 
         const entry = await useCase.update(kind, id, userId, data, {

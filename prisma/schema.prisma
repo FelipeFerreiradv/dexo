@@ -69,6 +69,8 @@ model User {
   products            Product[]
   productsCreated     Product[]           @relation("ProductCreatedBy")
   listingsCreated     ProductListing[]    @relation("ListingCreatedBy")
+  // BLOCO B — vendas em que esta pessoa foi o VENDEDOR (não o dono do tenant).
+  salesAsSeller       Receivable[]        @relation("ReceivableSeller")
   systemLogs          SystemLog[]
   locations           Location[]
   scraps              Scrap[]
@@ -1040,6 +1042,19 @@ model Receivable {
   installmentNumber  Int?
   installmentTotal   Int?
 
+  // ── BLOCO B: vendedor da venda ──
+  // Quem VENDEU — que pode não ser quem operou o caixa (o caixa lança a venda
+  // do balconista, e a comissão é de quem vendeu). Distinto do `userId`
+  // (dono/tenant) e do autor registrado na timeline (quem clicou).
+  //
+  // NULL = venda anterior ao recurso ou lançamento sem vendedor informado →
+  // a tela exibe "—". Sem FK física no banco, mesma decisão do
+  // `Product.createdByUserId`: o Prisma resolve o include sem constraint, e um
+  // id órfão (colaborador excluído) vira relação null em vez de quebrar.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "sellerUserId" TEXT;
+  sellerUserId String?
+
   // ── BLOCO D: motivo do cancelamento ──
   // Gravados SÓ pelo `POST /:id/reverse`, DENTRO da mesma transação que grava
   // CANCELADA. Em coluna, e não apenas no log: informar o motivo é OPCIONAL
@@ -1060,6 +1075,7 @@ model Receivable {
   updatedAt DateTime @updatedAt
 
   user     User                @relation(fields: [userId], references: [id])
+  seller   User?               @relation("ReceivableSeller", fields: [sellerUserId], references: [id])
   customer Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
   unidade  Unidade?            @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
   items    ReceivableItem[]
@@ -1075,6 +1091,8 @@ model Receivable {
   @@index([customerId])
   @@index([userId, unidadeId])
   @@index([parentReceivableId])
+  // BLOCO B — serve ao relatório "vendas por vendedor no período".
+  @@index([userId, sellerUserId])
 }
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.

@@ -36,6 +36,7 @@ import {
 } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
 import { buildInstallmentPlan } from "../lib/installment-plan";
+import { isSaleSellerUiEnabled } from "../lib/sale-seller";
 
 // Bloco B — entrada + parcelas. Só na CRIAÇÃO de venda balcão: editar uma
 // venda já parcelada mexeria em contas-filhas que podem já ter sido pagas.
@@ -111,6 +112,10 @@ const TOTAL_STEPS = STEPS.length;
 // payload. Removido na Fase 10 após smoke test em produção controlada.
 const BALCAO_SALE_ENABLED =
   process.env.NEXT_PUBLIC_BALCAO_SALE_ENABLED === "true";
+
+// BLOCO B — campo "Vendedor" no passo do cliente. Flag OFF ⇒ o formulário
+// renderiza como hoje, sem campo, sem request e sem `sellerUserId` no payload.
+const SALE_SELLER_UI_ENABLED = isSaleSellerUiEnabled();
 
 interface FinanceDialogProps {
   kind: FinanceKind;
@@ -506,6 +511,14 @@ export function FinanceDialog({
                 onSelect={setSelectedCustomer}
                 setValue={setValue}
                 allowQuickCreate={!isEdit}
+                // BLOCO B — vendedor. Só em conta a RECEBER (a coluna não
+                // existe em Payable) e só com a flag ligada.
+                showSeller={SALE_SELLER_UI_ENABLED && kind === "receivable"}
+                // Pré-seleciona quem está logado apenas ao CRIAR. Na edição,
+                // campo vazio significa "esta venda não tem vendedor", e
+                // preenchê-lo sozinho atribuiria comissão a quem só abriu a
+                // tela para conferir.
+                autoSelectMe={!isEdit}
               />
             )}
             {currentStep === 2 && (

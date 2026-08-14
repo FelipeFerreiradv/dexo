@@ -102,6 +102,17 @@ function toEntry(raw: any): FinanceEntry {
     cancelReasonCode: raw.cancelReasonCode ?? null,
     cancelReason: raw.cancelReason ?? null,
     cancelledAt: raw.cancelledAt ?? null,
+    // BLOCO B — vendedor da venda. `seller` só vem quando o include/select o
+    // pediu (receivable); em conta a pagar e em parcela fica null, que é a
+    // leitura correta ("não se aplica" / "é da venda-mãe").
+    sellerUserId: raw.sellerUserId ?? null,
+    seller: raw.seller
+      ? {
+          id: raw.seller.id,
+          name: raw.seller.name ?? null,
+          email: raw.seller.email ?? null,
+        }
+      : null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     customer: raw.customer
@@ -172,6 +183,11 @@ function buildInclude(kind: FinanceKind, withItems: boolean): any {
     customer: { select: { id: true, name: true, cpf: true, email: true } },
     unidade: { select: { id: true, name: true } },
   };
+  // BLOCO B — vendedor. Só receivable: a relação não existe em Payable, e
+  // pedi-la lá quebraria a consulta. Projeção mínima (é só um rótulo na tela).
+  if (kind === "receivable") {
+    include.seller = { select: { id: true, name: true, email: true } };
+  }
   if (withItems && kind === "receivable") {
     include.items = itemsInclude;
     // Viaja junto com os itens: quem precisa do detalhe da venda (edição,
@@ -253,11 +269,17 @@ export class FinanceRepository {
         status: (data.status as FinanceStatus) ?? "PENDENTE",
         paidAt: parseDate(data.paidAt ?? null),
         paymentMethod: data.paymentMethod ?? null,
+        // BLOCO B — vendedor. Só receivable (a coluna não existe em Payable) e
+        // só quando informado: ausente ⇒ nenhuma chave nova no objeto Prisma,
+        // e o INSERT fica byte-idêntico ao de hoje.
+        ...(kind === "receivable" && data.sellerUserId !== undefined
+          ? { sellerUserId: data.sellerUserId }
+          : {}),
       },
-      include: {
-        customer: { select: { id: true, name: true, cpf: true, email: true } },
-        unidade: { select: { id: true, name: true } },
-      },
+      // `buildInclude(kind, false)` devolve exatamente customer+unidade para os
+      // dois kinds, mais `seller` no receivable — a resposta da criação passa a
+      // trazer o vendedor sem que o caller precise reler a conta.
+      include: buildInclude(kind, false),
     });
     return toEntry(created);
   }
@@ -296,6 +318,15 @@ export class FinanceRepository {
         status: (data.status as FinanceStatus) ?? "PENDENTE",
         paidAt: parseDate(data.paidAt ?? null),
         paymentMethod: data.paymentMethod ?? null,
+        // BLOCO B — vendedor da venda. Ausente ⇒ nenhuma chave nova.
+        // As PARCELAS (criadas em createWithSplit) NÃO herdam, pelo mesmo
+        // motivo de `paymentMethod: null` lá: o vendedor é da VENDA, e
+        // replicá-lo faria um relatório por vendedor contar N+1 linhas para a
+        // mesma venda. Quem somar comissão junta entrada + parcelas pelo
+        // `parentReceivableId`, como a lista do PDV já faz.
+        ...(data.sellerUserId !== undefined
+          ? { sellerUserId: data.sellerUserId }
+          : {}),
       },
       // Não incluímos itens aqui (acabamos de criar e vamos preencher na
       // próxima query); a 2ª query traz o include completo.
@@ -495,10 +526,9 @@ export class FinanceRepository {
 
     const updated = await delegate.findUnique({
       where: { id },
-      include: {
-        customer: { select: { id: true, name: true, cpf: true, email: true } },
-        unidade: { select: { id: true, name: true } },
-      },
+      // Mesmo motivo do createSingle: sem isto, editar uma venda devolveria a
+      // conta SEM o vendedor e a tela o mostraria como "—" até recarregar.
+      include: buildInclude(kind, false),
     });
     return toEntry(updated);
   }
@@ -745,6 +775,10 @@ export class FinanceRepository {
                 cancelReasonCode: true,
                 cancelReason: true,
                 cancelledAt: true,
+                // BLOCO B — vendedor na listagem: a pergunta "quem vendeu?" é
+                // de conferência de caixa e não deve exigir abrir a venda.
+                sellerUserId: true,
+                seller: { select: { id: true, name: true, email: true } },
               }
             : {}),
           customer: {

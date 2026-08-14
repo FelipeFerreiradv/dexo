@@ -33,6 +33,8 @@ export interface FinanceRowForForm {
   interestPercent?: number | null;
   toleranceDays?: number | null;
   periodDays?: number | null;
+  /** BLOCO B — vendedor da venda. Ausente em conta a pagar e em API antiga. */
+  sellerUserId?: string | null;
 }
 
 export type FinanceFormSeed = Partial<FinanceEntryFormData> & {
@@ -69,6 +71,10 @@ export function financeRowToFormSeed(r: FinanceRowForForm): FinanceFormSeed {
     }),
     ...(r.toleranceDays !== undefined && { toleranceDays: r.toleranceDays }),
     ...(r.periodDays !== undefined && { periodDays: r.periodDays }),
+    // BLOCO B — vendedor. Omitido quando a linha não o traz (API antiga ou
+    // conta a pagar): a mesma regra do resto deste arquivo, e aqui ela vale
+    // dobrado — cair em `null` faria o submit APAGAR o vendedor da venda.
+    ...(r.sellerUserId !== undefined && { sellerUserId: r.sellerUserId }),
   };
 }
 

@@ -31,6 +31,10 @@ import { SaleTimelineSheet } from "@/app/financeiro/components/shared/sale-timel
 import { isSaleTimelineUiEnabled } from "@/app/financeiro/lib/sale-timeline-client";
 import { describeCancelReason } from "@/app/financeiro/lib/cancel-reasons";
 import {
+  isSaleSellerUiEnabled,
+  sellerLabel,
+} from "@/app/financeiro/lib/sale-seller";
+import {
   paymentMethodLabel,
   paymentMethodsSummary,
 } from "@/app/lib/payment-methods";
@@ -70,6 +74,8 @@ export interface PdvSaleRow {
   // com motivo informado.
   cancelReasonCode?: string | null;
   cancelReason?: string | null;
+  // BLOCO B — quem vendeu. Ausente = venda sem vendedor informado.
+  seller?: { id: string; name: string | null; email: string | null } | null;
 }
 
 interface Props {
@@ -97,6 +103,8 @@ const SALE_CANCEL = isSaleCancelEnabled();
 // BLOCO H — "Histórico da venda" no menu. Flag OFF ⇒ item nem existe, e o
 // painel nem é montado.
 const TIMELINE_UI = isSaleTimelineUiEnabled();
+// BLOCO B — coluna "Vendedor". Flag OFF ⇒ a coluna não existe.
+const SELLER_UI = isSaleSellerUiEnabled();
 
 const SHOWN = 10;
 
@@ -218,6 +226,13 @@ export function PdvSalesList({
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Cliente
                 </TableHead>
+                {/* BLOCO B — flag OFF ⇒ a coluna não existe e a tabela é
+                    exatamente a de hoje. */}
+                {SELLER_UI && (
+                  <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
+                    Vendedor
+                  </TableHead>
+                )}
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Forma
                 </TableHead>
@@ -241,6 +256,15 @@ export function PdvSalesList({
                   <TableCell className="max-w-[200px] truncate font-medium">
                     {r.customer?.name ?? "—"}
                   </TableCell>
+                  {SELLER_UI && (
+                    <TableCell className="max-w-[140px] truncate text-sm">
+                      {r.seller ? (
+                        sellerLabel(r.seller)
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  )}
                   <TableCell>
                     {r.paymentMethod ? (
                       (() => {

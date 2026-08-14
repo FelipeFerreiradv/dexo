@@ -20,6 +20,9 @@ export const financeEntrySchema = z
     debtDetails: z.string().max(1000).optional().nullable(),
     // Forma de pagamento (opcional). Código de app/lib/payment-methods ou null.
     paymentMethod: z.string().optional().nullable(),
+    // BLOCO B — vendedor da venda (id de usuário) ou null. Opcional: com a
+    // flag desligada o campo nunca é preenchido e o payload fica idêntico.
+    sellerUserId: z.string().optional().nullable(),
     totalAmount: z
       .number({ invalid_type_error: "Informe o valor total" })
       .positive("Valor deve ser maior que zero"),
@@ -213,6 +216,9 @@ export const DEFAULT_FINANCE_VALUES: FinanceEntryFormData = {
   reason: "",
   debtDetails: "",
   paymentMethod: null,
+  // BLOCO B — sem vendedor por padrão. Quem preenche é o formulário, com quem
+  // está logado, e só quando a flag da UI está ligada.
+  sellerUserId: null,
   totalAmount: 0,
   fineAmount: null,
   finePercent: null,

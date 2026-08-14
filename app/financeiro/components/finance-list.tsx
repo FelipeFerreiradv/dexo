@@ -106,6 +106,10 @@ interface FinanceRow {
   // (`row-to-form.ts` é uma tabela explícita, não um spread da linha).
   cancelReasonCode?: string | null;
   cancelReason?: string | null;
+  // BLOCO B — vendedor da venda. `sellerUserId` alimenta o formulário de
+  // edição; `seller` é só o rótulo.
+  sellerUserId?: string | null;
+  seller?: { id: string; name: string | null; email: string | null } | null;
   customer: { id: string; name: string; cpf: string | null } | null;
   unidadeId?: string | null;
   unidade?: { id: string; name: string } | null;

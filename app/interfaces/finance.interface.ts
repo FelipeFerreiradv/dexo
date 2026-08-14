@@ -66,6 +66,13 @@ export interface FinanceEntry {
   cancelReason?: string | null;
   cancelledAt?: Date | null;
 
+  // ── BLOCO B: vendedor da venda ──
+  // Quem VENDEU, que pode não ser quem operou o caixa. NULL em venda anterior
+  // ao recurso, em lançamento sem vendedor, em toda conta a PAGAR e nas
+  // PARCELAS (o vendedor é da venda-mãe, que carrega os itens).
+  sellerUserId?: string | null;
+  seller?: { id: string; name: string | null; email: string | null } | null;
+
   // Preenchidos só na conta-ENTRADA de uma venda parcelada, e só na listagem
   // do PDV (agregado das filhas). Servem para a tela mostrar o TAMANHO DA
   // VENDA (`totalAmount + installmentsAmount`) sem inflar o caixa do dia, que
@@ -169,6 +176,11 @@ export interface FinanceEntryCreate {
 
   // Forma de pagamento (opcional/nulável). Ausente = fluxo atual inalterado.
   paymentMethod?: string | null;
+
+  // BLOCO B — vendedor (receivable apenas). AUSENTE (undefined) ⇒ nenhuma
+  // chave nova no objeto Prisma ⇒ INSERT byte-idêntico ao de hoje. `null`
+  // é explicitamente "sem vendedor".
+  sellerUserId?: string | null;
 
   // Itens de venda balcão — opcional, receivable-only. Ausente = fluxo atual
   // 100% inalterado (nada de estoque/produto). Persistido em `ReceivableItem`

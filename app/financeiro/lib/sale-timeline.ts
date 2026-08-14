@@ -158,6 +158,9 @@ const CAMPOS_LEGIVEIS: Record<string, string> = {
   document: "Documento",
   reason: "Motivo",
   unidadeId: "Unidade",
+  // BLOCO B — trocar o vendedor move comissão. É a alteração cuja trilha mais
+  // importa, e é justamente a que se faz depois, no fechamento.
+  sellerUserId: "Vendedor",
 };
 
 export function diffSaleFields(
