@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  History,
   Loader2,
   Pencil,
   Plus,
@@ -66,6 +67,8 @@ import {
   SaleStatusFilter,
   type SaleStatusFilterCode,
 } from "./shared/sale-status-filter";
+import { SaleTimelineSheet } from "./shared/sale-timeline-sheet";
+import { isSaleTimelineUiEnabled } from "../lib/sale-timeline-client";
 
 interface FinanceRow {
   id: string;
@@ -117,6 +120,10 @@ const BALCAO_SALE_ENABLED =
 const SALE_CANCEL_ENABLED =
   process.env.NEXT_PUBLIC_SALE_CANCEL_ENABLED === "true";
 
+// BLOCO H — botão "Histórico". Flag OFF ⇒ o botão não existe e nenhum request
+// novo acontece. Só em contas a RECEBER: a timeline é da venda.
+const TIMELINE_UI_ENABLED = isSaleTimelineUiEnabled();
+
 // Sentinela do filtro de forma de pagamento (Radix Select não aceita value="").
 // "todas" = não envia o parâmetro => resultado idêntico ao atual.
 const METHOD_ALL = "__all__";
@@ -162,6 +169,8 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   const [statusFilters, setStatusFilters] = useState<SaleStatusFilterCode[]>(
     [],
   );
+  // BLOCO H — venda com o histórico aberto. null = painel fechado.
+  const [timelineTarget, setTimelineTarget] = useState<FinanceRow | null>(null);
   // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
   // egress). Guarda o id em carregamento p/ feedback no botão de editar.
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
@@ -548,6 +557,19 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                             <Receipt className="h-4 w-4" />
                           </Button>
                         )}
+                        {/* BLOCO H — histórico. Somente leitura: abre um painel
+                            e faz 1 GET, e só quando o operador clica. Flag OFF
+                            ⇒ o botão não existe. */}
+                        {TIMELINE_UI_ENABLED && kind === "receivable" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Histórico desta venda"
+                            onClick={() => setTimelineTarget(r)}
+                          >
+                            <History className="h-4 w-4" />
+                          </Button>
+                        )}
                         <Button
                           size="icon"
                           variant="ghost"
@@ -630,6 +652,25 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
           )}
         </CardContent>
       </Card>
+
+      {/* BLOCO H — painel lateral do histórico. UM para a lista inteira; o que
+          o abre é o `receivableId` não-nulo. Flag OFF ⇒ nem é montado. */}
+      {TIMELINE_UI_ENABLED && (
+        <SaleTimelineSheet
+          receivableId={timelineTarget?.id ?? null}
+          saleLabel={
+            timelineTarget
+              ? [
+                  timelineTarget.document || timelineTarget.reason,
+                  timelineTarget.customer?.name,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || null
+              : null
+          }
+          onOpenChange={(o) => !o && setTimelineTarget(null)}
+        />
+      )}
 
       <FinanceDialog
         kind={kind}

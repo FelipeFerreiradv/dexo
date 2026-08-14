@@ -27,6 +27,8 @@ import {
   SaleStatusFilter,
   type SaleStatusFilterCode,
 } from "@/app/financeiro/components/shared/sale-status-filter";
+import { SaleTimelineSheet } from "@/app/financeiro/components/shared/sale-timeline-sheet";
+import { isSaleTimelineUiEnabled } from "@/app/financeiro/lib/sale-timeline-client";
 import {
   paymentMethodLabel,
   paymentMethodsSummary,
@@ -87,6 +89,9 @@ interface Props {
 const ACTIONS_MENU = isPdvActionsMenuEnabled();
 // Bloco E — "Cancelar venda" no menu. Flag OFF ⇒ item nem existe.
 const SALE_CANCEL = isSaleCancelEnabled();
+// BLOCO H — "Histórico da venda" no menu. Flag OFF ⇒ item nem existe, e o
+// painel nem é montado.
+const TIMELINE_UI = isSaleTimelineUiEnabled();
 
 const SHOWN = 10;
 
@@ -128,6 +133,9 @@ export function PdvSalesList({
   const { data: session } = useSession();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [nfceBusyId, setNfceBusyId] = useState<string | null>(null);
+  // BLOCO H — venda com o histórico aberto. UM painel para a lista inteira,
+  // não um por linha.
+  const [timelineRow, setTimelineRow] = useState<PdvSaleRow | null>(null);
 
   const handleNfce = async (r: PdvSaleRow) => {
     if (!onNfce) return;
@@ -320,6 +328,10 @@ export function PdvSalesList({
                           // permissão recebe 403 mesmo chamando por fora.
                           saleCancelUi={SALE_CANCEL}
                           onReversed={onChanged}
+                          // BLOCO H: ausente com a flag OFF ⇒ item não existe.
+                          onTimeline={
+                            TIMELINE_UI ? () => setTimelineRow(r) : undefined
+                          }
                           onToast={onToast}
                         />
                       ) : (
@@ -360,6 +372,24 @@ export function PdvSalesList({
           </Link>
         </Button>
       </CardFooter>
+
+      {/* BLOCO H — UM painel para a lista inteira, não um por linha; o que o
+          abre é o `receivableId` não-nulo. Declarado dentro do Card só para
+          não reindentar o arquivo: o SheetContent vai para um portal no
+          `body`, então a posição no JSX não afeta o DOM renderizado. */}
+      {TIMELINE_UI && (
+        <SaleTimelineSheet
+          receivableId={timelineRow?.id ?? null}
+          saleLabel={
+            timelineRow
+              ? [timelineRow.customer?.name, formatWhen(timelineRow.createdAt)]
+                  .filter(Boolean)
+                  .join(" · ") || null
+              : null
+          }
+          onOpenChange={(o) => !o && setTimelineRow(null)}
+        />
+      )}
     </Card>
   );
 }

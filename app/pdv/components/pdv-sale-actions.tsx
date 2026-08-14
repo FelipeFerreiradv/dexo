@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react";
 import {
   Ban,
   FileText,
+  History,
   Loader2,
   MoreHorizontal,
   Printer,
@@ -72,6 +73,12 @@ interface Props {
   saleCancelUi?: boolean;
   /** Chamado após um cancelamento bem-sucedido, para recarregar a lista. */
   onReversed?: () => void;
+  /**
+   * BLOCO H — abre o histórico desta venda. AUSENTE ⇒ o item nem existe e o
+   * menu renderiza exatamente como hoje. Quem monta o painel é o chamador: o
+   * sheet vive fora da linha, senão haveria um por venda na tela.
+   */
+  onTimeline?: () => void;
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
 }
 
@@ -92,6 +99,7 @@ export function PdvSaleActions({
   nfceCompanyId,
   saleCancelUi,
   onReversed,
+  onTimeline,
   onToast,
 }: Props) {
   const { data: session } = useSession();
@@ -224,7 +232,9 @@ export function PdvSaleActions({
     nfceEmitAvailable: Boolean(onNfce),
   }).filter((a) => a.visible);
 
-  if (actions.length === 0) return null;
+  // Sem `onTimeline` a condição é idêntica à de antes. Com ele, o menu ainda
+  // vale a pena mesmo que nenhuma impressão esteja disponível.
+  if (actions.length === 0 && !onTimeline) return null;
 
   const emitidas = emittedDocsFor(docs);
 
@@ -246,9 +256,21 @@ export function PdvSaleActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuLabel className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-          Imprimir
-        </DropdownMenuLabel>
+        {/* BLOCO H — leitura pura, e por isso vem antes de tudo: nada aqui
+            imprime, emite ou cancela. O separador só existe quando há grupo
+            depois dele. */}
+        {onTimeline && (
+          <DropdownMenuItem onSelect={() => onTimeline()}>
+            <History className="h-4 w-4" />
+            Histórico da venda
+          </DropdownMenuItem>
+        )}
+        {onTimeline && actions.length > 0 && <DropdownMenuSeparator />}
+        {actions.length > 0 && (
+          <DropdownMenuLabel className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            Imprimir
+          </DropdownMenuLabel>
+        )}
         {actions.map((action, i) => {
           const Icon = ICONS[action.kind];
           // Separador entre o recibo (sem validade fiscal) e os documentos
