@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { Plus, Wallet } from "lucide-react";
 
@@ -26,6 +27,13 @@ import {
   isNfceUiEnabled,
   nfceToastFor,
 } from "../lib/pdv-nfce";
+import {
+  QUICK_SALE_PARAM,
+  buildQuickSaleSeed,
+  fetchQuickSaleProduct,
+  isQuickSaleEnabled,
+  parseQuickSaleParam,
+} from "../lib/pdv-quick-sale";
 import { PdvOverview } from "./pdv-overview";
 import { PdvSalesList, type PdvSaleRow } from "./pdv-sales-list";
 import type { SaleStatusFilterCode } from "@/app/financeiro/components/shared/sale-status-filter";
@@ -55,6 +63,11 @@ export function PdvView() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // BLOCO I — carrinho pré-preenchido quando o operador chega de /produtos.
+  // `undefined` = venda em branco, que é o estado de sempre.
+  const [dialogSeed, setDialogSeed] = useState<
+    ReturnType<typeof buildQuickSaleSeed> | undefined
+  >(undefined);
   const [sales, setSales] = useState<PdvSaleRow[]>([]);
   const [salesLoading, setSalesLoading] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
@@ -117,6 +130,66 @@ export function PdvView() {
   );
 
   const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  // ── BLOCO I: cheguei de /produtos com uma peça no carrinho ──
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const quickSaleId = isQuickSaleEnabled()
+    ? parseQuickSaleParam(searchParams.get(QUICK_SALE_PARAM))
+    : null;
+  // Id já consumido. Sem isto, o `router.replace` que limpa a URL provoca um
+  // re-render que poderia reabrir o modal em cima da venda em andamento.
+  const quickSaleConsumed = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!quickSaleId || quickSaleConsumed.current === quickSaleId) return;
+    const email = session?.user?.email;
+    // Sessão ainda carregando: sai SEM marcar como consumido, para tentar de
+    // novo quando o e-mail chegar.
+    if (!email) return;
+    quickSaleConsumed.current = quickSaleId;
+
+    const ctrl = new AbortController();
+    void (async () => {
+      try {
+        const peca = await fetchQuickSaleProduct(
+          quickSaleId,
+          email,
+          ctrl.signal,
+        );
+        if (!peca) {
+          // 404: a peça sumiu entre a vitrine e o clique. Abrir um modal vazio
+          // e mudo seria pior — o operador precisa saber por que nada veio.
+          showToast(
+            "Peça não encontrada — ela pode ter sido excluída ou vendida.",
+            "error",
+          );
+          return;
+        }
+        setDialogSeed(buildQuickSaleSeed(peca));
+        setDialogOpen(true);
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        showToast(
+          e instanceof Error ? e.message : "Erro ao carregar a peça",
+          "error",
+        );
+      } finally {
+        // Limpa a URL SEMPRE, inclusive na falha: um F5 não pode reabrir a
+        // venda, e o parâmetro já cumpriu o papel dele.
+        router.replace("/pdv", { scroll: false });
+      }
+    })();
+
+    return () => ctrl.abort();
+  }, [quickSaleId, session?.user?.email, showToast, router]);
+
+  // Fechar o modal descarta o carrinho pré-preenchido — senão a PRÓXIMA venda
+  // nasceria com a peça da anterior dentro.
+  const handleDialogOpenChange = useCallback((aberto: boolean) => {
+    setDialogOpen(aberto);
+    if (!aberto) setDialogSeed(undefined);
+  }, []);
 
   // BLOCO C — filtro de status do livro do dia. Vazio = todos: o parâmetro
   // não é enviado e a busca fica idêntica à de hoje.
@@ -369,7 +442,14 @@ export function PdvView() {
               Financeiro
             </Link>
           </Button>
-          <Button onClick={() => setDialogOpen(true)}>
+          <Button
+            onClick={() => {
+              // Venda em branco, sempre — mesmo logo depois de uma que veio
+              // pré-preenchida pelo carrinho do catálogo.
+              setDialogSeed(undefined);
+              setDialogOpen(true);
+            }}
+          >
             <Plus className="h-4 w-4" />
             Nova venda
           </Button>
@@ -409,7 +489,10 @@ export function PdvView() {
         kind="receivable"
         forceBalcao
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={handleDialogOpenChange}
+        // BLOCO I — carrinho vindo do catálogo. `undefined` (o caso normal) é
+        // exatamente o que era passado antes: venda em branco.
+        initialData={dialogSeed}
         onToast={showToast}
         onSaved={handleDialogSaved}
         onSavedEntry={handleSavedEntry}

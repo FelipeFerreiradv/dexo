@@ -18,6 +18,8 @@ interface ProductsGalleryViewProps {
   onTogglePause: (product: Product, status: "active" | "paused") => void;
   onOpenLightbox: (product: Product) => void;
   onOpenListings: (product: Product, platform: MarketplacePlatform) => void;
+  /** BLOCO I — repassado ao card. Ausente ⇒ o carrinho não existe. */
+  onSell?: (product: Product) => void;
 }
 
 /** Vitrine de produtos: grade responsiva de `ProductCard` (1 → 4 colunas). */
@@ -34,6 +36,7 @@ export function ProductsGalleryView({
   onTogglePause,
   onOpenLightbox,
   onOpenListings,
+  onSell,
 }: ProductsGalleryViewProps) {
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
@@ -54,6 +57,7 @@ export function ProductsGalleryView({
           onTogglePause={onTogglePause}
           onOpenLightbox={onOpenLightbox}
           onOpenListings={onOpenListings}
+          onSell={onSell}
         />
       ))}
     </div>

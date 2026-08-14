@@ -214,8 +214,13 @@ export function FinanceDialog({
       setEmitReceipt(false);
       // Seed do productMeta a partir do snapshot do backend (Fase 5 / balcão).
       // O backend (findById) traz items.product = { id, sku, name }; usamos
-      // para o bloco já mostrar SKU/nome em fluxo de edição. Estoque não vem
-      // no snapshot — vira 0 até o usuário re-pesquisar e re-selecionar.
+      // para o bloco já mostrar SKU/nome em fluxo de edição.
+      //
+      // BLOCO I — o estoque agora entra QUANDO o chamador o fornece. O
+      // `findById` continua não mandando estoque (e aí segue 0, como antes,
+      // byte a byte); quem manda é o carrinho vindo do catálogo, que acabou de
+      // ler a peça. Sem isso, a peça que o operador viu disponível na vitrine
+      // apareceria como "0 em estoque" no carrinho.
       const items = (initialData as any)?.items;
       if (balcaoEnabled && Array.isArray(items) && items.length > 0) {
         const seed: Record<string, ProductMeta> = {};
@@ -224,7 +229,8 @@ export function FinanceDialog({
             seed[it.productId] = {
               sku: it.product.sku,
               name: it.product.name,
-              stock: 0,
+              stock:
+                typeof it.product.stock === "number" ? it.product.stock : 0,
             };
           }
         }
