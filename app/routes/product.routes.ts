@@ -4,6 +4,10 @@ import {
   ProductUseCase,
 } from "../usecases/product.usercase";
 import {
+  CapacityExceededError,
+  LocationUseCase,
+} from "../usecases/location.usercase";
+import {
   ProductCreate,
   ProductListFilters,
   parseProductSort,
@@ -156,6 +160,8 @@ function sanitizeProductAttributes(
 
 export const productRoutes = async (fastify: FastifyInstance) => {
   const productUseCase = new ProductUseCase();
+  // Só para a checagem de capacidade da localização (issue #273).
+  const locationUseCase = new LocationUseCase();
 
   /**
    * GET /products/next-sku
@@ -750,6 +756,28 @@ export const productRoutes = async (fastify: FastifyInstance) => {
               }),
             );
           }
+        }
+      }
+
+      // Capacidade da localização (issue #273). Fica AQUI, na rota, e não em
+      // `ProductUseCase.create`, de propósito: os executores de importação
+      // (ibr-estoque, ibrsoft-pacote, vaapt-produtos) também chamam esse
+      // usecase passando `locationId`, e eles têm tratamento PRÓPRIO de
+      // capacidade (reportam e seguem). Validar lá dentro faria uma
+      // importação em massa abortar no meio — outro fluxo, outro contrato.
+      if (sanitized.locationId) {
+        try {
+          await locationUseCase.assertHasRoomForOne(
+            sanitized.locationId,
+            user?.dataOwnerId,
+          );
+        } catch (error) {
+          if (error instanceof CapacityExceededError) {
+            return reply
+              .status(422)
+              .send({ error: error.message, detail: error.detail });
+          }
+          throw error;
         }
       }
 
@@ -1589,6 +1617,24 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           resolvedMagaluCategorySource =
             (magaluCategorySource as any) || "manual";
           resolvedMagaluCategoryChosenAt = new Date();
+        }
+
+        // Capacidade da localização (issue #273). Passando o id da peça,
+        // `assertHasRoomForOne` ignora o caso "já estava aqui" — reeditar uma
+        // peça sem trocar de localização nunca é bloqueado, nem quando a
+        // localização está acima do limite (o buraco que esta issue fecha já
+        // foi usado, e essas peças precisam continuar corrigíveis).
+        if (locationId && userId) {
+          try {
+            await locationUseCase.assertHasRoomForOne(locationId, userId, id);
+          } catch (error) {
+            if (error instanceof CapacityExceededError) {
+              return reply
+                .status(422)
+                .send({ error: error.message, detail: error.detail });
+            }
+            throw error;
+          }
         }
 
         const result = await productUseCase.update(
