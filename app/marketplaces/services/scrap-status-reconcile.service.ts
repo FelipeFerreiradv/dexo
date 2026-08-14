@@ -48,11 +48,45 @@ export interface ReconcileForReceivableInput {
   logPrefix?: string;
 }
 
-/** Entrada por PRODUTOS — usada pelo cancelamento de pedido de marketplace. */
+/** Entrada por PRODUTOS — usada pelos caminhos de marketplace. */
 export interface ReconcileForProductsInput {
   productIds: string[];
-  userId: string;
+  /**
+   * Opcional. A consulta SEMPRE exige `Scrap.userId = Product.userId`, então o
+   * pareamento sucata↔dono é seguro mesmo sem este filtro — e é por isso que
+   * ele pode faltar: `deductStockForOrder` recebe um `Order` cujo
+   * `marketplaceAccount` não carrega `userId`. Quando informado, vira um
+   * filtro ADICIONAL (defense-in-depth), nunca a única garantia.
+   */
+  userId?: string;
   logPrefix?: string;
+}
+
+/**
+ * Quais produtos, após uma VENDA de marketplace, merecem reconciliação do lote.
+ *
+ * Função pura porque é a política de disparo do caminho mais sensível do
+ * sistema (roda dentro da importação de pedidos) — e política que não dá para
+ * testar não é política, é esperança.
+ *
+ * DUAS TRAVAS:
+ *  1. Flag `SCRAP_RECONCILE_ON_SALE_ENABLED`. Ausente ⇒ lista vazia ⇒ a
+ *     importação fica byte-idêntica. Env de BACKEND (não `NEXT_PUBLIC_`): liga
+ *     e desliga com restart do pm2, sem rebuild.
+ *  2. Só quem ZEROU. `deriveScrapStatus` só move o lote para DEPLETED quando o
+ *     estoque somado das peças chega a zero, então reconciliar quando ninguém
+ *     zerou é trabalho garantidamente inútil. Mesmo critério do `pauseOnZero`.
+ *
+ * Fora de escopo por decisão: AVAILABLE → IN_USE (primeira venda com estoque
+ * restante). Cobri-la exigiria reconciliar em TODA venda, que é o custo que as
+ * travas existem para evitar.
+ */
+export function scrapReconcileTargetsAfterSale(
+  deductions: { productId: string; newStock: number }[],
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  if (env.SCRAP_RECONCILE_ON_SALE_ENABLED !== "1") return [];
+  return deductions.filter((d) => d.newStock === 0).map((d) => d.productId);
 }
 
 export class ScrapStatusReconcileService {
@@ -114,23 +148,32 @@ export class ScrapStatusReconcileService {
     const { productIds, userId } = input;
     const logPrefix = input.logPrefix ?? "[ScrapStatusReconcile]";
 
-    // Sucatas DISTINTAS dos produtos tocados. Escopo de tenant pelo JOIN em
-    // Scrap.userId, igual ao irmão — `Product.scrapId` sozinho não garante que
-    // a sucata seja do mesmo dono.
-    const scrapRows = await prisma.$queryRaw<{ scrapId: string }[]>(Prisma.sql`
-      SELECT DISTINCT p."scrapId" AS "scrapId"
+    // Sucatas DISTINTAS dos produtos tocados, com o dono resolvido na própria
+    // consulta. `s."userId" = p."userId"` é o que garante o pareamento: um
+    // produto de outro tenant apontando para esta sucata não arrasta a
+    // reconciliação para fora do dono. O filtro por `userId` do chamador, quando
+    // existe, é camada extra — não a única garantia.
+    const scrapRows = await prisma.$queryRaw<
+      { scrapId: string; userId: string }[]
+    >(Prisma.sql`
+      SELECT DISTINCT p."scrapId" AS "scrapId", s."userId" AS "userId"
         FROM "Product" p
         JOIN "Scrap" s ON s."id" = p."scrapId"
        WHERE p."id" IN (${Prisma.join(productIds)})
-         AND s."userId" = ${userId}
+         AND s."userId" = p."userId"
          AND p."scrapId" IS NOT NULL
+         ${userId ? Prisma.sql`AND p."userId" = ${userId}` : Prisma.empty}
     `);
 
-    await ScrapStatusReconcileService.reconcileMany(
-      scrapRows,
-      userId,
-      logPrefix,
-    );
+    // Cada linha carrega o próprio dono — um pedido nunca mistura tenants, mas
+    // agrupar por linha é o que torna isso verdadeiro por construção.
+    for (const row of scrapRows) {
+      await ScrapStatusReconcileService.reconcileMany(
+        [{ scrapId: row.scrapId }],
+        row.userId,
+        logPrefix,
+      );
+    }
   }
 
   private static async run(

@@ -21,7 +21,10 @@ import {
   type StockDeductionResult,
   type StockOversellAlert,
 } from "../services/stock-deduction.service";
-import { ScrapStatusReconcileService } from "../services/scrap-status-reconcile.service";
+import {
+  ScrapStatusReconcileService,
+  scrapReconcileTargetsAfterSale,
+} from "../services/scrap-status-reconcile.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { OrderCustomerService } from "../services/order-customer.service";
@@ -3938,6 +3941,44 @@ export class OrderUseCase {
       reason,
       // NÃO passamos pauseOnZero → Order não pausa anúncios ao zerar.
     });
+
+    // ── Reflexo no status do LOTE ao VENDER pelo marketplace (opt-in) ──
+    //
+    // Espelho do que já existe no cancelamento. Sem isto, uma sucata cujas
+    // peças foram todas vendidas pelo ML — e que nunca teve venda de balcão —
+    // fica `AVAILABLE` para sempre, porque `Scrap.status` é coluna persistida e
+    // o único gatilho de reconciliação vinha do balcão.
+    //
+    // DUAS TRAVAS, porque este código roda DENTRO DA IMPORTAÇÃO DE PEDIDOS —
+    // o caminho de maior volume e o mais sensível do sistema:
+    //
+    //  1. FLAG. Ausente ⇒ nada roda e a importação fica byte-idêntica. É env de
+    //     backend (não `NEXT_PUBLIC_`) de propósito: liga e desliga com um
+    //     restart do pm2, sem rebuild — o que importa quando a alavanca existe
+    //     justamente para ser puxada às pressas.
+    //
+    //  2. GATILHO ESTREITO: só produtos que ZERARAM. `deriveScrapStatus` só
+    //     move o lote para DEPLETED quando o estoque somado das peças chega a
+    //     zero, então reconciliar quando ninguém zerou seria trabalho garantido
+    //     inútil. É o mesmo critério que o `pauseOnZero` já usa. Numa
+    //     importação típica isso reduz o disparo a quase nada; sem o filtro,
+    //     seriam N transações serializadas com advisory lock POR PEDIDO.
+    //
+    // Consequência assumida: a transição AVAILABLE → IN_USE (primeira venda com
+    // estoque restante) NÃO é coberta aqui. Ficou de fora deliberadamente — ela
+    // exigiria reconciliar em toda venda, que é exatamente o custo que as duas
+    // travas existem para evitar.
+    //
+    // A decisão de disparo é função PURA (`scrapReconcileTargetsAfterSale`),
+    // testada à parte: política do caminho mais sensível do sistema não pode
+    // depender de teste que reimplementa a regra.
+    const aReconciliar = scrapReconcileTargetsAfterSale(deductions);
+    if (aReconciliar.length > 0) {
+      ScrapStatusReconcileService.reconcileForProducts({
+        productIds: aReconciliar,
+        logPrefix: "[OrderUseCase]",
+      });
+    }
 
     // Log de oversell preservado byte-idêntico (mesma message + details).
     if (oversellAlerts.length > 0) {
