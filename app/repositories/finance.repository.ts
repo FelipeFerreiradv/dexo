@@ -615,6 +615,13 @@ export class FinanceRepository {
           unidadeId: true,
           document: true,
           reason: true,
+          // Fase 1.0 — a edição hidrata o formulário a partir da LINHA da
+          // listagem. Todo campo editável ausente aqui volta para o default do
+          // form e é regravado por cima no PUT (o submit envia o form inteiro).
+          // `debtDetails` era o único editável fora do select: a alternativa
+          // seria um GET extra na edição de conta a pagar, o que mudaria a
+          // contagem de requests desse fluxo.
+          debtDetails: true,
           totalAmount: true,
           fineAmount: true,
           finePercent: true,

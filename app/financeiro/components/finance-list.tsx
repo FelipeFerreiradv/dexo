@@ -55,6 +55,7 @@ import { getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
+import { financeRowToFormSeed } from "../lib/row-to-form";
 import { downloadReceipt } from "../lib/download-receipt";
 import { reverseSale } from "../lib/reverse-sale";
 import {
@@ -70,6 +71,16 @@ interface FinanceRow {
   totalAmount: number;
   installments: number;
   dueDate: string;
+  // Fase 1.0 — campos EDITÁVEIS que a API já devolvia mas o tipo não
+  // declarava. Sem eles em `base`, o `reset({...DEFAULT, ...initialData})` os
+  // preenchia com o default do form e o submit os regravava por cima: editar
+  // uma conta zerava multa/juros/tolerância/detalhes e fixava periodDays=30.
+  debtDetails?: string | null;
+  fineAmount?: number | null;
+  finePercent?: number | null;
+  interestPercent?: number | null;
+  toleranceDays?: number | null;
+  periodDays?: number | null;
   status: "PENDENTE" | "PAGA" | "VENCIDA" | "CANCELADA";
   customer: { id: string; name: string; cpf: string | null } | null;
   unidadeId?: string | null;
@@ -207,22 +218,10 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   };
 
   const handleEdit = async (r: FinanceRow) => {
-    const base: Partial<FinanceEntryFormData> & {
-      id?: string;
-      customer?: FinanceRow["customer"];
-      items?: unknown[];
-    } = {
-      id: r.id,
-      customerId: r.customer?.id || "",
-      customer: r.customer,
-      unidadeId: r.unidadeId ?? null,
-      document: r.document,
-      reason: r.reason,
-      paymentMethod: r.paymentMethod ?? null,
-      totalAmount: r.totalAmount,
-      installments: r.installments,
-      dueDate: r.dueDate?.slice(0, 10),
-    };
+    // Fase 1.0 — a montagem é uma TABELA PURA (`lib/row-to-form.ts`): todo
+    // campo editável tem de constar lá, senão o submit o regrava com o default
+    // do formulário. Ver o cabeçalho daquele arquivo.
+    const base = financeRowToFormSeed(r);
 
     // Receivables podem ter itens (venda balcão). A lista NÃO os traz (egress),
     // então carregamos sob demanda ao editar. Sem os itens no form, adicionar
