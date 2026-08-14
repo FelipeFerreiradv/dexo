@@ -21,7 +21,9 @@ import { HighlightText } from "@/app/localizacoes/components/highlight-text";
 import { tokenize } from "@/app/localizacoes/lib/search-utils";
 import {
   buildLocationSearchIndex,
+  countLocationMatches,
   filterLocationIndex,
+  LOCATION_SELECT_MAX_RESULTS,
   type LocationSelectItem,
 } from "@/app/produtos/lib/location-select-filter";
 
@@ -69,6 +71,18 @@ export function LocationCombobox({
     [searchIndex, query],
   );
   const tokens = useMemo(() => tokenize(query), [query]);
+
+  // Quantos casariam sem o cap. Só vale a segunda passada quando a lista bateu
+  // no teto — abaixo dele o exibido JÁ é o conjunto inteiro e não há aviso a
+  // dar. No tenant do #268 (2.192 localizações) "Galpão 2" casa 601 e a lista
+  // mostra 50: sem este número o operador não tem como saber que há mais.
+  const totalMatches = useMemo(
+    () =>
+      filtered.length >= LOCATION_SELECT_MAX_RESULTS
+        ? countLocationMatches(searchIndex, query)
+        : filtered.length,
+    [searchIndex, query, filtered.length],
+  );
 
   const selected = value ? options.find((l) => l.id === value) : undefined;
 
@@ -167,6 +181,17 @@ export function LocationCombobox({
               );
             })}
           </CommandList>
+          {/* Fora da CommandList de propósito: fica fixo no rodapé enquanto a
+              lista rola, e o cmdk não o trata como item navegável. */}
+          {totalMatches > filtered.length && (
+            <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+              Mostrando {filtered.length} de{" "}
+              {totalMatches.toLocaleString("pt-BR")}
+              {tokens.length === 0
+                ? " — digite para buscar."
+                : " — refine a busca para ver as demais."}
+            </div>
+          )}
         </Command>
       </PopoverContent>
     </Popover>

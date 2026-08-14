@@ -159,6 +159,30 @@ export function filterLocationIndex(
 }
 
 /**
+ * Quantos itens CASAM a query, ignorando o cap. Serve para avisar que a lista
+ * foi truncada ("mostrando 50 de 601") — depois do #268 os 50 exibidos são os
+ * mais relevantes, mas o corte continuava silencioso.
+ *
+ * O predicado é o MESMO de `filterLocationIndex` (e a query vazia devolve o
+ * índice inteiro, como lá). Duplicar a condição é o preço de não alocar nem
+ * ordenar só para contar — há teste amarrando as duas ao mesmo conjunto para
+ * que uma não derive da outra.
+ */
+export function countLocationMatches(
+  index: LocationSearchEntry[],
+  query: string,
+): number {
+  const tokens = tokenize(query);
+  if (tokens.length === 0) return index.length;
+
+  let total = 0;
+  for (const entry of index) {
+    if (tokens.every((t) => entry.haystack.includes(t))) total++;
+  }
+  return total;
+}
+
+/**
  * Conveniência: constrói o índice e filtra numa passada. Mantida para uso onde
  * `options` não é estável/memoizado (e para os testes).
  */
