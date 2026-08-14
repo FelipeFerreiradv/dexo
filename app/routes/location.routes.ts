@@ -96,6 +96,21 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
    * `no-cache` força revalidação, então uma entrada de outro usuário no mesmo
    * navegador nunca é servida — o ETag é recalculado para o usuário da vez e
    * não bate. O corpo de um 200 é byte-idêntico ao de antes.
+   *
+   * NÃO ADIANTA IR ALÉM DAQUI — medido em produção (13/08, issue #269), não
+   * refazer a análise:
+   *  - Cache por TEMPO (no cliente ou via `max-age`) não pega quase nada: a
+   *    MEDIANA entre dois cadastros do mesmo usuário é de 434 s. Só 2,2% das
+   *    aberturas caem dentro de 60 s da anterior, e 1 em 6.446 dentro de 15 s —
+   *    é por isso que o cache de 15 s do `products-list` praticamente nunca
+   *    acerta. Para pegar a mediana o TTL teria que ser de ~7 min, defasagem
+   *    que nenhum contador aguenta.
+   *  - Cache SERVER-SIDE não tem o que economizar: no `pg_stat_statements` as
+   *    consultas desta rota somam 60 s de banco em 22 dias (3,7 ms por
+   *    chamada). O `groupBy` escopado do `findAllFlat` já matou o custo que
+   *    existia.
+   *  - Encolher o corpo já tinha sido descartado antes: o `id` (cuid) é 64,6%
+   *    do payload comprimido e é a chave de seleção.
    */
   fastify.get(
     "/select",

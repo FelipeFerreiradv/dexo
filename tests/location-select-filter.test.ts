@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLocationSearchIndex,
+  countLocationMatches,
   filterLocationIndex,
   filterLocationOptions,
   LOCATION_SELECT_MAX_RESULTS,
@@ -291,5 +292,70 @@ describe("ranqueamento por relevância (bug: 'Galpão 2' não aparecia)", () => 
     outro.sort((a, b) => a.fullPath.localeCompare(b.fullPath));
     expect(ids(filtroAntigo(outro, "PRAT 02"))).not.toContain("p2");
     expect(filterLocationOptions(outro, "PRAT 02")[0]?.id).toBe("p2");
+  });
+});
+
+describe("countLocationMatches (aviso de truncagem)", () => {
+  const tenant = galpoes(60);
+
+  it("sem query conta o índice inteiro, como o filtro faz", () => {
+    const index = buildLocationSearchIndex(tenant);
+    expect(countLocationMatches(index, "")).toBe(tenant.length);
+    expect(countLocationMatches(index, "   ")).toBe(tenant.length);
+  });
+
+  it("conta ALÉM do cap — é esse o número que falta na tela", () => {
+    const index = buildLocationSearchIndex(tenant);
+    const exibidos = filterLocationIndex(index, "2");
+    const total = countLocationMatches(index, "2");
+
+    expect(exibidos).toHaveLength(LOCATION_SELECT_MAX_RESULTS);
+    expect(total).toBeGreaterThan(LOCATION_SELECT_MAX_RESULTS);
+  });
+
+  it("zero quando nada casa", () => {
+    const index = buildLocationSearchIndex(tenant);
+    expect(countLocationMatches(index, "xyz")).toBe(0);
+    expect(countLocationMatches(index, "galpao 3 xyz")).toBe(0);
+  });
+
+  it("herda a tolerância a acento e caixa do filtro", () => {
+    const index = buildLocationSearchIndex(tenant);
+    expect(countLocationMatches(index, "galpao 2")).toBe(
+      countLocationMatches(index, "GALPÃO 2"),
+    );
+  });
+
+  // GUARDA DE DERIVA: o contador REPETE o predicado do filtro para não alocar
+  // nem ordenar. Se um dos dois mudar sozinho, o rodapé passa a mentir — em
+  // silêncio. Este teste amarra os dois ao mesmo conjunto.
+  it("é exatamente o tamanho do filtro SEM cap, para toda query", () => {
+    const index = buildLocationSearchIndex(tenant);
+    const queries = [
+      "",
+      "  ",
+      "2",
+      "galpao",
+      "galpao 2",
+      "GALPÃO 1",
+      "prateleira",
+      "a12",
+      "xyz",
+      "prateleira 1",
+    ];
+    for (const q of queries) {
+      expect(countLocationMatches(index, q)).toBe(
+        filterLocationIndex(index, q, Number.MAX_SAFE_INTEGER).length,
+      );
+    }
+  });
+
+  it("não avisa quando cabe tudo na tela", () => {
+    const index = buildLocationSearchIndex(options);
+    for (const q of ["", "barracao", "a2"]) {
+      expect(countLocationMatches(index, q)).toBe(
+        filterLocationIndex(index, q).length,
+      );
+    }
   });
 });
