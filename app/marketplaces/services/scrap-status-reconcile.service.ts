@@ -48,6 +48,13 @@ export interface ReconcileForReceivableInput {
   logPrefix?: string;
 }
 
+/** Entrada por PRODUTOS — usada pelo cancelamento de pedido de marketplace. */
+export interface ReconcileForProductsInput {
+  productIds: string[];
+  userId: string;
+  logPrefix?: string;
+}
+
 export class ScrapStatusReconcileService {
   /**
    * Agenda a reconciliação (não-bloqueante). Retorna imediatamente; todo o
@@ -64,6 +71,66 @@ export class ScrapStatusReconcileService {
         ),
       );
     });
+  }
+
+  /**
+   * Agenda a reconciliação a partir de PRODUTOS (não-bloqueante).
+   *
+   * Existe porque o serviço só tinha entrada pela conta a receber, e os dois
+   * únicos chamadores eram `markPaid` e `reverse` — então **cancelar um pedido
+   * de marketplace restaurava o estoque mas deixava o lote marcado "Esgotada"
+   * para sempre**. O rótulo por peça se autocura (é derivado de estoque em
+   * tempo real), mas `Scrap.status` é coluna persistida: a peça voltava a
+   * aparecer "Em estoque" dentro de um lote "Esgotado".
+   *
+   * A query de fatos já sabia ler os dois canais (marketplace + balcão); só
+   * faltava alguém disparar pelo lado do marketplace.
+   *
+   * Mesmo contrato do irmão: `void`, best-effort, `setImmediate`, e cada sucata
+   * reconciliada sob advisory lock próprio.
+   */
+  static reconcileForProducts(input: ReconcileForProductsInput): void {
+    const logPrefix = input.logPrefix ?? "[ScrapStatusReconcile]";
+    const productIds = Array.from(new Set(input.productIds ?? [])).filter(
+      Boolean,
+    );
+    if (productIds.length === 0) return;
+    setImmediate(() => {
+      void ScrapStatusReconcileService.runForProducts({
+        ...input,
+        productIds,
+      }).catch((err) =>
+        console.error(
+          `${logPrefix} Falha ao reconciliar status de sucata (best-effort):`,
+          err,
+        ),
+      );
+    });
+  }
+
+  private static async runForProducts(
+    input: ReconcileForProductsInput,
+  ): Promise<void> {
+    const { productIds, userId } = input;
+    const logPrefix = input.logPrefix ?? "[ScrapStatusReconcile]";
+
+    // Sucatas DISTINTAS dos produtos tocados. Escopo de tenant pelo JOIN em
+    // Scrap.userId, igual ao irmão — `Product.scrapId` sozinho não garante que
+    // a sucata seja do mesmo dono.
+    const scrapRows = await prisma.$queryRaw<{ scrapId: string }[]>(Prisma.sql`
+      SELECT DISTINCT p."scrapId" AS "scrapId"
+        FROM "Product" p
+        JOIN "Scrap" s ON s."id" = p."scrapId"
+       WHERE p."id" IN (${Prisma.join(productIds)})
+         AND s."userId" = ${userId}
+         AND p."scrapId" IS NOT NULL
+    `);
+
+    await ScrapStatusReconcileService.reconcileMany(
+      scrapRows,
+      userId,
+      logPrefix,
+    );
   }
 
   private static async run(
@@ -85,6 +152,19 @@ export class ScrapStatusReconcileService {
          AND COALESCE(ri."scrapId", p."scrapId") IS NOT NULL
     `);
 
+    await ScrapStatusReconcileService.reconcileMany(
+      scrapRows,
+      userId,
+      logPrefix,
+    );
+  }
+
+  /** Laço compartilhado pelas duas entradas. Uma sucata que falha não derruba as outras. */
+  private static async reconcileMany(
+    scrapRows: { scrapId: string }[],
+    userId: string,
+    logPrefix: string,
+  ): Promise<void> {
     for (const { scrapId } of scrapRows) {
       try {
         await ScrapStatusReconcileService.reconcileScrap(scrapId, userId);

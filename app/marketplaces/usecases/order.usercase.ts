@@ -21,6 +21,7 @@ import {
   type StockDeductionResult,
   type StockOversellAlert,
 } from "../services/stock-deduction.service";
+import { ScrapStatusReconcileService } from "../services/scrap-status-reconcile.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { OrderCustomerService } from "../services/order-customer.service";
@@ -4142,6 +4143,22 @@ export class OrderUseCase {
             userId: order.marketplaceAccount.userId,
             force: true,
           },
+        });
+
+        // Reflexo no status do LOTE. `Scrap.status` é coluna persistida; só o
+        // rótulo por peça se autocura (é derivado de estoque em tempo real).
+        // Sem isto, o estoque voltava e o anúncio reabria, mas a sucata seguia
+        // marcada "Esgotada" para sempre — peça "Em estoque" dentro de lote
+        // esgotado. Espelha o que o `reverse` do balcão já fazia; a query de
+        // fatos do serviço sempre soube ler os dois canais, só faltava quem
+        // disparasse pelo lado do marketplace.
+        //
+        // Best-effort e pós-commit, como o irmão: falha aqui nunca desfaz o
+        // cancelamento nem o estorno de estoque, que já commitaram.
+        ScrapStatusReconcileService.reconcileForProducts({
+          productIds: restorations.map((d) => d.productId),
+          userId: order.marketplaceAccount.userId,
+          logPrefix,
         });
       }
 

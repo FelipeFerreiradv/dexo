@@ -194,10 +194,13 @@ describe("Fase 9 — POST /finance/receivables/:id/reverse", () => {
       timeout: 60_000,
       maxWait: 20_000,
     });
-    // Status → CANCELADA dentro da tx.
+    // Status → CANCELADA dentro da tx, com transição GUARDADA: o `statusIs`
+    // fecha a corrida de estorno duplo (o guard de idempotência do usecase
+    // roda fora da transação). Sem ele, dois cancelamentos simultâneos
+    // restauravam o estoque duas vezes.
     expect((prisma as any).receivable.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "r-1", userId: "user-owner" },
+        where: { id: "r-1", userId: "user-owner", status: "PAGA" },
         data: expect.objectContaining({ status: "CANCELADA" }),
       }),
     );

@@ -11,6 +11,40 @@ import {
   FinanceSummary,
 } from "../interfaces/finance.interface";
 
+/**
+ * Transição de status ATÔMICA (compare-and-swap) — opt-in.
+ *
+ * `markPaid` e `reverse` liam o status FORA da transação e escreviam dentro
+ * dela, sem condição: duas requisições simultâneas passavam as duas pelo guard
+ * de idempotência e baixavam (ou estornavam) o estoque DUAS vezes. Pior, em
+ * venda com peça avulsa as duas chamavam `promoteManualItems` sobre o mesmo
+ * snapshot e criavam DOIS produtos de catálogo para a mesma peça.
+ *
+ * Com o guard, o `UPDATE` só casa se o status ainda for o esperado. Sob READ
+ * COMMITTED do Postgres, a segunda transação bloqueia no row lock, e ao
+ * destravar reavalia o predicado contra a versão nova da linha (EvalPlanQual)
+ * — casa 0 linhas e perde a corrida sem efeito colateral.
+ *
+ * É OPT-IN de propósito: sem `guard`, o `where` fica byte-idêntico ao de
+ * sempre, e os caminhos de PUT/edição não mudam em nada.
+ *
+ * Precedente interno: `budget.repository.ts:366-380` já faz exatamente isto.
+ */
+export interface StatusGuard {
+  /** Só aplica se o status atual for DIFERENTE deste. */
+  statusNot?: FinanceStatus;
+  /** Só aplica se o status atual for EXATAMENTE este. */
+  statusIs?: FinanceStatus;
+}
+
+/** Perdeu a corrida: outra requisição já aplicou a transição. Não é erro de dado. */
+export class FinanceStatusConflictError extends Error {
+  constructor() {
+    super("Registro financeiro em estado conflitante");
+    this.name = "FinanceStatusConflictError";
+  }
+}
+
 function model(kind: FinanceKind): any {
   return kind === "receivable"
     ? prisma.receivable
@@ -384,6 +418,7 @@ export class FinanceRepository {
     userId: string,
     data: FinanceEntryUpdate,
     tx?: Prisma.TransactionClient,
+    guard?: StatusGuard,
   ): Promise<FinanceEntry> {
     // `items` no payload significa "substituir lista de itens" (replace
     // strategy). Ausência (undefined) preserva itens existentes — fluxo atual
@@ -394,7 +429,7 @@ export class FinanceRepository {
     const hasPaymentsField = "payments" in data && data.payments !== undefined;
 
     if (!hasItemsField && !hasPaymentsField) {
-      return this.updateSingle(kind, id, userId, data, tx);
+      return this.updateSingle(kind, id, userId, data, tx, guard);
     }
     if (kind !== "receivable") {
       throw new Error(
@@ -416,6 +451,7 @@ export class FinanceRepository {
     userId: string,
     data: FinanceEntryUpdate,
     tx?: Prisma.TransactionClient,
+    guard?: StatusGuard,
   ): Promise<FinanceEntry> {
     const db: any = tx ?? prisma;
     const delegate: any = kind === "receivable" ? db.receivable : db.payable;
@@ -428,10 +464,23 @@ export class FinanceRepository {
     delete payload.userId;
 
     const res = await delegate.updateMany({
-      where: { id, userId },
+      // Sem `guard`, o spread de `{}` não acrescenta chave: o `where` continua
+      // literalmente `{ id, userId }` e todo caminho existente fica intacto.
+      where: {
+        id,
+        userId,
+        ...(guard?.statusNot ? { status: { not: guard.statusNot } } : {}),
+        ...(guard?.statusIs ? { status: guard.statusIs } : {}),
+      },
       data: payload,
     });
-    if (res.count === 0) throw new Error("Registro financeiro não encontrado");
+    if (res.count === 0) {
+      // Com guard, count 0 significa que o status mudou entre a leitura e a
+      // escrita — outra requisição ganhou a corrida. É um caso diferente de
+      // "não existe", e o chamador precisa distinguir para ser idempotente.
+      if (guard) throw new FinanceStatusConflictError();
+      throw new Error("Registro financeiro não encontrado");
+    }
 
     const updated = await delegate.findUnique({
       where: { id },

@@ -21,7 +21,10 @@ import {
 } from "../lib/payment-methods";
 import prisma from "../lib/prisma";
 import { CustomerRepository } from "../repositories/customer.repository";
-import { FinanceRepository } from "../repositories/finance.repository";
+import {
+  FinanceRepository,
+  FinanceStatusConflictError,
+} from "../repositories/finance.repository";
 import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
@@ -599,53 +602,79 @@ export class FinanceUseCase {
     // Bloco F — ids dos produtos que NASCERAM nesta operação (peças avulsas).
     const promotedProductIds = new Set<string>();
 
-    await prisma.$transaction(
-      async (tx) => {
-        // Status + paidAt na MESMA tx.
-        updated = await this.repo.update(
-          kind,
-          id,
-          userId,
-          { status: "PAGA", paidAt: new Date() },
-          tx,
-        );
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          // Status + paidAt na MESMA tx.
+          //
+          // O guard `statusNot: "PAGA"` fecha uma corrida real: o `if (status ===
+          // "PAGA")` acima roda FORA da transação, então dois POST /pay
+          // simultâneos passavam os dois e baixavam estoque duas vezes — e, em
+          // venda com peça avulsa, criavam DOIS produtos de catálogo para a mesma
+          // peça (o `promoteManualItems` abaixo filtra sobre este mesmo snapshot).
+          //
+          // A ORDEM É CARREGADORA: esta é a PRIMEIRA escrita da tx, antes de
+          // promover peça avulsa e antes de deduzir estoque. O perdedor bloqueia
+          // aqui no row lock e sai por rollback sem ter criado nem deduzido nada.
+          // Não reordenar.
+          updated = await this.repo.update(
+            kind,
+            id,
+            userId,
+            { status: "PAGA", paidAt: new Date() },
+            tx,
+            { statusNot: "PAGA" },
+          );
 
-        // ── Bloco F: peça avulsa vira produto de catálogo ──
-        // Roda ANTES da baixa, na MESMA tx: o produto nasce, recebe a ENTRADA
-        // (+qty) e em seguida a venda faz a SAÍDA (−qty), terminando em 0.
-        // Rollback desfaz produto, vínculo e os dois StockLog juntos.
-        const promoted = await this.promoteManualItems(tx, id, userId, items);
-        for (const p of promoted) promotedProductIds.add(p.productId);
+          // ── Bloco F: peça avulsa vira produto de catálogo ──
+          // Roda ANTES da baixa, na MESMA tx: o produto nasce, recebe a ENTRADA
+          // (+qty) e em seguida a venda faz a SAÍDA (−qty), terminando em 0.
+          // Rollback desfaz produto, vínculo e os dois StockLog juntos.
+          const promoted = await this.promoteManualItems(tx, id, userId, items);
+          for (const p of promoted) promotedProductIds.add(p.productId);
 
-        // Baixa de estoque dentro da MESMA tx.
-        const result = await StockDeductionService.deductWithinTx(tx, {
-          // Apenas itens CADASTRADOS baixam estoque. Itens manuais
-          // (productId null) não têm produto no catálogo — não geram
-          // StockLog/baixa. Filtrar honra o tipo StockDeductionItem.productId
-          // (string) e evita SELECT/StockLog com id nulo.
-          items: [
-            ...items
-              .filter((it) => it.productId != null)
-              .map((it) => ({
-                productId: it.productId as string,
-                quantity: it.quantity,
+          // Baixa de estoque dentro da MESMA tx.
+          const result = await StockDeductionService.deductWithinTx(tx, {
+            // Apenas itens CADASTRADOS baixam estoque. Itens manuais
+            // (productId null) não têm produto no catálogo — não geram
+            // StockLog/baixa. Filtrar honra o tipo StockDeductionItem.productId
+            // (string) e evita SELECT/StockLog com id nulo.
+            items: [
+              ...items
+                .filter((it) => it.productId != null)
+                .map((it) => ({
+                  productId: it.productId as string,
+                  quantity: it.quantity,
+                })),
+              // As peças recém-promovidas entram aqui: acabaram de ganhar
+              // productId e estoque, e a venda tem de baixá-las igual às demais.
+              ...promoted.map((p) => ({
+                productId: p.productId,
+                quantity: p.quantity,
               })),
-            // As peças recém-promovidas entram aqui: acabaram de ganhar
-            // productId e estoque, e a venda tem de baixá-las igual às demais.
-            ...promoted.map((p) => ({
-              productId: p.productId,
-              quantity: p.quantity,
-            })),
-          ],
-          reason: `Venda balcão — Conta a Receber ${id}`,
-          // StockSyncJob.orderId é String? livre — anotação para auditoria.
-          orderId: `receivable:${id}`,
-          logPrefix: "[FinanceUseCase]",
-        });
-        deductions = result.deductions;
-      },
-      { timeout: 60_000, maxWait: 20_000 },
-    );
+            ],
+            reason: `Venda balcão — Conta a Receber ${id}`,
+            // StockSyncJob.orderId é String? livre — anotação para auditoria.
+            orderId: `receivable:${id}`,
+            logPrefix: "[FinanceUseCase]",
+          });
+          deductions = result.deductions;
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+    } catch (e) {
+      if (e instanceof FinanceStatusConflictError) {
+        // Perdeu a corrida — outra requisição já recebeu esta conta. A tx
+        // sofreu rollback, então nada foi criado nem deduzido aqui. Resposta
+        // idêntica à do caminho "já PAGA" no topo do método: mesmo contrato,
+        // sem efeito colateral. NÃO dispara firePostEffects nem reconciliação
+        // de sucata — quem venceu a corrida já cuidou dos dois.
+        const atual = await this.repo.findById(kind, id, userId);
+        if (!atual) throw new Error("Registro financeiro não encontrado");
+        return atual;
+      }
+      throw e;
+    }
 
     // Pós-commit (Fase 7): dispara sync dos jobs enfileirados E pausa
     // anúncios cujos produtos zeraram o estoque. Ambos rodam em `setImmediate`
@@ -899,76 +928,97 @@ export class FinanceUseCase {
       ReturnType<typeof StockDeductionService.restoreWithinTx>
     >["deductions"] = [];
 
-    await prisma.$transaction(
-      async (tx) => {
-        // 1. Status → CANCELADA na MESMA tx do estorno.
-        updated = await this.repo.update(
-          "receivable",
-          id,
-          userId,
-          { status: "CANCELADA" },
-          tx,
-        );
-        // 2. Contra-lançamento de estoque (+quantity por item).
-        const result = await StockDeductionService.restoreWithinTx(tx, {
-          // Espelha o markPaid: só itens cadastrados devolvem estoque.
-          items: items
-            .filter((it) => it.productId != null)
-            .map((it) => ({
-              productId: it.productId as string,
-              quantity: it.quantity,
-            })),
-          reason: `Estorno venda balcão — Conta a Receber ${id}`,
-          orderId: `receivable:${id}`,
-          logPrefix: "[FinanceUseCase]",
-        });
-        restorations = result.deductions;
-
-        // ── Bloco F: estorno SIMÉTRICO da peça avulsa ──
-        // O restore acima devolveu +qty também para os produtos que nasceram
-        // desta venda — e eles não existiam antes dela. Sem esta compensação,
-        // o catálogo ficaria com um "produto fantasma" com estoque de uma peça
-        // que já saiu. A saída de −qty devolve o produto a estoque 0.
-        //
-        // O produto NÃO é apagado: `ReceivableItem.product` é onDelete Restrict
-        // e apagar produto apaga o StockLog junto (product.repository.ts:1630),
-        // destruindo o histórico da venda. Fica no catálogo, zerado.
-        const avulsas = items.filter(
-          (it) => it.autoCreatedProduct === true && it.productId != null,
-        );
-        if (avulsas.length > 0) {
-          await StockDeductionService.deductWithinTx(tx, {
-            items: avulsas.map((it) => ({
-              productId: it.productId as string,
-              quantity: it.quantity,
-            })),
-            reason: `Estorno entrada — peça avulsa PDV · Conta a Receber ${id}`,
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          // 1. Status → CANCELADA na MESMA tx do estorno.
+          //
+          // `statusIs: "PAGA"` fecha a mesma corrida do markPaid, e aqui o dano
+          // é pior: estorno duplo INFLA o estoque de uma peça que não voltou ao
+          // pátio, e o marketplace passa a anunciar o que não existe. O guard de
+          // idempotência no topo do método roda fora da transação.
+          // Esta é a PRIMEIRA escrita da tx — o perdedor bloqueia aqui, antes de
+          // restaurar estoque e antes de cancelar as parcelas filhas.
+          updated = await this.repo.update(
+            "receivable",
+            id,
+            userId,
+            { status: "CANCELADA" },
+            tx,
+            { statusIs: "PAGA" },
+          );
+          // 2. Contra-lançamento de estoque (+quantity por item).
+          const result = await StockDeductionService.restoreWithinTx(tx, {
+            // Espelha o markPaid: só itens cadastrados devolvem estoque.
+            items: items
+              .filter((it) => it.productId != null)
+              .map((it) => ({
+                productId: it.productId as string,
+                quantity: it.quantity,
+              })),
+            reason: `Estorno venda balcão — Conta a Receber ${id}`,
             orderId: `receivable:${id}`,
             logPrefix: "[FinanceUseCase]",
           });
-          // Estes produtos NÃO entram no reopenOnRefill: eles não têm anúncio
-          // e voltaram a zero — reabrir não faria sentido.
-          const avulsasIds = new Set(avulsas.map((it) => it.productId));
-          restorations = restorations.filter(
-            (d) => !avulsasIds.has(d.productId),
-          );
-        }
+          restorations = result.deductions;
 
-        // ── Bloco B: nada de parcela viva em venda cancelada ──
-        // Só as EM ABERTO. Parcela já recebida é dinheiro que entrou: cancelar
-        // a linha faria o valor sumir do caixa sem devolução real. Essas ficam
-        // como estão e o operador é avisado para tratar a devolução.
-        await (tx as any).receivable.updateMany({
-          where: {
-            parentReceivableId: id,
-            userId,
-            status: { in: ["PENDENTE", "VENCIDA"] },
-          },
-          data: { status: "CANCELADA" },
-        });
-      },
-      { timeout: 60_000, maxWait: 20_000 },
-    );
+          // ── Bloco F: estorno SIMÉTRICO da peça avulsa ──
+          // O restore acima devolveu +qty também para os produtos que nasceram
+          // desta venda — e eles não existiam antes dela. Sem esta compensação,
+          // o catálogo ficaria com um "produto fantasma" com estoque de uma peça
+          // que já saiu. A saída de −qty devolve o produto a estoque 0.
+          //
+          // O produto NÃO é apagado: `ReceivableItem.product` é onDelete Restrict
+          // e apagar produto apaga o StockLog junto (product.repository.ts:1630),
+          // destruindo o histórico da venda. Fica no catálogo, zerado.
+          const avulsas = items.filter(
+            (it) => it.autoCreatedProduct === true && it.productId != null,
+          );
+          if (avulsas.length > 0) {
+            await StockDeductionService.deductWithinTx(tx, {
+              items: avulsas.map((it) => ({
+                productId: it.productId as string,
+                quantity: it.quantity,
+              })),
+              reason: `Estorno entrada — peça avulsa PDV · Conta a Receber ${id}`,
+              orderId: `receivable:${id}`,
+              logPrefix: "[FinanceUseCase]",
+            });
+            // Estes produtos NÃO entram no reopenOnRefill: eles não têm anúncio
+            // e voltaram a zero — reabrir não faria sentido.
+            const avulsasIds = new Set(avulsas.map((it) => it.productId));
+            restorations = restorations.filter(
+              (d) => !avulsasIds.has(d.productId),
+            );
+          }
+
+          // ── Bloco B: nada de parcela viva em venda cancelada ──
+          // Só as EM ABERTO. Parcela já recebida é dinheiro que entrou: cancelar
+          // a linha faria o valor sumir do caixa sem devolução real. Essas ficam
+          // como estão e o operador é avisado para tratar a devolução.
+          await (tx as any).receivable.updateMany({
+            where: {
+              parentReceivableId: id,
+              userId,
+              status: { in: ["PENDENTE", "VENCIDA"] },
+            },
+            data: { status: "CANCELADA" },
+          });
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+    } catch (e) {
+      if (e instanceof FinanceStatusConflictError) {
+        // Perdeu a corrida — outro estorno já cancelou esta venda. Rollback
+        // completo: nada foi restaurado aqui. Mesma resposta do caminho
+        // "já CANCELADA" no topo, e sem disparar efeitos pós-commit (quem
+        // venceu já reabriu anúncios e reconciliou a sucata).
+        const atual = await this.repo.findById("receivable", id, userId);
+        if (!atual) throw new Error("Conta a receber não encontrada");
+        return atual;
+      }
+      throw e;
+    }
 
     // Pós-commit: sincroniza com marketplaces + reabre anúncios cujos
     // produtos saíram de zero. Best-effort, fora da tx.
@@ -1160,6 +1210,32 @@ export class FinanceUseCase {
             },
           ];
 
+    // ── Venda parcelada: fechar a aritmética do grupo de pagamento ──
+    //
+    // Os ITENS acima são a venda INTEIRA (ficam todos na conta-mãe), mas
+    // `entry.payments`/`entry.totalAmount` valem só a ENTRADA. Sem isto o
+    // documento sai com SUM(vPag) = vNF − saldo a prazo: a nota diz que o
+    // cliente pagou menos do que a mercadoria vale.
+    //
+    // É a MESMA reconciliação que a rota do cupom já faz (`findChildren`);
+    // aqui ela só estava faltando no caminho fiscal. O saldo entra como
+    // CREDITO_LOJA (SEFAZ 05), que é o crediário próprio da loja — o mesmo
+    // meio que o sistema já usa para FIADO, e a descrição correta de um saldo
+    // parcelado pela própria loja.
+    //
+    // Venda à vista não tem filhas ⇒ nada é acrescentado ⇒ byte-idêntico.
+    const parcelas = await this.repo.findChildren(entry.id, userId);
+    const saldoAPrazo = parcelas.reduce(
+      (acc, f) => acc + Number(f.totalAmount),
+      0,
+    );
+    if (saldoAPrazo > 0) {
+      pagamentos.push({
+        meio: "CREDITO_LOJA",
+        valor: Number(saldoAPrazo.toFixed(2)),
+      });
+    }
+
     return this.nfeDraftUseCase.createPopulatedFromReceivable(userId, {
       customerId: entry.customerId,
       receivableId: entry.id,
@@ -1202,7 +1278,21 @@ export class FinanceUseCase {
         "Conta sem itens é inválida para NFC-e — adicione produtos antes de emitir.",
       );
     }
-    if (Number(entry.totalAmount) > NFCE_LIMITE_VALOR) {
+    // O limite legal vale para a VENDA, não para a conta-mãe. Numa venda
+    // parcelada, `totalAmount` da mãe guarda só a ENTRADA
+    // (finance.repository.ts, createWithSplit) enquanto TODOS os itens ficam
+    // nela: uma venda de R$ 12.000 com entrada de R$ 3.000 passava por este
+    // guard e só era barrada lá na emissão, pelo total dos itens
+    // (nfe-emission.usecase.ts) — erro tardio, em vez de rotear para a NF-e 55.
+    //
+    // Somar as filhas só pode AUMENTAR o valor avaliado, então nenhuma emissão
+    // que hoje funciona deixa de funcionar. Venda à vista não tem filhas ⇒
+    // soma 0 ⇒ comportamento byte-idêntico ao atual.
+    const filhas = await this.repo.findChildren(receivableId, userId);
+    const valorDaVenda =
+      Number(entry.totalAmount) +
+      filhas.reduce((acc, f) => acc + Number(f.totalAmount), 0);
+    if (valorDaVenda > NFCE_LIMITE_VALOR) {
       throw new Error(
         "NFC-e limitada a R$ 10.000,00 — use Emitir NF-e (modelo 55) para esta venda.",
       );

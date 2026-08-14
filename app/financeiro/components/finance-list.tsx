@@ -150,6 +150,9 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   // Bloco E — alvo do estorno e id em voo (a linha vira spinner).
   const [reverseTarget, setReverseTarget] = useState<FinanceRow | null>(null);
   const [reversingId, setReversingId] = useState<string | null>(null);
+  // Id em voo do "marcar como paga" — o botão não tinha guarda nenhuma e o
+  // duplo clique disparava dois POST /pay (ver handleMarkPaid).
+  const [payingId, setPayingId] = useState<string | null>(null);
   // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
   // egress). Guarda o id em carregamento p/ feedback no botão de editar.
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
@@ -284,6 +287,13 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   const handleMarkPaid = async (r: FinanceRow) => {
     const email = session?.user?.email;
     if (!email) return;
+    // Defesa em profundidade contra o duplo clique. A proteção de verdade é o
+    // compare-and-swap no backend (dois POST /pay simultâneos baixavam estoque
+    // duas vezes); isto só evita que o operador dispare a corrida sem querer —
+    // e não cobre duas abas nem dois operadores. Espelha o `reversingId` que a
+    // ação de estorno já usa logo abaixo.
+    if (payingId) return;
+    setPayingId(r.id);
     try {
       const res = await fetch(`${getApiBaseUrl()}${basePath}/${r.id}/pay`, {
         method: "POST",
@@ -295,6 +305,8 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       onChanged?.();
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Erro", "error");
+    } finally {
+      setPayingId(null);
     }
   };
 
@@ -494,8 +506,13 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                             variant="ghost"
                             title="Marcar como paga"
                             onClick={() => handleMarkPaid(r)}
+                            disabled={payingId === r.id}
                           >
-                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            {payingId === r.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            )}
                           </Button>
                         )}
                         {kind === "receivable" && (
