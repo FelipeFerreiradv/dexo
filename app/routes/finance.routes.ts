@@ -18,6 +18,40 @@ import { renderFinanceReport } from "../reports/finance-report";
 import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
 import { parseCompanyIdParam } from "./fiscal.routes";
 
+/**
+ * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
+ *
+ * Espelha `FinanceEntryCreate` menos `userId` (ou seja, `FinanceEntryUpdate`),
+ * menos os dois campos governados por rotas próprias. Campo de fora da lista é
+ * DESCARTADO; `PROTECTED_UPDATE_FIELDS` responde 400.
+ *
+ * Manter em sincronia com `FinanceEntryCreate` (finance.interface.ts): um campo
+ * novo lá que não entre aqui é silenciosamente ignorado no update.
+ */
+export const UPDATABLE_FIELDS = new Set([
+  "customerId",
+  "newCustomer",
+  "unidadeId",
+  "document",
+  "reason",
+  "debtDetails",
+  "totalAmount",
+  "fineAmount",
+  "finePercent",
+  "interestPercent",
+  "toleranceDays",
+  "installments",
+  "periodDays",
+  "dueDate",
+  "paymentMethod",
+  "items",
+  "payments",
+  "installmentPlan",
+]);
+
+/** Só mudam por `POST /:id/pay` e `POST /:id/reverse`, que cuidam do estoque. */
+export const PROTECTED_UPDATE_FIELDS = ["status", "paidAt"];
+
 function fmtDateTimeBR(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(
@@ -191,8 +225,40 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const body = request.body as any;
-        const entry = await useCase.update(kind, id, userId, body);
+        const body = (request.body ?? {}) as Record<string, unknown>;
+
+        // Fase 1.2 — o PUT repassava o body CRU ao usecase, e `updateSingle`
+        // faz `{...data}` direto no `updateMany`. Na prática, qualquer coluna
+        // escalar da tabela era gravável por HTTP.
+        //
+        // `status` e `paidAt` são os que causam dano de integridade e por isso
+        // respondem 400, não silêncio: quem os manda está tentando cancelar ou
+        // baixar por fora, e precisa saber que existe rota própria para isso.
+        //  - `status: "CANCELADA"` cancelava a venda SEM devolver estoque, sem
+        //    StockLog e sem reconciliar a sucata — e o `POST /reverse` legítimo
+        //    virava no-op depois (a guarda de idempotência vê CANCELADA).
+        //  - `status: "PAGA"` + `paidAt` contornava o `markPaid` inteiro: sem
+        //    baixa de estoque, sem promoção de peça avulsa, sem `pauseOnZero`.
+        //    Oversell silencioso no marketplace.
+        const protegidos = PROTECTED_UPDATE_FIELDS.filter((f) => f in body);
+        if (protegidos.length > 0) {
+          return reply.status(400).send({
+            error:
+              `Campo(s) não editável(is) por esta rota: ${protegidos.join(", ")}. ` +
+              `Use POST /${kind === "receivable" ? "receivables" : "payables"}/:id/pay para receber e ` +
+              `POST /receivables/:id/reverse para cancelar.`,
+          });
+        }
+
+        // O resto do que não é do contrato é DESCARTADO em silêncio (e não
+        // rejeitado): o formulário reenvia campos de tela como `id`, que hoje
+        // já eram inofensivos. Rejeitar quebraria a edição sem ganho nenhum.
+        const data: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(body)) {
+          if (UPDATABLE_FIELDS.has(k)) data[k] = v;
+        }
+
+        const entry = await useCase.update(kind, id, userId, data);
         return reply.status(200).send({ entry });
       } catch (error) {
         const message =
