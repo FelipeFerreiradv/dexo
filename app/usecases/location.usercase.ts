@@ -533,6 +533,72 @@ export class LocationUseCase {
   }
 
   /**
+   * Garante que cabe MAIS UMA peça na localização, ou lança
+   * `CapacityExceededError`. É a versão de uma peça só do check que
+   * `attachProducts` já fazia — existe porque criar/editar produto pela tela
+   * gravava `locationId` sem passar por nenhuma validação de capacidade
+   * (issue #273), deixando o bloqueio "Lotado" do combobox como única trava,
+   * e ela é client-side.
+   *
+   * Regras deliberadas:
+   * - `maxCapacity === 0` significa SEM limite → nunca bloqueia.
+   * - Localização inexistente ou de outro tenant → não é problema deste
+   *   método; segue em silêncio e deixa a FK/rota decidir (não vaza
+   *   existência de dado alheio).
+   * - `movingProductId` (edição) faz DUAS coisas, e as duas importam:
+   *   1. se a peça JÁ está nesta localização, não houve movimento — retorna
+   *      sem validar. Sem isso, reeditar qualquer peça de uma localização que
+   *      hoje está ACIMA do limite seria rejeitado, deixando presas justamente
+   *      as peças que precisam ser corrigidas;
+   *   2. tira a própria peça da contagem, para ela não disputar vaga consigo
+   *      mesma.
+   *
+   * Leituras enxutas de propósito (`select` explícito, `count` no banco), na
+   * linha das regras de egress da entrega de Segurança e Otimização.
+   */
+  async assertHasRoomForOne(
+    locationId: string,
+    userId: string,
+    movingProductId?: string,
+  ): Promise<void> {
+    if (movingProductId) {
+      const atual = await prisma.product.findFirst({
+        where: { id: movingProductId, userId },
+        select: { locationId: true },
+      });
+      // Já está aqui: não é entrada nova, nada a validar.
+      if (atual?.locationId === locationId) return;
+    }
+
+    const location = await prisma.location.findFirst({
+      where: { id: locationId, userId },
+      select: { code: true, maxCapacity: true },
+    });
+    // Sem limite definido, ou localização que não é deste tenant: nada a fazer.
+    if (!location || location.maxCapacity <= 0) return;
+
+    const currentCount = await prisma.product.count({
+      where: {
+        locationId,
+        ...(movingProductId ? { id: { not: movingProductId } } : {}),
+      },
+    });
+    if (currentCount + 1 <= location.maxCapacity) return;
+
+    throw new CapacityExceededError(
+      `Localização "${location.code}" está lotada (${currentCount}/${location.maxCapacity})`,
+      {
+        currentCount,
+        maxCapacity: location.maxCapacity,
+        attempting: 1,
+        wouldExceedBy: currentCount + 1 - location.maxCapacity,
+        acceptedIds: [],
+        excededIds: movingProductId ? [movingProductId] : [],
+      },
+    );
+  }
+
+  /**
    * Vincula produtos a uma localização via batch. Aborta o batch inteiro
    * com `CapacityExceededError` se exceder `maxCapacity`.
    *
