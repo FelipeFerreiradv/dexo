@@ -10,6 +10,11 @@ import {
   FinanceStatus,
   FinanceSummary,
 } from "../interfaces/finance.interface";
+import {
+  parseSaleStatusFilters,
+  needsFiscalLookup,
+  buildSaleStatusWhere,
+} from "../lib/finance-status-filters";
 
 /**
  * Transição de status ATÔMICA (compare-and-swap) — opt-in.
@@ -646,6 +651,46 @@ export class FinanceRepository {
         { reason: { contains: term, mode: "insensitive" } },
         { customer: { name: { contains: term, mode: "insensitive" } } },
       ];
+    }
+
+    // ── BLOCO C — filtro por status da venda (múltipla seleção) ──
+    //
+    // Entra em `where.AND` e NUNCA em `where.OR`: o `OR` acima já é da busca
+    // textual, e sobrescrevê-lo faria a busca sumir. Como `AND` só é
+    // acrescentado quando há filtro, a consulta sem filtro fica byte-idêntica —
+    // e os specs que casam o objeto EXATO do `where` continuam valendo.
+    const statusCodes = parseSaleStatusFilters(filters.statusIn);
+    if (statusCodes.length > 0) {
+      let faturadaIds: string[] | undefined;
+      if (needsFiscalLookup(statusCodes)) {
+        // O vínculo venda↔nota é TEXTUAL (`numeroPedido = "receivable:<id>"`),
+        // não há relação Prisma — daí a pré-consulta. Ela é estreita: filtra
+        // pelo índice `(userId, status)` e só então pelo prefixo.
+        //
+        // MEDIDO em produção (14/08/2026): 6.612 notas, 6.332 autorizadas, mas
+        // só 16 ligadas a uma venda e 1 autorizada+ligada. O `IN` resultante é
+        // minúsculo. Se o balcão fiscal crescer para milhares de vínculos, esta
+        // lista precisa virar subconsulta — o número acima é o gatilho.
+        const notas = await prisma.nfeEmitida.findMany({
+          where: {
+            userId,
+            status: "AUTHORIZED",
+            numeroPedido: { startsWith: "receivable:" },
+          },
+          select: { numeroPedido: true },
+        });
+        faturadaIds = notas
+          .map((n) => n.numeroPedido?.slice("receivable:".length))
+          .filter((v): v is string => !!v);
+      }
+
+      const fragmentos = buildSaleStatusWhere(statusCodes, {
+        now: new Date(),
+        faturadaIds,
+      });
+      if (fragmentos && fragmentos.length > 0) {
+        where.AND = [...(where.AND ?? []), { OR: fragmentos }];
+      }
     }
 
     const [rows, total] = await Promise.all([

@@ -28,6 +28,7 @@ import {
 } from "../lib/pdv-nfce";
 import { PdvOverview } from "./pdv-overview";
 import { PdvSalesList, type PdvSaleRow } from "./pdv-sales-list";
+import type { SaleStatusFilterCode } from "@/app/financeiro/components/shared/sale-status-filter";
 import { PdvBudgetsPanel } from "./pdv-budgets-panel";
 
 // PDV Balcão — casca do módulo próprio sobre o fluxo de venda balcão que já
@@ -117,6 +118,12 @@ export function PdvView() {
 
   const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
+  // BLOCO C — filtro de status do livro do dia. Vazio = todos: o parâmetro
+  // não é enviado e a busca fica idêntica à de hoje.
+  const [statusFilters, setStatusFilters] = useState<SaleStatusFilterCode[]>(
+    [],
+  );
+
   const fetchSales = useCallback(async () => {
     const email = session?.user?.email;
     if (!email) return;
@@ -130,6 +137,8 @@ export function PdvView() {
         limit: String(SALES_FETCH_LIMIT),
         hasItems: "true",
       });
+      if (statusFilters.length > 0)
+        params.set("statusIn", statusFilters.join(","));
       const res = await fetch(
         `${getApiBaseUrl()}/finance/receivables?${params}`,
         { headers: { email }, signal: ctrl.signal },
@@ -143,7 +152,7 @@ export function PdvView() {
     } finally {
       if (abortRef.current === ctrl) setSalesLoading(false);
     }
-  }, [session?.user?.email, showToast]);
+  }, [session?.user?.email, showToast, statusFilters]);
 
   useEffect(() => {
     fetchSales();
@@ -374,6 +383,8 @@ export function PdvView() {
         <div className="min-w-0 xl:col-span-2">
           <PdvSalesList
             rows={sales}
+            statusFilters={statusFilters}
+            onStatusFiltersChange={setStatusFilters}
             loading={salesLoading}
             onToast={showToast}
             onChanged={bumpRefresh}

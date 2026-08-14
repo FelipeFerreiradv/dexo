@@ -185,6 +185,16 @@ export type FinanceEntryUpdate = Partial<Omit<FinanceEntryCreate, "userId">>;
 export interface FinanceListFilters {
   search?: string;
   status?: FinanceStatus;
+  /**
+   * BLOCO C — filtro por status da VENDA, com múltipla seleção. Lista separada
+   * por vírgula no vocabulário de `lib/finance-status-filters.ts`
+   * (ABERTA, VENCIDA, RECEBIDA, PARCELADA, FATURADA, CANCELADA), que NÃO é o
+   * mesmo dos 4 valores de `FinanceStatus` — três dos rótulos são derivados.
+   *
+   * Campo NOVO em vez de sobrecarregar `status`: aquele continua aceitando um
+   * único `FinanceStatus` literal, como sempre. Ausente ⇒ consulta idêntica.
+   */
+  statusIn?: string;
   customerId?: string;
   // undefined/ausente = todas (comportamento atual); "sem_unidade" = unidadeId NULL;
   // qualquer outro valor = filtra por aquela unidade.

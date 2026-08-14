@@ -24,6 +24,10 @@ import { formatToBRL } from "@/components/ui/currency-input";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
 import {
+  SaleStatusFilter,
+  type SaleStatusFilterCode,
+} from "@/app/financeiro/components/shared/sale-status-filter";
+import {
   paymentMethodLabel,
   paymentMethodsSummary,
 } from "@/app/lib/payment-methods";
@@ -63,6 +67,10 @@ export interface PdvSaleRow {
 
 interface Props {
   rows: PdvSaleRow[];
+  // BLOCO C — filtro de status do livro do dia. Controlado pelo PdvView,
+  // que é quem faz o fetch. Ausente => o cabeçalho fica como sempre foi.
+  statusFilters?: SaleStatusFilterCode[];
+  onStatusFiltersChange?: (v: SaleStatusFilterCode[]) => void;
   loading: boolean;
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
   onChanged?: () => void;
@@ -109,6 +117,8 @@ function formatWhen(iso: string) {
 
 export function PdvSalesList({
   rows,
+  statusFilters,
+  onStatusFiltersChange,
   loading,
   onToast,
   onChanged,
@@ -155,7 +165,7 @@ export function PdvSalesList({
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <SectionHeading
           eyebrow="Livro do dia · Balcão"
           title="Vendas"
@@ -166,6 +176,12 @@ export function PdvSalesList({
               : "Contas a receber de venda balcão. Edição, estorno e cupom ficam no Financeiro."
           }
         />
+        {onStatusFiltersChange && (
+          <SaleStatusFilter
+            value={statusFilters ?? []}
+            onChange={onStatusFiltersChange}
+          />
+        )}
       </CardHeader>
       <CardContent>
         {loading ? (

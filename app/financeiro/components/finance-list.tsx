@@ -62,6 +62,10 @@ import {
   paymentMethodsForKind,
   paymentMethodsSummary,
 } from "@/app/lib/payment-methods";
+import {
+  SaleStatusFilter,
+  type SaleStatusFilterCode,
+} from "./shared/sale-status-filter";
 
 interface FinanceRow {
   id: string;
@@ -153,6 +157,11 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   // Id em voo do "marcar como paga" — o botão não tinha guarda nenhuma e o
   // duplo clique disparava dois POST /pay (ver handleMarkPaid).
   const [payingId, setPayingId] = useState<string | null>(null);
+  // BLOCO C — status selecionados. Vazio = todos (não envia o parâmetro,
+  // então a consulta fica idêntica à de hoje).
+  const [statusFilters, setStatusFilters] = useState<SaleStatusFilterCode[]>(
+    [],
+  );
   // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
   // egress). Guarda o id em carregamento p/ feedback no botão de editar.
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
@@ -189,6 +198,9 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       if (unidadeId) params.set("unidadeId", unidadeId);
       // methodFilter ausente => não envia => resultado idêntico ao atual.
       if (methodFilter) params.set("paymentMethod", methodFilter);
+      // Ausente => não envia => resultado idêntico ao atual.
+      if (statusFilters.length > 0)
+        params.set("statusIn", statusFilters.join(","));
       const res = await fetch(`${getApiBaseUrl()}${basePath}?${params}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -210,6 +222,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     searchTerm,
     unidadeId,
     methodFilter,
+    statusFilters,
     basePath,
     onToast,
   ]);
@@ -421,6 +434,16 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                 ))}
               </SelectContent>
             </Select>
+            {/* BLOCO C — filtro por status. Componente compartilhado com o
+                livro do dia do PDV: rótulo e comportamento idênticos por
+                construção. */}
+            <SaleStatusFilter
+              value={statusFilters}
+              onChange={(v) => {
+                setStatusFilters(v);
+                setPage(1);
+              }}
+            />
           </div>
 
           <div className="rounded-xl border border-border/70 overflow-hidden">

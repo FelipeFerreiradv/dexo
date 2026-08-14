@@ -131,6 +131,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         const {
           search,
           status,
+          statusIn,
           customerId,
           unidadeId,
           paymentMethod,
@@ -145,6 +146,8 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           {
             search: search || undefined,
             status: (status as FinanceStatus) || undefined,
+            // BLOCO C — ausente/"" ⇒ não filtra ⇒ consulta idêntica à de hoje.
+            statusIn: statusIn || undefined,
             customerId: customerId || undefined,
             unidadeId: unidadeId || undefined,
             paymentMethod: paymentMethod || undefined,
