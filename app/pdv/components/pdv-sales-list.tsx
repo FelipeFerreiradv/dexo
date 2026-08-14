@@ -23,7 +23,10 @@ import {
 import { formatToBRL } from "@/components/ui/currency-input";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
-import { paymentMethodLabel } from "@/app/lib/payment-methods";
+import {
+  paymentMethodLabel,
+  paymentMethodsSummary,
+} from "@/app/lib/payment-methods";
 import { SectionHeading } from "@/components/section-heading";
 import {
   isFiscalUiEnabled,
@@ -53,6 +56,9 @@ export interface PdvSaleRow {
   // Ausentes = venda à vista.
   installmentsCount?: number;
   installmentsAmount?: number;
+  // Fase 1.1 — linhas de pagamento quando a venda teve mais de uma forma.
+  // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
+  payments?: { method: string; amount: number }[];
 }
 
 interface Props {
@@ -208,9 +214,23 @@ export function PdvSalesList({
                   </TableCell>
                   <TableCell>
                     {r.paymentMethod ? (
-                      <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                        {paymentMethodLabel(r.paymentMethod)}
-                      </span>
+                      (() => {
+                        // Fase 1.1 — venda em N formas mostrava só a
+                        // predominante, como se as outras não existissem.
+                        // Com 0 ou 1 linha o rótulo é idêntico ao de antes.
+                        const { label, detail } = paymentMethodsSummary(
+                          r.paymentMethod,
+                          r.payments,
+                        );
+                        return (
+                          <span
+                            className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                            title={detail ?? undefined}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })()
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}

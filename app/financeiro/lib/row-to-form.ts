@@ -71,3 +71,31 @@ export function financeRowToFormSeed(r: FinanceRowForForm): FinanceFormSeed {
     ...(r.periodDays !== undefined && { periodDays: r.periodDays }),
   };
 }
+
+/**
+ * Fase 1.1 — linhas de pagamento do DETALHE (`GET /:id`) para o formulário.
+ *
+ * O `GET /:id` sempre devolveu `payments` (o `findById` inclui a relação), mas
+ * a edição lia apenas `items` e descartava o resto. Resultado: reabrir uma
+ * venda em PIX + Crédito mostrava o bloco de pagamento VAZIO, e o operador
+ * concluía que as formas não tinham sido salvas — elas estavam no banco o
+ * tempo todo.
+ *
+ * `tendered` NÃO é reidratado de propósito: é estado de tela para calcular
+ * troco, nunca foi persistido, e inventá-lo aqui exibiria um troco falso.
+ *
+ * Devolve `undefined` (e não `[]`) quando não há linhas: `[]` significa
+ * "apague as linhas existentes" no submit, e é exatamente o que NÃO se quer ao
+ * abrir uma venda cujo detalhe não pôde ser lido.
+ */
+export function entryPaymentsToForm(
+  payments: unknown,
+): Array<{ method: string; amount: number }> | undefined {
+  if (!Array.isArray(payments) || payments.length === 0) return undefined;
+  return payments
+    .filter(
+      (p): p is { method: string; amount: number | string } =>
+        !!p && typeof p.method === "string" && p.method.length > 0,
+    )
+    .map((p) => ({ method: p.method, amount: Number(p.amount) }));
+}

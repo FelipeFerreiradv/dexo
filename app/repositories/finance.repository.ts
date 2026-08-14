@@ -680,6 +680,44 @@ export class FinanceRepository {
       }
     }
 
+    // Fase 1.1 — pagamento combinado na LISTAGEM.
+    //
+    // O escalar `paymentMethod` guarda só o PREDOMINANTE, então uma venda em
+    // PIX + Crédito aparecia na lista como se fosse só "Crédito" — e o
+    // operador concluía, com razão, que a segunda forma não tinha sido salva.
+    //
+    // UMA consulta por página (índice em `receivableId`), no mesmo espírito do
+    // agregado de parcelas acima. Diferente daquele, roda também para a lista
+    // do Financeiro: é lá que o cliente confere a venda. Linhas sem pagamento
+    // detalhado não ganham campo nenhum — a resposta de uma conta comum segue
+    // byte-idêntica.
+    //
+    // ESCOPO DE TENANT: `ReceivablePayment` NÃO tem `userId`. Os ids já vêm de
+    // uma query escopada, mas o filtro por `receivable.userId` é a mesma
+    // defense-in-depth que `getScrapParts` aplica — sem ele, um id vazado
+    // atravessaria tenants.
+    if (kind === "receivable" && items.length > 0) {
+      const ids = items.map((i: FinanceEntry) => i.id);
+      const linhas = await prisma.receivablePayment.findMany({
+        where: { receivableId: { in: ids }, receivable: { userId } },
+        select: { receivableId: true, method: true, amount: true },
+        // Ordem em que o operador digitou — a mesma do cupom e da edição.
+        orderBy: { createdAt: "asc" },
+      });
+      if (linhas.length > 0) {
+        const porConta = new Map<string, { method: string; amount: number }[]>();
+        for (const l of linhas) {
+          const lista = porConta.get(l.receivableId) ?? [];
+          lista.push({ method: l.method, amount: Number(l.amount) });
+          porConta.set(l.receivableId, lista);
+        }
+        for (const it of items) {
+          const p = porConta.get(it.id);
+          if (p) it.payments = p;
+        }
+      }
+    }
+
     return {
       items,
       total,

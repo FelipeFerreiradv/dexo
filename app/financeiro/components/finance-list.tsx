@@ -55,12 +55,12 @@ import { getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
-import { financeRowToFormSeed } from "../lib/row-to-form";
+import { financeRowToFormSeed, entryPaymentsToForm } from "../lib/row-to-form";
 import { downloadReceipt } from "../lib/download-receipt";
 import { reverseSale } from "../lib/reverse-sale";
 import {
   paymentMethodsForKind,
-  paymentMethodLabel,
+  paymentMethodsSummary,
 } from "@/app/lib/payment-methods";
 
 interface FinanceRow {
@@ -81,6 +81,9 @@ interface FinanceRow {
   interestPercent?: number | null;
   toleranceDays?: number | null;
   periodDays?: number | null;
+  // Fase 1.1 — linhas de pagamento quando a venda teve mais de uma forma.
+  // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
+  payments?: { method: string; amount: number }[];
   status: "PENDENTE" | "PAGA" | "VENCIDA" | "CANCELADA";
   customer: { id: string; name: string; cpf: string | null } | null;
   unidadeId?: string | null;
@@ -257,6 +260,12 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
         } else {
           throw new Error("Resposta sem itens");
         }
+        // Fase 1.1 — as linhas de pagamento viajam JUNTO dos itens no mesmo
+        // `GET /:id` (buildInclude traz as duas relações). Só faltava lê-las:
+        // sem isto o bloco de pagamento combinado reabria vazio e a venda
+        // parecia ter perdido as formas.
+        const pagamentos = entryPaymentsToForm(data?.entry?.payments);
+        if (pagamentos) base.payments = pagamentos;
       } catch {
         onToast(
           "Não foi possível carregar os itens desta conta. Tente novamente.",
@@ -447,13 +456,25 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                         : "—"}
                     </TableCell>
                     <TableCell>
-                      {r.paymentMethod ? (
-                        <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          {paymentMethodLabel(r.paymentMethod)}
-                        </span>
-                      ) : (
-                        "—"
-                      )}
+                      {r.paymentMethod
+                        ? (() => {
+                            // Fase 1.1 — venda em N formas mostrava só a
+                            // predominante, como se as outras não existissem.
+                            // Com 0 ou 1 linha o rótulo é idêntico ao de antes.
+                            const { label, detail } = paymentMethodsSummary(
+                              r.paymentMethod,
+                              r.payments,
+                            );
+                            return (
+                              <span
+                                className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                                title={detail ?? undefined}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })()
+                        : "—"}
                     </TableCell>
                     <TableCell>
                       <span

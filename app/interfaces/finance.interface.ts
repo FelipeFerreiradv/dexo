@@ -90,7 +90,11 @@ export interface ReceivablePaymentInput {
 }
 
 export interface ReceivablePaymentSnapshot extends ReceivablePaymentInput {
-  id: string;
+  // Opcional desde a Fase 1.1: o DETALHE (findById) traz o id, a LISTAGEM não.
+  // Trafegar um cuid por linha de pagamento em toda página seria egress puro —
+  // e nenhum consumidor lê este campo (o único, o mapeamento fiscal em
+  // finance.usecase.ts, usa apenas `method` e `amount`).
+  id?: string;
   createdAt?: Date;
 }
 
