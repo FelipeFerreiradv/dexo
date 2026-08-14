@@ -54,6 +54,8 @@ import {
   type LocationSelectItem,
 } from "@/app/produtos/components/location-combobox";
 import { LocationScanButton } from "./location-scan-button";
+import { ScrapLinkSection } from "./scrap-link-section";
+import { isScrapRelinkUiEnabled } from "../lib/scrap-relink";
 import { Switch } from "@/components/ui/switch";
 
 // NextAuth
@@ -232,6 +234,10 @@ export interface EditProductDialogListingContext {
   externalListingId: string | null;
   status: string;
 }
+
+// BLOCO J — seletor de sucata no modal de edição. Flag OFF ⇒ o modal renderiza
+// exatamente como hoje (nenhum campo, nenhum request extra).
+const SCRAP_RELINK_UI_ENABLED = isScrapRelinkUiEnabled();
 
 interface EditProductDialogProps {
   product: Product;
@@ -2708,6 +2714,18 @@ export function EditProductDialog({
                   Para peças de sucata, informe o veículo de origem
                 </p>
               </div>
+
+              {/* BLOCO J — vínculo de lote. Vizinho de "Veículo de Origem"
+                  porque é a mesma pergunta ("de onde veio esta peça?"), mas
+                  com endpoint, confirmação e efeito próprios. Flag OFF ⇒ nem
+                  é montado: nenhum campo novo, nenhum request novo. */}
+              {SCRAP_RELINK_UI_ENABLED && (
+                <ScrapLinkSection
+                  productId={product.id}
+                  onToast={onToast}
+                  onChanged={onProductUpdated}
+                />
+              )}
 
               {/* Medidas (cm / kg) */}
               <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">

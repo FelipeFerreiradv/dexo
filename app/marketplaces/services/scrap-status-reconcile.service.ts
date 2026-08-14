@@ -63,6 +63,24 @@ export interface ReconcileForProductsInput {
 }
 
 /**
+ * Entrada por SUCATAS — usada quando quem muda é o VÍNCULO, não a venda.
+ *
+ * Existe por causa do BLOCO J (trocar a sucata de uma peça): depois do
+ * `UPDATE`, o produto já não aponta para a sucata ANTIGA, então
+ * `reconcileForProducts` — que resolve as sucatas a partir do produto — nunca
+ * a alcançaria. A antiga é justamente a que pode ter mudado de estado (perdeu
+ * a última peça em estoque, ou deixou de estar esgotada).
+ *
+ * Aqui `userId` é OBRIGATÓRIO: ao contrário da entrada por produtos, não há um
+ * `Product.userId` para parear na consulta — o dono é a única guarda.
+ */
+export interface ReconcileForScrapsInput {
+  scrapIds: string[];
+  userId: string;
+  logPrefix?: string;
+}
+
+/**
  * Quais produtos, após uma VENDA de marketplace, merecem reconciliação do lote.
  *
  * Função pura porque é a política de disparo do caminho mais sensível do
@@ -140,6 +158,49 @@ export class ScrapStatusReconcileService {
         ),
       );
     });
+  }
+
+  /**
+   * Agenda a reconciliação de sucatas INFORMADAS pelo chamador (não-bloqueante).
+   *
+   * Mesmo contrato das irmãs: `void`, best-effort, `setImmediate`, uma sucata
+   * por advisory lock. A diferença é de onde vem a lista — aqui o chamador já
+   * sabe quais lotes mexeram (a origem e o destino de um vínculo), e é isso
+   * que permite alcançar a sucata que o produto ACABOU DE DEIXAR.
+   */
+  static reconcileForScraps(input: ReconcileForScrapsInput): void {
+    const logPrefix = input.logPrefix ?? "[ScrapStatusReconcile]";
+    const scrapIds = Array.from(new Set(input.scrapIds ?? [])).filter(Boolean);
+    if (scrapIds.length === 0 || !input.userId) return;
+    setImmediate(() => {
+      void ScrapStatusReconcileService.runForScraps({
+        ...input,
+        scrapIds,
+      }).catch((err) =>
+        console.error(
+          `${logPrefix} Falha ao reconciliar status de sucata (best-effort):`,
+          err,
+        ),
+      );
+    });
+  }
+
+  private static async runForScraps(
+    input: ReconcileForScrapsInput,
+  ): Promise<void> {
+    const { scrapIds, userId } = input;
+    const logPrefix = input.logPrefix ?? "[ScrapStatusReconcile]";
+
+    // O dono é resolvido NA CONSULTA, nunca confiado ao chamador: um id de
+    // outro tenant simplesmente não volta da lista e portanto não é tocado.
+    const rows = await prisma.$queryRaw<{ scrapId: string }[]>(Prisma.sql`
+      SELECT s."id" AS "scrapId"
+        FROM "Scrap" s
+       WHERE s."id" IN (${Prisma.join(scrapIds)})
+         AND s."userId" = ${userId}
+    `);
+
+    await ScrapStatusReconcileService.reconcileMany(rows, userId, logPrefix);
   }
 
   private static async runForProducts(
