@@ -306,7 +306,15 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao atualizar";
-        const status = message.includes("não encontrado") ? 404 : 500;
+        // BLOCO E — "Estornar" é a palavra que o DELETE de conta paga já usa
+        // para sinalizar conflito de ESTADO (409), e não erro de entrada. O
+        // ramo é aditivo: nenhuma mensagem anterior deste handler a contém,
+        // então todo caminho existente continua caindo onde caía.
+        const status = message.includes("não encontrado")
+          ? 404
+          : message.includes("Estornar")
+            ? 409
+            : 500;
         return reply.status(status).send({ error: message });
       }
     };

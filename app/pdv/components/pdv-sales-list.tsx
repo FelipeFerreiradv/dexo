@@ -3,7 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { ArrowRight, CheckCircle2, Loader2, ReceiptText } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Loader2,
+  Pencil,
+  ReceiptText,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +50,7 @@ import {
   isPdvActionsMenuEnabled,
   isSaleCancelEnabled,
 } from "../lib/pdv-actions";
+import { canEditSaleInPdv } from "../lib/pdv-edit-sale";
 import { PdvSaleActions } from "./pdv-sale-actions";
 
 // "Livro do dia" do PDV — as vendas balcão recentes (contas a receber COM
@@ -93,6 +100,14 @@ interface Props {
   // Bloco D (multi-CNPJ): emitente selecionado no caixa, repassado ao rascunho
   // de NF-e 55 do menu de ações. Ausente/null ⇒ CNPJ padrão (igual a hoje).
   nfceCompanyId?: string | null;
+  /**
+   * BLOCO E — abre a venda para correção. AUSENTE ⇒ o botão não existe e a
+   * coluna de ações é a de hoje. Quem carrega e abre o formulário é o PdvView
+   * (que já tem o FinanceDialog montado).
+   */
+  onEditSale?: (row: PdvSaleRow) => void;
+  /** Id em carregamento — vira spinner no botão da linha. */
+  editingSaleId?: string | null;
 }
 
 // Bloco D — menu "Ações". Flag OFF ⇒ a coluna renderiza EXATAMENTE os dois
@@ -142,6 +157,8 @@ export function PdvSalesList({
   onChanged,
   onNfce,
   nfceCompanyId,
+  onEditSale,
+  editingSaleId,
 }: Props) {
   const { data: session } = useSession();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -333,6 +350,30 @@ export function PdvSalesList({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
+                      {/* BLOCO E — corrigir a venda SEM sair do caixa, e só
+                          enquanto ela não foi recebida: depois da baixa o
+                          estoque já saiu, e o backend recusa (409). Vem antes
+                          de "Receber" porque é o que se faz primeiro quando
+                          se percebe o erro. */}
+                      {onEditSale && canEditSaleInPdv(r.status) && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Corrigir esta venda"
+                          disabled={
+                            editingSaleId !== null &&
+                            editingSaleId !== undefined
+                          }
+                          onClick={() => onEditSale(r)}
+                        >
+                          {editingSaleId === r.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Pencil className="h-4 w-4" />
+                          )}
+                          Editar
+                        </Button>
+                      )}
                       {r.status !== "PAGA" && r.status !== "CANCELADA" && (
                         <Button
                           size="sm"

@@ -30,6 +30,12 @@ import {
   isCancelReasonEnabled,
   type NormalizedCancelReason,
 } from "../financeiro/lib/cancel-reasons";
+import {
+  blockedFieldsOnPaidSale,
+  isSaleEditGuardEnabled,
+  saleEditGuardMessage,
+  touchesProtectedFields,
+} from "../financeiro/lib/sale-edit-guard";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
   FinanceRepository,
@@ -571,9 +577,34 @@ export class FinanceUseCase {
     // BLOCO H — o "o quê mudou" precisa do ANTES. Só lê quando a timeline
     // está ligada E é receivable: fora disso, nenhuma consulta extra.
     const querAuditar = kind === "receivable" && isSaleTimelineEnabled();
-    const antes = querAuditar
-      ? await this.repo.findById(kind, id, userId)
-      : null;
+    // BLOCO E — a guarda de venda recebida também precisa do estado atual, mas
+    // só quando o payload ENCOSTA num campo vigiado. Sem isso, nenhuma
+    // consulta: editar o documento de uma conta segue custando o mesmo de hoje.
+    const querGuardar =
+      kind === "receivable" &&
+      isSaleEditGuardEnabled() &&
+      touchesProtectedFields(data as Record<string, unknown>);
+    // Uma leitura serve às duas necessidades — nunca duas.
+    const antes =
+      querAuditar || querGuardar
+        ? await this.repo.findById(kind, id, userId)
+        : null;
+
+    if (querGuardar) {
+      // A conta sumiu entre a tela e o submit: deixa o erro de "não
+      // encontrado" seguir o caminho de sempre (404), em vez de virar um
+      // bloqueio confuso.
+      if (!antes) throw new Error("Registro financeiro não encontrado");
+      const bloqueados = blockedFieldsOnPaidSale(
+        data as Record<string, unknown>,
+        antes.status,
+      );
+      if (bloqueados.length > 0) {
+        // A mensagem contém "Estornar" — é por ela que o handler mapeia 409,
+        // exatamente como já faz com o DELETE de conta paga com itens.
+        throw new Error(saleEditGuardMessage(bloqueados));
+      }
+    }
 
     const atualizada = await this.repo.update(kind, id, userId, data);
 

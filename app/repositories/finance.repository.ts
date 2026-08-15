@@ -567,6 +567,26 @@ export class FinanceRepository {
     // Só toca a relação que veio no payload: um update que manda `payments`
     // sem `items` (ou vice-versa) NÃO pode apagar a outra lista.
     if (hasItemsField) {
+      // BLOCO E — `autoCreatedProduct` marca a peça avulsa que virou produto
+      // do catálogo no pagamento, e é ELE que dispara a compensação simétrica
+      // do estorno (finance.usecase.ts:1089). O replace o perdia: o formulário
+      // não conhece o campo, então nenhuma edição o reenviava, e o `reverse`
+      // seguinte devolvia +qty sem a saída — produto fantasma com estoque
+      // positivo de peça que já saiu da loja.
+      //
+      // Preservado NO SERVIDOR, e não confiado ao cliente: a marca é um fato
+      // do backend (quem promoveu foi o markPaid), e depender de cada tela
+      // lembrar de reenviá-la é a receita para perdê-la de novo.
+      const anteriores = await (tx as any).receivableItem.findMany({
+        where: { receivableId: id, autoCreatedProduct: true },
+        select: { productId: true },
+      });
+      const eraAutoCriado = new Set<string>(
+        ((anteriores ?? []) as { productId: string | null }[])
+          .map((a) => a.productId)
+          .filter((p): p is string => !!p),
+      );
+
       await (tx as any).receivableItem.deleteMany({
         where: { receivableId: id },
       });
@@ -581,6 +601,12 @@ export class FinanceRepository {
             quantity: it.quantity,
             unitPrice: it.unitPrice,
             ...(it.createCatalogProduct ? { createCatalogProduct: true } : {}),
+            // Spread CONDICIONAL: sem marca a preservar, o objeto sai
+            // byte-idêntico ao de antes — inclusive para o teste que o afirma
+            // campo a campo.
+            ...(it.productId && eraAutoCriado.has(it.productId)
+              ? { autoCreatedProduct: true }
+              : {}),
           })),
         });
       }

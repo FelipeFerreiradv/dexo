@@ -27,6 +27,9 @@ import {
   isNfceUiEnabled,
   nfceToastFor,
 } from "../lib/pdv-nfce";
+import { isPdvEditSaleEnabled } from "../lib/pdv-actions";
+import { fetchSaleForEdit } from "../lib/pdv-edit-sale";
+import type { FinanceFormSeed } from "@/app/financeiro/lib/row-to-form";
 import {
   QUICK_SALE_PARAM,
   buildQuickSaleSeed,
@@ -58,16 +61,29 @@ interface Toast {
 // sem virar um dump da base — regra da casa: listagens enxutas por padrão.
 const SALES_FETCH_LIMIT = 50;
 
+// BLOCO E — botão "Editar" no livro do dia. Flag OFF ⇒ o livro renderiza
+// exatamente como hoje e o operador segue indo ao Financeiro.
+const PDV_EDIT_SALE = isPdvEditSaleEnabled();
+
 export function PdvView() {
   const { data: session } = useSession();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
-  // BLOCO I — carrinho pré-preenchido quando o operador chega de /produtos.
-  // `undefined` = venda em branco, que é o estado de sempre.
-  const [dialogSeed, setDialogSeed] = useState<
-    ReturnType<typeof buildQuickSaleSeed> | undefined
-  >(undefined);
+  // Semente do FinanceDialog. `undefined` = venda em branco, o estado de
+  // sempre. Preenchida pelo carrinho do catálogo (BLOCO I) ou pela edição de
+  // uma venda existente (BLOCO E) — o dialog distingue os dois pela presença
+  // de `id`, que é o que liga o modo de edição.
+  const [dialogSeed, setDialogSeed] = useState<FinanceFormSeed | undefined>(
+    undefined,
+  );
+  // BLOCO E — venda em carregamento para edição (spinner no botão da linha).
+  const [editingSaleId, setEditingSaleId] = useState<string | null>(null);
+  // Editando ⇒ a cadeia de "receber agora" NÃO pode disparar: o operador
+  // clicou em Editar, não em Receber, e o livro do dia tem botão próprio para
+  // isso. Guardado em estado (não derivado do seed) porque o seed é limpo ao
+  // fechar e a decisão precisa valer durante todo o submit.
+  const [editandoVenda, setEditandoVenda] = useState(false);
   const [sales, setSales] = useState<PdvSaleRow[]>([]);
   const [salesLoading, setSalesLoading] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
@@ -185,11 +201,53 @@ export function PdvView() {
   }, [quickSaleId, session?.user?.email, showToast, router]);
 
   // Fechar o modal descarta o carrinho pré-preenchido — senão a PRÓXIMA venda
-  // nasceria com a peça da anterior dentro.
+  // nasceria com a peça da anterior dentro. E descarta o modo de edição, senão
+  // a venda seguinte seria salva por cima da que acabou de ser corrigida.
   const handleDialogOpenChange = useCallback((aberto: boolean) => {
     setDialogOpen(aberto);
-    if (!aberto) setDialogSeed(undefined);
+    if (!aberto) {
+      setDialogSeed(undefined);
+      setEditandoVenda(false);
+    }
   }, []);
+
+  // ── BLOCO E: corrigir uma venda sem sair do caixa ──
+  const handleEditSale = useCallback(
+    async (row: PdvSaleRow) => {
+      const email = session?.user?.email;
+      if (!email) {
+        showToast("Sessão expirada — entre novamente.", "error");
+        return;
+      }
+      // Uma edição por vez: duas em voo abririam o formulário da resposta mais
+      // lenta, que pode não ser a linha que o operador clicou.
+      if (editingSaleId) return;
+      setEditingSaleId(row.id);
+      try {
+        const seed = await fetchSaleForEdit(row.id, email);
+        if (!seed) {
+          showToast(
+            "Venda não encontrada — a lista pode estar desatualizada.",
+            "error",
+          );
+          return;
+        }
+        setDialogSeed(seed);
+        setEditandoVenda(true);
+        setDialogOpen(true);
+      } catch (e) {
+        // NÃO abrimos o formulário em caso de falha: o submit envia a lista de
+        // itens inteira, então abrir sem eles e salvar APAGARIA os que existem.
+        showToast(
+          e instanceof Error ? e.message : "Erro ao carregar a venda",
+          "error",
+        );
+      } finally {
+        setEditingSaleId(null);
+      }
+    },
+    [editingSaleId, session?.user?.email, showToast],
+  );
 
   // BLOCO C — filtro de status do livro do dia. Vazio = todos: o parâmetro
   // não é enviado e a busca fica idêntica à de hoje.
@@ -472,6 +530,9 @@ export function PdvView() {
             // Bloco D: emitente do caixa segue para o rascunho de NF-e 55 do
             // menu de ações (mesma semântica da cadeia de NFC-e).
             nfceCompanyId={nfceCompanyId}
+            // BLOCO E — ausente com a flag OFF ⇒ o botão não existe.
+            onEditSale={PDV_EDIT_SALE ? handleEditSale : undefined}
+            editingSaleId={editingSaleId}
           />
         </div>
         <div className="min-w-0">
@@ -495,7 +556,11 @@ export function PdvView() {
         initialData={dialogSeed}
         onToast={showToast}
         onSaved={handleDialogSaved}
-        onSavedEntry={handleSavedEntry}
+        // BLOCO E — editando, a cadeia de recebimento fica FORA. Sem isto,
+        // corrigir uma venda pendente a receberia junto (o switch "Receber
+        // agora" é do caixa, não da correção) e o estoque baixaria sem o
+        // operador ter pedido.
+        onSavedEntry={editandoVenda ? undefined : handleSavedEntry}
       />
     </div>
   );
