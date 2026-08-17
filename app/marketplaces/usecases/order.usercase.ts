@@ -28,6 +28,7 @@ import {
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { OrderCustomerService } from "../services/order-customer.service";
+import { resolveReopenPref } from "../../services/reopen-listings-preference";
 import { SyncUseCase } from "./sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import { normalizeSku } from "@/app/lib/sku";
@@ -4056,7 +4057,21 @@ export class OrderUseCase {
           id: true,
           status: true,
           items: { select: { productId: true, quantity: true } },
-          marketplaceAccount: { select: { userId: true } },
+          marketplaceAccount: {
+            select: {
+              userId: true,
+              // Preferência de reabertura, no MESMO findFirst — nenhuma query
+              // nova. `parent` cobre a conta que foi conectada por um
+              // COLABORADOR: a preferência é do TENANT, então o valor do admin
+              // pai tem precedência sobre o da linha de quem conectou.
+              user: {
+                select: {
+                  reopenListingsOnSaleCancel: true,
+                  parent: { select: { reopenListingsOnSaleCancel: true } },
+                },
+              },
+            },
+          },
         },
       });
       if (!order) {
@@ -4177,13 +4192,38 @@ export class OrderUseCase {
       // do updateListingStatus faria no-op e o anúncio ficaria pausado para
       // sempre apesar do estoque restaurado.
       if (restorations.length > 0) {
+        // Preferência do TENANT (default LIGADO). Vem do findFirst lá em cima —
+        // zero query nova. `parent` tem precedência: conta conectada por
+        // colaborador obedece ao admin.
+        //
+        // FAIL-OPEN de graça: `user` ausente (relação não projetada, fixture de
+        // teste) ⇒ `undefined` ⇒ `resolveReopenPref` devolve LIGADO, que é o
+        // comportamento de sempre.
+        const contaDoPedido = order.marketplaceAccount;
+        const reabrirAnuncio = resolveReopenPref(
+          contaDoPedido.user?.parent?.reopenListingsOnSaleCancel ??
+            contaDoPedido.user?.reopenListingsOnSaleCancel,
+        );
+
+        // ⚠️ `firePostEffects` é chamado SEMPRE — o que muda é só a PRESENÇA da
+        // chave `reopenOnRefill`. Envolver a chamada num `if (reabrirAnuncio)`
+        // seria um desastre em dois eixos: ela também dispara o
+        // StockSyncRetryService (o estoque restaurado nunca chegaria aos
+        // marketplaces) e o bloco ainda hospeda a reconciliação de sucata logo
+        // abaixo (o lote ficaria "Esgotado" para sempre). Sem a chave, o motor
+        // executa o caminho "sem reabertura", já coberto e verde em
+        // tests/stock-deduction-service.spec.ts.
         StockDeductionService.firePostEffects({
           deductions: restorations,
           logPrefix,
-          reopenOnRefill: {
-            userId: order.marketplaceAccount.userId,
-            force: true,
-          },
+          ...(reabrirAnuncio
+            ? {
+                reopenOnRefill: {
+                  userId: contaDoPedido.userId,
+                  force: true,
+                },
+              }
+            : {}),
         });
 
         // Reflexo no status do LOTE. `Scrap.status` é coluna persistida; só o

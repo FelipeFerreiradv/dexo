@@ -240,9 +240,30 @@ export const userRoutes = async (fastify: FastifyInstance) => {
       request: FastifyRequest<{ Body: UserUpdate }>,
       reply: FastifyReply,
     ) => {
-      const me = (request as any).user as { id: string };
+      const me = (request as any).user as {
+        id: string;
+        parentUserId?: string | null;
+      };
       try {
-        const updated = await userUserCase.updateSettings(me.id, request.body);
+        // `reopenListingsOnSaleCancel` é preferência de TENANT: só o dono
+        // altera. Descartamos o campo em vez de bloquear a rota, porque este
+        // MESMO endpoint salva nome, avatar e SENHA (config-modal.tsx) — um
+        // `blockCollaborator` aqui tiraria do colaborador a capacidade de
+        // trocar a própria senha, que é a regressão que não podemos causar.
+        //
+        // Também não é fronteira de segurança: `updateSettings` grava em
+        // `me.id`, a linha do PRÓPRIO colaborador, e nenhum dos dois motores de
+        // cancelamento lê essa linha (ambos resolvem pelo dataOwnerId). Um
+        // colaborador que forçasse o campo por curl não mudaria comportamento
+        // nenhum. O descarte existe para o valor não grudar numa linha morta e
+        // para a tela não mentir — lá o controle aparece desabilitado.
+        let body = request.body;
+        if (me.parentUserId && body && "reopenListingsOnSaleCancel" in body) {
+          const { reopenListingsOnSaleCancel: _tenantOnly, ...rest } = body;
+          body = rest;
+        }
+
+        const updated = await userUserCase.updateSettings(me.id, body);
 
         // Registrar log de atualização de configurações
         await SystemLogService.logUserActivity(
