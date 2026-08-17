@@ -166,6 +166,9 @@ export function PdvView() {
     quickSaleConsumed.current = quickSaleId;
 
     const ctrl = new AbortController();
+    // Abortado pelo cleanup? Então NADA aconteceu, e o id não pode contar como
+    // consumido nem a URL pode ser limpa — senão não sobra caminho de volta.
+    let abortado = false;
     void (async () => {
       try {
         const peca = await fetchQuickSaleProduct(
@@ -185,15 +188,32 @@ export function PdvView() {
         setDialogSeed(buildQuickSaleSeed(peca));
         setDialogOpen(true);
       } catch (e) {
-        if ((e as Error).name === "AbortError") return;
+        if ((e as Error).name === "AbortError") {
+          // ⚠️ O CAMINHO QUE QUEBRAVA O CARRINHO INTEIRO.
+          // `reactStrictMode` está ligado (next.config), e em desenvolvimento o
+          // React monta → desmonta → remonta todo componente. A primeira monta
+          // marcava o id como consumido e o cleanup da desmontagem abortava o
+          // fetch; a remonta então via "já consumi" e saía na primeira linha.
+          // Resultado: o `OPTIONS` saía, o `GET` nunca, e o modal nunca abria.
+          //
+          // Liberar o id aqui é o que dá à remontagem uma segunda chance. Vale
+          // além do StrictMode: qualquer re-execução do efeito com o fetch em
+          // voo cairia no mesmo buraco.
+          abortado = true;
+          if (quickSaleConsumed.current === quickSaleId) {
+            quickSaleConsumed.current = null;
+          }
+          return;
+        }
         showToast(
           e instanceof Error ? e.message : "Erro ao carregar a peça",
           "error",
         );
       } finally {
-        // Limpa a URL SEMPRE, inclusive na falha: um F5 não pode reabrir a
-        // venda, e o parâmetro já cumpriu o papel dele.
-        router.replace("/pdv", { scroll: false });
+        // Limpa a URL em todo desfecho REAL, inclusive na falha: um F5 não pode
+        // reabrir a venda, e o parâmetro já cumpriu o papel dele. Só o aborto
+        // fica de fora — ali o parâmetro ainda não foi usado para nada.
+        if (!abortado) router.replace("/pdv", { scroll: false });
       }
     })();
 
