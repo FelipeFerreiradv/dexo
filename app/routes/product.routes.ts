@@ -23,6 +23,7 @@ import {
   ListingDispatchRequest,
 } from "../marketplaces/services/listing-dispatcher.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { isScrapRelinkEnabled } from "../produtos/lib/scrap-relink";
 import { SystemLogService } from "../services/system-log.service";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
 import { CategoryResolutionService } from "../marketplaces/services/category-resolution.service";
@@ -1373,6 +1374,102 @@ export const productRoutes = async (fastify: FastifyInstance) => {
               ? String(error.message)
               : "Erro ao excluir produto",
         });
+      }
+    },
+  );
+
+  // ── BLOCO J — vínculo de sucata da peça ──
+  //
+  // Rota DEDICADA, e não um campo no `PUT /products/:id`, por dois motivos que
+  // não são estilo:
+  //  1. o PUT dispara limpeza de overrides, StockLog e sync de anúncio; trocar
+  //     de lote não mexe em nada disso e não deve arrastar esses efeitos;
+  //  2. a troca reconcilia o estado de DOIS lotes e merece confirmação
+  //     própria na tela — misturada no salvar geral, aconteceria escondida.
+  //
+  // Leitura: os números que sustentam o aviso de confirmação.
+  fastify.get<{ Params: { id: string } }>(
+    "/:id/scrap-link",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+        const info = await productUseCase.getScrapLinkInfo(
+          request.params.id,
+          userId,
+        );
+        if (!info) {
+          return reply.status(404).send({ error: "Produto não encontrado" });
+        }
+        return reply.status(200).send(info);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao consultar o vínculo de sucata",
+        });
+      }
+    },
+  );
+
+  // Escrita: troca ou remove o vínculo. `scrapId: null` desvincula.
+  fastify.patch<{ Params: { id: string }; Body: { scrapId?: unknown } }>(
+    "/:id/scrap",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        // Kill-switch de backend: a troca mexe em contadores de dois lotes, e
+        // poder desligá-la com um restart vale mais que a linha que custa.
+        if (!isScrapRelinkEnabled()) {
+          return reply
+            .status(403)
+            .send({ error: "Troca de sucata desativada nesta instalação" });
+        }
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        // Fronteira de tipo: o body é `any`. Só string ou null passam — e
+        // `undefined` (chave ausente) NÃO é tratado como "desvincular", senão
+        // um body vazio por engano apagaria o vínculo em silêncio.
+        const bruto = (request.body ?? {}) as { scrapId?: unknown };
+        if (!("scrapId" in bruto)) {
+          return reply
+            .status(400)
+            .send({ error: "Informe scrapId (ou null para desvincular)" });
+        }
+        const scrapId =
+          bruto.scrapId === null || bruto.scrapId === ""
+            ? null
+            : typeof bruto.scrapId === "string"
+              ? bruto.scrapId
+              : undefined;
+        if (scrapId === undefined) {
+          return reply.status(400).send({ error: "scrapId inválido" });
+        }
+
+        const { product, previousScrapId } = await productUseCase.relinkScrap(
+          request.params.id,
+          scrapId,
+          userId,
+        );
+        return reply.status(200).send({ product, previousScrapId });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao trocar a sucata";
+        // "não encontrado" cobre produto inexistente e de outro tenant;
+        // "inválido" é a guarda de posse da sucata no repositório.
+        const status = message.includes("não encontrado")
+          ? 404
+          : message.includes("inválido")
+            ? 400
+            : 500;
+        return reply.status(status).send({ error: message });
       }
     },
   );

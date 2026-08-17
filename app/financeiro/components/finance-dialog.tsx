@@ -36,6 +36,8 @@ import {
 } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
 import { buildInstallmentPlan } from "../lib/installment-plan";
+import { isSaleSellerUiEnabled } from "../lib/sale-seller";
+import { isBankAccountsUiEnabled } from "../lib/bank-accounts";
 
 // Bloco B — entrada + parcelas. Só na CRIAÇÃO de venda balcão: editar uma
 // venda já parcelada mexeria em contas-filhas que podem já ter sido pagas.
@@ -111,6 +113,14 @@ const TOTAL_STEPS = STEPS.length;
 // payload. Removido na Fase 10 após smoke test em produção controlada.
 const BALCAO_SALE_ENABLED =
   process.env.NEXT_PUBLIC_BALCAO_SALE_ENABLED === "true";
+
+// BLOCO B — campo "Vendedor" no passo do cliente. Flag OFF ⇒ o formulário
+// renderiza como hoje, sem campo, sem request e sem `sellerUserId` no payload.
+const SALE_SELLER_UI_ENABLED = isSaleSellerUiEnabled();
+
+// BLOCO A — seletor de conta bancária / caixa no passo do título. Flag OFF ⇒
+// nenhum campo, nenhum request e `bankAccountId` nunca entra no payload.
+const BANK_ACCOUNTS_UI_ENABLED = isBankAccountsUiEnabled();
 
 interface FinanceDialogProps {
   kind: FinanceKind;
@@ -214,8 +224,13 @@ export function FinanceDialog({
       setEmitReceipt(false);
       // Seed do productMeta a partir do snapshot do backend (Fase 5 / balcão).
       // O backend (findById) traz items.product = { id, sku, name }; usamos
-      // para o bloco já mostrar SKU/nome em fluxo de edição. Estoque não vem
-      // no snapshot — vira 0 até o usuário re-pesquisar e re-selecionar.
+      // para o bloco já mostrar SKU/nome em fluxo de edição.
+      //
+      // BLOCO I — o estoque agora entra QUANDO o chamador o fornece. O
+      // `findById` continua não mandando estoque (e aí segue 0, como antes,
+      // byte a byte); quem manda é o carrinho vindo do catálogo, que acabou de
+      // ler a peça. Sem isso, a peça que o operador viu disponível na vitrine
+      // apareceria como "0 em estoque" no carrinho.
       const items = (initialData as any)?.items;
       if (balcaoEnabled && Array.isArray(items) && items.length > 0) {
         const seed: Record<string, ProductMeta> = {};
@@ -224,7 +239,8 @@ export function FinanceDialog({
             seed[it.productId] = {
               sku: it.product.sku,
               name: it.product.name,
-              stock: 0,
+              stock:
+                typeof it.product.stock === "number" ? it.product.stock : 0,
             };
           }
         }
@@ -500,6 +516,14 @@ export function FinanceDialog({
                 onSelect={setSelectedCustomer}
                 setValue={setValue}
                 allowQuickCreate={!isEdit}
+                // BLOCO B — vendedor. Só em conta a RECEBER (a coluna não
+                // existe em Payable) e só com a flag ligada.
+                showSeller={SALE_SELLER_UI_ENABLED && kind === "receivable"}
+                // Pré-seleciona quem está logado apenas ao CRIAR. Na edição,
+                // campo vazio significa "esta venda não tem vendedor", e
+                // preenchê-lo sozinho atribuiria comissão a quem só abriu a
+                // tela para conferir.
+                autoSelectMe={!isEdit}
               />
             )}
             {currentStep === 2 && (
@@ -508,6 +532,12 @@ export function FinanceDialog({
                 errors={errors}
                 kind={kind}
                 balcaoEnabled={balcaoEnabled}
+                // BLOCO A — conta de destino/origem. Vale nos DOIS kinds.
+                showBankAccount={BANK_ACCOUNTS_UI_ENABLED}
+                // Sugere a conta padrão só ao CRIAR: na edição, campo vazio
+                // significa "este lançamento não tem conta", e preenchê-lo
+                // sozinho reescreveria o histórico de quem só abriu a tela.
+                autoSelectDefaultAccount={!isEdit}
                 setValue={balcaoEnabled ? setValue : undefined}
                 getValues={balcaoEnabled ? getValues : undefined}
                 productMeta={balcaoEnabled ? productMeta : undefined}

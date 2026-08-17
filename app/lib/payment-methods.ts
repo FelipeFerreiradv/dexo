@@ -115,3 +115,41 @@ export function predominantPaymentMethod(
   }
   return winner;
 }
+
+/**
+ * Fase 1.1 — rótulo da coluna "Forma" quando a venda tem N formas.
+ *
+ * A coluna sempre mostrou o método PREDOMINANTE (o escalar
+ * `Receivable.paymentMethod`), o que fazia uma venda em PIX + Crédito parecer
+ * uma venda só em Crédito — e o operador concluía que a segunda forma não
+ * tinha sido salva.
+ *
+ * Compatibilidade: com 0 ou 1 linha o retorno é EXATAMENTE
+ * `paymentMethodLabel(predominante)`, então a venda de uma forma só continua
+ * renderizando byte-idêntica. O sufixo só aparece a partir da segunda linha.
+ *
+ * Devolve o texto pronto e, à parte, o detalhe por extenso para `title`/tooltip
+ * — quem chama decide se usa.
+ */
+export function paymentMethodsSummary(
+  predominant: string | null | undefined,
+  payments?: { method: string; amount: number }[] | null,
+): { label: string; detail: string | null } {
+  const linhas = Array.isArray(payments) ? payments : [];
+  const base = paymentMethodLabel(predominant);
+  if (linhas.length <= 1) return { label: base, detail: null };
+
+  // O predominante primeiro (é o que a coluna sempre mostrou); o resto vira
+  // contagem, para a coluna não quebrar o layout com 4 formas.
+  const outras = linhas.length - 1;
+  const detail = linhas
+    .map(
+      (p) =>
+        `${paymentMethodLabel(p.method)}: ${p.amount.toLocaleString("pt-BR", {
+          style: "currency",
+          currency: "BRL",
+        })}`,
+    )
+    .join(" · ");
+  return { label: `${base} +${outras}`, detail };
+}

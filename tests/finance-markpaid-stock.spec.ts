@@ -221,10 +221,17 @@ describe("Fase 6 — markPaid: receivable COM itens (venda balcao)", () => {
     expect((prisma as any).$transaction).toHaveBeenCalledTimes(1);
     const txCall = (prisma as any).$transaction.mock.calls[0];
     expect(txCall[1]).toMatchObject({ timeout: 60_000, maxWait: 20_000 });
-    // Status foi atualizado pra PAGA dentro da tx.
+    // Status foi atualizado pra PAGA dentro da tx, com transição GUARDADA: o
+    // `statusNot` fecha a corrida de dupla baixa (o guard de idempotência do
+    // usecase roda fora da transação). Sem ele, dois POST /pay simultâneos
+    // baixavam o estoque duas vezes e duplicavam a peça avulsa no catálogo.
     expect((prisma as any).receivable.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "r-1", userId: "user-owner" },
+        where: {
+          id: "r-1",
+          userId: "user-owner",
+          status: { not: "PAGA" },
+        },
         data: expect.objectContaining({ status: "PAGA", paidAt: expect.any(Date) }),
       }),
     );

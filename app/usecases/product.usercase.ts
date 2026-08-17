@@ -22,6 +22,7 @@ import { parseTitleToFields } from "../lib/product-parser";
 import { getVehicleBrands } from "../lib/vehicle-catalog";
 import { maskCorruptVehicleCategoriesInProducts } from "../marketplaces/services/category-resolution.service";
 import { AccountSemaphore } from "../marketplaces/services/account-semaphore";
+import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-status-reconcile.service";
 
 export const BULK_DELETE_MAX_IDS = 50;
 
@@ -703,6 +704,128 @@ export class ProductUseCase {
     if (!userId) throw new Error("Usuário não encontrado");
     if (!productId) throw new Error("Produto não informado");
     return this.productRepository.update(productId, { scrapId }, userId);
+  }
+
+  /**
+   * BLOCO J — troca (ou remove) a sucata de uma peça PELA INTERFACE.
+   *
+   * `linkScrap` acima já fazia o vínculo certo, mas nunca teve rota: só a
+   * importação de legado o alcançava. Ele fica INTOCADO de propósito — a
+   * importação vincula 13,7 mil peças de uma vez, e reconciliar lote a lote
+   * ali seria trabalho inútil em escala.
+   *
+   * O que este método acrescenta é o efeito colateral que a interface exige:
+   * reconciliar o estado dos DOIS lotes. `Scrap.status` é coluna persistida
+   * (ao contrário do rótulo por peça, que se autocura), então sem isto a
+   * sucata de ORIGEM ficaria marcada "Esgotada" depois de perder a última
+   * peça vendida, e a de DESTINO continuaria "Disponível" tendo recebido uma
+   * peça já vendida.
+   *
+   * Alcançar a sucata de origem é o detalhe que exige a entrada nova do
+   * serviço: depois do UPDATE o produto já não aponta para ela, então
+   * `reconcileForProducts` — que resolve as sucatas a partir do produto —
+   * nunca a encontraria.
+   *
+   * Best-effort e PÓS-escrita: o vínculo é o que o operador pediu; uma falha
+   * ao recalcular rótulo de lote não pode desfazê-lo.
+   */
+  async relinkScrap(
+    productId: string,
+    scrapId: string | null,
+    userId: string,
+  ): Promise<{ product: Product; previousScrapId: string | null }> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    if (!productId) throw new Error("Produto não informado");
+
+    const atual = await this.productRepository.findById(productId, userId);
+    if (!atual) throw new Error("Produto não encontrado");
+    const previousScrapId = (atual as any).scrapId ?? null;
+
+    // Idempotência: mesmo vínculo ⇒ nada a fazer. Evita reconciliar por um
+    // clique que não mudou nada.
+    if (previousScrapId === scrapId) {
+      return { product: atual as Product, previousScrapId };
+    }
+
+    const product = await this.linkScrap(productId, scrapId, userId);
+
+    ScrapStatusReconcileService.reconcileForScraps({
+      scrapIds: [previousScrapId, scrapId].filter((s): s is string => !!s),
+      userId,
+      logPrefix: "[ProductUseCase]",
+    });
+
+    return { product, previousScrapId };
+  }
+
+  /**
+   * BLOCO J — o que o operador precisa saber ANTES de trocar o vínculo.
+   *
+   * Os contadores da sucata são DERIVADOS de `Product.scrapId`, então mover a
+   * peça REATRIBUI o que ela já vendeu. Estes números é que transformam o
+   * aviso em consentimento informado, em vez de um "tem certeza?" genérico.
+   *
+   * Leitura pura: três contagens, nenhuma escrita.
+   */
+  async getScrapLinkInfo(
+    productId: string,
+    userId: string,
+  ): Promise<{
+    scrapId: string | null;
+    scrapLabel: string | null;
+    marketplaceSales: number;
+    counterSales: number;
+    pinnedCounterSales: number;
+  } | null> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    const produto = await prisma.product.findFirst({
+      where: { id: productId, userId },
+      select: {
+        scrapId: true,
+        scrap: { select: { id: true, brand: true, model: true, year: true } },
+      },
+    });
+    if (!produto) return null;
+
+    const [marketplaceSales, counterSales, pinnedCounterSales] =
+      await Promise.all([
+        // Mesmos status que o dinheiro e as contagens da sucata usam.
+        prisma.orderItem.count({
+          where: {
+            productId,
+            order: {
+              status: { in: ["PAID", "SHIPPED", "DELIVERED"] },
+              marketplaceAccount: { userId },
+            },
+          },
+        }),
+        prisma.receivableItem.count({
+          where: { productId, receivable: { status: "PAGA", userId } },
+        }),
+        // As que gravaram a sucata na própria linha: essas NÃO se mexem.
+        prisma.receivableItem.count({
+          where: {
+            productId,
+            scrapId: { not: null },
+            receivable: { status: "PAGA", userId },
+          },
+        }),
+      ]);
+
+    const s = produto.scrap;
+    const scrapLabel = s
+      ? [s.brand, s.model, s.year ? String(s.year) : null]
+          .filter(Boolean)
+          .join(" ") || s.id
+      : null;
+
+    return {
+      scrapId: produto.scrapId ?? null,
+      scrapLabel,
+      marketplaceSales,
+      counterSales,
+      pinnedCounterSales,
+    };
   }
 
   /**

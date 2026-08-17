@@ -17,6 +17,46 @@ import {
 import { renderFinanceReport } from "../reports/finance-report";
 import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
 import { parseCompanyIdParam } from "./fiscal.routes";
+import { listSaleTimeline } from "../financeiro/lib/sale-timeline";
+import { normalizeCancelReason } from "../financeiro/lib/cancel-reasons";
+import { normalizeSellerId } from "../financeiro/lib/sale-seller";
+import { normalizeSaleStage } from "../financeiro/lib/sale-stage";
+import { normalizeBankAccountId } from "../financeiro/lib/bank-accounts";
+import { normalizeSettleFlag } from "../financeiro/lib/settlement";
+
+/**
+ * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
+ *
+ * Espelha `FinanceEntryCreate` menos `userId` (ou seja, `FinanceEntryUpdate`),
+ * menos os dois campos governados por rotas próprias. Campo de fora da lista é
+ * DESCARTADO; `PROTECTED_UPDATE_FIELDS` responde 400.
+ *
+ * Manter em sincronia com `FinanceEntryCreate` (finance.interface.ts): um campo
+ * novo lá que não entre aqui é silenciosamente ignorado no update.
+ */
+export const UPDATABLE_FIELDS = new Set([
+  "customerId",
+  "newCustomer",
+  "unidadeId",
+  "document",
+  "reason",
+  "debtDetails",
+  "totalAmount",
+  "fineAmount",
+  "finePercent",
+  "interestPercent",
+  "toleranceDays",
+  "installments",
+  "periodDays",
+  "dueDate",
+  "paymentMethod",
+  "items",
+  "payments",
+  "installmentPlan",
+]);
+
+/** Só mudam por `POST /:id/pay` e `POST /:id/reverse`, que cuidam do estoque. */
+export const PROTECTED_UPDATE_FIELDS = ["status", "paidAt"];
 
 function fmtDateTimeBR(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -97,6 +137,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         const {
           search,
           status,
+          statusIn,
           customerId,
           unidadeId,
           paymentMethod,
@@ -111,6 +152,8 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           {
             search: search || undefined,
             status: (status as FinanceStatus) || undefined,
+            // BLOCO C — ausente/"" ⇒ não filtra ⇒ consulta idêntica à de hoje.
+            statusIn: statusIn || undefined,
             customerId: customerId || undefined,
             unidadeId: unidadeId || undefined,
             paymentMethod: paymentMethod || undefined,
@@ -166,8 +209,37 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const body = request.body as any;
-        const entry = await useCase.create(kind, { ...body, userId });
+        // BLOCO B — o vendedor sai do spread e volta NORMALIZADO. Tirá-lo do
+        // `...body` não é preciosismo: sem isso, com a flag desligada o valor
+        // cru do formulário chegaria ao repositório assim mesmo, e a coluna
+        // (que pode nem existir no banco ainda) seria escrita.
+        const {
+          sellerUserId: sellerBruto,
+          bankAccountId: contaBruta,
+          ...body
+        } = (request.body ?? {}) as any;
+        const sellerUserId =
+          kind === "receivable" ? normalizeSellerId(sellerBruto) : undefined;
+        // BLOCO A — conta de destino/origem. Vale para os DOIS kinds, e sai do
+        // spread pelo mesmo motivo do vendedor: com a flag desligada o valor
+        // cru chegaria ao repositório e tentaria escrever numa coluna que pode
+        // não existir no banco ainda.
+        const bankAccountId = normalizeBankAccountId(contaBruta);
+        // BLOCO H — quem OPEROU (request.user.id), não o dono dos dados:
+        // num tenant com colaboradores, dataOwnerId é sempre o admin.
+        const entry = await useCase.create(
+          kind,
+          {
+            ...body,
+            userId,
+            ...(sellerUserId !== undefined ? { sellerUserId } : {}),
+            ...(bankAccountId !== undefined ? { bankAccountId } : {}),
+          },
+          {
+            id: (request as any).user?.id,
+            name: (request as any).user?.name ?? null,
+          },
+        );
         return reply.status(201).send({ entry });
       } catch (error) {
         const message =
@@ -191,13 +263,80 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const body = request.body as any;
-        const entry = await useCase.update(kind, id, userId, body);
+        const body = (request.body ?? {}) as Record<string, unknown>;
+
+        // Fase 1.2 — o PUT repassava o body CRU ao usecase, e `updateSingle`
+        // faz `{...data}` direto no `updateMany`. Na prática, qualquer coluna
+        // escalar da tabela era gravável por HTTP.
+        //
+        // `status` e `paidAt` são os que causam dano de integridade e por isso
+        // respondem 400, não silêncio: quem os manda está tentando cancelar ou
+        // baixar por fora, e precisa saber que existe rota própria para isso.
+        //  - `status: "CANCELADA"` cancelava a venda SEM devolver estoque, sem
+        //    StockLog e sem reconciliar a sucata — e o `POST /reverse` legítimo
+        //    virava no-op depois (a guarda de idempotência vê CANCELADA).
+        //  - `status: "PAGA"` + `paidAt` contornava o `markPaid` inteiro: sem
+        //    baixa de estoque, sem promoção de peça avulsa, sem `pauseOnZero`.
+        //    Oversell silencioso no marketplace.
+        const protegidos = PROTECTED_UPDATE_FIELDS.filter((f) => f in body);
+        if (protegidos.length > 0) {
+          return reply.status(400).send({
+            error:
+              `Campo(s) não editável(is) por esta rota: ${protegidos.join(", ")}. ` +
+              `Use POST /${kind === "receivable" ? "receivables" : "payables"}/:id/pay para receber e ` +
+              `POST /receivables/:id/reverse para cancelar.`,
+          });
+        }
+
+        // O resto do que não é do contrato é DESCARTADO em silêncio (e não
+        // rejeitado): o formulário reenvia campos de tela como `id`, que hoje
+        // já eram inofensivos. Rejeitar quebraria a edição sem ganho nenhum.
+        const data: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(body)) {
+          if (UPDATABLE_FIELDS.has(k)) data[k] = v;
+        }
+
+        // BLOCO B — vendedor. FORA da whitelist genérica de propósito: ela
+        // vale para os dois kinds, e a coluna só existe em Receivable — um
+        // `sellerUserId` num PUT de conta a pagar quebraria o update. Aqui o
+        // campo entra normalizado e só no kind certo.
+        //
+        // `undefined` (chave ausente no formulário) NÃO vira `null`: seria um
+        // PUT sem o campo apagando o vendedor de uma venda antiga.
+        if (kind === "receivable") {
+          const seller = normalizeSellerId(
+            (body as Record<string, unknown>).sellerUserId,
+          );
+          if (seller !== undefined) data.sellerUserId = seller;
+        }
+
+        // BLOCO A — conta de destino/origem. Fora da whitelist genérica pela
+        // mesma razão do vendedor (fronteira de tipo + flag), mas SEM o
+        // recorte por kind: a coluna existe nos dois. `undefined` (chave
+        // ausente) não vira `null` — seria um PUT sem o campo apagando a conta
+        // de um lançamento que já a tinha.
+        const conta = normalizeBankAccountId(
+          (body as Record<string, unknown>).bankAccountId,
+        );
+        if (conta !== undefined) data.bankAccountId = conta;
+
+        const entry = await useCase.update(kind, id, userId, data, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
         return reply.status(200).send({ entry });
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao atualizar";
-        const status = message.includes("não encontrado") ? 404 : 500;
+        // BLOCO E — "Estornar" é a palavra que o DELETE de conta paga já usa
+        // para sinalizar conflito de ESTADO (409), e não erro de entrada. O
+        // ramo é aditivo: nenhuma mensagem anterior deste handler a contém,
+        // então todo caminho existente continua caindo onde caía.
+        const status = message.includes("não encontrado")
+          ? 404
+          : message.includes("Estornar")
+            ? 409
+            : 500;
         return reply.status(status).send({ error: message });
       }
     };
@@ -208,7 +347,10 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const entry = await useCase.markPaid(kind, id, userId);
+        const entry = await useCase.markPaid(kind, id, userId, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
         return reply.status(200).send({ entry });
       } catch (error) {
         const message =
@@ -295,12 +437,23 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
+        // BLOCO D — motivo OPCIONAL. O body pode não existir (o cliente só o
+        // envia quando há motivo, para manter a requisição sem motivo
+        // byte-idêntica à de hoje); `normalizeCancelReason` trata isso e
+        // descarta código fora do vocabulário. Nada aqui pode IMPEDIR um
+        // cancelamento — nem body inválido, nem observação gigante.
+        const motivo = normalizeCancelReason(request.body);
         // Auditoria: quem OPEROU (request.user.id), não o dono dos dados —
         // num tenant com colaboradores, dataOwnerId é sempre o admin.
-        const entry = await useCase.reverse(id, userId, {
-          id: (request as any).user?.id,
-          name: (request as any).user?.name ?? null,
-        });
+        const entry = await useCase.reverse(
+          id,
+          userId,
+          {
+            id: (request as any).user?.id,
+            name: (request as any).user?.name ?? null,
+          },
+          motivo,
+        );
         // Bloco B (aditivo): informa o que aconteceu com as parcelas. As em
         // aberto foram canceladas junto; as já RECEBIDAS ficaram como estão —
         // é dinheiro que entrou, e a devolução é decisão do operador. Sem
@@ -324,6 +477,151 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             ? 400
             : 500;
         return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── BLOCO A (2ª metade) — liquidação: o dinheiro caiu? ──
+  //
+  // Métrica NOVA, ao lado. Nenhuma das rotas abaixo toca `status`, `paidAt`
+  // nem o `GET /finance/summary` — os 8 lugares que somam "recebido" hoje
+  // continuam somando exatamente o mesmo.
+  fastify.get(
+    "/settlement-summary",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const summary = await useCase.settlementSummary(userId);
+        return reply.status(200).send({ summary });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao calcular a liquidação",
+        });
+      }
+    },
+  );
+
+  fastify.patch<{
+    Params: { id: string };
+    Body: { settled?: unknown; paymentId?: unknown };
+  }>(
+    "/receivables/:id/settlement",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params;
+        const body = (request.body ?? {}) as {
+          settled?: unknown;
+          paymentId?: unknown;
+        };
+        const settled = normalizeSettleFlag(body.settled);
+        if (settled === undefined) {
+          return reply.status(400).send({
+            error:
+              "Informe settled (true/false) — ou o recurso está desativado",
+          });
+        }
+        const paymentId =
+          typeof body.paymentId === "string" && body.paymentId.trim()
+            ? body.paymentId.trim()
+            : undefined;
+
+        const entry = await useCase.setSettlement(
+          id,
+          userId,
+          settled,
+          paymentId,
+          {
+            id: (request as any).user?.id,
+            name: (request as any).user?.name ?? null,
+          },
+        );
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao marcar a liquidação";
+        const status = message.includes("não encontrad") ? 404 : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── BLOCO F — estágio operacional da venda ──
+  //
+  // Rota DEDICADA: o estágio muda muito (é operação de pátio) e não passa pelo
+  // wizard nem pela guarda de edição do BLOCO E — venda PAGA continua andando
+  // no pátio, é justamente aí que ela anda.
+  //
+  // Só receivable: o conceito é da VENDA. Conta a pagar não tem pipeline.
+  fastify.patch<{ Params: { id: string }; Body: { saleStage?: unknown } }>(
+    "/receivables/:id/stage",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params;
+        // Fronteira de tipo + flag numa só chamada: com a flag desligada
+        // devolve `undefined` e a rota recusa, sem tocar a coluna nova (que
+        // pode não existir no banco ainda).
+        const saleStage = normalizeSaleStage((request.body ?? {}).saleStage);
+        if (!saleStage) {
+          // Ao contrário do motivo de cancelamento (acessório de uma operação
+          // que precisa acontecer), aqui o estágio É a operação — recusar é a
+          // resposta certa, não seguir em silêncio.
+          return reply
+            .status(400)
+            .send({ error: "Estágio inválido ou recurso desativado" });
+        }
+        const entry = await useCase.setSaleStage(id, userId, saleStage, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao mover o estágio";
+        const status = message.includes("não encontrada") ? 404 : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── BLOCO H — timeline da venda ──
+  // Somente leitura, escopada por dataOwnerId no repositório (nunca no
+  // caller). Paginada por cursor de data: uma venda muito editada não pode
+  // virar payload sem fim. Com a flag desligada devolve [] — o que torna
+  // seguro subir o código ANTES do DDL.
+  fastify.get(
+    "/receivables/:id/timeline",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const { limit, before } = request.query as {
+          limit?: string;
+          before?: string;
+        };
+        const antes = before ? new Date(before) : undefined;
+        const events = await listSaleTimeline(id, userId, {
+          limit: limit ? parseInt(limit) : undefined,
+          before: antes && !isNaN(antes.getTime()) ? antes : undefined,
+        });
+        return reply.status(200).send({ events });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao consultar o histórico da venda",
+        });
       }
     },
   );

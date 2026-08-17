@@ -20,8 +20,37 @@ import {
   type PaymentLine,
 } from "../lib/payment-methods";
 import prisma from "../lib/prisma";
+import {
+  recordSaleEvent,
+  diffSaleFields,
+  isSaleTimelineEnabled,
+} from "../financeiro/lib/sale-timeline";
+import {
+  describeCancelReason,
+  isCancelReasonEnabled,
+  type NormalizedCancelReason,
+} from "../financeiro/lib/cancel-reasons";
+import {
+  blockedFieldsOnPaidSale,
+  type SaleStateForGuard,
+  isSaleEditGuardEnabled,
+  saleEditGuardMessage,
+  touchesProtectedFields,
+} from "../financeiro/lib/sale-edit-guard";
+import { deriveSaleStage, saleStageLabel } from "../financeiro/lib/sale-stage";
+import {
+  isSettlementEnabled,
+  settlementBreakdown,
+} from "../financeiro/lib/settlement";
+import {
+  recomputeReservedStock,
+  recomputeReservedStockWithinTx,
+} from "../marketplaces/services/stock-reservation.service";
 import { CustomerRepository } from "../repositories/customer.repository";
-import { FinanceRepository } from "../repositories/finance.repository";
+import {
+  FinanceRepository,
+  FinanceStatusConflictError,
+} from "../repositories/finance.repository";
 import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
@@ -451,6 +480,9 @@ export class FinanceUseCase {
   async create(
     kind: FinanceKind,
     data: FinanceEntryCreate,
+    // BLOCO H (aditivo): operador da ação, para a timeline. Ausente ⇒ nada
+    // é registrado e o comportamento é byte-idêntico ao atual.
+    actor?: FinanceActor,
   ): Promise<FinanceEntry> {
     if (!data.userId) throw new Error("Usuário não encontrado");
 
@@ -493,7 +525,7 @@ export class FinanceUseCase {
         await this.assertUnidade(data.unidadeId, data.userId);
 
       const { newCustomer, ...rest } = data;
-      return prisma.$transaction(async (tx) => {
+      const criadaQuick = await prisma.$transaction(async (tx) => {
         const customer = await this.customerUseCase.createWithTx(tx, {
           userId: data.userId,
           name: newCustomer.name,
@@ -505,13 +537,18 @@ export class FinanceUseCase {
           tx,
         );
       });
+      // Pós-commit: a venda já existe. Falha de auditoria não pode desfazê-la.
+      this.registrarCriacao(kind, criadaQuick, actor);
+      return criadaQuick;
     }
 
     // ── Fluxo atual — 100% inalterado ──
     this.validate(data);
     await this.assertCustomer(data.customerId, data.userId);
     if (data.unidadeId) await this.assertUnidade(data.unidadeId, data.userId);
-    return this.repo.create(kind, data);
+    const criada = await this.repo.create(kind, data);
+    this.registrarCriacao(kind, criada, actor);
+    return criada;
   }
 
   async update(
@@ -519,6 +556,8 @@ export class FinanceUseCase {
     id: string,
     userId: string,
     data: FinanceEntryUpdate,
+    // BLOCO H (aditivo): ausente ⇒ evento sem autor.
+    actor?: FinanceActor,
   ): Promise<FinanceEntry> {
     if (data.customerId) {
       await this.assertCustomer(data.customerId, userId);
@@ -545,7 +584,64 @@ export class FinanceUseCase {
       data = this.applyPredominantMethod(data);
     }
 
-    return this.repo.update(kind, id, userId, data);
+    // BLOCO H — o "o quê mudou" precisa do ANTES. Só lê quando a timeline
+    // está ligada E é receivable: fora disso, nenhuma consulta extra.
+    const querAuditar = kind === "receivable" && isSaleTimelineEnabled();
+    // BLOCO E — a guarda de venda recebida também precisa do estado atual, mas
+    // só quando o payload ENCOSTA num campo vigiado. Sem isso, nenhuma
+    // consulta: editar o documento de uma conta segue custando o mesmo de hoje.
+    const querGuardar =
+      kind === "receivable" &&
+      isSaleEditGuardEnabled() &&
+      touchesProtectedFields(data as Record<string, unknown>);
+    // Uma leitura serve às duas necessidades — nunca duas.
+    const antes =
+      querAuditar || querGuardar
+        ? await this.repo.findById(kind, id, userId)
+        : null;
+
+    if (querGuardar) {
+      // A conta sumiu entre a tela e o submit: deixa o erro de "não
+      // encontrado" seguir o caminho de sempre (404), em vez de virar um
+      // bloqueio confuso.
+      if (!antes) throw new Error("Registro financeiro não encontrado");
+      // O 4º argumento é o ANTES que já está em mãos (l. 597-600): a guarda
+      // compara VALOR, não presença de chave, e sem ele voltaria a recusar
+      // todo save — o formulário reenvia `totalAmount` e a lista de itens
+      // inteira em toda edição de venda de balcão. Zero consulta nova.
+      const bloqueados = blockedFieldsOnPaidSale(
+        data as Record<string, unknown>,
+        antes.status,
+        process.env,
+        antes as unknown as SaleStateForGuard,
+      );
+      if (bloqueados.length > 0) {
+        // A mensagem contém "Estornar" — é por ela que o handler mapeia 409,
+        // exatamente como já faz com o DELETE de conta paga com itens.
+        throw new Error(saleEditGuardMessage(bloqueados));
+      }
+    }
+
+    const atualizada = await this.repo.update(kind, id, userId, data);
+
+    if (antes) {
+      const campos = diffSaleFields(
+        antes as unknown as Record<string, unknown>,
+        data as unknown as Record<string, unknown>,
+      );
+      recordSaleEvent({
+        receivableId: id,
+        userId,
+        type: "UPDATED",
+        message:
+          campos.length > 0
+            ? `Venda alterada: ${campos.join(", ")}`
+            : "Venda alterada",
+        details: { fields: campos },
+        actor,
+      });
+    }
+    return atualizada;
   }
 
   /**
@@ -564,10 +660,40 @@ export class FinanceUseCase {
    * Para payable OU receivable SEM itens: caminho atual idêntico (sem tx,
    * sem estoque) — preserva 100% o fluxo da Fase 1.
    */
+  /**
+   * BLOCO H — evento de criação. Só receivable: a timeline é da VENDA.
+   * Best-effort e pós-commit, como todo o resto da auditoria.
+   */
+  private registrarCriacao(
+    kind: FinanceKind,
+    entry: FinanceEntry,
+    actor?: FinanceActor,
+  ): void {
+    if (kind !== "receivable") return;
+    const itens = Array.isArray(entry.items) ? entry.items.length : 0;
+    recordSaleEvent({
+      receivableId: entry.id,
+      userId: entry.userId,
+      type: "CREATED",
+      message:
+        itens > 0
+          ? `Venda criada com ${itens} ${itens === 1 ? "item" : "itens"}`
+          : "Conta a receber criada",
+      details: {
+        totalAmount: Number(entry.totalAmount),
+        itemCount: itens,
+        paymentMethod: entry.paymentMethod ?? null,
+      },
+      actor,
+    });
+  }
+
   async markPaid(
     kind: FinanceKind,
     id: string,
     userId: string,
+    // BLOCO H (aditivo): ausente ⇒ evento sem autor, comportamento idêntico.
+    actor?: FinanceActor,
   ): Promise<FinanceEntry> {
     const current = await this.repo.findById(kind, id, userId);
     if (!current) throw new Error("Registro financeiro não encontrado");
@@ -596,56 +722,110 @@ export class FinanceUseCase {
     let deductions: Awaited<
       ReturnType<typeof StockDeductionService.deductWithinTx>
     >["deductions"] = [];
+    // BLOCO G — alertas de venda além do estoque. Coletados dentro da tx e
+    // registrados DEPOIS do commit: a venda já aconteceu, e falhar o log não
+    // pode desfazê-la.
+    let oversellAlerts: Array<{
+      productId: string;
+      productName?: string;
+      requested: number;
+      available: number;
+    }> = [];
     // Bloco F — ids dos produtos que NASCERAM nesta operação (peças avulsas).
     const promotedProductIds = new Set<string>();
 
-    await prisma.$transaction(
-      async (tx) => {
-        // Status + paidAt na MESMA tx.
-        updated = await this.repo.update(
-          kind,
-          id,
-          userId,
-          { status: "PAGA", paidAt: new Date() },
-          tx,
-        );
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          // Status + paidAt na MESMA tx.
+          //
+          // O guard `statusNot: "PAGA"` fecha uma corrida real: o `if (status ===
+          // "PAGA")` acima roda FORA da transação, então dois POST /pay
+          // simultâneos passavam os dois e baixavam estoque duas vezes — e, em
+          // venda com peça avulsa, criavam DOIS produtos de catálogo para a mesma
+          // peça (o `promoteManualItems` abaixo filtra sobre este mesmo snapshot).
+          //
+          // A ORDEM É CARREGADORA: esta é a PRIMEIRA escrita da tx, antes de
+          // promover peça avulsa e antes de deduzir estoque. O perdedor bloqueia
+          // aqui no row lock e sai por rollback sem ter criado nem deduzido nada.
+          // Não reordenar.
+          updated = await this.repo.update(
+            kind,
+            id,
+            userId,
+            { status: "PAGA", paidAt: new Date() },
+            tx,
+            { statusNot: "PAGA" },
+          );
 
-        // ── Bloco F: peça avulsa vira produto de catálogo ──
-        // Roda ANTES da baixa, na MESMA tx: o produto nasce, recebe a ENTRADA
-        // (+qty) e em seguida a venda faz a SAÍDA (−qty), terminando em 0.
-        // Rollback desfaz produto, vínculo e os dois StockLog juntos.
-        const promoted = await this.promoteManualItems(tx, id, userId, items);
-        for (const p of promoted) promotedProductIds.add(p.productId);
+          // ── Bloco F: peça avulsa vira produto de catálogo ──
+          // Roda ANTES da baixa, na MESMA tx: o produto nasce, recebe a ENTRADA
+          // (+qty) e em seguida a venda faz a SAÍDA (−qty), terminando em 0.
+          // Rollback desfaz produto, vínculo e os dois StockLog juntos.
+          const promoted = await this.promoteManualItems(tx, id, userId, items);
+          for (const p of promoted) promotedProductIds.add(p.productId);
 
-        // Baixa de estoque dentro da MESMA tx.
-        const result = await StockDeductionService.deductWithinTx(tx, {
-          // Apenas itens CADASTRADOS baixam estoque. Itens manuais
-          // (productId null) não têm produto no catálogo — não geram
-          // StockLog/baixa. Filtrar honra o tipo StockDeductionItem.productId
-          // (string) e evita SELECT/StockLog com id nulo.
-          items: [
-            ...items
-              .filter((it) => it.productId != null)
-              .map((it) => ({
-                productId: it.productId as string,
-                quantity: it.quantity,
+          // Baixa de estoque dentro da MESMA tx.
+          const result = await StockDeductionService.deductWithinTx(tx, {
+            // Apenas itens CADASTRADOS baixam estoque. Itens manuais
+            // (productId null) não têm produto no catálogo — não geram
+            // StockLog/baixa. Filtrar honra o tipo StockDeductionItem.productId
+            // (string) e evita SELECT/StockLog com id nulo.
+            items: [
+              ...items
+                .filter((it) => it.productId != null)
+                .map((it) => ({
+                  productId: it.productId as string,
+                  quantity: it.quantity,
+                })),
+              // As peças recém-promovidas entram aqui: acabaram de ganhar
+              // productId e estoque, e a venda tem de baixá-las igual às demais.
+              ...promoted.map((p) => ({
+                productId: p.productId,
+                quantity: p.quantity,
               })),
-            // As peças recém-promovidas entram aqui: acabaram de ganhar
-            // productId e estoque, e a venda tem de baixá-las igual às demais.
-            ...promoted.map((p) => ({
-              productId: p.productId,
-              quantity: p.quantity,
-            })),
-          ],
-          reason: `Venda balcão — Conta a Receber ${id}`,
-          // StockSyncJob.orderId é String? livre — anotação para auditoria.
-          orderId: `receivable:${id}`,
-          logPrefix: "[FinanceUseCase]",
-        });
-        deductions = result.deductions;
-      },
-      { timeout: 60_000, maxWait: 20_000 },
-    );
+            ],
+            reason: `Venda balcão — Conta a Receber ${id}`,
+            // StockSyncJob.orderId é String? livre — anotação para auditoria.
+            orderId: `receivable:${id}`,
+            logPrefix: "[FinanceUseCase]",
+          });
+          deductions = result.deductions;
+          // BLOCO G — a MEDIÇÃO que faltava. `deductWithinTx` clampa a baixa
+          // em zero e devolve `oversellAlerts`; o `OrderUseCase` os registra,
+          // mas este caminho só lia `deductions` e os descartava. Resultado: a
+          // venda dupla no balcão acontecia sem deixar rastro nenhum, e não
+          // havia como medir a frequência do problema que a reserva existe
+          // para resolver.
+          //
+          // Sem flag: registrar o que já acontece é correção pura, e é o dado
+          // que vai decidir se a virada do sync (fase seguinte, 25 pontos de
+          // escrita) vale o risco.
+          oversellAlerts = result.oversellAlerts ?? [];
+
+          // A venda saiu de PENDENTE: o estoque foi baixado de verdade, então
+          // a reserva daquelas peças deixa de existir. Recalculado a partir da
+          // verdade, dentro da mesma tx.
+          await recomputeReservedStockWithinTx(
+            tx,
+            items.map((it) => it.productId),
+          );
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+    } catch (e) {
+      if (e instanceof FinanceStatusConflictError) {
+        // Perdeu a corrida — outra requisição já recebeu esta conta. A tx
+        // sofreu rollback, então nada foi criado nem deduzido aqui. Resposta
+        // idêntica à do caminho "já PAGA" no topo do método: mesmo contrato,
+        // sem efeito colateral. NÃO dispara firePostEffects nem reconciliação
+        // de sucata — quem venceu a corrida já cuidou dos dois.
+        const atual = await this.repo.findById(kind, id, userId);
+        if (!atual) throw new Error("Registro financeiro não encontrado");
+        return atual;
+      }
+      throw e;
+    }
 
     // Pós-commit (Fase 7): dispara sync dos jobs enfileirados E pausa
     // anúncios cujos produtos zeraram o estoque. Ambos rodam em `setImmediate`
@@ -678,6 +858,33 @@ export class FinanceUseCase {
       receivableId: id,
       userId,
       logPrefix: "[FinanceUseCase]",
+    });
+
+    // BLOCO G — a venda dupla, finalmente visível. Cada alerta é uma peça que
+    // foi vendida além do que existia: o `deductWithinTx` clampou a baixa em
+    // zero e seguiu, e até agora ninguém ficava sabendo. É este log que vai
+    // dizer, com número, se a virada do sync vale o risco dos 25 pontos.
+    for (const a of oversellAlerts) {
+      logFinanceAction(actor, "SALE_OVERSELL", "Venda acima do estoque", {
+        receivableId: id,
+        productId: a.productId,
+        productName: a.productName,
+        solicitado: a.requested,
+        disponivel: a.available,
+      });
+    }
+
+    // BLOCO H — recebimento na timeline. Pós-commit e best-effort.
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "PAID",
+      message: "Venda recebida — estoque baixado",
+      details: {
+        totalAmount: Number(current.totalAmount),
+        productsDeducted: deductions.length,
+      },
+      actor,
     });
 
     return updated!;
@@ -835,6 +1042,18 @@ export class FinanceUseCase {
     }
     await this.repo.delete(kind, id, userId);
 
+    // BLOCO G — excluir a venda LIBERA as peças. É o caminho de "soltar" uma
+    // reserva esquecida (não há expiração automática, por decisão de 14/08).
+    // Fora de transação e best-effort: a venda já foi apagada, e falhar o
+    // recálculo só deixa o número desatualizado até o próximo toque — que é
+    // exatamente o modo de falha que o desenho por RECÁLCULO torna aceitável.
+    if (kind === "receivable" && Array.isArray(snapshot?.items)) {
+      recomputeReservedStock(
+        snapshot!.items!.map((it) => it.productId),
+        "[FinanceUseCase]",
+      );
+    }
+
     // Auditoria pós-efeito, best-effort: até aqui o financeiro não deixava
     // nenhum rastro de quem excluiu o quê.
     logFinanceAction(actor, "FINANCE_ENTRY_DELETED", `Título excluído (${kind})`, {
@@ -870,6 +1089,10 @@ export class FinanceUseCase {
     // Bloco E (aditivo): operador da ação, para auditoria. Ausente ⇒ nada é
     // logado ⇒ comportamento byte-idêntico ao atual.
     actor?: FinanceActor,
+    // BLOCO D (aditivo): motivo JÁ NORMALIZADO pela rota (o body é `any`; a
+    // fronteira de tipo fica em `cancel-reasons.ts`). Ausente ou com a flag
+    // desligada ⇒ o `data` do UPDATE fica byte-idêntico ao de hoje.
+    cancelReason?: NormalizedCancelReason,
   ): Promise<FinanceEntry> {
     const current = await this.repo.findById("receivable", id, userId);
     if (!current) {
@@ -899,76 +1122,119 @@ export class FinanceUseCase {
       ReturnType<typeof StockDeductionService.restoreWithinTx>
     >["deductions"] = [];
 
-    await prisma.$transaction(
-      async (tx) => {
-        // 1. Status → CANCELADA na MESMA tx do estorno.
-        updated = await this.repo.update(
-          "receivable",
-          id,
-          userId,
-          { status: "CANCELADA" },
-          tx,
-        );
-        // 2. Contra-lançamento de estoque (+quantity por item).
-        const result = await StockDeductionService.restoreWithinTx(tx, {
-          // Espelha o markPaid: só itens cadastrados devolvem estoque.
-          items: items
-            .filter((it) => it.productId != null)
-            .map((it) => ({
-              productId: it.productId as string,
-              quantity: it.quantity,
-            })),
-          reason: `Estorno venda balcão — Conta a Receber ${id}`,
-          orderId: `receivable:${id}`,
-          logPrefix: "[FinanceUseCase]",
-        });
-        restorations = result.deductions;
-
-        // ── Bloco F: estorno SIMÉTRICO da peça avulsa ──
-        // O restore acima devolveu +qty também para os produtos que nasceram
-        // desta venda — e eles não existiam antes dela. Sem esta compensação,
-        // o catálogo ficaria com um "produto fantasma" com estoque de uma peça
-        // que já saiu. A saída de −qty devolve o produto a estoque 0.
-        //
-        // O produto NÃO é apagado: `ReceivableItem.product` é onDelete Restrict
-        // e apagar produto apaga o StockLog junto (product.repository.ts:1630),
-        // destruindo o histórico da venda. Fica no catálogo, zerado.
-        const avulsas = items.filter(
-          (it) => it.autoCreatedProduct === true && it.productId != null,
-        );
-        if (avulsas.length > 0) {
-          await StockDeductionService.deductWithinTx(tx, {
-            items: avulsas.map((it) => ({
-              productId: it.productId as string,
-              quantity: it.quantity,
-            })),
-            reason: `Estorno entrada — peça avulsa PDV · Conta a Receber ${id}`,
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          // 1. Status → CANCELADA na MESMA tx do estorno.
+          //
+          // `statusIs: "PAGA"` fecha a mesma corrida do markPaid, e aqui o dano
+          // é pior: estorno duplo INFLA o estoque de uma peça que não voltou ao
+          // pátio, e o marketplace passa a anunciar o que não existe. O guard de
+          // idempotência no topo do método roda fora da transação.
+          // Esta é a PRIMEIRA escrita da tx — o perdedor bloqueia aqui, antes de
+          // restaurar estoque e antes de cancelar as parcelas filhas.
+          //
+          // BLOCO D — o motivo entra NA MESMA ESCRITA que grava CANCELADA, e
+          // não num log pós-commit: se o operador se deu ao trabalho de dizer
+          // por que cancelou, esse dado tem de ter a mesma durabilidade do
+          // cancelamento. `cancelledAt` é gravado mesmo sem motivo informado —
+          // "cancelada sem justificativa" continua sendo um fato com data.
+          //
+          // Flag ausente ⇒ `motivo` é {} e o `data` fica byte-idêntico ao de
+          // hoje. Isso não é só compatibilidade: com as colunas ainda não
+          // criadas, escrever aqui derrubaria a transação inteira e a venda
+          // NÃO seria cancelada (ver o cabeçalho do DDL).
+          const motivo = isCancelReasonEnabled()
+            ? {
+                cancelledAt: new Date(),
+                ...(cancelReason?.code
+                  ? { cancelReasonCode: cancelReason.code }
+                  : {}),
+                ...(cancelReason?.note
+                  ? { cancelReason: cancelReason.note }
+                  : {}),
+              }
+            : {};
+          updated = await this.repo.update(
+            "receivable",
+            id,
+            userId,
+            { status: "CANCELADA", ...motivo },
+            tx,
+            { statusIs: "PAGA" },
+          );
+          // 2. Contra-lançamento de estoque (+quantity por item).
+          const result = await StockDeductionService.restoreWithinTx(tx, {
+            // Espelha o markPaid: só itens cadastrados devolvem estoque.
+            items: items
+              .filter((it) => it.productId != null)
+              .map((it) => ({
+                productId: it.productId as string,
+                quantity: it.quantity,
+              })),
+            reason: `Estorno venda balcão — Conta a Receber ${id}`,
             orderId: `receivable:${id}`,
             logPrefix: "[FinanceUseCase]",
           });
-          // Estes produtos NÃO entram no reopenOnRefill: eles não têm anúncio
-          // e voltaram a zero — reabrir não faria sentido.
-          const avulsasIds = new Set(avulsas.map((it) => it.productId));
-          restorations = restorations.filter(
-            (d) => !avulsasIds.has(d.productId),
-          );
-        }
+          restorations = result.deductions;
 
-        // ── Bloco B: nada de parcela viva em venda cancelada ──
-        // Só as EM ABERTO. Parcela já recebida é dinheiro que entrou: cancelar
-        // a linha faria o valor sumir do caixa sem devolução real. Essas ficam
-        // como estão e o operador é avisado para tratar a devolução.
-        await (tx as any).receivable.updateMany({
-          where: {
-            parentReceivableId: id,
-            userId,
-            status: { in: ["PENDENTE", "VENCIDA"] },
-          },
-          data: { status: "CANCELADA" },
-        });
-      },
-      { timeout: 60_000, maxWait: 20_000 },
-    );
+          // ── Bloco F: estorno SIMÉTRICO da peça avulsa ──
+          // O restore acima devolveu +qty também para os produtos que nasceram
+          // desta venda — e eles não existiam antes dela. Sem esta compensação,
+          // o catálogo ficaria com um "produto fantasma" com estoque de uma peça
+          // que já saiu. A saída de −qty devolve o produto a estoque 0.
+          //
+          // O produto NÃO é apagado: `ReceivableItem.product` é onDelete Restrict
+          // e apagar produto apaga o StockLog junto (product.repository.ts:1630),
+          // destruindo o histórico da venda. Fica no catálogo, zerado.
+          const avulsas = items.filter(
+            (it) => it.autoCreatedProduct === true && it.productId != null,
+          );
+          if (avulsas.length > 0) {
+            await StockDeductionService.deductWithinTx(tx, {
+              items: avulsas.map((it) => ({
+                productId: it.productId as string,
+                quantity: it.quantity,
+              })),
+              reason: `Estorno entrada — peça avulsa PDV · Conta a Receber ${id}`,
+              orderId: `receivable:${id}`,
+              logPrefix: "[FinanceUseCase]",
+            });
+            // Estes produtos NÃO entram no reopenOnRefill: eles não têm anúncio
+            // e voltaram a zero — reabrir não faria sentido.
+            const avulsasIds = new Set(avulsas.map((it) => it.productId));
+            restorations = restorations.filter(
+              (d) => !avulsasIds.has(d.productId),
+            );
+          }
+
+          // ── Bloco B: nada de parcela viva em venda cancelada ──
+          // Só as EM ABERTO. Parcela já recebida é dinheiro que entrou: cancelar
+          // a linha faria o valor sumir do caixa sem devolução real. Essas ficam
+          // como estão e o operador é avisado para tratar a devolução.
+          await (tx as any).receivable.updateMany({
+            where: {
+              parentReceivableId: id,
+              userId,
+              status: { in: ["PENDENTE", "VENCIDA"] },
+            },
+            data: { status: "CANCELADA" },
+          });
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+    } catch (e) {
+      if (e instanceof FinanceStatusConflictError) {
+        // Perdeu a corrida — outro estorno já cancelou esta venda. Rollback
+        // completo: nada foi restaurado aqui. Mesma resposta do caminho
+        // "já CANCELADA" no topo, e sem disparar efeitos pós-commit (quem
+        // venceu já reabriu anúncios e reconciliou a sucata).
+        const atual = await this.repo.findById("receivable", id, userId);
+        if (!atual) throw new Error("Conta a receber não encontrada");
+        return atual;
+      }
+      throw e;
+    }
 
     // Pós-commit: sincroniza com marketplaces + reabre anúncios cujos
     // produtos saíram de zero. Best-effort, fora da tx.
@@ -991,15 +1257,213 @@ export class FinanceUseCase {
     // devolve estoque, reabre anúncios e move dinheiro. Até agora não deixava
     // rastro nenhum de QUEM fez. Best-effort e pós-commit: a venda já foi
     // estornada e uma falha de log jamais pode desfazê-la.
+    // BLOCO H — cancelamento na timeline, com o motivo quando houver.
+    // O motivo já está gravado em coluna (dentro da tx); aqui ele só é
+    // REPETIDO para a leitura, porque quem abre o histórico não deve precisar
+    // abrir a venda para saber o porquê.
+    const motivoTexto = describeCancelReason(
+      cancelReason?.code,
+      cancelReason?.note,
+    );
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "REVERSED",
+      message: motivoTexto
+        ? `Venda cancelada (estorno) — ${motivoTexto}`
+        : "Venda cancelada (estorno)",
+      details: {
+        totalAmount: Number(current.totalAmount),
+        itemCount: items.length,
+        restoredProducts: restorations.length,
+        ...(cancelReason?.code ? { cancelReasonCode: cancelReason.code } : {}),
+        ...(cancelReason?.note ? { cancelReason: cancelReason.note } : {}),
+      },
+      actor,
+    });
+
     logFinanceAction(actor, "SALE_REVERSED", "Venda cancelada (estorno)", {
       receivableId: id,
       totalAmount: Number(current.totalAmount),
       itemCount: items.length,
       customerId: current.customerId,
       restoredProducts: restorations.length,
+      ...(cancelReason?.code ? { cancelReasonCode: cancelReason.code } : {}),
+      ...(cancelReason?.note ? { cancelReason: cancelReason.note } : {}),
     });
 
     return updated!;
+  }
+
+  /**
+   * BLOCO F — move a venda de estágio operacional.
+   *
+   * Caminho PRÓPRIO, e não um campo no PUT, por dois motivos:
+   *  1. o estágio muda MUITO (é operação de pátio, não de cadastro), e passar
+   *     por um wizard de 4 passos para avançar uma etapa seria absurdo;
+   *  2. o PUT carrega o replace de itens e a guarda do BLOCO E. O estágio não
+   *     tem nada a ver com nenhum dos dois, e nem deve ser barrado por eles —
+   *     uma venda PAGA continua andando no pátio (é justamente aí que ela anda).
+   *
+   * NÃO GOVERNA NADA: não valida transição, não exige ordem, não impede pular
+   * etapa. É informação. Um pipeline que trava é um pipeline que alguém vai
+   * contornar gravando no banco — decisão de 14/08.
+   */
+  async setSaleStage(
+    id: string,
+    userId: string,
+    saleStage: string,
+    actor?: FinanceActor,
+  ): Promise<FinanceEntry> {
+    const atual = await this.repo.findById("receivable", id, userId);
+    if (!atual) throw new Error("Conta a receber não encontrada");
+
+    // Idempotência: mesmo estágio ⇒ devolve sem escrever nem registrar evento.
+    // Sem isto, um duplo clique no "avançar" viraria duas linhas iguais no
+    // histórico da venda.
+    const anterior = deriveSaleStage(atual.saleStage);
+    if (anterior === saleStage) return atual;
+
+    const atualizada = await this.repo.update("receivable", id, userId, {
+      saleStage,
+    } as never);
+
+    // BLOCO H — o histórico operacional é justamente o que um pipeline precisa
+    // ter: quem moveu, quando e de onde para onde. Best-effort e pós-escrita.
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "UPDATED",
+      message: `Estágio: ${saleStageLabel(anterior)} → ${saleStageLabel(saleStage)}`,
+      details: { saleStageFrom: anterior, saleStageTo: saleStage },
+      actor,
+    });
+
+    return atualizada;
+  }
+
+  /**
+   * BLOCO A (2ª metade) — marca (ou desmarca) que o dinheiro caiu.
+   *
+   * Sem `paymentId`, marca a VENDA — é o caminho das vendas sem linhas de
+   * pagamento, que são a esmagadora maioria (77 das 82 medidas). Com
+   * `paymentId`, marca UMA forma, que é o "o PIX caiu, o cartão não".
+   *
+   * Desmarcar é permitido de propósito: conferência de extrato erra, e erro
+   * precisa ter volta. O estágio (BLOCO F) segue a mesma filosofia.
+   *
+   * NÃO mexe em `status` nem em `paidAt`: a venda continua PAGA e o estoque
+   * continua baixado. Liquidação é uma dimensão AO LADO — é o que garante que
+   * os 8 lugares que somam dinheiro hoje continuem somando o mesmo.
+   */
+  async setSettlement(
+    id: string,
+    userId: string,
+    settled: boolean,
+    paymentId?: string,
+    actor?: FinanceActor,
+  ): Promise<FinanceEntry> {
+    const atual = await this.repo.findById("receivable", id, userId);
+    if (!atual) throw new Error("Conta a receber não encontrada");
+
+    const quando = settled ? new Date() : null;
+
+    if (paymentId) {
+      // Escopo pelo receivableId ALÉM do id da linha: sem isso, um id de linha
+      // de outro tenant marcaria liquidação numa venda alheia.
+      const res = await (prisma as any).receivablePayment.updateMany({
+        where: { id: paymentId, receivableId: id },
+        data: { settledAt: quando },
+      });
+      if (res.count === 0) {
+        throw new Error("Forma de pagamento não encontrada nesta venda");
+      }
+    } else {
+      await this.repo.update("receivable", id, userId, {
+        settledAt: quando,
+      } as never);
+    }
+
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "UPDATED",
+      message: settled
+        ? "Dinheiro confirmado na conta"
+        : "Confirmação de recebimento desfeita",
+      details: { settled, paymentId: paymentId ?? null },
+      actor,
+    });
+
+    // Relê para devolver o estado consolidado (a marca pode ter ido para uma
+    // LINHA, e o chamador precisa do conjunto para recalcular o selo).
+    const atualizada = await this.repo.findById("receivable", id, userId);
+    return atualizada ?? atual;
+  }
+
+  /**
+   * BLOCO A (2ª metade) — quanto já caiu e quanto ainda está a caminho.
+   *
+   * MÉTRICA NOVA, ao lado: não toca `summary()` nem nenhum dos lugares que
+   * somam "recebido" hoje. Decisão de 14/08 — cada número existente continua
+   * significando o que sempre significou.
+   *
+   * A conta é feita em TS, e não em SQL, porque a regra ("PIX cai no ato,
+   * crédito não") vive no vocabulário de formas de pagamento. Reescrevê-la em
+   * SQL seria mantê-la em dois lugares, e é assim que as duas divergem.
+   *
+   * Egress: projeção mínima sobre as contas PAGAS. Cresce com o histórico —
+   * quando incomodar, o corte natural é por período (a tela já filtra por
+   * data), não uma reescrita em SQL.
+   */
+  async settlementSummary(userId: string): Promise<{
+    settledAmount: number;
+    pendingAmount: number;
+    pendingCount: number;
+  }> {
+    if (!isSettlementEnabled()) {
+      return { settledAmount: 0, pendingAmount: 0, pendingCount: 0 };
+    }
+    const rows = await (prisma as any).receivable.findMany({
+      where: { userId, status: "PAGA" },
+      select: {
+        totalAmount: true,
+        status: true,
+        paidAt: true,
+        paymentMethod: true,
+        settledAt: true,
+        payments: { select: { method: true, amount: true, settledAt: true } },
+      },
+    });
+
+    let settledAmount = 0;
+    let pendingAmount = 0;
+    let pendingCount = 0;
+    for (const r of rows as any[]) {
+      const b = settlementBreakdown(
+        {
+          status: r.status,
+          paidAt: r.paidAt,
+          paymentMethod: r.paymentMethod,
+          settledAt: r.settledAt,
+        },
+        (r.payments ?? []).map((p: any) => ({
+          method: p.method,
+          amount: Number(p.amount),
+          settledAt: p.settledAt,
+        })),
+        Number(r.totalAmount),
+      );
+      settledAmount += b.settledAmount;
+      pendingAmount += b.pendingAmount;
+      if (b.pendingAmount > 0) pendingCount += 1;
+    }
+
+    return {
+      settledAmount: Math.round(settledAmount * 100) / 100,
+      pendingAmount: Math.round(pendingAmount * 100) / 100,
+      pendingCount,
+    };
   }
 
   async summary(
@@ -1160,6 +1624,32 @@ export class FinanceUseCase {
             },
           ];
 
+    // ── Venda parcelada: fechar a aritmética do grupo de pagamento ──
+    //
+    // Os ITENS acima são a venda INTEIRA (ficam todos na conta-mãe), mas
+    // `entry.payments`/`entry.totalAmount` valem só a ENTRADA. Sem isto o
+    // documento sai com SUM(vPag) = vNF − saldo a prazo: a nota diz que o
+    // cliente pagou menos do que a mercadoria vale.
+    //
+    // É a MESMA reconciliação que a rota do cupom já faz (`findChildren`);
+    // aqui ela só estava faltando no caminho fiscal. O saldo entra como
+    // CREDITO_LOJA (SEFAZ 05), que é o crediário próprio da loja — o mesmo
+    // meio que o sistema já usa para FIADO, e a descrição correta de um saldo
+    // parcelado pela própria loja.
+    //
+    // Venda à vista não tem filhas ⇒ nada é acrescentado ⇒ byte-idêntico.
+    const parcelas = await this.repo.findChildren(entry.id, userId);
+    const saldoAPrazo = parcelas.reduce(
+      (acc, f) => acc + Number(f.totalAmount),
+      0,
+    );
+    if (saldoAPrazo > 0) {
+      pagamentos.push({
+        meio: "CREDITO_LOJA",
+        valor: Number(saldoAPrazo.toFixed(2)),
+      });
+    }
+
     return this.nfeDraftUseCase.createPopulatedFromReceivable(userId, {
       customerId: entry.customerId,
       receivableId: entry.id,
@@ -1202,7 +1692,21 @@ export class FinanceUseCase {
         "Conta sem itens é inválida para NFC-e — adicione produtos antes de emitir.",
       );
     }
-    if (Number(entry.totalAmount) > NFCE_LIMITE_VALOR) {
+    // O limite legal vale para a VENDA, não para a conta-mãe. Numa venda
+    // parcelada, `totalAmount` da mãe guarda só a ENTRADA
+    // (finance.repository.ts, createWithSplit) enquanto TODOS os itens ficam
+    // nela: uma venda de R$ 12.000 com entrada de R$ 3.000 passava por este
+    // guard e só era barrada lá na emissão, pelo total dos itens
+    // (nfe-emission.usecase.ts) — erro tardio, em vez de rotear para a NF-e 55.
+    //
+    // Somar as filhas só pode AUMENTAR o valor avaliado, então nenhuma emissão
+    // que hoje funciona deixa de funcionar. Venda à vista não tem filhas ⇒
+    // soma 0 ⇒ comportamento byte-idêntico ao atual.
+    const filhas = await this.repo.findChildren(receivableId, userId);
+    const valorDaVenda =
+      Number(entry.totalAmount) +
+      filhas.reduce((acc, f) => acc + Number(f.totalAmount), 0);
+    if (valorDaVenda > NFCE_LIMITE_VALOR) {
       throw new Error(
         "NFC-e limitada a R$ 10.000,00 — use Emitir NF-e (modelo 55) para esta venda.",
       );
@@ -1284,6 +1788,23 @@ export class FinanceUseCase {
           : emission.success
             ? ("processing" as const)
             : ("error" as const);
+
+    // BLOCO H — só a emissão AUTORIZADA vira evento. Tentativa que falhou,
+    // rejeição e reemissão idempotente não são fato da venda: poluiriam a
+    // timeline do operador com ruído do pipeline fiscal.
+    if (emission.status === "AUTHORIZED") {
+      recordSaleEvent({
+        receivableId,
+        userId,
+        type: "FISCAL_EMITTED",
+        message: `NFC-e autorizada${emission.numero ? ` nº ${emission.numero}` : ""}`,
+        details: {
+          modelo: "65",
+          numero: emission.numero ?? null,
+          serie: emission.serie ?? null,
+        },
+      });
+    }
 
     return {
       state,

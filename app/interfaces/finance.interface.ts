@@ -58,6 +58,43 @@ export interface FinanceEntry {
   installmentNumber?: number | null;
   installmentTotal?: number | null;
 
+  // ── BLOCO D: motivo do cancelamento ──
+  // Preenchidos só por `POST /receivables/:id/reverse`, e só com a flag
+  // ligada. NULL em toda conta não cancelada, em todo cancelamento sem motivo
+  // informado e em qualquer conta a PAGAR (o conceito não se aplica lá).
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  cancelledAt?: Date | null;
+
+  // ── BLOCO B: vendedor da venda ──
+  // Quem VENDEU, que pode não ser quem operou o caixa. NULL em venda anterior
+  // ao recurso, em lançamento sem vendedor, em toda conta a PAGAR e nas
+  // PARCELAS (o vendedor é da venda-mãe, que carrega os itens).
+  sellerUserId?: string | null;
+  seller?: { id: string; name: string | null; email: string | null } | null;
+
+  // ── BLOCO A (2ª metade): liquidação ──
+  // Marca EXPLÍCITA de que o dinheiro caiu. NULL ≠ "não caiu": significa
+  // "ninguém marcou", e aí a regra por forma decide em read-time
+  // (`saleSettledAt` / `lineSettledAt` em lib/settlement.ts).
+  settledAt?: Date | null;
+
+  // ── BLOCO A: conta de destino/origem do dinheiro ──
+  // NULL = não informado. Vale para receivable E payable (entrada e saída).
+  bankAccountId?: string | null;
+  bankAccount?: {
+    id: string;
+    name: string;
+    kind: string | null;
+    bankName: string | null;
+  } | null;
+
+  // ── BLOCO F: estágio operacional ──
+  // Segunda dimensão, ortogonal ao `status`. NULL = venda anterior ao recurso;
+  // quem exibe DERIVA para o primeiro estágio (deriveSaleStage). Nunca governa
+  // receber, estornar, editar ou emitir nota.
+  saleStage?: string | null;
+
   // Preenchidos só na conta-ENTRADA de uma venda parcelada, e só na listagem
   // do PDV (agregado das filhas). Servem para a tela mostrar o TAMANHO DA
   // VENDA (`totalAmount + installmentsAmount`) sem inflar o caixa do dia, que
@@ -87,10 +124,25 @@ export interface ReceivablePaymentInput {
   /** Valor aplicado À VENDA nesta forma. NUNCA o valor entregue pelo cliente:
    *  troco é diferença de caixa e não é persistido em lugar nenhum. */
   amount: number;
+  /**
+   * BLOCO A — conta de destino DESTA forma ("o PIX caiu no Itaú, o dinheiro
+   * ficou no caixa"). Ausente/null ⇒ vale o `Receivable.bankAccountId`, mesma
+   * precedência de `ReceivableItem.scrapId`.
+   */
+  bankAccountId?: string | null;
+  /**
+   * BLOCO A (2ª metade) — marca explícita de que ESTA forma caiu. Ausente ⇒
+   * a regra por forma decide (PIX cai no ato; crédito, não).
+   */
+  settledAt?: Date | string | null;
 }
 
 export interface ReceivablePaymentSnapshot extends ReceivablePaymentInput {
-  id: string;
+  // Opcional desde a Fase 1.1: o DETALHE (findById) traz o id, a LISTAGEM não.
+  // Trafegar um cuid por linha de pagamento em toda página seria egress puro —
+  // e nenhum consumidor lê este campo (o único, o mapeamento fiscal em
+  // finance.usecase.ts, usa apenas `method` e `amount`).
+  id?: string;
   createdAt?: Date;
 }
 
@@ -158,6 +210,15 @@ export interface FinanceEntryCreate {
   // Forma de pagamento (opcional/nulável). Ausente = fluxo atual inalterado.
   paymentMethod?: string | null;
 
+  // BLOCO B — vendedor (receivable apenas). AUSENTE (undefined) ⇒ nenhuma
+  // chave nova no objeto Prisma ⇒ INSERT byte-idêntico ao de hoje. `null`
+  // é explicitamente "sem vendedor".
+  sellerUserId?: string | null;
+
+  // BLOCO A — conta de destino (receivable) / origem (payable). Mesma regra:
+  // AUSENTE ⇒ nenhuma chave nova; `null` = sem conta.
+  bankAccountId?: string | null;
+
   // Itens de venda balcão — opcional, receivable-only. Ausente = fluxo atual
   // 100% inalterado (nada de estoque/produto). Persistido em `ReceivableItem`
   // na mesma transação da Receivable.
@@ -181,6 +242,16 @@ export type FinanceEntryUpdate = Partial<Omit<FinanceEntryCreate, "userId">>;
 export interface FinanceListFilters {
   search?: string;
   status?: FinanceStatus;
+  /**
+   * BLOCO C — filtro por status da VENDA, com múltipla seleção. Lista separada
+   * por vírgula no vocabulário de `lib/finance-status-filters.ts`
+   * (ABERTA, VENCIDA, RECEBIDA, PARCELADA, FATURADA, CANCELADA), que NÃO é o
+   * mesmo dos 4 valores de `FinanceStatus` — três dos rótulos são derivados.
+   *
+   * Campo NOVO em vez de sobrecarregar `status`: aquele continua aceitando um
+   * único `FinanceStatus` literal, como sempre. Ausente ⇒ consulta idêntica.
+   */
+  statusIn?: string;
   customerId?: string;
   // undefined/ausente = todas (comportamento atual); "sem_unidade" = unidadeId NULL;
   // qualquer outro valor = filtra por aquela unidade.

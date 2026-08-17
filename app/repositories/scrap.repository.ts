@@ -36,6 +36,41 @@ type ScrapListOmittedKey =
   | "freightMode"
   | "issuePurpose";
 
+/**
+ * Fase 1.2 — `productsCount` tem de contar as MESMAS peças que `getScrapParts`
+ * devolve, senão a listagem diz "12 produto(s)" e o detalhe mostra 11.
+ *
+ * Exclui a peça avulsa ÓRFÃ, com o mesmo discriminador de três condições do
+ * `getScrapParts` (ver o comentário lá): nasceu de uma venda, não tem venda
+ * viva em NENHUM canal e não tem estoque. `NOT: { a, b, c, d }` no Prisma é
+ * `NOT (a AND b AND c AND d)`.
+ *
+ * Custo: a contagem é por sucata (relação indexada por `scrapId`), então o
+ * conjunto candidato são as dezenas de peças daquele lote — e os dois `none`
+ * só são avaliados nas linhas que já passaram pelos dois predicados de coluna,
+ * que são baratos e raros.
+ */
+const PARTS_COUNT: {
+  select: { products: { where: Prisma.ProductWhereInput } };
+} = {
+  select: {
+    products: {
+      where: {
+        NOT: {
+          autoCreatedFromSale: true,
+          stock: 0,
+          receivableItems: { none: { receivable: { status: "PAGA" } } },
+          orderItems: {
+            none: {
+              order: { status: { in: ["PAID", "SHIPPED", "DELIVERED"] } },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 function mapPrismaToScrap(
   item: Omit<PrismaScrap, ScrapListOmittedKey> &
     Partial<Pick<PrismaScrap, ScrapListOmittedKey>> & {
@@ -138,7 +173,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         },
         include: {
           location: { select: { code: true } },
-          _count: { select: { products: true } },
+          _count: PARTS_COUNT,
         },
       });
 
@@ -157,7 +192,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         where: { id, ...(userId ? { userId } : {}) },
         include: {
           location: { select: { code: true } },
-          _count: { select: { products: true } },
+          _count: PARTS_COUNT,
         },
       });
       if (!item) return null;
@@ -227,7 +262,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           },
           include: {
             location: { select: { code: true } },
-            _count: { select: { products: true } },
+            _count: PARTS_COUNT,
           },
         }),
         prisma.scrap.count({ where }),
@@ -284,7 +319,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           },
           include: {
             location: { select: { code: true } },
-            _count: { select: { products: true } },
+            _count: PARTS_COUNT,
           },
         }),
       ),
@@ -372,6 +407,8 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         quality: true,
         isSecurityItem: true,
         isTraceable: true,
+        // Fase 1.2 — necessário para descartar a peça avulsa ÓRFÃ (ver abaixo).
+        autoCreatedFromSale: true,
       },
       orderBy: [{ stock: "desc" }, { name: "asc" }],
     });
@@ -416,19 +453,58 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
       );
     }
 
-    return products.map((p) => ({
-      id: p.id,
-      name: p.name,
-      sku: p.sku,
-      partNumber: p.partNumber ?? undefined,
-      price: Number(p.price ?? 0),
-      stock: p.stock,
-      status: p.stock > 0 ? "IN_STOCK" : "SOLD",
-      quality: p.quality ?? undefined,
-      isSecurityItem: p.isSecurityItem ?? false,
-      isTraceable: p.isTraceable ?? false,
-      soldQuantity: soldBy.get(p.id) ?? 0,
-    }));
+    return (
+      products
+        // ── Fase 1.2 — a peça avulsa ÓRFÃ não é peça vendida ──
+        //
+        // A peça avulsa vira produto de catálogo no recebimento e HERDA a
+        // sucata (finance.usecase.ts:741) justamente para contar aqui. No
+        // ESTORNO o contra-lançamento devolve +qty e a compensação simétrica
+        // tira −qty de volta, deixando o produto no catálogo com estoque 0 —
+        // e `status` abaixo deriva de estoque, então ele continuava "Vendido"
+        // PARA SEMPRE. Era o bug relatado: cancelar a venda não devolvia a
+        // contagem de peças vendidas da sucata.
+        //
+        // Órfã = nasceu de uma venda (`autoCreatedFromSale`) E não tem venda
+        // viva (`soldQuantity` zerado, somando os DOIS canais: marketplace
+        // PAID/SHIPPED/DELIVERED + balcão PAGA) E não tem peça física
+        // (`stock` zerado). As três condições juntas: sem venda e sem estoque,
+        // este produto não representa nada — existe só como resíduo do
+        // estorno.
+        //
+        // O `stock === 0` não é redundante: se alguém REPÔS a peça avulsa no
+        // catálogo, ela virou peça de verdade com inventário físico, e
+        // escondê-la da lista da sucata esconderia estoque que existe.
+        //
+        // Escopo deliberadamente estreito. Peça CADASTRADA com estoque 0 e sem
+        // venda continua aparecendo como hoje (pode ter zerado por ajuste,
+        // perda ou importação), e a peça avulsa de venda ainda PAGA continua
+        // contando — que é a intenção do Bloco F.
+        // `ScrapStatusReconcileService` já aplica exclusão equivalente no
+        // cálculo de status do lote (scrap-status-reconcile.service.ts:139-152);
+        // esta consulta é que nunca tinha recebido o mesmo tratamento.
+        .filter(
+          (p) =>
+            !(
+              p.autoCreatedFromSale &&
+              (soldBy.get(p.id) ?? 0) === 0 &&
+              p.stock === 0
+            ),
+        )
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          partNumber: p.partNumber ?? undefined,
+          price: Number(p.price ?? 0),
+          stock: p.stock,
+          status: p.stock > 0 ? "IN_STOCK" : "SOLD",
+          quality: p.quality ?? undefined,
+          isSecurityItem: p.isSecurityItem ?? false,
+          isTraceable: p.isTraceable ?? false,
+          soldQuantity: soldBy.get(p.id) ?? 0,
+        }))
+    );
   }
 
   // Vendas avulsas (itens MANUAIS, sem produto cadastrado) atribuídas
@@ -599,7 +675,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         },
         include: {
           location: { select: { code: true } },
-          _count: { select: { products: true } },
+          _count: PARTS_COUNT,
         },
       });
 
@@ -630,7 +706,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         data: { logisticsStatus },
         include: {
           location: { select: { code: true } },
-          _count: { select: { products: true } },
+          _count: PARTS_COUNT,
         },
       });
 

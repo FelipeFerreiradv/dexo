@@ -94,6 +94,13 @@ export class ScrapUseCase {
 
     if (include?.products) {
       detail.products = await this.scrapRepository.getScrapParts(id, userId);
+      // Fase 1.2 — o cabeçalho "Peças do lote (N)" tem de contar as MESMAS
+      // peças da tabela logo abaixo. `productsCount` vem de um `_count` de
+      // relação e não conhece os filtros de `getScrapParts` (peça avulsa órfã
+      // e produto de outro tenant apontando para esta sucata), então divergia.
+      // Só quando os produtos foram carregados — sem `include.products` o
+      // contador segue sendo o da relação, como na listagem de sucatas.
+      detail.productsCount = detail.products.length;
     }
 
     if (include?.history) {
