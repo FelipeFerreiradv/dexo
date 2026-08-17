@@ -53,6 +53,20 @@ model User {
   // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
   whatsappEnabledAt DateTime?
 
+  // Reabrir o anúncio quando a peça volta ao estoque por CANCELAMENTO de venda
+  // (pedido de marketplace ou estorno de balcão). Default true = comportamento
+  // atual, então nenhum tenant muda ao migrar.
+  //
+  // Existe porque quem trabalha com peça USADA sofre com a reabertura: a peça
+  // física ainda não voltou ao pátio, outro comprador compra, e o lojista
+  // cancela de novo — o que machuca reputação no marketplace. Quem trabalha com
+  // peça nova quer o oposto, e por isso a escolha é por conta, não global.
+  //
+  // É preferência de TENANT: colaboradores herdam do admin pai (a leitura usa
+  // sempre o dataOwnerId), mesma regra de `whatsappEnabledAt`.
+  // Migração: prisma/ddl/2026-08-17-user-reopen-listings-on-sale-cancel.sql
+  reopenListingsOnSaleCancel Boolean @default(true)
+
   // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
   // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
   // bloqueado. Só afeta colaboradores; admin/superadmin sempre têm acesso total.

@@ -74,6 +74,13 @@ export default function ConfigModal({
   // Aumento percentual escalonado entre contas ML (anti-penalização)
   const [crossAccountPercent, setCrossAccountPercent] = useState<string>("");
 
+  // Reabrir anúncio quando a peça volta ao estoque por cancelamento de venda.
+  // Nasce LIGADO para que a janela entre abrir o modal e o fetch chegar nunca
+  // mostre "desligado" para quem está ligado — que é a maioria.
+  const [reopenOnSaleCancel, setReopenOnSaleCancel] = useState(true);
+  // Preferência de TENANT: colaborador vê o valor do admin, mas não altera.
+  const isCollaborator = Boolean((session?.user as any)?.parentUserId);
+
   const apiBase = useMemo(() => getApiBaseUrl(), []);
 
   // sync controlled open
@@ -123,6 +130,14 @@ export default function ConfigModal({
         user.crossAccountPriceIncreasePercent != null
           ? String(user.crossAccountPriceIncreasePercent)
           : "",
+      );
+      // `effective*` é o valor do TENANT — colaborador herda do admin pai. Ler
+      // o campo cru aqui faria o colaborador ver sempre "ligado" (o default da
+      // própria linha), mentindo sobre o que vai de fato acontecer.
+      setReopenOnSaleCancel(
+        user.effectiveReopenListingsOnSaleCancel ??
+          user.reopenListingsOnSaleCancel ??
+          true,
       );
     } catch (error) {
       alert("Erro ao carregar configurações");
@@ -204,6 +219,13 @@ export default function ConfigModal({
           // Aumento percentual escalonado entre contas ML
           crossAccountPriceIncreasePercent:
             crossAccountPercent !== "" ? Number(crossAccountPercent) : 0,
+
+          // Preferência de TENANT: colaborador nem envia. A rota também
+          // descarta por garantia, mas mandar um campo que será ignorado é
+          // mentir para quem lê o request.
+          ...(isCollaborator
+            ? {}
+            : { reopenListingsOnSaleCancel: reopenOnSaleCancel }),
         }),
       });
 
@@ -336,6 +358,9 @@ export default function ConfigModal({
                   onManufacturingTimeChange={setDefaultManufacturingTime}
                   crossAccountPercent={crossAccountPercent}
                   onCrossAccountPercentChange={setCrossAccountPercent}
+                  reopenOnSaleCancel={reopenOnSaleCancel}
+                  onReopenOnSaleCancelChange={setReopenOnSaleCancel}
+                  reopenLocked={isCollaborator}
                   onSave={handleSavePreferences}
                   saving={savingPrefs}
                 />
@@ -566,6 +591,10 @@ function PreferencesSection(props: {
   onManufacturingTimeChange: (value: string) => void;
   crossAccountPercent: string;
   onCrossAccountPercentChange: (value: string) => void;
+  reopenOnSaleCancel: boolean;
+  onReopenOnSaleCancelChange: (value: boolean) => void;
+  /** Colaborador: exibe o valor do tenant, mas não altera. */
+  reopenLocked: boolean;
   onSave: () => void;
   saving: boolean;
 }) {
@@ -596,6 +625,9 @@ function PreferencesSection(props: {
     onManufacturingTimeChange,
     crossAccountPercent,
     onCrossAccountPercentChange,
+    reopenOnSaleCancel,
+    onReopenOnSaleCancelChange,
+    reopenLocked,
     onSave,
     saving,
   } = props;
@@ -848,6 +880,31 @@ function PreferencesSection(props: {
                 %
               </span>
             </div>
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup
+        title="Cancelamento de venda"
+        description="O que acontece com os seus anúncios quando uma venda é cancelada."
+      >
+        <SettingRow
+          alignTop
+          title="Reabrir anúncio quando a peça voltar ao estoque"
+          description="Quando uma venda é cancelada — pedido de marketplace ou estorno de balcão — a peça volta para o estoque. Com esta opção ligada, o anúncio que estava pausado por falta de estoque volta ao ar sozinho. Desligue se você prefere conferir a peça antes de anunciar de novo: o estoque volta do mesmo jeito, só o anúncio continua pausado até você reativar. Vale para a empresa inteira."
+        >
+          <div className="flex items-center justify-end gap-3">
+            {reopenLocked ? (
+              <span className="text-xs text-muted-foreground">
+                Somente o administrador da conta pode alterar.
+              </span>
+            ) : null}
+            <Switch
+              id="cfgReopenOnSaleCancel"
+              checked={reopenOnSaleCancel}
+              onCheckedChange={onReopenOnSaleCancelChange}
+              disabled={reopenLocked}
+            />
           </div>
         </SettingRow>
       </SettingGroup>

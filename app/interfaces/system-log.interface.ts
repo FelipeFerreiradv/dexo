@@ -63,6 +63,11 @@ export type LogAction =
   // anúncios (ver OrderUseCase.processOrderCancellation).
   | "ORDER_CANCEL_RESTORE"
   | "ORDER_CANCEL_RESTORE_FAILED"
+  // Não deu para ler a preferência `User.reopenListingsOnSaleCancel` e o sistema
+  // assumiu LIGADO (comportamento de hoje). Existe porque fail-open SILENCIOSO
+  // seria inaceitável: o cliente que DESLIGOU veria o anúncio reabrir sem
+  // nenhum rastro de por quê. Ver app/services/reopen-listings-preference.ts.
+  | "REOPEN_PREFERENCE_READ_FAILED"
   | "ORDER_UNCANCEL_REDEDUCT"
   | "MAGALU_CANCEL_DETECTED"
   // Auto-cadastro de Customer a partir de venda de marketplace

@@ -61,6 +61,10 @@ import { NFCE_LIMITE_VALOR } from "../fiscal/domain/nfce";
 import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
 import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
 import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-status-reconcile.service";
+import {
+  isReopenOnCancelEnabled,
+  REOPEN_ON_CANCEL_DEFAULT,
+} from "../services/reopen-listings-preference";
 import { SystemLogService } from "../services/system-log.service";
 import { ProductUseCase } from "./product.usercase";
 
@@ -1236,12 +1240,29 @@ export class FinanceUseCase {
       throw e;
     }
 
+    // Preferência do TENANT (default LIGADO). `userId` aqui JÁ é o dataOwnerId
+    // — a rota resolve `parentUserId ?? id` (finance.routes.ts) —, então mesmo
+    // quando quem estorna é um colaborador a leitura cai na linha certa.
+    //
+    // Só consulta quando há o que restaurar: sem restauração não existe anúncio
+    // a reabrir, e a query seria desperdício. Nesse caminho o input do
+    // firePostEffects fica byte-idêntico ao de antes desta mudança.
+    const reabrirAnuncio =
+      restorations.length > 0
+        ? await isReopenOnCancelEnabled(userId)
+        : REOPEN_ON_CANCEL_DEFAULT;
+
     // Pós-commit: sincroniza com marketplaces + reabre anúncios cujos
     // produtos saíram de zero. Best-effort, fora da tx.
+    //
+    // ⚠️ A chamada acontece SEMPRE; só a chave `reopenOnRefill` é condicional.
+    // Envolvê-la num `if` mataria junto o StockSyncRetryService — o estoque
+    // restaurado nunca chegaria aos marketplaces. Ver o gêmeo em
+    // OrderUseCase.processOrderCancellation.
     StockDeductionService.firePostEffects({
       deductions: restorations,
       logPrefix: "[FinanceUseCase]",
-      reopenOnRefill: { userId },
+      ...(reabrirAnuncio ? { reopenOnRefill: { userId } } : {}),
     });
 
     // Estorno simétrico: reavalia o status da sucata (DEPLETED→IN_USE→AVAILABLE
