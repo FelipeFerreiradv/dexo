@@ -78,6 +78,8 @@ import {
   describeCancelReason,
   isCancelReasonUiEnabled,
 } from "../lib/cancel-reasons";
+import { isSettlementUiEnabled } from "../lib/settlement";
+import { SettlementBadge } from "./shared/settlement-badge";
 
 interface FinanceRow {
   id: string;
@@ -101,6 +103,10 @@ interface FinanceRow {
   // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
   payments?: { method: string; amount: number }[];
   status: "PENDENTE" | "PAGA" | "VENCIDA" | "CANCELADA";
+  paidAt?: string | null;
+  // BLOCO A (2ª metade) — marca explícita de liquidação. Ausente/null ⇒ a
+  // regra por forma decide (o cálculo é do `settlement.ts`, não daqui).
+  settledAt?: string | null;
   // BLOCO D — motivo do cancelamento. Ausente em tudo que não foi cancelado
   // com motivo informado. Só leitura: o formulário de edição não os conhece
   // (`row-to-form.ts` é uma tabela explícita, não um spread da linha).
@@ -141,6 +147,9 @@ const SALE_CANCEL_ENABLED =
 // BLOCO H — botão "Histórico". Flag OFF ⇒ o botão não existe e nenhum request
 // novo acontece. Só em contas a RECEBER: a timeline é da venda.
 const TIMELINE_UI_ENABLED = isSaleTimelineUiEnabled();
+
+// BLOCO A (2ª metade) — selo "a liquidar". Flag OFF ⇒ o selo não existe.
+const SETTLEMENT_UI_ENABLED = isSettlementUiEnabled();
 
 // Sentinela do filtro de forma de pagamento (Radix Select não aceita value="").
 // "todas" = não envia o parâmetro => resultado idêntico ao atual.
@@ -551,20 +560,42 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                           pergunta "cancelada por quê?" se responde onde ela
                           nasce, sem abrir nada. Sem motivo, o badge é o de
                           sempre (title undefined). */}
-                      <span
-                        title={
-                          describeCancelReason(
-                            r.cancelReasonCode,
-                            r.cancelReason,
-                          ) ?? undefined
-                        }
-                        className={cn(
-                          "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
-                          STATUS_STYLES[r.status],
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span
+                          title={
+                            describeCancelReason(
+                              r.cancelReasonCode,
+                              r.cancelReason,
+                            ) ?? undefined
+                          }
+                          className={cn(
+                            "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
+                            STATUS_STYLES[r.status],
+                          )}
+                        >
+                          {r.status}
+                        </span>
+                        {/* BLOCO A (2ª metade) — o selo só aparece quando há
+                            dinheiro a cair. PAGA no PIX não ganha selo: marcar
+                            "liquidado" no que já liquidou sozinho criaria fila
+                            para confirmar o óbvio. */}
+                        {SETTLEMENT_UI_ENABLED && kind === "receivable" && (
+                          <SettlementBadge
+                            receivableId={r.id}
+                            status={r.status}
+                            paidAt={r.paidAt}
+                            paymentMethod={r.paymentMethod}
+                            settledAt={r.settledAt}
+                            payments={r.payments}
+                            totalAmount={r.totalAmount}
+                            onToast={onToast}
+                            onChanged={() => {
+                              fetchList();
+                              onChanged?.();
+                            }}
+                          />
                         )}
-                      >
-                        {r.status}
-                      </span>
+                      </div>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">

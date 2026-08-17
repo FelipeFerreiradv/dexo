@@ -109,6 +109,9 @@ function toEntry(raw: any): FinanceEntry {
     // toda conta a pagar; a DERIVAÇÃO para o primeiro estágio é de quem exibe,
     // não daqui — o repositório devolve o que está gravado.
     saleStage: raw.saleStage ?? null,
+    // BLOCO A (2ª metade) — marca explícita de liquidação. A DERIVAÇÃO (regra
+    // por forma) é de quem lê, não daqui.
+    settledAt: raw.settledAt ?? null,
     // BLOCO A — conta de destino/origem. Vale para os DOIS kinds.
     bankAccountId: raw.bankAccountId ?? null,
     bankAccount: raw.bankAccount
@@ -173,6 +176,9 @@ function toEntry(raw: any): FinanceEntry {
           // precedência mora em `effectiveBankAccountId`, não aqui: o
           // repositório devolve o que está gravado).
           bankAccountId: p.bankAccountId ?? null,
+          // BLOCO A (2ª metade) — marca explícita de liquidação. NULL ⇒ a
+          // regra por forma decide em read-time; o repositório não deriva.
+          settledAt: p.settledAt ?? null,
         }))
       : undefined,
   };
@@ -854,6 +860,10 @@ export class FinanceRepository {
                 // BLOCO F — estágio na listagem: é a coluna do painel, e
                 // "onde está esta venda?" não pode exigir abrir a venda.
                 saleStage: true,
+                // BLOCO A (2ª metade) — a marca de liquidação. Sem ela a
+                // listagem não conseguiria distinguir "cartão que já caiu" de
+                // "cartão a caminho" sem uma consulta por linha.
+                settledAt: true,
               }
             : {}),
           customer: {

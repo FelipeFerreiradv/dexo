@@ -22,6 +22,7 @@ import { normalizeCancelReason } from "../financeiro/lib/cancel-reasons";
 import { normalizeSellerId } from "../financeiro/lib/sale-seller";
 import { normalizeSaleStage } from "../financeiro/lib/sale-stage";
 import { normalizeBankAccountId } from "../financeiro/lib/bank-accounts";
+import { normalizeSettleFlag } from "../financeiro/lib/settlement";
 
 /**
  * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
@@ -475,6 +476,78 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           : message.includes("inválida") || message.includes("inválido")
             ? 400
             : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── BLOCO A (2ª metade) — liquidação: o dinheiro caiu? ──
+  //
+  // Métrica NOVA, ao lado. Nenhuma das rotas abaixo toca `status`, `paidAt`
+  // nem o `GET /finance/summary` — os 8 lugares que somam "recebido" hoje
+  // continuam somando exatamente o mesmo.
+  fastify.get(
+    "/settlement-summary",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const summary = await useCase.settlementSummary(userId);
+        return reply.status(200).send({ summary });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao calcular a liquidação",
+        });
+      }
+    },
+  );
+
+  fastify.patch<{
+    Params: { id: string };
+    Body: { settled?: unknown; paymentId?: unknown };
+  }>(
+    "/receivables/:id/settlement",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params;
+        const body = (request.body ?? {}) as {
+          settled?: unknown;
+          paymentId?: unknown;
+        };
+        const settled = normalizeSettleFlag(body.settled);
+        if (settled === undefined) {
+          return reply.status(400).send({
+            error:
+              "Informe settled (true/false) — ou o recurso está desativado",
+          });
+        }
+        const paymentId =
+          typeof body.paymentId === "string" && body.paymentId.trim()
+            ? body.paymentId.trim()
+            : undefined;
+
+        const entry = await useCase.setSettlement(
+          id,
+          userId,
+          settled,
+          paymentId,
+          {
+            id: (request as any).user?.id,
+            name: (request as any).user?.name ?? null,
+          },
+        );
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao marcar a liquidação";
+        const status = message.includes("não encontrad") ? 404 : 500;
         return reply.status(status).send({ error: message });
       }
     },

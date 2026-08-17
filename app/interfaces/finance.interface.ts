@@ -73,6 +73,12 @@ export interface FinanceEntry {
   sellerUserId?: string | null;
   seller?: { id: string; name: string | null; email: string | null } | null;
 
+  // ── BLOCO A (2ª metade): liquidação ──
+  // Marca EXPLÍCITA de que o dinheiro caiu. NULL ≠ "não caiu": significa
+  // "ninguém marcou", e aí a regra por forma decide em read-time
+  // (`saleSettledAt` / `lineSettledAt` em lib/settlement.ts).
+  settledAt?: Date | null;
+
   // ── BLOCO A: conta de destino/origem do dinheiro ──
   // NULL = não informado. Vale para receivable E payable (entrada e saída).
   bankAccountId?: string | null;
@@ -124,6 +130,11 @@ export interface ReceivablePaymentInput {
    * precedência de `ReceivableItem.scrapId`.
    */
   bankAccountId?: string | null;
+  /**
+   * BLOCO A (2ª metade) — marca explícita de que ESTA forma caiu. Ausente ⇒
+   * a regra por forma decide (PIX cai no ato; crédito, não).
+   */
+  settledAt?: Date | string | null;
 }
 
 export interface ReceivablePaymentSnapshot extends ReceivablePaymentInput {

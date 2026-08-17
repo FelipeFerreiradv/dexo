@@ -37,6 +37,10 @@ import {
   touchesProtectedFields,
 } from "../financeiro/lib/sale-edit-guard";
 import { deriveSaleStage, saleStageLabel } from "../financeiro/lib/sale-stage";
+import {
+  isSettlementEnabled,
+  settlementBreakdown,
+} from "../financeiro/lib/settlement";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
   FinanceRepository,
@@ -1271,6 +1275,130 @@ export class FinanceUseCase {
     });
 
     return atualizada;
+  }
+
+  /**
+   * BLOCO A (2ª metade) — marca (ou desmarca) que o dinheiro caiu.
+   *
+   * Sem `paymentId`, marca a VENDA — é o caminho das vendas sem linhas de
+   * pagamento, que são a esmagadora maioria (77 das 82 medidas). Com
+   * `paymentId`, marca UMA forma, que é o "o PIX caiu, o cartão não".
+   *
+   * Desmarcar é permitido de propósito: conferência de extrato erra, e erro
+   * precisa ter volta. O estágio (BLOCO F) segue a mesma filosofia.
+   *
+   * NÃO mexe em `status` nem em `paidAt`: a venda continua PAGA e o estoque
+   * continua baixado. Liquidação é uma dimensão AO LADO — é o que garante que
+   * os 8 lugares que somam dinheiro hoje continuem somando o mesmo.
+   */
+  async setSettlement(
+    id: string,
+    userId: string,
+    settled: boolean,
+    paymentId?: string,
+    actor?: FinanceActor,
+  ): Promise<FinanceEntry> {
+    const atual = await this.repo.findById("receivable", id, userId);
+    if (!atual) throw new Error("Conta a receber não encontrada");
+
+    const quando = settled ? new Date() : null;
+
+    if (paymentId) {
+      // Escopo pelo receivableId ALÉM do id da linha: sem isso, um id de linha
+      // de outro tenant marcaria liquidação numa venda alheia.
+      const res = await (prisma as any).receivablePayment.updateMany({
+        where: { id: paymentId, receivableId: id },
+        data: { settledAt: quando },
+      });
+      if (res.count === 0) {
+        throw new Error("Forma de pagamento não encontrada nesta venda");
+      }
+    } else {
+      await this.repo.update("receivable", id, userId, {
+        settledAt: quando,
+      } as never);
+    }
+
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "UPDATED",
+      message: settled
+        ? "Dinheiro confirmado na conta"
+        : "Confirmação de recebimento desfeita",
+      details: { settled, paymentId: paymentId ?? null },
+      actor,
+    });
+
+    // Relê para devolver o estado consolidado (a marca pode ter ido para uma
+    // LINHA, e o chamador precisa do conjunto para recalcular o selo).
+    const atualizada = await this.repo.findById("receivable", id, userId);
+    return atualizada ?? atual;
+  }
+
+  /**
+   * BLOCO A (2ª metade) — quanto já caiu e quanto ainda está a caminho.
+   *
+   * MÉTRICA NOVA, ao lado: não toca `summary()` nem nenhum dos lugares que
+   * somam "recebido" hoje. Decisão de 14/08 — cada número existente continua
+   * significando o que sempre significou.
+   *
+   * A conta é feita em TS, e não em SQL, porque a regra ("PIX cai no ato,
+   * crédito não") vive no vocabulário de formas de pagamento. Reescrevê-la em
+   * SQL seria mantê-la em dois lugares, e é assim que as duas divergem.
+   *
+   * Egress: projeção mínima sobre as contas PAGAS. Cresce com o histórico —
+   * quando incomodar, o corte natural é por período (a tela já filtra por
+   * data), não uma reescrita em SQL.
+   */
+  async settlementSummary(userId: string): Promise<{
+    settledAmount: number;
+    pendingAmount: number;
+    pendingCount: number;
+  }> {
+    if (!isSettlementEnabled()) {
+      return { settledAmount: 0, pendingAmount: 0, pendingCount: 0 };
+    }
+    const rows = await (prisma as any).receivable.findMany({
+      where: { userId, status: "PAGA" },
+      select: {
+        totalAmount: true,
+        status: true,
+        paidAt: true,
+        paymentMethod: true,
+        settledAt: true,
+        payments: { select: { method: true, amount: true, settledAt: true } },
+      },
+    });
+
+    let settledAmount = 0;
+    let pendingAmount = 0;
+    let pendingCount = 0;
+    for (const r of rows as any[]) {
+      const b = settlementBreakdown(
+        {
+          status: r.status,
+          paidAt: r.paidAt,
+          paymentMethod: r.paymentMethod,
+          settledAt: r.settledAt,
+        },
+        (r.payments ?? []).map((p: any) => ({
+          method: p.method,
+          amount: Number(p.amount),
+          settledAt: p.settledAt,
+        })),
+        Number(r.totalAmount),
+      );
+      settledAmount += b.settledAmount;
+      pendingAmount += b.pendingAmount;
+      if (b.pendingAmount > 0) pendingCount += 1;
+    }
+
+    return {
+      settledAmount: Math.round(settledAmount * 100) / 100,
+      pendingAmount: Math.round(pendingAmount * 100) / 100,
+      pendingCount,
+    };
   }
 
   async summary(

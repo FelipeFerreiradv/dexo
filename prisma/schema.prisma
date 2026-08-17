@@ -1044,6 +1044,18 @@ model Receivable {
   installmentNumber  Int?
   installmentTotal   Int?
 
+  // ── BLOCO A (2ª metade): liquidação ──
+  // Quando o dinheiro DE FATO caiu, distinto de `paidAt` ("a venda foi baixada,
+  // o estoque saiu"). Só é gravado quando alguém MARCA explicitamente — no caso
+  // comum a liquidação é DERIVADA da forma de pagamento em read-time
+  // (app/financeiro/lib/settlement.ts), como o VENCIDA sempre foi.
+  //
+  // NULL não significa "não caiu": significa "ninguém marcou", e aí a regra por
+  // forma decide. PIX derivado como liquidado tem `settledAt` NULL.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "settledAt" TIMESTAMP(3);
+  settledAt DateTime?
+
   // ── BLOCO A: conta de destino do dinheiro ──
   // Onde o dinheiro DESTA venda entrou. NULL = não informado (é o caso de 178
   // das 260 contas existentes, importadas do legado sem forma de pagamento).
@@ -1245,6 +1257,13 @@ model ReceivablePayment {
   //
   // Migração: ALTER TABLE "ReceivablePayment" ADD COLUMN IF NOT EXISTS "bankAccountId" TEXT;
   bankAccountId String?
+
+  // BLOCO A (2ª metade) — quando ESTA forma caiu. Só gravado por marcação
+  // explícita; no caso comum a liquidação é derivada da forma em read-time.
+  // É o que permite "o PIX já caiu, o cartão não" na MESMA venda.
+  //
+  // Migração: ALTER TABLE "ReceivablePayment" ADD COLUMN IF NOT EXISTS "settledAt" TIMESTAMP(3);
+  settledAt DateTime?
 
   receivable  Receivable   @relation(fields: [receivableId], references: [id], onDelete: Cascade)
   bankAccount BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
