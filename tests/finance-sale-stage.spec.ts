@@ -10,9 +10,10 @@
 // venda anterior ao recurso ficaria fora do painel, que passaria a mentir sobre
 // o movimento da loja.
 //
-// ⚠️ Os nomes dos 11 estágios são PROPOSTA (o vocabulário do cliente se perdeu
-// no prompt). Por isso os testes afirmam ESTRUTURA e COMPORTAMENTO — nunca um
-// rótulo literal: trocar "Em separação" por outro nome não pode ficar vermelho.
+// Os testes afirmam ESTRUTURA e COMPORTAMENTO, nunca um rótulo literal. É
+// deliberado: o vocabulário é operacional e vai mudar quando o processo da loja
+// mudar. Renomear "Em separação" não pode deixar a suíte vermelha — só mexer na
+// mecânica (derivação, avanço, fronteira do PATCH) deve.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import fastify from "fastify";

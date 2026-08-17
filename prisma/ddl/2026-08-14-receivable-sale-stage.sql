@@ -14,10 +14,9 @@
 -- listagem, edição, recebimento, dashboard. A flag não protege disso, porque
 -- ela governa a ESCRITA e a leitura quebrada acontece antes, em qualquer tela.
 --
--- ⚠️ AGUARDANDO CONFIRMAÇÃO DO VOCABULÁRIO: os 11 estágios em
--- `app/financeiro/lib/sale-stage.ts` são PROPOSTA. Nada aqui depende deles —
--- a coluna é TEXT livre, e trocar nome de estágio é editar aquele arquivo, sem
--- tocar no banco. Este DDL vale para qualquer lista que você definir.
+-- Nada aqui depende dos NOMES dos estágios: a coluna é TEXT livre, e a lista
+-- vive em `app/financeiro/lib/sale-stage.ts`. Mudar o pipeline no futuro é
+-- editar aquele arquivo — este DDL continua valendo.
 
 BEGIN;
 

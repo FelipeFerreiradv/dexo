@@ -12,12 +12,14 @@
 //     caminho que baixa estoque é exatamente o que ninguém consegue destravar
 //     num sábado de movimento.
 //
-// ⚠️⚠️ OS 11 ESTÁGIOS ABAIXO SÃO PROPOSTA MINHA, NÃO O VOCABULÁRIO DO CLIENTE.
-// A lista pedida no prompt original se perdeu, e inventar nome de processo de
-// outra pessoa é pior do que perguntar. Estão aqui para a infraestrutura ficar
-// pronta e testada; TROCAR CADA NOME É EDITAR UMA LINHA, sem migração — foi
-// justamente por isso que a coluna é TEXT. A flag nasce desligada, então nada
-// disso aparece em produção antes de você confirmar.
+// Os 11 estágios abaixo foram confirmados em 14/08. ACRESCENTAR, RENOMEAR OU
+// REORDENAR é editar esta lista — sem migração, porque a coluna é TEXT. Duas
+// coisas a respeitar ao mexer nela:
+//   · o `code` é o que está GRAVADO nas vendas. Renomear um code sem migrar os
+//     dados deixa as vendas antigas com um código fora do vocabulário — o que
+//     não quebra nada (elas exibem o código cru), mas some do painel. Preferir
+//     trocar só o `label`, que é o que o operador vê.
+//   · a ORDEM define o "próximo" do botão de avançar e o contador "3/11".
 //
 // Módulo PURO (sem I/O): serve ao backend e ao bundle.
 
@@ -29,7 +31,7 @@ export interface SaleStageDef {
   hint?: string;
 }
 
-/** ⚠️ PROPOSTA — aguardando confirmação do vocabulário real. */
+/** Pipeline operacional da venda de balcão. Confirmado em 14/08. */
 export const SALE_STAGES: SaleStageDef[] = [
   { code: "AGUARDANDO_PAGAMENTO", label: "Aguardando pagamento" },
   { code: "PAGAMENTO_CONFIRMADO", label: "Pagamento confirmado" },
