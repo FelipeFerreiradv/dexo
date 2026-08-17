@@ -21,6 +21,7 @@ import { listSaleTimeline } from "../financeiro/lib/sale-timeline";
 import { normalizeCancelReason } from "../financeiro/lib/cancel-reasons";
 import { normalizeSellerId } from "../financeiro/lib/sale-seller";
 import { normalizeSaleStage } from "../financeiro/lib/sale-stage";
+import { normalizeBankAccountId } from "../financeiro/lib/bank-accounts";
 
 /**
  * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
@@ -211,10 +212,18 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         // `...body` não é preciosismo: sem isso, com a flag desligada o valor
         // cru do formulário chegaria ao repositório assim mesmo, e a coluna
         // (que pode nem existir no banco ainda) seria escrita.
-        const { sellerUserId: sellerBruto, ...body } = (request.body ??
-          {}) as any;
+        const {
+          sellerUserId: sellerBruto,
+          bankAccountId: contaBruta,
+          ...body
+        } = (request.body ?? {}) as any;
         const sellerUserId =
           kind === "receivable" ? normalizeSellerId(sellerBruto) : undefined;
+        // BLOCO A — conta de destino/origem. Vale para os DOIS kinds, e sai do
+        // spread pelo mesmo motivo do vendedor: com a flag desligada o valor
+        // cru chegaria ao repositório e tentaria escrever numa coluna que pode
+        // não existir no banco ainda.
+        const bankAccountId = normalizeBankAccountId(contaBruta);
         // BLOCO H — quem OPEROU (request.user.id), não o dono dos dados:
         // num tenant com colaboradores, dataOwnerId é sempre o admin.
         const entry = await useCase.create(
@@ -223,6 +232,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             ...body,
             userId,
             ...(sellerUserId !== undefined ? { sellerUserId } : {}),
+            ...(bankAccountId !== undefined ? { bankAccountId } : {}),
           },
           {
             id: (request as any).user?.id,
@@ -298,6 +308,16 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           );
           if (seller !== undefined) data.sellerUserId = seller;
         }
+
+        // BLOCO A — conta de destino/origem. Fora da whitelist genérica pela
+        // mesma razão do vendedor (fronteira de tipo + flag), mas SEM o
+        // recorte por kind: a coluna existe nos dois. `undefined` (chave
+        // ausente) não vira `null` — seria um PUT sem o campo apagando a conta
+        // de um lançamento que já a tinha.
+        const conta = normalizeBankAccountId(
+          (body as Record<string, unknown>).bankAccountId,
+        );
+        if (conta !== undefined) data.bankAccountId = conta;
 
         const entry = await useCase.update(kind, id, userId, data, {
           id: (request as any).user?.id,

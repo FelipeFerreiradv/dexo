@@ -37,6 +37,7 @@ import {
 import { downloadReceipt } from "../lib/download-receipt";
 import { buildInstallmentPlan } from "../lib/installment-plan";
 import { isSaleSellerUiEnabled } from "../lib/sale-seller";
+import { isBankAccountsUiEnabled } from "../lib/bank-accounts";
 
 // Bloco B — entrada + parcelas. Só na CRIAÇÃO de venda balcão: editar uma
 // venda já parcelada mexeria em contas-filhas que podem já ter sido pagas.
@@ -116,6 +117,10 @@ const BALCAO_SALE_ENABLED =
 // BLOCO B — campo "Vendedor" no passo do cliente. Flag OFF ⇒ o formulário
 // renderiza como hoje, sem campo, sem request e sem `sellerUserId` no payload.
 const SALE_SELLER_UI_ENABLED = isSaleSellerUiEnabled();
+
+// BLOCO A — seletor de conta bancária / caixa no passo do título. Flag OFF ⇒
+// nenhum campo, nenhum request e `bankAccountId` nunca entra no payload.
+const BANK_ACCOUNTS_UI_ENABLED = isBankAccountsUiEnabled();
 
 interface FinanceDialogProps {
   kind: FinanceKind;
@@ -527,6 +532,12 @@ export function FinanceDialog({
                 errors={errors}
                 kind={kind}
                 balcaoEnabled={balcaoEnabled}
+                // BLOCO A — conta de destino/origem. Vale nos DOIS kinds.
+                showBankAccount={BANK_ACCOUNTS_UI_ENABLED}
+                // Sugere a conta padrão só ao CRIAR: na edição, campo vazio
+                // significa "este lançamento não tem conta", e preenchê-lo
+                // sozinho reescreveria o histórico de quem só abriu a tela.
+                autoSelectDefaultAccount={!isEdit}
                 setValue={balcaoEnabled ? setValue : undefined}
                 getValues={balcaoEnabled ? getValues : undefined}
                 productMeta={balcaoEnabled ? productMeta : undefined}

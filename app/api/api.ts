@@ -35,6 +35,7 @@ import { customerRoutes } from "../routes/customer.routes";
 import { financeRoutes } from "../routes/finance.routes";
 import { budgetRoutes } from "../routes/budget.routes";
 import { unidadeRoutes } from "../routes/unidade.routes";
+import { bankAccountRoutes } from "../routes/bank-account.routes";
 import { fiscalRoutes } from "../routes/fiscal.routes";
 import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
@@ -238,6 +239,12 @@ api.register(budgetRoutes, {
 
 api.register(unidadeRoutes, {
   prefix: "/unidades",
+});
+
+// BLOCO A — contas bancárias / caixas. As rotas checam a flag por dentro; sem
+// ela, a listagem devolve vazio e a escrita responde 403.
+api.register(bankAccountRoutes, {
+  prefix: "/bank-accounts",
 });
 
 api.register(fiscalRoutes, {

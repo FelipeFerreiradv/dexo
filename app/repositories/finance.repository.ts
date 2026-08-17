@@ -109,6 +109,16 @@ function toEntry(raw: any): FinanceEntry {
     // toda conta a pagar; a DERIVAÇÃO para o primeiro estágio é de quem exibe,
     // não daqui — o repositório devolve o que está gravado.
     saleStage: raw.saleStage ?? null,
+    // BLOCO A — conta de destino/origem. Vale para os DOIS kinds.
+    bankAccountId: raw.bankAccountId ?? null,
+    bankAccount: raw.bankAccount
+      ? {
+          id: raw.bankAccount.id,
+          name: raw.bankAccount.name,
+          kind: raw.bankAccount.kind ?? null,
+          bankName: raw.bankAccount.bankName ?? null,
+        }
+      : null,
     sellerUserId: raw.sellerUserId ?? null,
     seller: raw.seller
       ? {
@@ -159,6 +169,10 @@ function toEntry(raw: any): FinanceEntry {
           method: p.method,
           amount: Number(p.amount),
           createdAt: p.createdAt,
+          // BLOCO A — destino DESTA forma. NULL ⇒ vale o da conta (a
+          // precedência mora em `effectiveBankAccountId`, não aqui: o
+          // repositório devolve o que está gravado).
+          bankAccountId: p.bankAccountId ?? null,
         }))
       : undefined,
   };
@@ -186,6 +200,11 @@ function buildInclude(kind: FinanceKind, withItems: boolean): any {
   const include: any = {
     customer: { select: { id: true, name: true, cpf: true, email: true } },
     unidade: { select: { id: true, name: true } },
+    // BLOCO A — conta de destino/origem. Nos DOIS kinds: a coluna existe em
+    // Receivable e em Payable (entrada e saída). Projeção mínima — é rótulo.
+    bankAccount: {
+      select: { id: true, name: true, kind: true, bankName: true },
+    },
   };
   // BLOCO B — vendedor. Só receivable: a relação não existe em Payable, e
   // pedi-la lá quebraria a consulta. Projeção mínima (é só um rótulo na tela).
@@ -279,6 +298,11 @@ export class FinanceRepository {
         ...(kind === "receivable" && data.sellerUserId !== undefined
           ? { sellerUserId: data.sellerUserId }
           : {}),
+        // BLOCO A — conta de destino/origem. Vale para os DOIS kinds (a coluna
+        // existe em Receivable e Payable). Ausente ⇒ nenhuma chave nova.
+        ...(data.bankAccountId !== undefined
+          ? { bankAccountId: data.bankAccountId }
+          : {}),
       },
       // `buildInclude(kind, false)` devolve exatamente customer+unidade para os
       // dois kinds, mais `seller` no receivable — a resposta da criação passa a
@@ -331,6 +355,12 @@ export class FinanceRepository {
         ...(data.sellerUserId !== undefined
           ? { sellerUserId: data.sellerUserId }
           : {}),
+        // BLOCO A — conta de destino da venda. As PARCELAS também não herdam,
+        // pelo mesmo motivo do vendedor: a conta é do recebimento, e a parcela
+        // pode cair em outra (ou nem ter caído ainda).
+        ...(data.bankAccountId !== undefined
+          ? { bankAccountId: data.bankAccountId }
+          : {}),
       },
       // Não incluímos itens aqui (acabamos de criar e vamos preencher na
       // próxima query); a 2ª query traz o include completo.
@@ -362,6 +392,9 @@ export class FinanceRepository {
           receivableId: created.id,
           method: p.method,
           amount: p.amount,
+          // BLOCO A — destino desta forma. Spread condicional: sem destino, o
+          // objeto sai byte-idêntico ao de antes.
+          ...(p.bankAccountId ? { bankAccountId: p.bankAccountId } : {}),
         })),
       });
     }
@@ -626,6 +659,8 @@ export class FinanceRepository {
             receivableId: id,
             method: p.method,
             amount: p.amount,
+            // BLOCO A — idem ao create: spread condicional preserva o objeto.
+            ...(p.bankAccountId ? { bankAccountId: p.bankAccountId } : {}),
           })),
         });
       }
@@ -795,6 +830,13 @@ export class FinanceRepository {
           paymentMethod: true,
           createdAt: true,
           updatedAt: true,
+          // BLOCO A — conta de destino/origem na listagem: "esse PIX caiu em
+          // qual conta?" é pergunta de conferência e não deve exigir abrir o
+          // lançamento. Nos dois kinds.
+          bankAccountId: true,
+          bankAccount: {
+            select: { id: true, name: true, kind: true, bankName: true },
+          },
           // BLOCO D — motivo do cancelamento, para a lista explicar o porquê
           // sem exigir que o operador abra a venda. SÓ receivable: as colunas
           // não existem em Payable, e pedi-las lá quebraria a consulta.

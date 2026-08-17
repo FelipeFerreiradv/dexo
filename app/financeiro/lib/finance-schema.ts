@@ -23,6 +23,8 @@ export const financeEntrySchema = z
     // BLOCO B — vendedor da venda (id de usuário) ou null. Opcional: com a
     // flag desligada o campo nunca é preenchido e o payload fica idêntico.
     sellerUserId: z.string().optional().nullable(),
+    // BLOCO A — conta de destino (a receber) / origem (a pagar) do dinheiro.
+    bankAccountId: z.string().optional().nullable(),
     totalAmount: z
       .number({ invalid_type_error: "Informe o valor total" })
       .positive("Valor deve ser maior que zero"),
@@ -219,6 +221,8 @@ export const DEFAULT_FINANCE_VALUES: FinanceEntryFormData = {
   // BLOCO B — sem vendedor por padrão. Quem preenche é o formulário, com quem
   // está logado, e só quando a flag da UI está ligada.
   sellerUserId: null,
+  // BLOCO A — sem conta por padrão; o seletor sugere a conta PADRÃO na criação.
+  bankAccountId: null,
   totalAmount: 0,
   fineAmount: null,
   finePercent: null,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Building2 } from "lucide-react";
+import { Building2, Landmark } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
@@ -11,6 +11,11 @@ import { UnidadeFilter } from "./shared/unidade-select";
 import { UnidadesDialog } from "./unidades-dialog";
 import { FinanceReportButton } from "./finance-report-button";
 import { BudgetList } from "./budget-list";
+import { BankAccountsDialog } from "./bank-accounts-dialog";
+import { isBankAccountsUiEnabled } from "../lib/bank-accounts";
+
+// BLOCO A — cadastro de contas bancárias / caixas.
+const BANK_ACCOUNTS_UI = isBankAccountsUiEnabled();
 
 // Flag do módulo de Orçamento. Ausente/false => o Financeiro renderiza
 // EXATAMENTE como antes (apenas as duas abas). Referência literal a
@@ -36,6 +41,9 @@ export function FinanceView() {
   const [unidadesOpen, setUnidadesOpen] = useState(false);
   // Bump para o UnidadeFilter recarregar a lista após gerenciar unidades.
   const [unidadeRefreshKey, setUnidadeRefreshKey] = useState(0);
+  // BLOCO A — cadastro de contas bancárias / caixas.
+  const [contasOpen, setContasOpen] = useState(false);
+  const [bankAccountRefreshKey, setBankAccountRefreshKey] = useState(0);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error" | "warning") => {
@@ -87,6 +95,14 @@ export function FinanceView() {
             <Building2 className="h-4 w-4" />
             Gerenciar unidades
           </Button>
+          {/* BLOCO A — flag OFF ⇒ o botão não existe e o Financeiro renderiza
+              como hoje. */}
+          {BANK_ACCOUNTS_UI && (
+            <Button variant="outline" onClick={() => setContasOpen(true)}>
+              <Landmark className="h-4 w-4" />
+              Contas e caixas
+            </Button>
+          )}
         </div>
       </div>
 
@@ -136,6 +152,21 @@ export function FinanceView() {
           bumpRefresh();
         }}
       />
+
+      {/* BLOCO A — cadastro de contas. `bankAccountRefreshKey` invalida os
+          seletores abertos: sem isso, cadastrar uma conta e voltar ao
+          lançamento mostraria a lista velha. */}
+      {BANK_ACCOUNTS_UI && (
+        <BankAccountsDialog
+          open={contasOpen}
+          onOpenChange={setContasOpen}
+          onToast={showToast}
+          onChanged={() => {
+            setBankAccountRefreshKey((k) => k + 1);
+            bumpRefresh();
+          }}
+        />
+      )}
     </div>
   );
 }

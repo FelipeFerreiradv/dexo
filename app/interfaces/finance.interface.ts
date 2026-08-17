@@ -73,6 +73,16 @@ export interface FinanceEntry {
   sellerUserId?: string | null;
   seller?: { id: string; name: string | null; email: string | null } | null;
 
+  // ── BLOCO A: conta de destino/origem do dinheiro ──
+  // NULL = não informado. Vale para receivable E payable (entrada e saída).
+  bankAccountId?: string | null;
+  bankAccount?: {
+    id: string;
+    name: string;
+    kind: string | null;
+    bankName: string | null;
+  } | null;
+
   // ── BLOCO F: estágio operacional ──
   // Segunda dimensão, ortogonal ao `status`. NULL = venda anterior ao recurso;
   // quem exibe DERIVA para o primeiro estágio (deriveSaleStage). Nunca governa
@@ -108,6 +118,12 @@ export interface ReceivablePaymentInput {
   /** Valor aplicado À VENDA nesta forma. NUNCA o valor entregue pelo cliente:
    *  troco é diferença de caixa e não é persistido em lugar nenhum. */
   amount: number;
+  /**
+   * BLOCO A — conta de destino DESTA forma ("o PIX caiu no Itaú, o dinheiro
+   * ficou no caixa"). Ausente/null ⇒ vale o `Receivable.bankAccountId`, mesma
+   * precedência de `ReceivableItem.scrapId`.
+   */
+  bankAccountId?: string | null;
 }
 
 export interface ReceivablePaymentSnapshot extends ReceivablePaymentInput {
@@ -187,6 +203,10 @@ export interface FinanceEntryCreate {
   // chave nova no objeto Prisma ⇒ INSERT byte-idêntico ao de hoje. `null`
   // é explicitamente "sem vendedor".
   sellerUserId?: string | null;
+
+  // BLOCO A — conta de destino (receivable) / origem (payable). Mesma regra:
+  // AUSENTE ⇒ nenhuma chave nova; `null` = sem conta.
+  bankAccountId?: string | null;
 
   // Itens de venda balcão — opcional, receivable-only. Ausente = fluxo atual
   // 100% inalterado (nada de estoque/produto). Persistido em `ReceivableItem`
