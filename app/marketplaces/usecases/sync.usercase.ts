@@ -9,6 +9,7 @@
 
 import prisma from "@/app/lib/prisma";
 import { findManyInChunks } from "@/app/lib/prisma-chunked";
+import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
@@ -2850,7 +2851,7 @@ export class SyncUseCase {
    */
   static async syncProductStock(productId: string): Promise<SyncResult[]> {
     // 1. Buscar produto com seus listings
-    const product = await prisma.product.findUnique({
+    const carregado = await prisma.product.findUnique({
       where: { id: productId },
       include: {
         listings: {
@@ -2860,6 +2861,15 @@ export class SyncUseCase {
         },
       },
     });
+
+    // BLOCO G — desconta o estoque COMPROMETIDO por vendas ainda em aberto,
+    // UMA VEZ, na entrada do funil. Daqui para baixo os três métodos por
+    // plataforma e todos os gates leem o valor efetivo sem saber que existe
+    // reserva — é o que impede que um deles divirja dos outros.
+    //
+    // Só troca o número EM MEMÓRIA: este caminho nunca escreve em `Product`.
+    // Flag desligada ⇒ devolve o mesmo objeto, sem cópia.
+    const product = carregado ? withAvailableStock(carregado) : carregado;
 
     if (!product) {
       return [
@@ -3776,13 +3786,19 @@ export class SyncUseCase {
 
     try {
       // 1. Buscar produto
-      const product = await prisma.product.findUnique({
+      const carregado = await prisma.product.findUnique({
         where: { id: productId },
       });
 
-      if (!product) {
+      if (!carregado) {
         throw new Error(`Produto ${productId} nÃ£o encontrado`);
       }
+
+      // BLOCO G — MESMA troca do `syncProductStock`, e este é o ponto que mais
+      // importa: `syncProductData` roda em TODA EDIÇÃO DE PRODUTO, num fluxo
+      // separado do sync de estoque. Sem isto, editar qualquer peça reescreveria
+      // a quantidade BRUTA no marketplace e desfaria a reserva em silêncio.
+      const product = withAvailableStock(carregado);
 
       // 2. Buscar conta do marketplace
       const account = await prisma.marketplaceAccount.findUnique({

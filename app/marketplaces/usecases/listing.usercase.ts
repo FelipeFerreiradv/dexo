@@ -1,6 +1,7 @@
 ﻿import { Platform } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
+import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluApiService } from "../services/magalu-api.service";
@@ -1413,14 +1414,20 @@ export class ListingUseCase {
       }
 
       // 2. Buscar dados do produto
-      const product =
+      const produtoCarregado =
         await ListingUseCase.productRepository.findById(productId);
-      if (!product) {
+      if (!produtoCarregado) {
         return {
           success: false,
           error: "Produto nÃ£o encontrado",
         };
       }
+      // BLOCO G — publicar um anúncio novo também respeita o comprometido:
+      // anunciar peça que já está numa venda em aberto é criar a venda dupla
+      // no ato do cadastro. Troca só em memória; nada é gravado em Product.
+      const product = withAvailableStock(
+        produtoCarregado as any,
+      ) as typeof produtoCarregado;
 
       // Override do title (cirúrgico): substitui apenas em memória para esta
       // execução; não persiste no banco. Usado pela republicação UP para

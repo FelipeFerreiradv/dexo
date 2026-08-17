@@ -139,6 +139,39 @@ export function isOverReserved(
   return (Number(reservedStock) || 0) > (Number(stock) || 0);
 }
 
+/**
+ * Devolve uma CÓPIA do produto com `stock` já descontado da reserva.
+ *
+ * ⭐ É ISTO que torna a virada do sync segura. O mapeamento achou 25 pontos que
+ * empurram quantidade para fora — 14 envios, 6 gates, 2 projeções, 2 filtros e
+ * 1 SQL bruto. Editar 25 lugares é 25 chances de esquecer um, e o esquecido
+ * seria justamente o `syncProductData`, que roda em TODA edição de produto e
+ * desfaria a reserva em silêncio.
+ *
+ * Em vez disso, o número é trocado UMA VEZ na entrada de cada funil. Tudo o
+ * que estiver depois — os três métodos por plataforma, os gates
+ * `if (product.stock > 0)`, o `available_quantity` do sync completo — passa a
+ * ler o valor efetivo sem saber que existe reserva.
+ *
+ * SEGURO porque o sync NUNCA escreve em `Product` (verificado: zero
+ * `product.update` em sync.usercase.ts). Esta cópia vive só na memória do
+ * envio; o estoque físico gravado continua intocado.
+ *
+ * E os gates ganham o comportamento certo de graça: peça inteiramente
+ * reservada chega em `stock: 0`, e o `pauseOnZero` que já existe pausa o
+ * anúncio — que é exatamente o que se quer.
+ *
+ * Flag ausente ⇒ devolve o MESMO objeto, sem cópia. Nada muda.
+ */
+export function withAvailableStock<
+  T extends { stock: number; reservedStock?: number | null },
+>(product: T, env: Record<string, string | undefined> = process.env): T {
+  if (!isStockReservationEnabled(env)) return product;
+  const efetivo = availableForSale(product.stock, product.reservedStock);
+  if (efetivo === product.stock) return product;
+  return { ...product, stock: efetivo };
+}
+
 /** Texto curto para a tela: "3 em estoque · 1 reservada". */
 export function describeAvailability(
   stock: number | null | undefined,
