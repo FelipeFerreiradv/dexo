@@ -25,16 +25,22 @@
 --   · BLOCO F — Receivable.saleStage             (2026-08-14-receivable-sale-stage.sql)
 --   · BLOCO A — Receivable/ReceivablePayment.settledAt
 --                                                (2026-08-14-receivable-settlement.sql)
+--   · BLOCO G — Product.reservedStock            (2026-08-14-product-reserved-stock.sql)
 --
 -- JÁ APLICADOS (não estão aqui, conferido no banco em 14/08):
 --   ReceivableEvent · BankAccount · cancelReason* · cancelledAt · bankAccountId
 --
 -- DEPOIS DO DEPLOY, ligar as flags:
 --   .env da API  →  SALE_SELLER_ENABLED=1  SALE_STAGE_ENABLED=1
---                   SALE_SETTLEMENT_ENABLED=1        + pm2 restart
+--                   SALE_SETTLEMENT_ENABLED=1  STOCK_RESERVATION_ENABLED=1
+--                                                    + pm2 restart
 --   build        →  NEXT_PUBLIC_SALE_SELLER_ENABLED=true
 --                   NEXT_PUBLIC_SALE_STAGE_ENABLED=true
---                   NEXT_PUBLIC_SALE_SETTLEMENT_ENABLED=true   + npm run build
+--                   NEXT_PUBLIC_SALE_SETTLEMENT_ENABLED=true
+--                   NEXT_PUBLIC_STOCK_RESERVATION_ENABLED=true + npm run build
+--
+-- ⚠️ ESTE ARQUIVO É IDEMPOTENTE (`IF NOT EXISTS` em tudo). Se você já rodou a
+-- versão anterior dele, pode rodar de novo sem medo — só a parte nova entra.
 
 BEGIN;
 
@@ -89,6 +95,32 @@ CREATE INDEX IF NOT EXISTS "Receivable_userId_settledAt_idx"
   ON "Receivable" ("userId", "settledAt")
   WHERE "settledAt" IS NOT NULL;
 
+-- ── BLOCO G · estoque comprometido por venda pendente ──────────────────────
+-- Peças lançadas em venda PENDENTE. O estoque FÍSICO não muda (a peça continua
+-- no pátio); o que muda é quanto dela ainda pode ser vendido.
+--
+-- ⚠️ `Product` é a tabela mais lida do sistema — catálogo, importação,
+-- sincronização de anúncios, sucatas, PDV. Por isso vale em dobro rodar isto
+-- ANTES do deploy.
+--
+-- NOT NULL DEFAULT 0, diferente das outras colunas deste lote: aqui o valor é
+-- uma CONTAGEM. NULL significaria "não sei quanto está comprometido", e toda
+-- aritmética de disponibilidade precisaria tratar esse caso. Zero é a verdade
+-- para as 16.697 peças existentes.
+--
+-- No PG 11+ isto NÃO reescreve a tabela: o default de coluna nova fica no
+-- catálogo. (Se este banco fosse PG 10, o caminho seria nulável → backfill em
+-- lotes → NOT NULL.)
+ALTER TABLE "Product"
+  ADD COLUMN IF NOT EXISTS "reservedStock" INTEGER NOT NULL DEFAULT 0;
+
+-- Índice PARCIAL: só as peças efetivamente comprometidas. A esmagadora maioria
+-- fica em 0 para sempre, e um índice cheio de zeros custaria escrita em todo
+-- INSERT de produto — a importação cria milhares de uma vez.
+CREATE INDEX IF NOT EXISTS "Product_userId_reservedStock_idx"
+  ON "Product" ("userId", "reservedStock")
+  WHERE "reservedStock" > 0;
+
 COMMIT;
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -110,7 +142,13 @@ COMMIT;
 -- UNION ALL SELECT 'ReceivablePayment.settledAt',
 --        CASE WHEN EXISTS(SELECT 1 FROM information_schema.columns
 --                          WHERE table_name='ReceivablePayment' AND column_name='settledAt')
+--             THEN 'OK' ELSE 'FALTA' END
+-- UNION ALL SELECT 'Product.reservedStock',
+--        CASE WHEN EXISTS(SELECT 1 FROM information_schema.columns
+--                          WHERE table_name='Product' AND column_name='reservedStock')
 --             THEN 'OK' ELSE 'FALTA' END;
+--
+-- (5 linhas, todas "OK".)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 --  ROLLBACK — ⚠️ ordem INVERTIDA
@@ -122,6 +160,8 @@ COMMIT;
 --   3. só então o bloco abaixo.
 --
 -- BEGIN;
+--   DROP INDEX IF EXISTS "Product_userId_reservedStock_idx";
+--   ALTER TABLE "Product" DROP COLUMN IF EXISTS "reservedStock";
 --   DROP INDEX IF EXISTS "Receivable_userId_settledAt_idx";
 --   ALTER TABLE "ReceivablePayment" DROP COLUMN IF EXISTS "settledAt";
 --   ALTER TABLE "Receivable" DROP COLUMN IF EXISTS "settledAt";
