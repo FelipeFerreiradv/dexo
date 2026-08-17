@@ -9,6 +9,7 @@ import {
   History,
   Loader2,
   MoreHorizontal,
+  Pencil,
   Printer,
   ReceiptText,
 } from "lucide-react";
@@ -85,6 +86,21 @@ interface Props {
    * sheet vive fora da linha, senão haveria um por venda na tela.
    */
   onTimeline?: () => void;
+  /**
+   * BLOCO E — corrigir a venda sem sair do caixa. AUSENTE ⇒ o item nem existe
+   * e o menu renderiza exatamente como antes.
+   *
+   * Mora no menu, e não como botão solto na linha, por pedido do operador: a
+   * linha já tinha "Receber" como ação primária, e um segundo botão ao lado
+   * disputava o olho com ela. Aqui "Editar" fica junto das outras ações da
+   * venda, atrás de um clique — que é o peso certo para uma correção.
+   *
+   * Quem decide SE aparece é `canEditSaleInPdv` no chamador (só antes da
+   * baixa); a trava de verdade é o 409 do backend.
+   */
+  onEdit?: () => void;
+  /** Carregando a venda para edição — impede abrir dois modais no duplo clique. */
+  editBusy?: boolean;
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
 }
 
@@ -106,6 +122,8 @@ export function PdvSaleActions({
   saleCancelUi,
   onReversed,
   onTimeline,
+  onEdit,
+  editBusy,
   onToast,
 }: Props) {
   const { data: session } = useSession();
@@ -204,7 +222,15 @@ export function PdvSaleActions({
         setBusy(null);
       }
     },
-    [saleId, totalAmount, session?.user?.email, onNfce, nfceCompanyId, onToast, router],
+    [
+      saleId,
+      totalAmount,
+      session?.user?.email,
+      onNfce,
+      nfceCompanyId,
+      onToast,
+      router,
+    ],
   );
 
   const doReverse = useCallback(async () => {
@@ -255,141 +281,157 @@ export function PdvSaleActions({
 
   return (
     <>
-    <DropdownMenu onOpenChange={handleOpenChange}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label="Ações da venda"
-          disabled={busy !== null}
-        >
-          {busy !== null ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <MoreHorizontal className="h-4 w-4" />
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
-        {/* BLOCO H — leitura pura, e por isso vem antes de tudo: nada aqui
-            imprime, emite ou cancela. O separador só existe quando há grupo
-            depois dele. */}
-        {onTimeline && (
-          <DropdownMenuItem onSelect={() => onTimeline()}>
-            <History className="h-4 w-4" />
-            Histórico da venda
-          </DropdownMenuItem>
-        )}
-        {onTimeline && actions.length > 0 && <DropdownMenuSeparator />}
-        {actions.length > 0 && (
-          <DropdownMenuLabel className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            Imprimir
-          </DropdownMenuLabel>
-        )}
-        {actions.map((action, i) => {
-          const Icon = ICONS[action.kind];
-          // Separador entre o recibo (sem validade fiscal) e os documentos
-          // fiscais — são naturezas diferentes e o operador não pode confundir.
-          // Fragment (não <div>): um wrapper de elemento quebra a navegação
-          // por teclado e o typeahead do Radix, que dependem dos itens serem
-          // filhos diretos do Content.
-          // ...e antes da ação destrutiva, que fecha o menu.
-          const needsSeparator =
-            (i === 1 && actions[0]?.kind === "receipt") ||
-            action.kind === "reverse";
-          return (
-            <Fragment key={action.kind}>
-              {needsSeparator && <DropdownMenuSeparator />}
-              <DropdownMenuItem
-                disabled={action.disabled}
-                variant={action.kind === "reverse" ? "destructive" : "default"}
-                // O motivo do bloqueio fica visível: nada de item cinza mudo.
-                title={action.reason}
-                // Sem preventDefault: o menu fecha ao acionar (Radix não
-                // dispara onSelect em item desabilitado). O estado de progresso
-                // fica no gatilho, que vira spinner enquanto `busy`.
-                onSelect={() => void run(action)}
-              >
-                <Icon className="h-4 w-4" />
-                <span className="flex flex-col">
-                  <span>{action.label}</span>
-                  {action.disabled && action.reason && (
-                    <span className="text-[11px] text-muted-foreground">
-                      {action.reason}
-                    </span>
-                  )}
-                </span>
-              </DropdownMenuItem>
-            </Fragment>
-          );
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
-
-    <AlertDialog open={confirmReverse} onOpenChange={setConfirmReverse}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Cancelar esta venda?</AlertDialogTitle>
-          <AlertDialogDescription asChild>
-            <div className="space-y-2">
-              <p>
-                O estoque das peças volta para o catálogo e os anúncios que
-                tinham zerado são reabertos. A venda fica com status CANCELADA e
-                deixa de contar no faturamento.
-              </p>
-              {emitidas.length > 0 && (
-                // §22.f do plano: cancelamento fiscal tem prazo de 24h e exige
-                // justificativa. Avisar é obrigação; disparar automaticamente
-                // seria decidir sozinho sobre um documento legal.
-                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-200">
-                  <strong>Atenção:</strong> esta venda tem{" "}
-                  {emitidas
-                    .map((d) =>
-                      d.modelo === "65"
-                        ? `NFC-e nº ${d.numero ?? "?"}`
-                        : `NF-e nº ${d.numero ?? "?"}`,
-                    )
-                    .join(" e ")}
-                  . Cancelar a venda <strong>não cancela a nota</strong> — o
-                  cancelamento fiscal tem prazo de 24h e exige justificativa, e
-                  é feito no módulo Notas Fiscais.
-                </p>
-              )}
-            </div>
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {/* BLOCO D — fora da Description: o campo é interativo, e a
-            AlertDialogDescription vira o `aria-describedby` do diálogo. */}
-        {isCancelReasonUiEnabled() && (
-          <CancelReasonField
-            value={motivo}
-            onChange={setMotivo}
-            disabled={busy === "reverse"}
-          />
-        )}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy === "reverse"}>
-            Voltar
-          </AlertDialogCancel>
-          <AlertDialogAction
-            disabled={busy === "reverse"}
-            onClick={(e) => {
-              // Sem o preventDefault o Radix fecha o diálogo antes da resposta
-              // e o operador não vê o resultado (nem o 403 de permissão).
-              e.preventDefault();
-              void doReverse();
-            }}
+      <DropdownMenu onOpenChange={handleOpenChange}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Ações da venda"
+            disabled={busy !== null}
           >
-            {busy === "reverse" ? (
+            {busy !== null ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Ban className="h-4 w-4" />
+              <MoreHorizontal className="h-4 w-4" />
             )}
-            Cancelar venda
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-64">
+          {/* BLOCO H — leitura pura, e por isso vem antes de tudo: nada aqui
+            imprime, emite ou cancela. O separador só existe quando há grupo
+            depois dele. */}
+          {/* BLOCO E — primeiro item do menu: quando o operador percebe o erro,
+            corrigir é o que ele quer fazer, e não imprimir nem cancelar. */}
+          {onEdit && (
+            <DropdownMenuItem onSelect={() => onEdit()} disabled={editBusy}>
+              {editBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Pencil className="h-4 w-4" />
+              )}
+              Editar venda
+            </DropdownMenuItem>
+          )}
+          {onTimeline && (
+            <DropdownMenuItem onSelect={() => onTimeline()}>
+              <History className="h-4 w-4" />
+              Histórico da venda
+            </DropdownMenuItem>
+          )}
+          {(onTimeline || onEdit) && actions.length > 0 && (
+            <DropdownMenuSeparator />
+          )}
+          {actions.length > 0 && (
+            <DropdownMenuLabel className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Imprimir
+            </DropdownMenuLabel>
+          )}
+          {actions.map((action, i) => {
+            const Icon = ICONS[action.kind];
+            // Separador entre o recibo (sem validade fiscal) e os documentos
+            // fiscais — são naturezas diferentes e o operador não pode confundir.
+            // Fragment (não <div>): um wrapper de elemento quebra a navegação
+            // por teclado e o typeahead do Radix, que dependem dos itens serem
+            // filhos diretos do Content.
+            // ...e antes da ação destrutiva, que fecha o menu.
+            const needsSeparator =
+              (i === 1 && actions[0]?.kind === "receipt") ||
+              action.kind === "reverse";
+            return (
+              <Fragment key={action.kind}>
+                {needsSeparator && <DropdownMenuSeparator />}
+                <DropdownMenuItem
+                  disabled={action.disabled}
+                  variant={
+                    action.kind === "reverse" ? "destructive" : "default"
+                  }
+                  // O motivo do bloqueio fica visível: nada de item cinza mudo.
+                  title={action.reason}
+                  // Sem preventDefault: o menu fecha ao acionar (Radix não
+                  // dispara onSelect em item desabilitado). O estado de progresso
+                  // fica no gatilho, que vira spinner enquanto `busy`.
+                  onSelect={() => void run(action)}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="flex flex-col">
+                    <span>{action.label}</span>
+                    {action.disabled && action.reason && (
+                      <span className="text-[11px] text-muted-foreground">
+                        {action.reason}
+                      </span>
+                    )}
+                  </span>
+                </DropdownMenuItem>
+              </Fragment>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <AlertDialog open={confirmReverse} onOpenChange={setConfirmReverse}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancelar esta venda?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  O estoque das peças volta para o catálogo e os anúncios que
+                  tinham zerado são reabertos. A venda fica com status CANCELADA
+                  e deixa de contar no faturamento.
+                </p>
+                {emitidas.length > 0 && (
+                  // §22.f do plano: cancelamento fiscal tem prazo de 24h e exige
+                  // justificativa. Avisar é obrigação; disparar automaticamente
+                  // seria decidir sozinho sobre um documento legal.
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-200">
+                    <strong>Atenção:</strong> esta venda tem{" "}
+                    {emitidas
+                      .map((d) =>
+                        d.modelo === "65"
+                          ? `NFC-e nº ${d.numero ?? "?"}`
+                          : `NF-e nº ${d.numero ?? "?"}`,
+                      )
+                      .join(" e ")}
+                    . Cancelar a venda <strong>não cancela a nota</strong> — o
+                    cancelamento fiscal tem prazo de 24h e exige justificativa,
+                    e é feito no módulo Notas Fiscais.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {/* BLOCO D — fora da Description: o campo é interativo, e a
+            AlertDialogDescription vira o `aria-describedby` do diálogo. */}
+          {isCancelReasonUiEnabled() && (
+            <CancelReasonField
+              value={motivo}
+              onChange={setMotivo}
+              disabled={busy === "reverse"}
+            />
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy === "reverse"}>
+              Voltar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy === "reverse"}
+              onClick={(e) => {
+                // Sem o preventDefault o Radix fecha o diálogo antes da resposta
+                // e o operador não vê o resultado (nem o 403 de permissão).
+                e.preventDefault();
+                void doReverse();
+              }}
+            >
+              {busy === "reverse" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Ban className="h-4 w-4" />
+              )}
+              Cancelar venda
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

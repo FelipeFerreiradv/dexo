@@ -386,30 +386,37 @@ export function PdvSalesList({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
-                      {/* BLOCO E — corrigir a venda SEM sair do caixa, e só
-                          enquanto ela não foi recebida: depois da baixa o
-                          estoque já saiu, e o backend recusa (409). Vem antes
-                          de "Receber" porque é o que se faz primeiro quando
-                          se percebe o erro. */}
-                      {onEditSale && canEditSaleInPdv(r.status) && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          title="Corrigir esta venda"
-                          disabled={
-                            editingSaleId !== null &&
-                            editingSaleId !== undefined
-                          }
-                          onClick={() => onEditSale(r)}
-                        >
-                          {editingSaleId === r.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Pencil className="h-4 w-4" />
-                          )}
-                          Editar
-                        </Button>
-                      )}
+                      {/* BLOCO E — "Editar" MUDOU DE LUGAR: era um botão solto
+                          aqui e passou para dentro do menu de ações, por pedido
+                          do operador. A linha já tinha "Receber" como ação
+                          primária, e um segundo botão ao lado disputava o olho
+                          com ela.
+
+                          Só sobrou botão solto no caminho SEM menu de ações
+                          (flag `NEXT_PUBLIC_PDV_ACTIONS_MENU_ENABLED` off) —
+                          ali não existe menu onde encaixar, e sumir com a
+                          edição seria regressão. */}
+                      {!ACTIONS_MENU &&
+                        onEditSale &&
+                        canEditSaleInPdv(r.status) && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            title="Corrigir esta venda"
+                            disabled={
+                              editingSaleId !== null &&
+                              editingSaleId !== undefined
+                            }
+                            onClick={() => onEditSale(r)}
+                          >
+                            {editingSaleId === r.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Pencil className="h-4 w-4" />
+                            )}
+                            Editar
+                          </Button>
+                        )}
                       {r.status !== "PAGA" && r.status !== "CANCELADA" && (
                         <Button
                           size="sm"
@@ -446,6 +453,18 @@ export function PdvSalesList({
                           // BLOCO H: ausente com a flag OFF ⇒ item não existe.
                           onTimeline={
                             TIMELINE_UI ? () => setTimelineRow(r) : undefined
+                          }
+                          // BLOCO E: ausente quando a venda já não pode ser
+                          // corrigida (paga/cancelada) ou com a flag OFF ⇒ o
+                          // item nem aparece no menu.
+                          onEdit={
+                            onEditSale && canEditSaleInPdv(r.status)
+                              ? () => onEditSale(r)
+                              : undefined
+                          }
+                          editBusy={
+                            editingSaleId !== null &&
+                            editingSaleId !== undefined
                           }
                           onToast={onToast}
                         />
