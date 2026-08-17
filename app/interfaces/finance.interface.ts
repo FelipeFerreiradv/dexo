@@ -73,6 +73,12 @@ export interface FinanceEntry {
   sellerUserId?: string | null;
   seller?: { id: string; name: string | null; email: string | null } | null;
 
+  // ── BLOCO F: estágio operacional ──
+  // Segunda dimensão, ortogonal ao `status`. NULL = venda anterior ao recurso;
+  // quem exibe DERIVA para o primeiro estágio (deriveSaleStage). Nunca governa
+  // receber, estornar, editar ou emitir nota.
+  saleStage?: string | null;
+
   // Preenchidos só na conta-ENTRADA de uma venda parcelada, e só na listagem
   // do PDV (agregado das filhas). Servem para a tela mostrar o TAMANHO DA
   // VENDA (`totalAmount + installmentsAmount`) sem inflar o caixa do dia, que

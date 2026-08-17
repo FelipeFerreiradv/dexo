@@ -20,6 +20,7 @@ import { parseCompanyIdParam } from "./fiscal.routes";
 import { listSaleTimeline } from "../financeiro/lib/sale-timeline";
 import { normalizeCancelReason } from "../financeiro/lib/cancel-reasons";
 import { normalizeSellerId } from "../financeiro/lib/sale-seller";
+import { normalizeSaleStage } from "../financeiro/lib/sale-stage";
 
 /**
  * Fase 1.2 — contrato explícito do `PUT /finance/{receivables,payables}/:id`.
@@ -454,6 +455,46 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           : message.includes("inválida") || message.includes("inválido")
             ? 400
             : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── BLOCO F — estágio operacional da venda ──
+  //
+  // Rota DEDICADA: o estágio muda muito (é operação de pátio) e não passa pelo
+  // wizard nem pela guarda de edição do BLOCO E — venda PAGA continua andando
+  // no pátio, é justamente aí que ela anda.
+  //
+  // Só receivable: o conceito é da VENDA. Conta a pagar não tem pipeline.
+  fastify.patch<{ Params: { id: string }; Body: { saleStage?: unknown } }>(
+    "/receivables/:id/stage",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params;
+        // Fronteira de tipo + flag numa só chamada: com a flag desligada
+        // devolve `undefined` e a rota recusa, sem tocar a coluna nova (que
+        // pode não existir no banco ainda).
+        const saleStage = normalizeSaleStage((request.body ?? {}).saleStage);
+        if (!saleStage) {
+          // Ao contrário do motivo de cancelamento (acessório de uma operação
+          // que precisa acontecer), aqui o estágio É a operação — recusar é a
+          // resposta certa, não seguir em silêncio.
+          return reply
+            .status(400)
+            .send({ error: "Estágio inválido ou recurso desativado" });
+        }
+        const entry = await useCase.setSaleStage(id, userId, saleStage, {
+          id: (request as any).user?.id,
+          name: (request as any).user?.name ?? null,
+        });
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao mover o estágio";
+        const status = message.includes("não encontrada") ? 404 : 500;
         return reply.status(status).send({ error: message });
       }
     },

@@ -41,6 +41,11 @@ import {
   sellerLabel,
 } from "@/app/financeiro/lib/sale-seller";
 import {
+  isSaleStageUiEnabled,
+  saleStageLabel,
+} from "@/app/financeiro/lib/sale-stage";
+import { SaleStageCell } from "@/app/financeiro/components/shared/sale-stage-cell";
+import {
   paymentMethodLabel,
   paymentMethodsSummary,
 } from "@/app/lib/payment-methods";
@@ -83,6 +88,9 @@ export interface PdvSaleRow {
   cancelReason?: string | null;
   // BLOCO B — quem vendeu. Ausente = venda sem vendedor informado.
   seller?: { id: string; name: string | null; email: string | null } | null;
+  // BLOCO F — estágio operacional. Ausente/null ⇒ a tela DERIVA para o
+  // primeiro estágio (venda anterior ao recurso não fica fora do painel).
+  saleStage?: string | null;
 }
 
 interface Props {
@@ -120,6 +128,8 @@ const SALE_CANCEL = isSaleCancelEnabled();
 const TIMELINE_UI = isSaleTimelineUiEnabled();
 // BLOCO B — coluna "Vendedor". Flag OFF ⇒ a coluna não existe.
 const SELLER_UI = isSaleSellerUiEnabled();
+// BLOCO F — coluna "Etapa" (estágio operacional). Flag OFF ⇒ não existe.
+const STAGE_UI = isSaleStageUiEnabled();
 
 const SHOWN = 10;
 
@@ -253,6 +263,14 @@ export function PdvSalesList({
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Forma
                 </TableHead>
+                {/* BLOCO F — a etapa é a SEGUNDA dimensão, e fica ao lado do
+                    status financeiro de propósito: "PAGA · em separação" é uma
+                    leitura, não duas. Flag OFF ⇒ a coluna não existe. */}
+                {STAGE_UI && (
+                  <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
+                    Etapa
+                  </TableHead>
+                )}
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Status
                 </TableHead>
@@ -305,6 +323,24 @@ export function PdvSalesList({
                       <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
+                  {STAGE_UI && (
+                    <TableCell>
+                      {/* Venda CANCELADA não anda no pátio: mover etapa ali
+                          não significaria nada. Mostra o rótulo, sem controle. */}
+                      {r.status === "CANCELADA" ? (
+                        <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          {saleStageLabel(r.saleStage)}
+                        </span>
+                      ) : (
+                        <SaleStageCell
+                          receivableId={r.id}
+                          saleStage={r.saleStage}
+                          onToast={onToast}
+                          onChanged={onChanged}
+                        />
+                      )}
+                    </TableCell>
+                  )}
                   <TableCell>
                     {/* BLOCO D — o motivo vira tooltip do badge, igual ao
                         Financeiro. Sem motivo, title fica undefined e o badge

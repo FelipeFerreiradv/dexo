@@ -105,6 +105,10 @@ function toEntry(raw: any): FinanceEntry {
     // BLOCO B — vendedor da venda. `seller` só vem quando o include/select o
     // pediu (receivable); em conta a pagar e em parcela fica null, que é a
     // leitura correta ("não se aplica" / "é da venda-mãe").
+    // BLOCO F — estágio operacional. NULL em venda anterior ao recurso e em
+    // toda conta a pagar; a DERIVAÇÃO para o primeiro estágio é de quem exibe,
+    // não daqui — o repositório devolve o que está gravado.
+    saleStage: raw.saleStage ?? null,
     sellerUserId: raw.sellerUserId ?? null,
     seller: raw.seller
       ? {
@@ -805,6 +809,9 @@ export class FinanceRepository {
                 // de conferência de caixa e não deve exigir abrir a venda.
                 sellerUserId: true,
                 seller: { select: { id: true, name: true, email: true } },
+                // BLOCO F — estágio na listagem: é a coluna do painel, e
+                // "onde está esta venda?" não pode exigir abrir a venda.
+                saleStage: true,
               }
             : {}),
           customer: {

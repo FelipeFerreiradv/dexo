@@ -36,6 +36,7 @@ import {
   saleEditGuardMessage,
   touchesProtectedFields,
 } from "../financeiro/lib/sale-edit-guard";
+import { deriveSaleStage, saleStageLabel } from "../financeiro/lib/sale-stage";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
   FinanceRepository,
@@ -1223,6 +1224,53 @@ export class FinanceUseCase {
     });
 
     return updated!;
+  }
+
+  /**
+   * BLOCO F — move a venda de estágio operacional.
+   *
+   * Caminho PRÓPRIO, e não um campo no PUT, por dois motivos:
+   *  1. o estágio muda MUITO (é operação de pátio, não de cadastro), e passar
+   *     por um wizard de 4 passos para avançar uma etapa seria absurdo;
+   *  2. o PUT carrega o replace de itens e a guarda do BLOCO E. O estágio não
+   *     tem nada a ver com nenhum dos dois, e nem deve ser barrado por eles —
+   *     uma venda PAGA continua andando no pátio (é justamente aí que ela anda).
+   *
+   * NÃO GOVERNA NADA: não valida transição, não exige ordem, não impede pular
+   * etapa. É informação. Um pipeline que trava é um pipeline que alguém vai
+   * contornar gravando no banco — decisão de 14/08.
+   */
+  async setSaleStage(
+    id: string,
+    userId: string,
+    saleStage: string,
+    actor?: FinanceActor,
+  ): Promise<FinanceEntry> {
+    const atual = await this.repo.findById("receivable", id, userId);
+    if (!atual) throw new Error("Conta a receber não encontrada");
+
+    // Idempotência: mesmo estágio ⇒ devolve sem escrever nem registrar evento.
+    // Sem isto, um duplo clique no "avançar" viraria duas linhas iguais no
+    // histórico da venda.
+    const anterior = deriveSaleStage(atual.saleStage);
+    if (anterior === saleStage) return atual;
+
+    const atualizada = await this.repo.update("receivable", id, userId, {
+      saleStage,
+    } as never);
+
+    // BLOCO H — o histórico operacional é justamente o que um pipeline precisa
+    // ter: quem moveu, quando e de onde para onde. Best-effort e pós-escrita.
+    recordSaleEvent({
+      receivableId: id,
+      userId,
+      type: "UPDATED",
+      message: `Estágio: ${saleStageLabel(anterior)} → ${saleStageLabel(saleStage)}`,
+      details: { saleStageFrom: anterior, saleStageTo: saleStage },
+      actor,
+    });
+
+    return atualizada;
   }
 
   async summary(

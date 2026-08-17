@@ -1042,6 +1042,24 @@ model Receivable {
   installmentNumber  Int?
   installmentTotal   Int?
 
+  // ── BLOCO F: estágio operacional da venda ──
+  // SEGUNDA DIMENSÃO, ortogonal ao `status` financeiro: uma venda pode estar
+  // PAGA e ainda "em separação". Segue o desenho aprovado do `BudgetStage`
+  // (schema:907-916) e a regra que ele mesmo escreveu: NUNCA governa receber,
+  // estornar, editar ou emitir nota. É informação, não trava.
+  //
+  // TEXT e não enum do Postgres (decisão de 14/08): acrescentar, renomear ou
+  // reordenar estágio passa a ser editar `app/financeiro/lib/sale-stage.ts`,
+  // sem migração — e `ALTER TYPE` não remove valor de enum, o que prenderia o
+  // pipeline nos primeiros 11 para sempre. Mesma escolha de `paymentMethod`,
+  // `cancelReasonCode` e `ReceivableEvent.type`.
+  //
+  // NULL = venda anterior ao recurso ⇒ DERIVA para o primeiro estágio em
+  // read-time, exatamente como o BudgetStage faz com "Novo". Nenhum backfill.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "saleStage" TEXT;
+  saleStage String?
+
   // ── BLOCO B: vendedor da venda ──
   // Quem VENDEU — que pode não ser quem operou o caixa (o caixa lança a venda
   // do balconista, e a comissão é de quem vendeu). Distinto do `userId`
@@ -1093,6 +1111,8 @@ model Receivable {
   @@index([parentReceivableId])
   // BLOCO B — serve ao relatório "vendas por vendedor no período".
   @@index([userId, sellerUserId])
+  // BLOCO F — serve à contagem por coluna do painel de estágios.
+  @@index([userId, saleStage])
 }
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.
