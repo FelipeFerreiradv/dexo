@@ -41,6 +41,10 @@ import {
   isSettlementEnabled,
   settlementBreakdown,
 } from "../financeiro/lib/settlement";
+import {
+  recomputeReservedStock,
+  recomputeReservedStockWithinTx,
+} from "../marketplaces/services/stock-reservation.service";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
   FinanceRepository,
@@ -711,6 +715,15 @@ export class FinanceUseCase {
     let deductions: Awaited<
       ReturnType<typeof StockDeductionService.deductWithinTx>
     >["deductions"] = [];
+    // BLOCO G — alertas de venda além do estoque. Coletados dentro da tx e
+    // registrados DEPOIS do commit: a venda já aconteceu, e falhar o log não
+    // pode desfazê-la.
+    let oversellAlerts: Array<{
+      productId: string;
+      productName?: string;
+      requested: number;
+      available: number;
+    }> = [];
     // Bloco F — ids dos produtos que NASCERAM nesta operação (peças avulsas).
     const promotedProductIds = new Set<string>();
 
@@ -771,6 +784,25 @@ export class FinanceUseCase {
             logPrefix: "[FinanceUseCase]",
           });
           deductions = result.deductions;
+          // BLOCO G — a MEDIÇÃO que faltava. `deductWithinTx` clampa a baixa
+          // em zero e devolve `oversellAlerts`; o `OrderUseCase` os registra,
+          // mas este caminho só lia `deductions` e os descartava. Resultado: a
+          // venda dupla no balcão acontecia sem deixar rastro nenhum, e não
+          // havia como medir a frequência do problema que a reserva existe
+          // para resolver.
+          //
+          // Sem flag: registrar o que já acontece é correção pura, e é o dado
+          // que vai decidir se a virada do sync (fase seguinte, 25 pontos de
+          // escrita) vale o risco.
+          oversellAlerts = result.oversellAlerts ?? [];
+
+          // A venda saiu de PENDENTE: o estoque foi baixado de verdade, então
+          // a reserva daquelas peças deixa de existir. Recalculado a partir da
+          // verdade, dentro da mesma tx.
+          await recomputeReservedStockWithinTx(
+            tx,
+            items.map((it) => it.productId),
+          );
         },
         { timeout: 60_000, maxWait: 20_000 },
       );
@@ -820,6 +852,20 @@ export class FinanceUseCase {
       userId,
       logPrefix: "[FinanceUseCase]",
     });
+
+    // BLOCO G — a venda dupla, finalmente visível. Cada alerta é uma peça que
+    // foi vendida além do que existia: o `deductWithinTx` clampou a baixa em
+    // zero e seguiu, e até agora ninguém ficava sabendo. É este log que vai
+    // dizer, com número, se a virada do sync vale o risco dos 25 pontos.
+    for (const a of oversellAlerts) {
+      logFinanceAction(actor, "SALE_OVERSELL", "Venda acima do estoque", {
+        receivableId: id,
+        productId: a.productId,
+        productName: a.productName,
+        solicitado: a.requested,
+        disponivel: a.available,
+      });
+    }
 
     // BLOCO H — recebimento na timeline. Pós-commit e best-effort.
     recordSaleEvent({
@@ -988,6 +1034,18 @@ export class FinanceUseCase {
       }
     }
     await this.repo.delete(kind, id, userId);
+
+    // BLOCO G — excluir a venda LIBERA as peças. É o caminho de "soltar" uma
+    // reserva esquecida (não há expiração automática, por decisão de 14/08).
+    // Fora de transação e best-effort: a venda já foi apagada, e falhar o
+    // recálculo só deixa o número desatualizado até o próximo toque — que é
+    // exatamente o modo de falha que o desenho por RECÁLCULO torna aceitável.
+    if (kind === "receivable" && Array.isArray(snapshot?.items)) {
+      recomputeReservedStock(
+        snapshot!.items!.map((it) => it.productId),
+        "[FinanceUseCase]",
+      );
+    }
 
     // Auditoria pós-efeito, best-effort: até aqui o financeiro não deixava
     // nenhum rastro de quem excluiu o quê.

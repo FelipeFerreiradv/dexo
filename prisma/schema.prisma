@@ -98,6 +98,21 @@ model Product {
   description            String?
   price                  Decimal                @db.Decimal(10, 2)
   stock                  Int                    @default(0)
+  // ── BLOCO G: estoque COMPROMETIDO ──
+  // Peças lançadas em venda PENDENTE (ainda não recebida). O estoque físico
+  // (`stock`) não muda: a peça continua no pátio. O que muda é quanto dela
+  // ainda pode ser vendido — `stock - reservedStock`.
+  //
+  // Existe porque criar uma venda de balcão NÃO toca estoque (a baixa só
+  // acontece em `markPaid`), então a peça segue anunciada e pode ser vendida
+  // de novo. Medido em 14/08: 65 vendas pendentes, a mais antiga há 51 dias.
+  //
+  // ⚠️ NESTA FASE O SYNC AINDA EMPURRA `stock` CRU. A virada dos 25 pontos de
+  // escrita para `stock - reservedStock` é fase própria, com dado de oversell
+  // na mão — decisão de 14/08. Por ora a reserva é informação para o operador.
+  //
+  // Migração: ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "reservedStock" INTEGER NOT NULL DEFAULT 0;
+  reservedStock          Int                    @default(0)
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
   costPrice              Decimal?               @db.Decimal(10, 2)

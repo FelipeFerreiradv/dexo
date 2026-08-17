@@ -249,8 +249,13 @@ describe("O replace PRESERVA a marca da peça avulsa", () => {
   it("item que era autoCreatedProduct volta com a marca", async () => {
     // Sem isto, o `reverse` seguinte devolve +qty sem a saída compensatória e
     // sobra um produto fantasma com estoque de peça que já saiu da loja.
+    // O fixture diz EXPLICITAMENTE que a linha era auto-criada. Antes ele
+    // dependia de o `where` da consulta já ter filtrado — acoplamento ao
+    // "como", não ao "o quê". Com o BLOCO G a mesma leitura passou a servir
+    // também à reserva (precisa de TODAS as linhas), então o filtro virou JS
+    // e o fixture ficou explícito. A asserção abaixo é a mesma.
     (prisma as any).receivableItem.findMany.mockResolvedValue([
-      { productId: "p-1" },
+      { productId: "p-1", autoCreatedProduct: true },
     ]);
     await put("PENDENTE", {
       items: [{ productId: "p-1", quantity: 2, unitPrice: 50 }],
@@ -274,7 +279,7 @@ describe("O replace PRESERVA a marca da peça avulsa", () => {
     // O operador pode reordenar ou acrescentar itens; o que identifica a peça
     // promovida é o produto.
     (prisma as any).receivableItem.findMany.mockResolvedValue([
-      { productId: "p-9" },
+      { productId: "p-9", autoCreatedProduct: true },
     ]);
     await put("PENDENTE", {
       items: [

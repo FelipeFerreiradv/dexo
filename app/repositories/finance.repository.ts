@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { recomputeReservedStockWithinTx } from "../marketplaces/services/stock-reservation.service";
 import {
   FinanceEntry,
   FinanceEntryCreate,
@@ -405,6 +406,13 @@ export class FinanceRepository {
       });
     }
 
+    // BLOCO G — a venda nasce PENDENTE e COMPROMETE as peças. Dentro da MESMA
+    // transação: se o create falhar, nada fica reservado.
+    await recomputeReservedStockWithinTx(
+      tx,
+      (data.items ?? []).map((i) => i.productId),
+    );
+
     const full = await (tx as any).receivable.findUnique({
       where: { id: created.id },
       include: buildInclude("receivable", true),
@@ -609,6 +617,10 @@ export class FinanceRepository {
     //
     // Só toca a relação que veio no payload: um update que manda `payments`
     // sem `items` (ou vice-versa) NÃO pode apagar a outra lista.
+    //
+    // Declarado FORA do bloco: o recálculo da reserva (BLOCO G) acontece
+    // depois, e precisa saber quais produtos estavam na venda ANTES.
+    let produtosAntes: string[] = [];
     if (hasItemsField) {
       // BLOCO E — `autoCreatedProduct` marca a peça avulsa que virou produto
       // do catálogo no pagamento, e é ELE que dispara a compensação simétrica
@@ -620,15 +632,24 @@ export class FinanceRepository {
       // Preservado NO SERVIDOR, e não confiado ao cliente: a marca é um fato
       // do backend (quem promoveu foi o markPaid), e depender de cada tela
       // lembrar de reenviá-la é a receita para perdê-la de novo.
-      const anteriores = await (tx as any).receivableItem.findMany({
-        where: { receivableId: id, autoCreatedProduct: true },
-        select: { productId: true },
-      });
+      //
+      // BLOCO G — a MESMA leitura serve à reserva: o produto que SAIU da venda
+      // precisa ser liberado, e olhar só os itens novos o deixaria reservado
+      // para sempre. Por isso lemos TODAS as linhas, não só as auto-criadas.
+      const anteriores = (await (tx as any).receivableItem.findMany({
+        where: { receivableId: id },
+        select: { productId: true, autoCreatedProduct: true },
+      })) as { productId: string | null; autoCreatedProduct: boolean }[];
+
       const eraAutoCriado = new Set<string>(
-        ((anteriores ?? []) as { productId: string | null }[])
+        (anteriores ?? [])
+          .filter((a) => a.autoCreatedProduct)
           .map((a) => a.productId)
           .filter((p): p is string => !!p),
       );
+      produtosAntes = (anteriores ?? [])
+        .map((a) => a.productId)
+        .filter((p): p is string => !!p);
 
       await (tx as any).receivableItem.deleteMany({
         where: { receivableId: id },
@@ -670,6 +691,17 @@ export class FinanceRepository {
           })),
         });
       }
+    }
+
+    // BLOCO G — editar itens muda o que está comprometido. Os produtos a
+    // recalcular são a UNIÃO dos de antes e dos de depois: quem SAIU da venda
+    // precisa ser liberado, e olhar só os novos deixaria a peça removida
+    // reservada para sempre.
+    if (hasItemsField) {
+      await recomputeReservedStockWithinTx(tx, [
+        ...produtosAntes,
+        ...items.map((i) => i.productId),
+      ]);
     }
 
     const updated = await (tx as any).receivable.findUnique({
