@@ -32,6 +32,7 @@ import {
 } from "../financeiro/lib/cancel-reasons";
 import {
   blockedFieldsOnPaidSale,
+  type SaleStateForGuard,
   isSaleEditGuardEnabled,
   saleEditGuardMessage,
   touchesProtectedFields,
@@ -604,9 +605,15 @@ export class FinanceUseCase {
       // encontrado" seguir o caminho de sempre (404), em vez de virar um
       // bloqueio confuso.
       if (!antes) throw new Error("Registro financeiro não encontrado");
+      // O 4º argumento é o ANTES que já está em mãos (l. 597-600): a guarda
+      // compara VALOR, não presença de chave, e sem ele voltaria a recusar
+      // todo save — o formulário reenvia `totalAmount` e a lista de itens
+      // inteira em toda edição de venda de balcão. Zero consulta nova.
       const bloqueados = blockedFieldsOnPaidSale(
         data as Record<string, unknown>,
         antes.status,
+        process.env,
+        antes as unknown as SaleStateForGuard,
       );
       if (bloqueados.length > 0) {
         // A mensagem contém "Estornar" — é por ela que o handler mapeia 409,
