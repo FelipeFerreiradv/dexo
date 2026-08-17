@@ -162,6 +162,15 @@ export function isOverReserved(
  * anúncio — que é exatamente o que se quer.
  *
  * Flag ausente ⇒ devolve o MESMO objeto, sem cópia. Nada muda.
+ *
+ * ⭐ IDEMPOTENTE POR CONSTRUÇÃO: a cópia sai com `reservedStock: 0`, então
+ * aplicar de novo não desconta de novo. Isso importa porque existem caminhos
+ * que passam pela sombra mais de uma vez — `syncProductStock` já aplica na
+ * entrada e o retry pós-refresh de token da Shopee reentra no mesmo método.
+ * Sem esta linha, `{stock:5, reservedStock:2}` viraria 3, depois 1, depois 0,
+ * e o sintoma seria "a peça sumiu do anúncio" sem causa aparente. Depender de
+ * chamar no lugar certo é uma garantia que se perde na primeira refatoração;
+ * idempotência é uma garantia que fica no código.
  */
 export function withAvailableStock<
   T extends { stock: number; reservedStock?: number | null },
@@ -169,7 +178,7 @@ export function withAvailableStock<
   if (!isStockReservationEnabled(env)) return product;
   const efetivo = availableForSale(product.stock, product.reservedStock);
   if (efetivo === product.stock) return product;
-  return { ...product, stock: efetivo };
+  return { ...product, stock: efetivo, reservedStock: 0 };
 }
 
 /** Texto curto para a tela: "3 em estoque · 1 reservada". */

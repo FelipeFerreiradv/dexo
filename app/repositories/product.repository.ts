@@ -258,6 +258,15 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     name: item.name,
     description: item.description ?? undefined,
     stock: item.stock,
+    // BLOCO G — sem esta linha a sombra do publish é NO-OP: `withAvailableStock`
+    // lia `undefined` e devolvia o produto intacto, então publicar anúncio novo
+    // empurrava estoque BRUTO mesmo com a reserva ligada. O `as any` na chamada
+    // é que escondeu isso do compilador.
+    // `?? undefined` e NÃO `?? 0`: as leituras via productSelect não projetam a
+    // coluna, e `0` ali seria uma AFIRMAÇÃO de "nada reservado" sobre um dado
+    // que existe no banco — mentira que o próximo leitor usaria para publicar
+    // peça comprometida. Ausente é honesto; zero não é.
+    reservedStock: (item as any).reservedStock ?? undefined,
     price: item.price.toNumber(),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,

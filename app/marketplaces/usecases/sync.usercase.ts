@@ -3663,12 +3663,28 @@ export class SyncUseCase {
         //   (7.459 calls @285ms).
         // A árvore de sync de estoque (syncMLProductStock, syncShopeeProductStock,
         // logMLStockWarningAndReturn, alertMLReactivationRisk) lê APENAS
-        // listing.id e listing.externalListingId + product.{id,sku,stock,name}
+        // listing.id e listing.externalListingId +
+        // product.{id,sku,stock,reservedStock,name}
         // + marketplaceAccount.* — MESMAS linhas, sem trafegar o resto.
+        //
+        // BLOCO G — `reservedStock` entra no select porque este caminho é o de
+        // MAIOR volume (o botão "Sincronizar Estoque" varre a conta inteira) e
+        // era o único que ficava de fora da sombra. Sem a coluna aqui, aplicar
+        // `withAvailableStock` abaixo seria um segundo no-op silencioso — o
+        // mesmo defeito que o publish tinha. Custo: um Int de 4 bytes por
+        // linha, inline, sem TOAST; mesmo precedente do reconciliador.
         select: {
           id: true,
           externalListingId: true,
-          product: { select: { id: true, sku: true, stock: true, name: true } },
+          product: {
+            select: {
+              id: true,
+              sku: true,
+              stock: true,
+              reservedStock: true,
+              name: true,
+            },
+          },
           marketplaceAccount: true,
         },
       });
@@ -3698,14 +3714,21 @@ export class SyncUseCase {
           batch.map(async (listing) => {
             // Timeout de 15s por item para evitar travamento
             const timeoutMs = 15000;
+            // BLOCO G — a sombra fica AQUI, no chamador, e não dentro dos três
+            // métodos por plataforma. Dentro deles seria aplicada duas vezes
+            // nos caminhos que já descontam na entrada (`syncProductStock`) e
+            // no retry pós-refresh de token da Shopee, que reentra no próprio
+            // método. Um ponto só por funil é a regra; a idempotência de
+            // `withAvailableStock` é o cinto de segurança.
+            const produto = withAvailableStock(listing.product!);
             const syncPromise = (async () => {
               switch (platform) {
                 case Platform.MERCADO_LIVRE:
-                  return this.syncMLProductStock(listing, listing.product);
+                  return this.syncMLProductStock(listing, produto);
                 case Platform.SHOPEE:
-                  return this.syncShopeeProductStock(listing, listing.product);
+                  return this.syncShopeeProductStock(listing, produto);
                 case Platform.MAGALU:
-                  return this.syncMagaluProductStock(listing, listing.product);
+                  return this.syncMagaluProductStock(listing, produto);
                 default:
                   return {
                     success: false,
