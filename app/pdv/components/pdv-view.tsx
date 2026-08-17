@@ -102,7 +102,13 @@ export function PdvView() {
   // 2+ empresas; null = CNPJ padrão (comportamento atual do PDV).
   const multiCnpjUi = nfceUi && isMultiCnpjUiEnabled();
   const [companies, setCompanies] = useState<
-    Array<{ id: string; cnpj: string; razaoSocial: string; nomeFantasia?: string | null; isDefault?: boolean }>
+    Array<{
+      id: string;
+      cnpj: string;
+      razaoSocial: string;
+      nomeFantasia?: string | null;
+      isDefault?: boolean;
+    }>
   >([]);
   const [nfceCompanyId, setNfceCompanyId] = useState<string | null>(null);
 
@@ -153,22 +159,31 @@ export function PdvView() {
   const quickSaleId = isQuickSaleEnabled()
     ? parseQuickSaleParam(searchParams.get(QUICK_SALE_PARAM))
     : null;
-  // Id já consumido. Sem isto, o `router.replace` que limpa a URL provoca um
-  // re-render que poderia reabrir o modal em cima da venda em andamento.
-  const quickSaleConsumed = useRef<string | null>(null);
+  // Id que JÁ ABRIU o modal. Guarda contra reabrir por cima de uma venda em
+  // andamento.
+  //
+  // ⚠️ ELE SÓ PODE SER MARCADO NO SUCESSO, e essa ordem é o bug inteiro.
+  // `reactStrictMode` está ligado (next.config:114): em desenvolvimento o React
+  // monta → limpa → remonta, TUDO SÍNCRONO. Marcando antes do resultado:
+  //
+  //   1. monta   → marca consumido, dispara o fetch
+  //   2. limpa   → `ctrl.abort()`
+  //   3. remonta → vê "já consumi" e sai na 1ª linha  ← o modal morre aqui
+  //
+  // Minha 1ª tentativa foi liberar o id dentro do `catch (AbortError)`. Não
+  // funciona: o `catch` é assíncrono (microtask) e o passo 3 já aconteceu. Não
+  // existe onde encaixar a liberação a tempo — o que precisa mudar é QUANDO se
+  // marca. Marcando só depois de o modal abrir, o passo 3 encontra o campo
+  // livre, refaz o fetch e abre.
+  const quickSaleOpened = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!quickSaleId || quickSaleConsumed.current === quickSaleId) return;
+    if (!quickSaleId || quickSaleOpened.current === quickSaleId) return;
     const email = session?.user?.email;
-    // Sessão ainda carregando: sai SEM marcar como consumido, para tentar de
-    // novo quando o e-mail chegar.
+    // Sessão ainda carregando: tenta de novo quando o e-mail chegar.
     if (!email) return;
-    quickSaleConsumed.current = quickSaleId;
 
     const ctrl = new AbortController();
-    // Abortado pelo cleanup? Então NADA aconteceu, e o id não pode contar como
-    // consumido nem a URL pode ser limpa — senão não sobra caminho de volta.
-    let abortado = false;
     void (async () => {
       try {
         const peca = await fetchQuickSaleProduct(
@@ -183,38 +198,24 @@ export function PdvView() {
             "Peça não encontrada — ela pode ter sido excluída ou vendida.",
             "error",
           );
-          return;
+        } else {
+          quickSaleOpened.current = quickSaleId;
+          setDialogSeed(buildQuickSaleSeed(peca));
+          setDialogOpen(true);
         }
-        setDialogSeed(buildQuickSaleSeed(peca));
-        setDialogOpen(true);
       } catch (e) {
-        if ((e as Error).name === "AbortError") {
-          // ⚠️ O CAMINHO QUE QUEBRAVA O CARRINHO INTEIRO.
-          // `reactStrictMode` está ligado (next.config), e em desenvolvimento o
-          // React monta → desmonta → remonta todo componente. A primeira monta
-          // marcava o id como consumido e o cleanup da desmontagem abortava o
-          // fetch; a remonta então via "já consumi" e saía na primeira linha.
-          // Resultado: o `OPTIONS` saía, o `GET` nunca, e o modal nunca abria.
-          //
-          // Liberar o id aqui é o que dá à remontagem uma segunda chance. Vale
-          // além do StrictMode: qualquer re-execução do efeito com o fetch em
-          // voo cairia no mesmo buraco.
-          abortado = true;
-          if (quickSaleConsumed.current === quickSaleId) {
-            quickSaleConsumed.current = null;
-          }
-          return;
-        }
+        // Aborto = nada aconteceu. Sai sem tocar no ref e sem limpar a URL,
+        // que é o que deixa a remontagem tentar de novo.
+        if ((e as Error).name === "AbortError") return;
         showToast(
           e instanceof Error ? e.message : "Erro ao carregar a peça",
           "error",
         );
-      } finally {
-        // Limpa a URL em todo desfecho REAL, inclusive na falha: um F5 não pode
-        // reabrir a venda, e o parâmetro já cumpriu o papel dele. Só o aborto
-        // fica de fora — ali o parâmetro ainda não foi usado para nada.
-        if (!abortado) router.replace("/pdv", { scroll: false });
       }
+      // Fora do `finally` DE PROPÓSITO: o aborto sai pelo `return` acima e não
+      // chega aqui. Nos desfechos reais (abriu, 404 ou erro) a URL é limpa, para
+      // que um F5 não reabra a venda.
+      router.replace("/pdv", { scroll: false });
     })();
 
     return () => ctrl.abort();
