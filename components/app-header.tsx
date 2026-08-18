@@ -178,8 +178,29 @@ export function AppHeader({ session }: AppHeaderProps) {
     loadUserProfile();
   }, [loadUserProfile]);
 
+  // O redirecionamento mora num EFEITO, não no corpo do render.
+  //
+  // Este componente é um Client Component, e Client Component também é
+  // renderizado no SERVIDOR para produzir o HTML inicial. Lá `session` chega
+  // null, o ramo executava, e `router.push` do next/navigation toca `location`
+  // — que não existe no Node. O resultado era um `ReferenceError: location is
+  // not defined` NÃO CAPTURADO a cada requisição: 3,88 milhões de ocorrências e
+  // 391 MB de log em produção, e ruído suficiente para mascarar o incidente de
+  // 17/08/2026 (ver o commit d3b7a0f).
+  //
+  // Efeito não roda no servidor, então o push só acontece no navegador — que é
+  // onde ele sempre precisou acontecer. Para o usuário nada muda: sem sessão a
+  // tela continua vazia e continua indo para /login.
+  //
+  // `app-sidebar.tsx` já fazia exatamente assim; este arquivo é que ficou para
+  // trás. Estamos alinhando com o irmão, não inventando padrão.
+  useEffect(() => {
+    if (!session) {
+      router.push("/login");
+    }
+  }, [router, session]);
+
   if (!session) {
-    router.push("/login");
     return null;
   }
 
