@@ -108,8 +108,19 @@ export default function EnviarXmlPage() {
     }
   }, [authStatus, fetchNotas]);
 
+  // Redirecionamento em EFEITO, não no render — mesmo motivo do
+  // `app-header.tsx`: esta página também é renderizada no servidor, e ali
+  // `router.push` toca `location`, que não existe no Node. Hoje o ramo não
+  // dispara (a flag está ligada em produção), o que torna isto uma mina
+  // dormente: bastaria desligar o módulo fiscal para a página passar a
+  // estourar `ReferenceError` a cada requisição.
+  useEffect(() => {
+    if (!FISCAL_MODULE_ENABLED) {
+      router.push("/");
+    }
+  }, [router]);
+
   if (!FISCAL_MODULE_ENABLED) {
-    router.push("/");
     return null;
   }
 
