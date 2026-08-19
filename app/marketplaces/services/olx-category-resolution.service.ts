@@ -2,6 +2,7 @@ import {
   OLX_CATEGORY_MAP,
   OLX_DEFAULT_CATEGORY_ID,
 } from "../olx/olx-category-map";
+import { tabelaDePecaDaCategoria } from "../olx/olx-part-map";
 
 /**
  * Resolve o código INTEIRO de categoria OLX de um produto.
@@ -78,9 +79,48 @@ export class OlxCategoryResolutionService {
     const params: Record<string, string> = {
       condition: this.mapCondition(product?.quality),
     };
-    const partKey = this.partsNameKey(categoryId);
-    if (partKey) params[partKey] = this.defaultPartValue(categoryId);
+    const tabela = tabelaDePecaDaCategoria(categoryId);
+    if (tabela) params[tabela.chave] = this.resolvePartValue(product, categoryId);
     return params;
+  }
+
+  /**
+   * Tipo de peça (`parts_name_*`) a partir do nome do produto.
+   *
+   * Era uma constante: toda peça de carro saía como "4" (Peças automotivas).
+   * Medido no catálogo real, isso está CERTO para 98,4% — a tabela da OLX é
+   * comercial e grossa, e maçaneta/farol/motor/freio são mesmo "Peças
+   * automotivas". O que se ganha são os 1,64% que a OLX separa no filtro e que
+   * hoje se escondem no genérico: pneus, rodas, calotas, som e GPS.
+   *
+   * ⚠️ NÃO-REGRESSÃO: sem casamento, devolve o MESMO valor de antes. O payload
+   * de 98,4% dos anúncios continua byte a byte idêntico.
+   */
+  static resolvePartValue(product: any, categoryId: number): string {
+    const tabela = tabelaDePecaDaCategoria(categoryId);
+    if (!tabela) return "";
+    return this.lookupNoMapa(product, tabela.mapa) ?? tabela.padrao;
+  }
+
+  /** Mesmo casamento por palavra do de-para de veículo: chave mais longa vence. */
+  private static lookupNoMapa(
+    product: any,
+    mapa: Record<string, string>,
+  ): string | null {
+    const name = this.normalize(product?.name);
+    if (!name) return null;
+    let best: { len: number; value: string } | null = null;
+    for (const [rawKey, value] of Object.entries(mapa)) {
+      const key = this.normalize(rawKey);
+      if (!key || !value) continue;
+      const re = new RegExp(
+        `\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+      );
+      if (re.test(name)) {
+        if (!best || key.length > best.len) best = { len: key.length, value };
+      }
+    }
+    return best?.value ?? null;
   }
 
   /** Novo → "1"; qualquer outro (usado/sucata/desmonte) → "2". */
@@ -88,26 +128,4 @@ export class OlxCategoryResolutionService {
     return String(quality ?? "").toUpperCase() === "NOVO" ? "1" : "2";
   }
 
-  /** Chave de tipo-de-peça conforme o veículo da categoria. */
-  private static partsNameKey(categoryId: number): string | null {
-    switch (categoryId) {
-      case 2103:
-        return "parts_name_motos";
-      case 2104:
-        return "parts_name_boats";
-      case 2101:
-      case 2102:
-      case 2105:
-        return "parts_name_cars";
-      default:
-        return null; // categoria não-autopeça conhecida → sem parts_name
-    }
-  }
-
-  /** Valor genérico "peça" por veículo (opções da tabela do portal). */
-  private static defaultPartValue(categoryId: number): string {
-    if (categoryId === 2103) return "10"; // Peças de motos
-    if (categoryId === 2104) return "11"; // Barcos: Outros (sem genérico "peças")
-    return "4"; // Carros/caminhões/ônibus: Peças automotivas
-  }
 }

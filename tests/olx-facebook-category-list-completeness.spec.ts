@@ -165,4 +165,45 @@ describe("as categorias de OLX e Facebook chegam INTEIRAS ao combobox", () => {
       expect(await buscar(`${url}?search=zzzznaoexiste`)).toEqual([]);
     }
   });
+
+  it("o operador acha a cesta digitando o NOME DA PEÇA", async () => {
+    // O pedido literal do dono: "se eu colocar maçaneta, aparecer as categorias
+    // correspondentes". A busca casa o rótulo OU o de-para de peça.
+    const casos: Array<[string, string]> = [
+      ["macaneta", "Lataria e carroceria"],
+      ["maçaneta", "Lataria e carroceria"],
+      ["porta", "Lataria e carroceria"],
+      ["farol", "Faróis, lanternas e iluminação"],
+      ["lanterna", "Faróis, lanternas e iluminação"],
+      ["amortecedor", "Suspensão"],
+      ["radiador", "Arrefecimento e ar-condicionado"],
+      ["bico injetor", "Sistema de combustível"],
+      ["retrovisor", "Retrovisores e espelhos"],
+      ["sonda", "Sensores e indicadores"],
+      ["cambio", "Direção, câmbio e transmissão"],
+      ["câmbio", "Direção, câmbio e transmissão"],
+      ["banco", "Bancos e assentos"],
+      ["pneu", "Rodas, pneus e cubos"],
+      ["escapamento", "Escapamento"],
+      ["cabecote", "Peças de motor"],
+    ];
+
+    for (const [termo, esperado] of casos) {
+      const cats = await buscar(
+        `/marketplace/facebook/categories?search=${encodeURIComponent(termo)}`,
+      );
+      expect(
+        cats.map((c) => c.value),
+        `buscando "${termo}"`,
+      ).toContain(esperado);
+    }
+  });
+
+  it("busca por peça inexistente continua devolvendo vazio", async () => {
+    // Controle negativo: sem ele os casos acima poderiam passar por um filtro
+    // frouxo que devolve tudo.
+    expect(
+      await buscar("/marketplace/facebook/categories?search=zzzznaoexiste"),
+    ).toEqual([]);
+  });
 });

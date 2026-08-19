@@ -35,6 +35,7 @@ import {
   OLX_CATEGORY_MAP,
 } from "../marketplaces/olx/olx-category-map";
 import { FACEBOOK_CATEGORY_LABEL } from "../marketplaces/facebook/facebook-category-map";
+import { FACEBOOK_PART_MAP } from "../marketplaces/facebook/facebook-part-map";
 import {
   resolveListingsPage,
   totalDePaginas,
@@ -4109,15 +4110,28 @@ small{color:#666}</style></head><body>
         // `id` continua sendo o path da taxonomia do Google — é ele que vai
         // para a Meta. Só o `value`, que a tela exibe e a busca filtra, é
         // português.
+        // BUSCA PELO NOME DA PEÇA, não só pelo rótulo da cesta.
+        //
+        // O operador digita "maçaneta", não "lataria e carroceria" — foi o
+        // pedido literal do dono. O de-para que a resolução automática usa
+        // (FACEBOOK_PART_MAP) já sabe que maçaneta é carroceria, farol é
+        // iluminação e bico injetor é combustível; aqui ele vira sinônimo de
+        // busca. Mesmo padrão já usado na OLX.
+        const sinonimosPorCesta = new Map<string, string[]>();
+        for (const [palavra, cesta] of Object.entries(FACEBOOK_PART_MAP)) {
+          const atuais = sinonimosPorCesta.get(cesta) ?? [];
+          atuais.push(normalizarBusca(palavra));
+          sinonimosPorCesta.set(cesta, atuais);
+        }
         const categories = Object.entries(FACEBOOK_CATEGORY_LABEL)
           .map(([path, value]) => ({ id: path, value }))
           .filter((c) => {
             if (!search) return true;
-            const v = c.value
-              .toLowerCase()
-              .normalize("NFD")
-              .replace(/[̀-ͯ]/g, "");
-            return v.includes(search);
+            if (normalizarBusca(c.value).includes(search)) return true;
+            const sinonimos = sinonimosPorCesta.get(c.id) ?? [];
+            return sinonimos.some(
+              (p) => p.includes(search) || search.includes(p),
+            );
           });
         reply.header("Cache-Control", "private, max-age=600");
         return reply.send({ categories });

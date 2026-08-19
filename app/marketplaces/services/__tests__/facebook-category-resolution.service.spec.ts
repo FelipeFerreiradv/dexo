@@ -17,12 +17,21 @@ describe("FacebookCategoryResolutionService", () => {
     ).toContain("Motorcycle Parts");
   });
 
-  it("word-boundary: 'motor' NÃO casa 'moto' → fica no default", () => {
-    expect(
-      FacebookCategoryResolutionService.resolveCategory({
-        name: "Suporte do Motor Gol",
-      }),
-    ).toBe(FACEBOOK_DEFAULT_CATEGORY);
+  it("word-boundary: 'motor' NÃO casa 'moto'", () => {
+    // ⚠️ Este caso afirmava `toBe(FACEBOOK_DEFAULT_CATEGORY)`. Era um PROXY: o
+    // que ele existe para provar é que "Suporte do Motor" não vira peça de
+    // MOTO, e naquele momento "não ser moto" e "ser o default" davam no mesmo,
+    // porque só existiam três categorias.
+    //
+    // Com as 21 cestas por sistema, "Suporte do Motor Gol" passa a resolver
+    // para Peças de motor — mais específico, e a invariante do word-boundary
+    // segue intacta. O proxy quebrou; a propriedade, não. Agora o caso afirma a
+    // propriedade diretamente.
+    const cat = FacebookCategoryResolutionService.resolveCategory({
+      name: "Suporte do Motor Gol",
+    });
+    expect(cat).not.toContain("Motorcycle Parts");
+    expect(cat).toContain("Motor Vehicle Engine Parts");
   });
 
   it("casa 'barco' → Watercraft Parts", () => {
