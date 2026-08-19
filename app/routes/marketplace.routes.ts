@@ -3994,7 +3994,7 @@ small{color:#666}</style></head><body>
           .trim();
         // Mesma correção da OLX: a lista sai dos RÓTULOS, não do de-para de
         // busca. Com `Object.values(FACEBOOK_CATEGORY_MAP)`, o caminho
-        // "Peças de carros, vans e utilitários" (MOTOR_VEHICLE_PARTS) nunca
+        // "Peças de veículos (carros, vans, utilitários, caminhões e ônibus)" nunca
         // aparecia — é o DEFAULT (`FACEBOOK_DEFAULT_CATEGORY`) e, como tal, não
         // tem palavra-chave no de-para. Restavam só motos e barcos na tela.
         //

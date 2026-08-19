@@ -47,9 +47,25 @@ export const FACEBOOK_DEFAULT_CATEGORY: string = MOTOR_VEHICLE_PARTS;
  * taxonomia do Google, que existe só em inglês — traduzir o valor faria a Meta
  * recusar o item. Por isso o de-para é uma camada separada: a chave é o path
  * real (enviado ao canal) e o texto é apenas o que aparece na tela.
+ *
+ * ⚠️⚠️ O RÓTULO NÃO PODE COPIAR O DA OLX. A primeira versão destes textos dizia
+ * "Peças de carros, vans e utilitários" para MOTOR_VEHICLE_PARTS — a redação da
+ * categoria 2101 da OLX. Ficou errado por dois motivos:
+ *
+ *   1. É estreito demais. Na taxonomia do Google, "Motor Vehicle Parts" é a
+ *      cesta de TODO veículo automotor: carro, van, utilitário, caminhão E
+ *      ônibus. A OLX separa caminhão (2102) e ônibus (2105) em categorias
+ *      próprias; a Meta não separa. Quem lesse o rótulo antigo concluiria que
+ *      peça de caminhão precisa de outra categoria no Facebook — não precisa,
+ *      e não existe.
+ *   2. Fazia os dois canais parecerem dizer a mesma coisa em telas onde
+ *      aparecem lado a lado, escondendo justamente a diferença que importa:
+ *      na OLX a categoria é o TIPO DE VEÍCULO; na Meta é o TIPO DE PEÇA.
+ *
+ * O rótulo tem que descrever o que a categoria realmente cobre no canal DELE.
  */
 export const FACEBOOK_CATEGORY_LABEL: Record<string, string> = {
-  [MOTOR_VEHICLE_PARTS]: "Peças de carros, vans e utilitários",
+  [MOTOR_VEHICLE_PARTS]: "Peças de veículos (carros, vans, utilitários, caminhões e ônibus)",
   [MOTORCYCLE_PARTS]: "Peças de motos",
   [WATERCRAFT_PARTS]: "Peças de barcos e embarcações",
 };

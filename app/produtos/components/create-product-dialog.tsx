@@ -6084,6 +6084,18 @@ export function CreateProductDialog({
                             .join(" > ")
                         : "Nenhuma"}
                     </p>
+                    {/* O que a Meta realmente recebe. O rótulo acima é
+                        tradução nossa; o `google_product_category` é o caminho
+                        da taxonomia do Google, que só existe em inglês. Mostrar
+                        os dois evita a dúvida legítima de "a categoria mudou?"
+                        quando só o texto da tela mudou — e deixa o operador
+                        conferir sem precisar abrir o banco. */}
+                    {watch("facebookCategory") ? (
+                      <p className="text-[11px] text-muted-foreground/80">
+                        Enviado à Meta:{" "}
+                        <span className="font-mono">{watch("facebookCategory")}</span>
+                      </p>
+                    ) : null}
                   </div>
                 )}
 

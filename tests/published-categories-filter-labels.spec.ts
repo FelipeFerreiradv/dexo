@@ -65,7 +65,7 @@ describe("filtro 'Categoria publicada' — nome legível também na OLX e no Fac
 
     const [opcao] = await repo.findPublishedCategories("user-1");
 
-    expect(opcao.label).toBe("Facebook • Peças de carros, vans e utilitários");
+    expect(opcao.label).toBe("Facebook • Peças de veículos (carros, vans, utilitários, caminhões e ônibus)");
     expect(opcao.label.toLowerCase()).not.toContain("vehicle");
   });
 

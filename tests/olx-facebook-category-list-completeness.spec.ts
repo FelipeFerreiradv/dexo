@@ -93,7 +93,7 @@ describe("as categorias de OLX e Facebook chegam INTEIRAS ao combobox", () => {
     expect(ids).toEqual(Object.keys(FACEBOOK_CATEGORY_LABEL).sort());
     const padrao = categories.find((c) => c.id === FACEBOOK_DEFAULT_CATEGORY);
     expect(padrao, "a categoria padrão da Meta sumiu da lista").toBeDefined();
-    expect(padrao!.value).toBe("Peças de carros, vans e utilitários");
+    expect(padrao!.value).toBe("Peças de veículos (carros, vans, utilitários, caminhões e ônibus)");
   });
 
   it("o operador acha a categoria de carro digitando o que ele fala", async () => {

@@ -99,6 +99,70 @@ describe("Facebook — rótulo em português, valor em inglês", () => {
       true,
     );
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // NENHUM RÓTULO DO FACEBOOK PODE SER CÓPIA DE UM DA OLX.
+  //
+  // A primeira versão destes textos rotulou MOTOR_VEHICLE_PARTS como "Peças de
+  // carros, vans e utilitários" — a redação da categoria 2101 da OLX. Nas telas
+  // em que os dois canais aparecem um embaixo do outro ficou parecendo que
+  // diziam a mesma coisa, e o dono perguntou (com razão) se a categoria do
+  // Facebook tinha sido trocada. Não tinha: só o rótulo estava errado.
+  //
+  // Errado de fato, não apenas confuso: na taxonomia do Google, "Motor Vehicle
+  // Parts" é a cesta de TODO veículo automotor — inclusive caminhão e ônibus,
+  // que na OLX são categorias separadas (2102 e 2105). O rótulo antigo levava a
+  // concluir que peça de caminhão precisaria de outra categoria no Facebook.
+  //
+  // Os dois canais classificam por eixos diferentes — OLX por TIPO DE VEÍCULO,
+  // Meta por TIPO DE PEÇA — então rótulo igual é sinal de erro, não de acerto.
+  it("a categoria padrão da Meta NÃO pode ser rotulada como a 2101 da OLX", () => {
+    // ⚠️ A primeira versão deste caso reprovava QUALQUER rótulo do Facebook
+    // parecido com um da OLX. Passava do ponto: "Peças de motos" vs "Motos"
+    // está certo — a 2103 da OLX e MOTORCYCLE_PARTS cobrem o mesmo conjunto de
+    // veículos, e é bom que se pareçam.
+    //
+    // A invariante de verdade é sobre COBERTURA, não sobre semelhança: só a
+    // categoria padrão da Meta FUNDE três categorias da OLX (2101 carros, 2102
+    // caminhões, 2105 ônibus). Só ela, portanto, não pode herdar a redação de
+    // uma delas — foi exatamente o que aconteceu.
+    const rotuloMeta = FACEBOOK_CATEGORY_LABEL[FACEBOOK_DEFAULT_CATEGORY];
+    const normalizar = (t: string) =>
+      t
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/^pecas de\s+/, "")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+
+    const fundidas = [
+      OLX_CATEGORY_LABEL[OLX_AUTOPARTS_CATEGORY.CARS],
+      OLX_CATEGORY_LABEL[OLX_AUTOPARTS_CATEGORY.TRUCKS],
+      OLX_CATEGORY_LABEL[OLX_AUTOPARTS_CATEGORY.BUSES],
+    ];
+
+    for (const daOlx of fundidas) {
+      expect(
+        normalizar(rotuloMeta),
+        `o rótulo da categoria padrão da Meta é a redação da OLX "${daOlx}", mas ` +
+          "na Meta essa categoria cobre as TRÊS (carro, caminhão e ônibus)",
+      ).not.toBe(normalizar(daOlx));
+    }
+  });
+
+    it("a categoria padrão da Meta diz que cobre caminhão e ônibus", () => {
+    // É o que a diferencia da 2101 da OLX, e o que o operador precisa saber para
+    // não sair procurando uma categoria de caminhão no Facebook — não existe.
+    const rotulo = FACEBOOK_CATEGORY_LABEL[FACEBOOK_DEFAULT_CATEGORY];
+    const semAcento = rotulo
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+
+    expect(semAcento).toContain("caminh");
+    expect(semAcento).toContain("onibus");
+  });
 });
 
 describe("a SUGESTÃO automática também devolve nome, não código", () => {
