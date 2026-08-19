@@ -11,6 +11,8 @@
 // Escopo: v1 GLOBAL (Jotabê é o único seller hoje, majoritariamente peça de
 // carro). Se entrar outro seller, migrar para mapa por conta (DB), como Magalu.
 
+import { FB_PART_LABEL } from "./facebook-part-map";
+
 const MOTOR_VEHICLE_PARTS =
   "Vehicles & Parts > Vehicle Parts & Accessories > Motor Vehicle Parts";
 const MOTORCYCLE_PARTS =
@@ -65,7 +67,14 @@ export const FACEBOOK_DEFAULT_CATEGORY: string = MOTOR_VEHICLE_PARTS;
  * O rótulo tem que descrever o que a categoria realmente cobre no canal DELE.
  */
 export const FACEBOOK_CATEGORY_LABEL: Record<string, string> = {
-  [MOTOR_VEHICLE_PARTS]: "Peças de veículos (carros, vans, utilitários, caminhões e ônibus)",
+  [MOTOR_VEHICLE_PARTS]:
+    "Peças de veículos (carros, vans, utilitários, caminhões e ônibus)",
   [MOTORCYCLE_PARTS]: "Peças de motos",
   [WATERCRAFT_PARTS]: "Peças de barcos e embarcações",
+  // As 21 cestas por SISTEMA (freios, suspensão, lataria…). Ficam aqui, e não
+  // num mapa à parte, porque este é o conjunto autoritativo do qual saem a
+  // LISTA do combobox, o rótulo da SUGESTÃO e o do filtro "Categoria publicada".
+  // Um mapa separado voltaria a criar o buraco de "existe rótulo que a lista não
+  // oferece" — o defeito que fez a categoria padrão sumir de seis telas.
+  ...FB_PART_LABEL,
 };
