@@ -51,11 +51,22 @@ export const FACEBOOK_CONSTANTS = {
     process.env.FACEBOOK_REDIRECT_URI ||
     `${process.env.APP_BACKEND_URL || "http://localhost:3333"}/marketplace/facebook/callback`,
 
-  // Escopos OAuth (separados por vírgula, padrão Meta). `catalog_management`
-  // libera escrever no catálogo; `business_management` p/ ler o Business/contas.
-  SCOPES:
-    process.env.FACEBOOK_SCOPES ||
-    ["catalog_management", "business_management"].join(","),
+  // Escopos OAuth (separados por vírgula, padrão Meta). `catalog_management` é
+  // o que libera escrever no catálogo — e é o ÚNICO que esta integração usa.
+  //
+  // `business_management` foi removido em 19/08/2026. Ele era pedido e nunca
+  // exercido: os três endpoints do Graph que o Dexo chama são todos de catálogo
+  // (`items_batch`, `products`, `check_batch_request_status`), mais o `/me` do
+  // callback, que é coberto pelo `public_profile`. Não há uma única chamada a
+  // `/businesses`, `owned_product_catalogs` ou conta de anúncios.
+  //
+  // Não era só excesso: a Análise do App reprova quem pede permissão que não
+  // usa ("recursos ou permissões desnecessários deverão ser mudados para acesso
+  // padrão ou removidos"), e o pedido enviado à Meta cobre apenas
+  // `catalog_management`. Mantê-lo aqui faria a tela de consentimento pedir, em
+  // produção, uma permissão não aprovada — e a Meta devolve o token SEM ela, em
+  // silêncio, porque não conferimos os escopos concedidos.
+  SCOPES: process.env.FACEBOOK_SCOPES || "catalog_management",
 
   // URL da página do vendedor — o item de catálogo EXIGE `link`. O Dexo não tem
   // vitrine pública por produto, então todos os itens apontam para esta página
@@ -108,7 +119,9 @@ export function facebookDialogBase(): string {
  * usuário. Retorna undefined se o APP_SECRET não estiver configurado (não quebra
  * o boot; a chamada segue sem o proof, como antes).
  */
-export function facebookAppSecretProof(accessToken: string): string | undefined {
+export function facebookAppSecretProof(
+  accessToken: string,
+): string | undefined {
   const secret = FACEBOOK_CONSTANTS.APP_SECRET;
   if (!secret || !accessToken) return undefined;
   return createHmac("sha256", secret).update(accessToken).digest("hex");
