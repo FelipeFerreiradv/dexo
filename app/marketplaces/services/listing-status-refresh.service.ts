@@ -1,3 +1,4 @@
+import axios from "axios";
 import prisma from "@/app/lib/prisma";
 import { MLApiService } from "./ml-api.service";
 import { MLOAuthService } from "./ml-oauth.service";
@@ -6,6 +7,12 @@ import { ShopeeOAuthService } from "./shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { normalizeListingStatus } from "../lib/listing-status";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
+import {
+  FACEBOOK_CONSTANTS,
+  facebookAppSecretProof,
+  facebookGraphBase,
+} from "../facebook/facebook-constants";
 
 const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
 const SHOPEE_BATCH_SIZE = 50;
@@ -22,6 +29,7 @@ export type RefreshableListingRow = {
     refreshToken: string | null;
     expiresAt: Date | null;
     shopId: number | null;
+    fbCatalogId: string | null;
   } | null;
 };
 
@@ -137,10 +145,92 @@ const parseShopeeItemId = (externalListingId: string): number | null => {
 };
 
 /**
- * Consulta o status remoto ao vivo (ML/Shopee) para um conjunto de listings e
- * grava o valor normalizado nos que mudaram. Fase de espelhamento
+ * Lê o status remoto dos itens do catálogo Meta (retailer_id → availability/
+ * review_status) via GET /{catalog_id}/products?filter=... A Meta não tem
+ * refresh de token (long-lived; expira ⇒ re-OAuth), então usa o token salvo —
+ * expirado ⇒ a chamada falha e o try/catch do grupo isola. review_status
+ * (rejected/pending) tem prioridade sobre availability no espelho: um item
+ * barrado/em revisão importa mais que a disponibilidade. Item ausente ⇒ omitido.
+ */
+/**
+ * Conta FACEBOOK com token já vencido. A Meta não expõe refresh do long-lived
+ * token (~60 dias): passada a validade, toda chamada é 401 certo. Sem esta
+ * guarda o sweep horário queima egress e enche o log com o mesmo erro.
+ * Só se aplica ao Facebook — ML e Shopee renovam o token no caminho.
+ */
+function isExpiredFacebookAccount(account: {
+  platform: string;
+  expiresAt: Date | null;
+}): boolean {
+  if (account.platform !== "FACEBOOK") return false;
+  if (!account.expiresAt) return false;
+  return new Date(account.expiresAt).getTime() <= Date.now();
+}
+
+async function getFacebookItemStatuses(
+  accessToken: string,
+  retailerIds: string[],
+  catalogId?: string | null,
+): Promise<Map<string, string | undefined>> {
+  const out = new Map<string, string | undefined>();
+  // Catálogo POR CONTA, sem cair no global do `.env`.
+  //
+  // O comentário anterior dizia "env só fallback p/ não ler o catálogo global"
+  // e o código fazia exatamente o contrário. A diferença importa aqui mais que
+  // nos outros pontos: este caminho ESCREVE o status lido de volta nos anúncios
+  // do tenant. Uma conta sem `fbCatalogId` passaria a espelhar o estado do
+  // catálogo de OUTRO tenant (o do `.env`) sobre os próprios anúncios — dado
+  // errado, não só dado a mais.
+  //
+  // Sem catálogo da conta o espelho simplesmente não roda, e o anúncio mantém o
+  // status do banco. É o que OLX e Magalu já fazem hoje: não ter espelho é o
+  // comportamento normal, ter espelho errado não.
+  if (retailerIds.length === 0 || !catalogId) return out;
+  const catalog = catalogId;
+
+  const filter = JSON.stringify({ retailer_id: { is_any: retailerIds } });
+  const url = new URL(`${facebookGraphBase()}/${catalog}/products`);
+  url.searchParams.set("fields", "retailer_id,availability,review_status");
+  url.searchParams.set("filter", filter);
+  url.searchParams.set("limit", String(retailerIds.length));
+  // appsecret_proof: obrigatório quando o app Meta tem "Require App Secret"
+  // ligado (hardening padrão). Todas as outras chamadas Graph do projeto já o
+  // enviam; esta era a única sem — e como o 401 resultante é engolido pelo
+  // try/catch por conta, o espelhamento de status inteiro falharia em silêncio.
+  const proof = facebookAppSecretProof(accessToken);
+  if (proof) url.searchParams.set("appsecret_proof", proof);
+
+  const response = await axios.get<{
+    data?: Array<{
+      retailer_id?: string;
+      availability?: string;
+      review_status?: string;
+    }>;
+  }>(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: FACEBOOK_CONSTANTS.REQUEST_TIMEOUT,
+  });
+
+  for (const item of response.data?.data ?? []) {
+    if (!item?.retailer_id) continue;
+    const reviewBlocked =
+      item.review_status &&
+      item.review_status.toLowerCase() !== "approved" &&
+      item.review_status.toLowerCase() !== "active";
+    out.set(
+      item.retailer_id,
+      reviewBlocked ? item.review_status : item.availability,
+    );
+  }
+  return out;
+}
+
+/**
+ * Consulta o status remoto ao vivo (ML/Shopee/Facebook) para um conjunto de
+ * listings e grava o valor normalizado nos que mudaram. Fase de espelhamento
  * marketplace→Dexo: usada pelo GET /listings/status?live=1 (dialog) e pela
- * varredura periódica. Magalu fica de fora até a leitura da API ser validada.
+ * varredura periódica. Magalu e OLX ficam de fora até a leitura de status da
+ * API ser validada/implementada.
  * Kill-switch: LISTING_STATUS_SYNC_DISABLED=1 ⇒ Map vazio. Nunca lança.
  *
  * EGRESS/PERF: fetch ML via multiget lean (attributes=id,status), writes via
@@ -163,7 +253,14 @@ export class ListingStatusRefreshService {
         !row.externalListingId.startsWith("PENDING_") &&
         row.marketplaceAccount &&
         row.marketplaceAccount.status === "ACTIVE" &&
-        row.marketplaceAccount.accessToken,
+        row.marketplaceAccount.accessToken &&
+        // Kill-switch: não consulta status ao vivo de plataforma desligada
+        // (cobre o live=1 do dialog, que escapava do kill-switch).
+        !isPlatformDisabled(row.marketplaceAccount.platform) &&
+        // Facebook não tem refresh de token: o long-lived expira em ~60 dias e
+        // depois disso cada rodada do sweep é um 401 garantido. ML e Shopee
+        // ficam de fora desta guarda porque renovam o token adiante.
+        !isExpiredFacebookAccount(row.marketplaceAccount),
     );
     if (eligible.length === 0) return changed;
 
@@ -228,9 +325,28 @@ export class ListingStatusRefreshService {
               ];
             }),
           );
+        } else if (account.platform === "FACEBOOK") {
+          await reloadFreshTokens(account);
+          if (!account.accessToken) return;
+          const retailerIds = [
+            ...new Set(group.map((r) => r.externalListingId)),
+          ];
+          const statusByRetailerId = await getFacebookItemStatuses(
+            account.accessToken,
+            retailerIds,
+            account.fbCatalogId,
+          );
+          rawByExternalId = new Map(
+            group.map((r) => [
+              r.externalListingId,
+              statusByRetailerId.get(r.externalListingId),
+            ]),
+          );
         } else {
           // MAGALU: leitura de status da API ainda não validada (TODO na
-          // MagaluApiService) — sem espelhamento ativo nesta fase.
+          // MagaluApiService) — sem espelhamento ativo nesta fase. OLX: a
+          // leitura de status do anúncio publicado ainda não existe (fase
+          // futura do autoupload) — sem espelhamento ativo.
           return;
         }
 

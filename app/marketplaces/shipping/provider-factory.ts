@@ -21,6 +21,14 @@ export function getShippingProvider(
       return new ShopeeShippingLabelProvider();
     case "MAGALU":
       return new MagaluShippingLabelProvider();
+    case "OLX":
+    case "FACEBOOK":
+      // OLX (autoupload) e Catálogo Meta não têm API de pedido/checkout no
+      // Brasil, logo não emitem etiqueta. Mensagem específica em vez do genérico.
+      throw new ShippingLabelError(
+        "UNSUPPORTED_PLATFORM",
+        `${platform === "OLX" ? "A OLX" : "O Facebook"} não fornece etiqueta de envio: a plataforma não tem pedido/checkout no Brasil. Registre a venda manualmente.`,
+      );
     default:
       throw new ShippingLabelError(
         "UNSUPPORTED_PLATFORM",

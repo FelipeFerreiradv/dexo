@@ -1,4 +1,5 @@
-export type MarketplaceListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+export type MarketplaceListingPlatform =
+  "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 export interface MarketplaceListingLinkInput {
   platform: MarketplaceListingPlatform;
@@ -21,12 +22,16 @@ export const MARKETPLACE_LISTING_PLATFORMS = [
   "MERCADO_LIVRE",
   "SHOPEE",
   "MAGALU",
+  "OLX",
+  "FACEBOOK",
 ] as const;
 
 const PLATFORM_LABELS: Record<MarketplaceListingPlatform, string> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
   MAGALU: "Magalu",
+  OLX: "OLX",
+  FACEBOOK: "Facebook",
 };
 
 function normalizeText(value?: string | null) {
@@ -143,6 +148,28 @@ export function resolveMarketplaceListingLinkState(
   // externalListingId. Quando há link, ele vem em `permalink` (tratado acima).
   // Sem permalink, degrada graciosamente — nunca cai na lógica da Shopee.
   if (listing.platform === "MAGALU") {
+    return {
+      href: null,
+      isOpenable: false,
+      disabledReason: `Anuncio do ${label} ainda nao tem link disponivel.`,
+    };
+  }
+
+  // OLX: a URL pública (permalink) vem na consulta de status (tratada acima
+  // quando presente). Sem permalink não é derivável do externalListingId (SKU),
+  // então degrada como o Magalu — nunca cai na lógica da Shopee.
+  if (listing.platform === "OLX") {
+    return {
+      href: null,
+      isOpenable: false,
+      disabledReason: `Anuncio do ${label} ainda nao tem link disponivel.`,
+    };
+  }
+
+  // Facebook: o `link` do item de catálogo (página do produto) vem em
+  // `permalink` (tratado acima quando presente). Sem ele não é derivável do
+  // retailer_id (SKU), então degrada como OLX/Magalu — nunca cai na Shopee.
+  if (listing.platform === "FACEBOOK") {
     return {
       href: null,
       isOpenable: false,

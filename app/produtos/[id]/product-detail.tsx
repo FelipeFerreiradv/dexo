@@ -107,7 +107,13 @@ interface ProductData {
   imageUrls?: string[];
   scrapId?: string;
   createdFromMarketplace?: boolean;
-  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | null;
+  originPlatform?:
+    | "MERCADO_LIVRE"
+    | "SHOPEE"
+    | "MAGALU"
+    | "OLX"
+    | "FACEBOOK"
+    | null;
   compatibilities?: Compatibility[];
 }
 
@@ -308,7 +314,11 @@ export function ProductDetail({ productId }: { productId: string }) {
                     ? "Shopee"
                     : product.originPlatform === "MAGALU"
                       ? "Magalu"
-                      : "Mercado Livre"}
+                      : product.originPlatform === "OLX"
+                        ? "OLX"
+                        : product.originPlatform === "FACEBOOK"
+                          ? "Facebook"
+                          : "Mercado Livre"}
                 </Badge>
               )}
               {product.quality && (

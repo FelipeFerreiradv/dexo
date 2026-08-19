@@ -8,6 +8,7 @@ import CategoryRepository from "../marketplaces/repositories/category.repository
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { blockCollaborator } from "../middlewares/no-collaborator.middleware";
 import { Platform } from "@prisma/client";
+import { isOlxDisabled, isFacebookDisabled } from "../lib/integration-flags";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
@@ -19,6 +20,7 @@ import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.servic
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { OlxOAuthService } from "../marketplaces/services/olx-oauth.service";
 import { MagaluWebhookSignatureService } from "../marketplaces/services/magalu-webhook-signature.service";
 import { ShopeeWebhookSignatureService } from "../marketplaces/services/shopee-webhook-signature.service";
 import { SHOPEE_CONSTANTS } from "../marketplaces/shopee/shopee-constants";
@@ -26,6 +28,10 @@ import { Readable } from "stream";
 import { MAGALU_CONSTANTS } from "../marketplaces/magalu/magalu-constants";
 import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-order.types";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import { OlxCategoryResolutionService } from "../marketplaces/services/olx-category-resolution.service";
+import { FacebookCategoryResolutionService } from "../marketplaces/services/facebook-category-resolution.service";
+import { OLX_CATEGORY_MAP } from "../marketplaces/olx/olx-category-map";
+import { FACEBOOK_CATEGORY_MAP } from "../marketplaces/facebook/facebook-category-map";
 import { getVehicleRootSet } from "../marketplaces/services/category-resolution.service";
 import {
   ML_BLOCKED_BRANCHES,
@@ -131,6 +137,63 @@ async function resolveMlAccountForCompat(
  * Rotas para gerenciar conexÃµes com marketplaces
  */
 export async function marketplaceRoutes(app: FastifyInstance) {
+  // Kill-switch de runtime: bloqueia todas as rotas /marketplace/olx/* e
+  // /marketplace/facebook/* quando OLX_INTEGRATION_DISABLED / FACEBOOK_INTEGRATION_DISABLED=1.
+  // Encapsulado neste plugin (prefixo /marketplace), então só afeta estas rotas.
+  //
+  // ESCOPO: o kill-switch para de MEXER NOS ANÚNCIOS, não de administrar a conta.
+  //
+  // Bloquear tudo sob /marketplace/olx/* deixava a integração pausada
+  // indistinguível de quebrada — e, pior, impedia justamente o que se precisa
+  // fazer com ela pausada: conectar/reconectar a conta e preencher os dados do
+  // vendedor ANTES de ligar. Numa reautorização em produção, o operador ficaria
+  // obrigado a DESLIGAR o kill-switch para conseguir reconectar.
+  //
+  // Bloqueado: `/sync` e `/import` — publicar, empurrar estoque, importar
+  // catálogo. Liberado: leitura local, dados do vendedor, e o OAuth
+  // (connect/disconnect), que só troca token e escreve no NOSSO banco — não
+  // toca em nenhum anúncio do vendedor.
+  //
+  // Este hook é camada extra, não a única: a publicação nunca passou por aqui
+  // (vive em /listings/*, filtrada por isPlatformDisabled em listing.routes.ts
+  // :946/:1274/:1521 e product.routes.ts:940/948) e pausar/reativar tem guarda
+  // própria em ListingUseCase.updateListingStatus.
+  const mexeNosAnunciosDoCanal = (metodo: string, path: string): boolean => {
+    // Toda leitura destas rotas é do banco local — nunca sai chamada.
+    if (metodo === "GET") return false;
+    // Publicar/sincronizar estoque e importar catálogo: é o que o kill-switch
+    // existe para parar.
+    if (/\/sync(\/|$)/.test(path)) return true;
+    if (/\/import(\/|$)/.test(path)) return true;
+    // O resto (OAuth, dados do vendedor, desconectar) é CONFIGURAÇÃO: mexe só
+    // no nosso banco e no vínculo da conta, nunca nos anúncios do vendedor.
+    return false;
+  };
+
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.url.split("?")[0];
+    const metodo = request.method.toUpperCase();
+
+    const ehOlx =
+      path === "/marketplace/olx" || path.startsWith("/marketplace/olx/");
+    const ehFacebook =
+      path === "/marketplace/facebook" ||
+      path.startsWith("/marketplace/facebook/");
+
+    if ((isOlxDisabled() && ehOlx) || (isFacebookDisabled() && ehFacebook)) {
+      if (!mexeNosAnunciosDoCanal(metodo, path)) return;
+
+      const nome = ehOlx ? "OLX" : "Facebook";
+      const flag = ehOlx
+        ? "OLX_INTEGRATION_DISABLED"
+        : "FACEBOOK_INTEGRATION_DISABLED";
+      return reply.code(503).send({
+        error: "Integração pausada",
+        message: `${nome} pausado por kill-switch (${flag}). Conectar a conta e configurar seguem liberados; publicar, sincronizar estoque e importar estão suspensos.`,
+      });
+    }
+  });
+
   app.get("/ml/cli-callback", async (request, reply) => {
     const q = (request.query as Record<string, string | undefined>) ?? {};
     const code = q.code ?? "";
@@ -2956,6 +3019,984 @@ small{color:#666}</style></head><body>
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao sincronizar estoque do produto na Magalu",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  // ====================================================================
+  // ROTAS OLX (espelham o padrão /magalu/*). Aditivas, atrás da flag
+  // NEXT_PUBLIC_OLX_INTEGRATION_ENABLED. SEM webhook e SEM import de pedidos
+  // (a OLX não fornece) — a baixa de estoque é unidirecional ERP→OLX.
+  // ====================================================================
+
+  /** POST /marketplace/olx/auth — inicia o OAuth da OLX. */
+  app.post<{
+    Body: { accountEmail?: string };
+    Reply: { authUrl: string; state: string };
+  }>(
+    "/olx/auth",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+
+        // A OLX não expõe mais quem é o dono do token (basic_user_info fora do
+        // ar), então a identidade da conta vem declarada aqui. Validar ANTES do
+        // consentimento evita mandar o vendedor fazer todo o login para só
+        // então descobrir que a conexão não fecha.
+        const accountEmail = (request.body as { accountEmail?: string } | null)
+          ?.accountEmail;
+        if (!OlxOAuthService.isValidAccountEmail(accountEmail)) {
+          return reply.status(400).send({
+            error: "E-mail da conta OLX inválido",
+            message:
+              "Informe o e-mail da conta da OLX que você vai autorizar. Ele identifica a conta e impede que a mesma conta seja vinculada duas vezes.",
+          });
+        }
+
+        const { authUrl, state } = MarketplaceUseCase.initiateOlxOAuth(
+          userId,
+          accountEmail,
+        );
+        return reply.send({ authUrl, state });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar autenticação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/olx/callback?code=...&state=...
+   * Callback OAuth da OLX. Não requer auth prévia — userId vem do state.
+   */
+  app.get<{
+    Querystring: { code?: string; state?: string };
+  }>("/olx/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+    const acceptHeader = ((request.headers.accept as string) || "").toString();
+    const isBrowserRedirect = acceptHeader.includes("text/html");
+    const frontendUrl =
+      process.env.NEXTAUTH_URL ||
+      process.env.CORS_ORIGIN ||
+      "http://localhost:3000";
+
+    try {
+      const code = (request.query as any).code as string | undefined;
+      const state = (request.query as any).state as string | undefined;
+
+      if (!code || !state) {
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/olx/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+          );
+        }
+        return reply.status(400).send({
+          error: "Parâmetros inválidos",
+          message: "code e state são obrigatórios",
+        });
+      }
+
+      const userId = request.user?.dataOwnerId;
+      const account = await MarketplaceUseCase.handleOlxOAuthCallback({
+        code,
+        state,
+        userId,
+      });
+
+      if (isBrowserRedirect) {
+        return reply.redirect(
+          `${frontendUrl}/integracoes/olx/callback?result=success`,
+        );
+      }
+
+      return reply.send({
+        success: true,
+        message: "Conta conectada com sucesso",
+        account: {
+          id: account.id,
+          platform: account.platform,
+          status: account.status,
+          createdAt: account.createdAt,
+        },
+      });
+    } catch (error) {
+      if (isBrowserRedirect) {
+        const errorMsg =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        return reply.redirect(
+          `${frontendUrl}/integracoes/olx/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+        );
+      }
+      return reply.status(500).send({
+        error: "Erro ao processar callback",
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
+  });
+
+  /** GET /marketplace/olx/status */
+  app.get(
+    "/olx/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const statusData = await MarketplaceUseCase.getOlxAccountStatus(userId);
+        return reply.send({
+          connected: statusData.connected,
+          platform: Platform.OLX,
+          status: statusData.account?.status,
+          message: statusData.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao obter status",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/olx/accounts — lista contas OLX do usuário. */
+  app.get(
+    "/olx/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.OLX,
+        );
+        // Não devolve accessToken/refreshToken crus ao browser (na OLX o token
+        // não expira → vazamento é permanente). A UI só precisa dos metadados.
+        const safe = accounts.map(
+          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        );
+        return reply.send({ accounts: safe });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** PATCH /marketplace/olx/accounts/:id — dados do vendedor (telefone/CEP). */
+  app.patch<{ Params: { id: string } }>(
+    "/olx/accounts/:id",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const body = (request.body ?? {}) as {
+          olxSellerPhone?: string | null;
+          olxSellerZipcode?: string | null;
+        };
+        const count = await MarketplaceRepository.updateSellerFields(
+          id,
+          userId,
+          Platform.OLX,
+          {
+            olxSellerPhone: body.olxSellerPhone ?? null,
+            olxSellerZipcode: body.olxSellerZipcode ?? null,
+          },
+        );
+        if (count === 0) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        return reply.send({ success: true });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao salvar dados do vendedor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** DELETE /marketplace/olx — desconecta conta (aceita accountId). */
+  app.delete<{ Reply: { success: boolean; message: string } }>(
+    "/olx",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        await MarketplaceUseCase.disconnectAccount(
+          userId,
+          Platform.OLX,
+          accountId,
+        );
+
+        return reply.send({
+          success: true,
+          message: "Conta OLX desconectada com sucesso",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao desconectar conta",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/olx/listings — vínculos produto↔anúncio da OLX. */
+  app.get(
+    "/olx/listings",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.OLX,
+                },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.OLX,
+              );
+
+        if (!accounts || accounts.length === 0) {
+          return reply.status(404).send({
+            error: "Conta não encontrada",
+            message: "Conecte sua conta da OLX primeiro",
+          });
+        }
+
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                olxListId: true,
+                permalink: true,
+                status: true,
+                lastError: true,
+                createdAt: true,
+                product: { select: { name: true, sku: true, stock: true } },
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+
+        const listings = listingsArrays.flat();
+        return reply.send({ success: true, count: listings.length, listings });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar anúncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/olx/sync — sincroniza estoque de todos os anúncios OLX. */
+  app.post(
+    "/olx/sync",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        // Conta selecionada no seletor da aba — MESMO bloco de /ml/sync. Sem
+        // ele o dropdown não tinha efeito: com N contas OLX conectadas, pedir
+        // a sincronização de UMA varria as N, multiplicando por N as leituras
+        // do banco e as chamadas à OLX. Ausente ⇒ `undefined` ⇒ varre todas,
+        // que é o comportamento de hoje e o do item "Todas as contas".
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        void (async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.OLX,
+              accountIds,
+            );
+            console.log(
+              `[olx/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (e) {
+            console.error("[olx/sync] Background sync error:", e);
+          }
+        })();
+        return reply.status(202).send({
+          success: true,
+          message: "Sincronização de estoque OLX iniciada",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque na OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/olx/sync/:productId — sincroniza um produto específico. */
+  app.post<{ Params: { productId: string } }>(
+    "/olx/sync/:productId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { productId } = request.params as { productId: string };
+
+        // Posse: sem isto qualquer usuário autenticado sincronizaria o produto de
+        // outro (chamada outbound + vazamento de resultado). syncProductStock não
+        // escopa por usuário, então a validação é aqui.
+        const owned = await prisma.product.findFirst({
+          where: { id: productId, userId },
+          select: { id: true },
+        });
+        if (!owned) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+            message: "Produto não encontrado ou não pertence a este usuário.",
+          });
+        }
+
+        const result = await SyncUseCase.syncProductStock(productId);
+        const failed = result.filter((r) => !r.success);
+
+        await SystemLogService.logSyncComplete(userId, "PRODUCT_SYNC", "OLX", {
+          productId,
+          successful: result.length - failed.length,
+          failed: failed.length,
+        });
+
+        return reply.send({ success: failed.length === 0, results: result });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque do produto na OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/olx/categories?search=<termo>
+   * Lista as (sub)categorias de autopeças OLX (tipo de veículo). Offline — o
+   * de-para é curado no código (OLX_CATEGORY_MAP). `search` filtra por rótulo.
+   */
+  app.get(
+    "/olx/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const search = (
+          ((request.query as any)?.search as string | undefined) ?? ""
+        )
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .trim();
+        const seen = new Set<number>();
+        const labelById = new Map<number, string>();
+        for (const [rawKey, id] of Object.entries(OLX_CATEGORY_MAP)) {
+          if (!labelById.has(id)) labelById.set(id, rawKey);
+        }
+        const categories = Object.values(OLX_CATEGORY_MAP)
+          .filter((id) => {
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          })
+          .map((id) => ({
+            id: String(id),
+            value: labelById.get(id) ?? String(id),
+          }))
+          .filter((c) => {
+            if (!search) return true;
+            const v = c.value
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[̀-ͯ]/g, "");
+            return v.includes(search) || c.id.includes(search);
+          });
+        reply.header("Cache-Control", "private, max-age=600");
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/olx/category-suggest?name=<nome do produto>
+   * Sugere a categoria OLX (mesma resolução do create) — id inteiro do veículo.
+   */
+  app.get(
+    "/olx/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const name = (request.query as any)?.name as string | undefined;
+      if (!name || !name.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'name' é obrigatório" });
+      }
+      try {
+        const categoryId = OlxCategoryResolutionService.resolveCategoryId({
+          name,
+        });
+        return reply.send({
+          categoryId: categoryId != null ? String(categoryId) : null,
+          path: null,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categoria OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  // ====================================================================
+  // ROTAS FACEBOOK/META (espelham o padrão /olx/*). Aditivas, atrás da flag
+  // NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED. SEM webhook e SEM import de
+  // pedidos (checkout fora da plataforma) — baixa de estoque unidirecional
+  // ERP→Meta (UPDATE availability).
+  // ====================================================================
+
+  /** POST /marketplace/facebook/auth — inicia o OAuth do Facebook. */
+  app.post<{ Reply: { authUrl: string; state: string } }>(
+    "/facebook/auth",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { authUrl, state } =
+          MarketplaceUseCase.initiateFacebookOAuth(userId);
+        return reply.send({ authUrl, state });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar autenticação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/callback?code=...&state=...
+   * Callback OAuth do Facebook. Não requer auth prévia — userId vem do state.
+   */
+  app.get<{
+    Querystring: { code?: string; state?: string };
+  }>(
+    "/facebook/callback",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const acceptHeader = (
+        (request.headers.accept as string) || ""
+      ).toString();
+      const isBrowserRedirect = acceptHeader.includes("text/html");
+      const frontendUrl =
+        process.env.NEXTAUTH_URL ||
+        process.env.CORS_ORIGIN ||
+        "http://localhost:3000";
+
+      try {
+        const code = (request.query as any).code as string | undefined;
+        const state = (request.query as any).state as string | undefined;
+
+        if (!code || !state) {
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/facebook/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+            );
+          }
+          return reply.status(400).send({
+            error: "Parâmetros inválidos",
+            message: "code e state são obrigatórios",
+          });
+        }
+
+        const userId = request.user?.dataOwnerId;
+        const account = await MarketplaceUseCase.handleFacebookOAuthCallback({
+          code,
+          state,
+          userId,
+        });
+
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/facebook/callback?result=success`,
+          );
+        }
+
+        return reply.send({
+          success: true,
+          message: "Conta conectada com sucesso",
+          account: {
+            id: account.id,
+            platform: account.platform,
+            status: account.status,
+            createdAt: account.createdAt,
+          },
+        });
+      } catch (error) {
+        if (isBrowserRedirect) {
+          const errorMsg =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          return reply.redirect(
+            `${frontendUrl}/integracoes/facebook/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+          );
+        }
+        return reply.status(500).send({
+          error: "Erro ao processar callback",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/facebook/status */
+  app.get(
+    "/facebook/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const statusData =
+          await MarketplaceUseCase.getFacebookAccountStatus(userId);
+        return reply.send({
+          connected: statusData.connected,
+          platform: Platform.FACEBOOK,
+          status: statusData.account?.status,
+          message: statusData.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao obter status",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/facebook/accounts — lista contas Facebook do usuário. */
+  app.get(
+    "/facebook/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.FACEBOOK,
+        );
+        // Não devolve accessToken/refreshToken crus ao browser.
+        const safe = accounts.map(
+          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        );
+        return reply.send({ accounts: safe });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** PATCH /marketplace/facebook/accounts/:id — catálogo/URL base do produto. */
+  app.patch<{ Params: { id: string } }>(
+    "/facebook/accounts/:id",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const body = (request.body ?? {}) as {
+          fbCatalogId?: string | null;
+          fbProductUrlBase?: string | null;
+        };
+        const count = await MarketplaceRepository.updateSellerFields(
+          id,
+          userId,
+          Platform.FACEBOOK,
+          {
+            fbCatalogId: body.fbCatalogId ?? null,
+            fbProductUrlBase: body.fbProductUrlBase ?? null,
+          },
+        );
+        if (count === 0) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        return reply.send({ success: true });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao salvar dados do catálogo",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** DELETE /marketplace/facebook — desconecta conta (aceita accountId). */
+  app.delete<{ Reply: { success: boolean; message: string } }>(
+    "/facebook",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        await MarketplaceUseCase.disconnectAccount(
+          userId,
+          Platform.FACEBOOK,
+          accountId,
+        );
+
+        return reply.send({
+          success: true,
+          message: "Conta Facebook desconectada com sucesso",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao desconectar conta",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/facebook/listings — vínculos produto↔item do catálogo. */
+  app.get(
+    "/facebook/listings",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.FACEBOOK,
+                },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.FACEBOOK,
+              );
+
+        if (!accounts || accounts.length === 0) {
+          return reply.status(404).send({
+            error: "Conta não encontrada",
+            message: "Conecte sua conta do Facebook primeiro",
+          });
+        }
+
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                fbCatalogItemId: true,
+                permalink: true,
+                status: true,
+                lastError: true,
+                createdAt: true,
+                product: { select: { name: true, sku: true, stock: true } },
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+
+        const listings = listingsArrays.flat();
+        return reply.send({ success: true, count: listings.length, listings });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar anúncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/facebook/import — importa itens do Catálogo Meta de TODAS
+   * as contas ACTIVE do dono e cria+vincula os produtos (dedup por SKU via
+   * núcleo). Responde 202 com importId; a aba faz polling em
+   * GET /facebook/import/:importId. `accountIds`/`accountId` opcional restringe.
+   */
+  app.post(
+    "/facebook/import",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        const job = await SyncUseCase.startFacebookImportJob(userId, accountId);
+
+        return reply.status(202).send({
+          success: true,
+          importId: job.importId,
+          status: job.status,
+          message: job.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar importação do Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/import/:importId — status/resultado do job.
+   */
+  app.get<{ Params: { importId: string } }>(
+    "/facebook/import/:importId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { importId } = request.params as { importId: string };
+        const status = await SyncUseCase.getGenericImportJobStatus(
+          userId,
+          importId,
+        );
+        return reply.send({
+          success: true,
+          importId: status.importId,
+          status: status.status,
+          progress: status.progress,
+          result: status.result,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        const statusCode = /não encontrada|not found/i.test(message)
+          ? 404
+          : 500;
+        return reply.status(statusCode).send({
+          error: "Erro ao consultar importação do Facebook",
+          message,
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/facebook/sync — sincroniza estoque de todos os itens. */
+  app.post(
+    "/facebook/sync",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        // Conta selecionada no seletor da aba — MESMO bloco de /ml/sync. Ver o
+        // comentário em /olx/sync: sem isto o dropdown não tinha efeito e cada
+        // conta extra multiplicava leituras do banco e chamadas à Meta.
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        void (async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.FACEBOOK,
+              accountIds,
+            );
+            console.log(
+              `[facebook/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (e) {
+            console.error("[facebook/sync] Background sync error:", e);
+          }
+        })();
+        return reply.status(202).send({
+          success: true,
+          message: "Sincronização de estoque Facebook iniciada",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque no Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/facebook/sync/:productId — sincroniza um produto. */
+  app.post<{ Params: { productId: string } }>(
+    "/facebook/sync/:productId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { productId } = request.params as { productId: string };
+
+        // Posse: syncProductStock não escopa por usuário → valida aqui p/ não
+        // sincronizar produto de outro tenant.
+        const owned = await prisma.product.findFirst({
+          where: { id: productId, userId },
+          select: { id: true },
+        });
+        if (!owned) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+            message: "Produto não encontrado ou não pertence a este usuário.",
+          });
+        }
+
+        const result = await SyncUseCase.syncProductStock(productId);
+        const failed = result.filter((r) => !r.success);
+
+        await SystemLogService.logSyncComplete(
+          userId,
+          "PRODUCT_SYNC",
+          "FACEBOOK",
+          {
+            productId,
+            successful: result.length - failed.length,
+            failed: failed.length,
+          },
+        );
+
+        return reply.send({ success: failed.length === 0, results: result });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque do produto no Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/categories?search=<termo>
+   * Lista os google_product_category de autopeças do catálogo Meta. Offline — o
+   * de-para é curado no código (FACEBOOK_CATEGORY_MAP). `search` filtra por path.
+   */
+  app.get(
+    "/facebook/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const search = (
+          ((request.query as any)?.search as string | undefined) ?? ""
+        )
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .trim();
+        const seen = new Set<string>();
+        const categories = Object.values(FACEBOOK_CATEGORY_MAP)
+          .filter((path) => {
+            if (seen.has(path)) return false;
+            seen.add(path);
+            return true;
+          })
+          .map((path) => ({ id: path, value: path }))
+          .filter((c) => {
+            if (!search) return true;
+            const v = c.value
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[̀-ͯ]/g, "");
+            return v.includes(search);
+          });
+        reply.header("Cache-Control", "private, max-age=600");
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/category-suggest?name=<nome do produto>
+   * Sugere o google_product_category (mesma resolução offline do create).
+   */
+  app.get(
+    "/facebook/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const name = (request.query as any)?.name as string | undefined;
+      if (!name || !name.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'name' é obrigatório" });
+      }
+      try {
+        const categoryId = FacebookCategoryResolutionService.resolveCategory({
+          name,
+        });
+        return reply.send({ categoryId: categoryId ?? null, path: categoryId });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categoria Facebook",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

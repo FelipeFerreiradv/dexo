@@ -32,6 +32,9 @@ export interface AnunciosBreakdown {
   ml: number;
   shopee: number;
   magalu: number;
+  // Opcionais p/ não quebrar literais externos (ex.: fallback em team.routes.ts).
+  olx?: number;
+  facebook?: number;
   outro: number;
 }
 
@@ -51,6 +54,8 @@ export interface ProductivityTimeseriesPoint {
   ml: number;
   shopee: number;
   magalu: number;
+  olx: number;
+  facebook: number;
 }
 
 export interface ProductivityResult {
@@ -105,7 +110,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 function newAnuncios(): AnunciosBreakdown {
-  return { total: 0, ml: 0, shopee: 0, magalu: 0, outro: 0 };
+  return { total: 0, ml: 0, shopee: 0, magalu: 0, olx: 0, facebook: 0, outro: 0 };
 }
 
 function toISODate(d: Date): string {
@@ -192,6 +197,8 @@ function buildTimeseries(
       ml: b?.ml ?? 0,
       shopee: b?.shopee ?? 0,
       magalu: b?.magalu ?? 0,
+      olx: b?.olx ?? 0,
+      facebook: b?.facebook ?? 0,
     });
     cur.setUTCDate(cur.getUTCDate() + 1);
     guard++;
@@ -234,7 +241,15 @@ export function aggregateTeamProductivity(
 
     let bucket = dayMap.get(g.day);
     if (!bucket) {
-      bucket = { date: g.day, produtos: 0, ml: 0, shopee: 0, magalu: 0 };
+      bucket = {
+        date: g.day,
+        produtos: 0,
+        ml: 0,
+        shopee: 0,
+        magalu: 0,
+        olx: 0,
+        facebook: 0,
+      };
       dayMap.set(g.day, bucket);
     }
 
@@ -261,6 +276,14 @@ export function aggregateTeamProductivity(
       totals.anuncios.magalu += cnt;
       c.anuncios.magalu += cnt;
       bucket.magalu += cnt;
+    } else if (platform === "OLX") {
+      totals.anuncios.olx = (totals.anuncios.olx ?? 0) + cnt;
+      c.anuncios.olx = (c.anuncios.olx ?? 0) + cnt;
+      bucket.olx += cnt;
+    } else if (platform === "FACEBOOK") {
+      totals.anuncios.facebook = (totals.anuncios.facebook ?? 0) + cnt;
+      c.anuncios.facebook = (c.anuncios.facebook ?? 0) + cnt;
+      bucket.facebook += cnt;
     } else {
       totals.anuncios.outro += cnt;
       c.anuncios.outro += cnt;

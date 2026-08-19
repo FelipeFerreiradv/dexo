@@ -1,8 +1,14 @@
+import { Platform } from "@prisma/client";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MLApiService } from "./ml-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MLOAuthService } from "./ml-oauth.service";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
+import {
+  classifyFacebookRemoveError,
+  classifyOlxRemoveError,
+} from "./listing-removal.helpers";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -20,7 +26,8 @@ const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
 // Pre-compiled regex for Shopee terminal error detection
-const SHOPEE_TERMINAL_RE = /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida|n[ãa]o foi poss[ií]vel obter os atributos da categoria/i;
+const SHOPEE_TERMINAL_RE =
+  /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida|n[ãa]o foi poss[ií]vel obter os atributos da categoria/i;
 
 export class ListingRetryService {
   private static running = false;
@@ -148,8 +155,11 @@ export class ListingRetryService {
                 Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
               ];
             await ListingRepository.incrementRetryAttempts(cand.id, {
-              lastError: (isTerminal ? "[TERMINAL] " : "") + msg.substring(0, 490),
-              nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+              lastError:
+                (isTerminal ? "[TERMINAL] " : "") + msg.substring(0, 490),
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
               retryEnabled: shouldRetry,
             });
             if (isTerminal) {
@@ -160,6 +170,146 @@ export class ListingRetryService {
           }
           continue;
         }
+        // OLX e Facebook: delegar ao create da própria plataforma, no mesmo
+        // desenho do branch da Shopee acima. Antes destes ramos, os dois caíam
+        // no guard abaixo e tinham o retry DESLIGADO — ou seja, uma falha
+        // transitória (5xx da OLX, rate limit da Meta) matava o anúncio na
+        // primeira tentativa e ele nunca mais era republicado.
+        // Não replicar a condição `startsWith("PENDING_")`: OLX/Facebook não
+        // usam placeholder — o externalListingId deles já é o SKU.
+        if (
+          account?.platform === Platform.OLX ||
+          account?.platform === Platform.FACEBOOK
+        ) {
+          const ehOlx = account.platform === Platform.OLX;
+          const nome = ehOlx ? "OLX" : "Facebook";
+
+          // Kill-switch: com a integração pausada, este cron NÃO pode continuar
+          // publicando. Reagenda sem consumir tentativa — quando o operador
+          // religar, o candidato volta à fila no estado em que estava.
+          if (isPlatformDisabled(account.platform)) {
+            await ListingRepository.incrementRetryAttempts(
+              cand.id,
+              {
+                nextRetryAt: new Date(Date.now() + 30 * 60 * 1000),
+                lastError: `${nome} pausado por kill-switch — retry adiado`,
+              },
+              // O comentário acima prometia "sem consumir tentativa" e o código
+              // fazia o contrário: com o cron a cada 30 min, 2h30 de pausa
+              // esgotavam as 5 tentativas e o anúncio saía da fila sem NUNCA
+              // ter sido publicado.
+              { increment: false },
+            );
+            continue;
+          }
+
+          try {
+            const { ListingUseCase } =
+              await import("../usecases/listing.usercase");
+            const result = ehOlx
+              ? await ListingUseCase.createOlxListing(
+                  account?.userId || "",
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account?.id,
+                )
+              : await ListingUseCase.createFacebookListing(
+                  account?.userId || "",
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account?.id,
+                );
+            if (!result.success) {
+              // TETO DE TENTATIVAS.
+              //
+              // Diferente do branch da Shopee, createOlxListing e
+              // createFacebookListing NÃO lançam: devolvem { success:false } e o
+              // catch deles regrava `retryEnabled: true` com nextRetryAt de 60s.
+              // Sem o bloco abaixo, uma recusa DEFINITIVA (preço suspeito, sem
+              // vaga no plano, imagem pequena) voltaria a ser publicada a cada
+              // 60 segundos, para sempre — ~1.440 chamadas/dia por anúncio.
+              //
+              // Classifica com o mesmo vocabulário já usado na remoção, para
+              // erro permanente sair da fila na primeira vez.
+              // ⚠️ O Error precisa carregar os SINAIS, não só o texto.
+              //
+              // Os classificadores decidem permanente vs. transitório lendo
+              // `status` (5xx/429), `responseData.statusCode` (OLX) e
+              // `responseData.error.code` (rate limit da Graph: 4/17/32/613),
+              // além de `code` para ECONNRESET/ETIMEDOUT. Um `new Error(msg)`
+              // nu deixa todos eles `undefined` e o DEFAULT dos dois
+              // classificadores é "permanent" — então um 503 da OLX ou um rate
+              // limit da Meta tirava o anúncio da fila para SEMPRE, que é o
+              // oposto do que este bloco existe para fazer. Só as poucas
+              // substrings ("timeout", "socket hang up") escapavam.
+              const msg = result.error ?? "Erro desconhecido";
+              const erroRico = new Error(msg);
+              (erroRico as any).status = result.errorStatus;
+              (erroRico as any).responseData = result.errorResponseData;
+              (erroRico as any).code = result.errorCode;
+              const classificacao = ehOlx
+                ? classifyOlxRemoveError(erroRico)
+                : classifyFacebookRemoveError(erroRico);
+              const ehPermanente = classificacao.kind === "permanent";
+              const attempts = (cand.retryAttempts || 0) + 1;
+              const shouldRetry = !ehPermanente && attempts < MAX_ATTEMPTS;
+              const nextDelay =
+                BACKOFF_SECONDS[
+                  Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+                ];
+              await ListingRepository.incrementRetryAttempts(cand.id, {
+                lastError:
+                  (ehPermanente ? "[TERMINAL] " : "") + msg.substring(0, 490),
+                nextRetryAt: shouldRetry
+                  ? new Date(Date.now() + nextDelay * 1000)
+                  : null,
+                retryEnabled: shouldRetry,
+              });
+              console.warn(
+                `[ListingRetryService] retry ${nome} falhou para ${cand.id} (tentativa ${attempts}/${MAX_ATTEMPTS}${ehPermanente ? ", TERMINAL" : ""}): ${msg}`,
+              );
+            }
+          } catch (err) {
+            const msg = errMsg(err);
+            console.error(
+              `[ListingRetryService] exceção no retry ${nome} para ${cand.id}:`,
+              msg,
+            );
+            const attempts = (cand.retryAttempts || 0) + 1;
+            const shouldRetry = attempts < MAX_ATTEMPTS;
+            const nextDelay =
+              BACKOFF_SECONDS[
+                Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+              ];
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              lastError: msg.substring(0, 490),
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
+              retryEnabled: shouldRetry,
+            });
+          }
+          continue;
+        }
+
+        // Só MERCADO_LIVRE segue no caminho ML: Magalu não pode enviar
+        // seu token para api.mercadolibre.com (vazamento de token).
+        // DESABILITA o retry ao pular: este é o único publish-retry e
+        // claimRetryCandidate é agnóstico de plataforma — sem desligar, um
+        // candidato Magalu/OLX/FB é reivindicado (write no banco) a cada ciclo,
+        // p/ sempre, e nunca sai da fila.
+        if (account?.platform && account.platform !== Platform.MERCADO_LIVRE) {
+          console.log(
+            `[ListingRetryService] skipping ${cand.id} (plataforma ${account.platform} não suportada pelo retry ML) — retry desabilitado`,
+          );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            retryEnabled: false,
+            nextRetryAt: null,
+            lastError: "[TERMINAL] plataforma sem retry",
+          });
+          continue;
+        }
+
         if (!account || !account.accessToken) {
           console.log(
             `[ListingRetryService] skipping ${cand.id} (no account/token)`,
@@ -281,11 +431,12 @@ export class ListingRetryService {
         const hasValidStock = Number.isFinite(stockNum) && stockNum > 0;
         const hasValidPrice = Number.isFinite(priceNum) && priceNum > 0;
         if (!hasValidStock || !hasValidPrice) {
-          const reason = !hasValidStock && !hasValidPrice
-            ? "sem estoque e sem preço"
-            : !hasValidStock
-              ? "sem estoque (stock=0)"
-              : "sem preço (price=0)";
+          const reason =
+            !hasValidStock && !hasValidPrice
+              ? "sem estoque e sem preço"
+              : !hasValidStock
+                ? "sem estoque (stock=0)"
+                : "sem preço (price=0)";
           console.warn(
             `[ListingRetryService] skipping ${cand.id} permanently — produto ${reason}`,
           );

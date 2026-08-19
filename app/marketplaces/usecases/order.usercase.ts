@@ -4035,7 +4035,7 @@ export class OrderUseCase {
   static async processOrderCancellation(params: {
     marketplaceAccountId: string;
     externalOrderId: string;
-    platformLabel: "ML" | "Shopee" | "Magalu";
+    platformLabel: "ML" | "Shopee" | "Magalu" | "OLX" | "FACEBOOK";
     logPrefix?: string;
   }): Promise<OrderCancellationResult> {
     const { marketplaceAccountId, externalOrderId, platformLabel } = params;
@@ -4321,7 +4321,7 @@ export class OrderUseCase {
   static async processOrderUncancellation(params: {
     marketplaceAccountId: string;
     externalOrderId: string;
-    platformLabel: "ML" | "Shopee" | "Magalu";
+    platformLabel: "ML" | "Shopee" | "Magalu" | "OLX" | "FACEBOOK";
     targetStatus: "PAID" | "SHIPPED" | "DELIVERED";
     logPrefix?: string;
   }): Promise<OrderUncancellationResult> {

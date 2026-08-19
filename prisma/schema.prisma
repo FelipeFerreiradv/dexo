@@ -167,6 +167,17 @@ model Product {
   magaluCategoryId       String?
   magaluCategorySource   String?
   magaluCategoryChosenAt DateTime?
+  // Categoria OLX (código de VEÍCULO do autoupload: 2101 carros, 2103 motos —
+  // o tipo de peça viaja em `params`, não aqui). Mesmo trio das demais: a
+  // escolha do operador vira memória do produto, e não some ao republicar nem
+  // ao publicar numa segunda conta.
+  olxCategoryId          String?
+  olxCategorySource      String?
+  olxCategoryChosenAt    DateTime?
+  // Categoria Facebook (google_product_category do Commerce Catalog).
+  fbCategoryId           String?
+  fbCategorySource       String?
+  fbCategoryChosenAt     DateTime?
   locationId             String?
   scrapId                String?
   attributes             Json?
@@ -334,6 +345,13 @@ model MarketplaceAccount {
   // Multi-CNPJ: CNPJ emissor vinculado a esta conta (CompanyFiscalConfig.id,
   // scalar sem FK — padrão do módulo fiscal). NULL = usa o CNPJ padrão do tenant.
   companyFiscalConfigId       String?
+  // Dados de vendedor POR CONTA (multi-tenant). NULL = usa o fallback do .env,
+  // então é aditivo e não muda nada para contas existentes. OLX exige telefone/CEP
+  // do vendedor em cada anúncio; Facebook precisa do catálogo e da URL base do item.
+  olxSellerPhone              String?
+  olxSellerZipcode            String?
+  fbCatalogId                 String?
+  fbProductUrlBase            String?
   user                        User                  @relation(fields: [userId], references: [id])
   orders                      Order[]
   listings                    ProductListing[]
@@ -445,6 +463,21 @@ model ProductListing {
   compatSyncedAt       DateTime?
   compatDiagnostics    Json?
 
+  // OLX autoupload: `list_id` é o id REAL do anúncio na OLX (≠ externalListingId,
+  // que guardamos como o SKU/`id` estável enviado no ad_list). Devolvido só na
+  // consulta de status quando status="accepted". A `url`/permalink vai em
+  // `permalink`. Só populado para listings da plataforma OLX.
+  olxListId            String?
+
+  // Facebook/Meta Commerce Catalog: id numérico do item no catálogo.
+  // ATENÇÃO: NÃO vem no items_batch — a publicação recebe apenas `handles`.
+  // O id só aparece na LEITURA (GET /{catalog_id}/products), então quem preenche
+  // esta coluna é o import de anúncios, não o create.
+  // O `retailer_id` enviado ao catálogo = o SKU, guardado em
+  // `externalListingId`; o permalink (quando houver) vai em `permalink`. Só
+  // populado para listings da plataforma FACEBOOK.
+  fbCatalogItemId      String?
+
   // Override fields: quando preenchidos, sobrescrevem o valor do produto
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é
@@ -459,6 +492,8 @@ model ProductListing {
   categoryOverride        String?
   mlCategoryOverride      String?
   shopeeCategoryOverride  String?
+  olxCategoryOverride     String?
+  fbCategoryOverride      String?
   partNumberOverride      String?
   qualityOverride         String?
   heightCmOverride        Int?
@@ -854,6 +889,8 @@ enum Platform {
   MERCADO_LIVRE
   SHOPEE
   MAGALU
+  OLX
+  FACEBOOK
 }
 
 enum AccountStatus {

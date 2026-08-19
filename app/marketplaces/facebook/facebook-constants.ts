@@ -1,0 +1,149 @@
+// Constantes da integração Facebook/Meta (Commerce Catalog via Graph API).
+// Espelha o padrão de olx-constants.ts + whatsapp-constants.ts. A integração
+// inteira fica atrás da flag NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED; estas
+// constantes só são exercitadas quando a flag está ligada e as FACEBOOK_* env
+// vars estão presentes.
+//
+// Caminho ESCOLHIDO: Meta Commerce / Catálogo (FB & Instagram Shops). O Facebook
+// NÃO tem API pública de Marketplace clássico (Partner API é invite-only). O
+// produto vira ITEM DE CATÁLOGO, não anúncio de Marketplace.
+//
+// Diferenças-chave vs. OLX (moldam o desenho):
+//   - API = Graph Catalog Batch: PUT/POST /{catalog_id}/items_batch, síncrono em
+//     lote (requests[]), item endereçado por `retailer_id` (= SKU). Não é
+//     autoupload async com poll de token (mas há check_batch_request_status).
+//   - OAuth = Meta Graph: token EXPIRA (~60d). Troca short-lived → long-lived
+//     (grant_type=fb_exchange_token) e salva `expiresAt` REAL. Sem refresh
+//     endpoint → re-OAuth quando expira (enxuto como a OLX, sem cron/mutex).
+//   - Estoque zero = UPDATE availability='out of stock' (item PERMANECE no
+//     catálogo), refill = 'in stock'. NÃO deleta/reinsere como a OLX. DELETE só
+//     no desvínculo real (removeFacebookListing).
+//   - Token vai no header Authorization: Bearer (Graph aceita), não no corpo.
+
+import { createHmac } from "crypto";
+
+export const FACEBOOK_CONSTANTS = {
+  // Graph API (troca de token, /me, items_batch). Versão fixada por constante
+  // (mesma do WhatsApp: v25.0). Override por env para bump sem redeploy.
+  GRAPH_BASE_URL:
+    process.env.FACEBOOK_GRAPH_BASE_URL || "https://graph.facebook.com",
+  API_VERSION: process.env.FACEBOOK_API_VERSION || "v25.0",
+
+  // Host do DIÁLOGO de consentimento OAuth (≠ graph.facebook.com). O consent do
+  // usuário mora em www.facebook.com/{version}/dialog/oauth.
+  DIALOG_BASE_URL:
+    process.env.FACEBOOK_DIALOG_BASE_URL || "https://www.facebook.com",
+
+  // App Meta (tipo Business). Mesmo modelo do app que o WhatsApp já usa.
+  APP_ID: process.env.FACEBOOK_APP_ID,
+  APP_SECRET: process.env.FACEBOOK_APP_SECRET,
+
+  // ID do Catálogo (Commerce Manager). Alvo do items_batch.
+  CATALOG_ID: process.env.FACEBOOK_CATALOG_ID,
+
+  // Endpoints (relativos, montados com GRAPH_BASE_URL/API_VERSION ou DIALOG).
+  OAUTH_DIALOG_ENDPOINT: "/dialog/oauth", // GET consent (em DIALOG_BASE_URL)
+  OAUTH_TOKEN_ENDPOINT: "/oauth/access_token", // GET troca code→token (em GRAPH)
+  ME_ENDPOINT: "/me", // GET id/name da conta
+
+  // Callback OAuth. Prod: https://usedexo.com.br/integracoes/facebook/callback.
+  REDIRECT_URI:
+    process.env.FACEBOOK_REDIRECT_URI ||
+    `${process.env.APP_BACKEND_URL || "http://localhost:3333"}/marketplace/facebook/callback`,
+
+  // Escopos OAuth (separados por vírgula, padrão Meta). `catalog_management` é
+  // o que libera escrever no catálogo — e é o ÚNICO que esta integração usa.
+  //
+  // `business_management` foi removido em 19/08/2026. Ele era pedido e nunca
+  // exercido: os três endpoints do Graph que o Dexo chama são todos de catálogo
+  // (`items_batch`, `products`, `check_batch_request_status`), mais o `/me` do
+  // callback, que é coberto pelo `public_profile`. Não há uma única chamada a
+  // `/businesses`, `owned_product_catalogs` ou conta de anúncios.
+  //
+  // Não era só excesso: a Análise do App reprova quem pede permissão que não
+  // usa ("recursos ou permissões desnecessários deverão ser mudados para acesso
+  // padrão ou removidos"), e o pedido enviado à Meta cobre apenas
+  // `catalog_management`. Mantê-lo aqui faria a tela de consentimento pedir, em
+  // produção, uma permissão não aprovada — e a Meta devolve o token SEM ela, em
+  // silêncio, porque não conferimos os escopos concedidos.
+  SCOPES: process.env.FACEBOOK_SCOPES || "catalog_management",
+
+  // URL da página do vendedor — o item de catálogo EXIGE `link`. O Dexo não tem
+  // vitrine pública por produto, então todos os itens apontam para esta página
+  // FIXA do Facebook (sem sufixo /sku). Sem ela o build falha com erro claro.
+  PRODUCT_URL_BASE: process.env.FB_PRODUCT_URL_BASE || "",
+
+  // Moeda dos preços do catálogo (ISO 4217).
+  CURRENCY: process.env.FACEBOOK_CURRENCY || "BRL",
+
+  // TTL de fallback do long-lived token quando a Meta não devolve expires_in
+  // (~60 dias). O valor real vem de expires_in na troca fb_exchange_token.
+  LONG_LIVED_TTL_MS: 60 * 24 * 60 * 60 * 1000,
+
+  // Estado (state) para CSRF do OAuth.
+  STATE_LENGTH: 32,
+  STATE_TTL_MS: 10 * 60 * 1000,
+
+  // Limites do item de catálogo (Graph Product Item):
+  TITLE_MAX_LENGTH: 200, // `name`
+  DESCRIPTION_MAX_LENGTH: 9999, // `description`
+  RETAILER_ID_MAX_LENGTH: 100, // `retailer_id` (SKU)
+  MAX_IMAGES_PER_ITEM: 20, // image_url + additional_image_urls (1ª = principal)
+  MAX_REQUESTS_PER_BATCH: 5000, // teto do items_batch
+
+  // Poll do status do batch (check_batch_request_status): a Meta processa o
+  // items_batch de forma assíncrona, então erros por-item (categoria/link/imagem
+  // inválidos) só aparecem no status — o corpo do POST devolve 200 + handles
+  // mesmo quando o item é rejeitado. Espelha o poll do autoupload da OLX.
+  BATCH_POLL_INTERVAL_MS: 1500,
+  BATCH_POLL_MAX_ATTEMPTS: 8,
+
+  // Timeout por request (espelha OLX/WhatsApp).
+  REQUEST_TIMEOUT: 30000,
+} as const;
+
+/** Base da Graph API já com versão (ex.: https://graph.facebook.com/v25.0). */
+export function facebookGraphBase(): string {
+  return `${FACEBOOK_CONSTANTS.GRAPH_BASE_URL}/${FACEBOOK_CONSTANTS.API_VERSION}`;
+}
+
+/** Base do diálogo OAuth já com versão. */
+export function facebookDialogBase(): string {
+  return `${FACEBOOK_CONSTANTS.DIALOG_BASE_URL}/${FACEBOOK_CONSTANTS.API_VERSION}`;
+}
+
+/**
+ * `appsecret_proof` = HMAC-SHA256(access_token) chaveado pelo APP_SECRET (hex).
+ * A Meta usa p/ provar que o chamador detém o app secret — sem ele, um token
+ * vazado é usável por qualquer um. Anexar a TODA chamada Graph com token de
+ * usuário. Retorna undefined se o APP_SECRET não estiver configurado (não quebra
+ * o boot; a chamada segue sem o proof, como antes).
+ */
+export function facebookAppSecretProof(
+  accessToken: string,
+): string | undefined {
+  const secret = FACEBOOK_CONSTANTS.APP_SECRET;
+  if (!secret || !accessToken) return undefined;
+  return createHmac("sha256", secret).update(accessToken).digest("hex");
+}
+
+/**
+ * Valida a config do Facebook em RUNTIME (não no boot). Chamar nos serviços
+ * facebook-* antes de qualquer chamada à API. Mantém o boot da API intacto
+ * mesmo quando a integração não está configurada (flag desligada / credenciais
+ * pendentes) — mesmo contrato de validateOlxConfig/validateMagaluConfig.
+ */
+export function validateFacebookConfig(): void {
+  // FACEBOOK_CATALOG_ID NÃO é exigido: o catálogo é por-conta
+  // (account.fbCatalogId); o env é só fallback. Exigi-lo aqui tornaria o
+  // desenho multi-tenant inoperante (bloqueava conectar qualquer conta).
+  const requiredEnvVars = ["FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"];
+
+  for (const envVar of requiredEnvVars) {
+    if (!process.env[envVar]) {
+      throw new Error(
+        `Variável de ambiente ${envVar} não configurada (integração Facebook)`,
+      );
+    }
+  }
+}

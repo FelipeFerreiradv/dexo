@@ -23,6 +23,10 @@ export const perProductListingSchema = z.object({
   includeShopee: z.boolean(),
   /** Inclui este produto no Magalu (default: true quando há conta Magalu). */
   includeMagalu: z.boolean(),
+  /** Inclui este produto na OLX (default: true quando há conta OLX). */
+  includeOlx: z.boolean(),
+  /** Inclui este produto no Facebook (default: true quando há conta Facebook). */
+  includeFacebook: z.boolean(),
   /** Categoria automática ligada — pré-preenche categoria sugerida (override ok). */
   autoCategory: z.boolean(),
 
@@ -38,6 +42,14 @@ export const perProductListingSchema = z.object({
   magaluCategory: z.string().optional(),
   /** Rótulo (caminho "A/B/C") da categoria Magalu — só exibição. */
   magaluCategoryLabel: z.string().optional(),
+  /** Categoria OLX (id externo; vazio ⇒ backend resolve no envio). */
+  olxCategoryOverride: z.string().optional(),
+  /** Rótulo da categoria OLX — só exibição. */
+  olxCategoryOverrideLabel: z.string().optional(),
+  /** Categoria Facebook (id externo; vazio ⇒ backend resolve no envio). */
+  fbCategoryOverride: z.string().optional(),
+  /** Rótulo da categoria Facebook — só exibição. */
+  fbCategoryOverrideLabel: z.string().optional(),
 
   /** Subconjunto das contas ML selecionadas globalmente (default: todas). */
   mlAccountIds: z.array(z.string()),
@@ -45,6 +57,10 @@ export const perProductListingSchema = z.object({
   shopeeAccountIds: z.array(z.string()),
   /** Subconjunto das contas Magalu selecionadas globalmente (default: todas). */
   magaluAccountIds: z.array(z.string()),
+  /** Subconjunto das contas OLX selecionadas globalmente (default: todas). */
+  olxAccountIds: z.array(z.string()),
+  /** Subconjunto das contas Facebook selecionadas globalmente (default: todas). */
+  facebookAccountIds: z.array(z.string()),
 
   mlCatalogProductId: z.string().nullable().optional(),
   attributes: z.record(
@@ -70,6 +86,8 @@ export const perProductListingSchema = z.object({
    */
   shopeeListingPrice: z.number().min(0).nullable().optional(),
   magaluListingPrice: z.number().min(0).nullable().optional(),
+  olxListingPrice: z.number().min(0).nullable().optional(),
+  facebookListingPrice: z.number().min(0).nullable().optional(),
 });
 
 export type PerProductListingConfig = z.infer<typeof perProductListingSchema>;
@@ -143,16 +161,38 @@ export interface PerProductMagaluOverride {
   listingPrice?: number;
 }
 
+export interface PerProductOlxOverride {
+  categoryId?: string;
+  /**
+   * "Valor do Anúncio" — preço específico deste anúncio, como ML/Shopee/Magalu
+   * já têm. Atenção: na OLX editar é re-inserir com o mesmo id, então aplicar o
+   * preço reenvia o anúncio inteiro e ele volta para a fila de revisão.
+   */
+  listingPrice?: number;
+}
+
+export interface PerProductFacebookOverride {
+  categoryId?: string;
+  /** "Valor do Anúncio" — aplicado via UPDATE no items_batch. */
+  listingPrice?: number;
+}
+
 export interface PerProductOverrideEntry {
   ml?: PerProductMlOverride;
   shopee?: PerProductShopeeOverride;
   magalu?: PerProductMagaluOverride;
+  olx?: PerProductOlxOverride;
+  facebook?: PerProductFacebookOverride;
   /** Contas ML globais que ESTE produto NÃO publica (skip por conta). */
   disabledMlAccountIds?: string[];
   /** Contas Shopee globais que ESTE produto NÃO publica. */
   disabledShopeeAccountIds?: string[];
   /** Contas Magalu globais que ESTE produto NÃO publica. */
   disabledMagaluAccountIds?: string[];
+  /** Contas OLX globais que ESTE produto NÃO publica. */
+  disabledOlxAccountIds?: string[];
+  /** Contas Facebook globais que ESTE produto NÃO publica. */
+  disabledFacebookAccountIds?: string[];
 }
 
 export type PerProductOverrides = Record<string, PerProductOverrideEntry>;
@@ -165,18 +205,26 @@ export function configFromDefaults(
   globalMlIds: string[],
   globalShopeeIds: string[],
   globalMagaluIds: string[] = [],
+  globalOlxIds: string[] = [],
+  globalFacebookIds: string[] = [],
 ): PerProductListingConfig {
   return {
     includeMl: globalMlIds.length > 0,
     includeShopee: globalShopeeIds.length > 0,
     includeMagalu: globalMagaluIds.length > 0,
+    includeOlx: globalOlxIds.length > 0,
+    includeFacebook: globalFacebookIds.length > 0,
     autoCategory: defaults.autoCategory,
     mlCategory: undefined,
     shopeeCategory: undefined,
     magaluCategory: undefined,
+    olxCategoryOverride: undefined,
+    fbCategoryOverride: undefined,
     mlAccountIds: [...globalMlIds],
     shopeeAccountIds: [...globalShopeeIds],
     magaluAccountIds: [...globalMagaluIds],
+    olxAccountIds: [...globalOlxIds],
+    facebookAccountIds: [...globalFacebookIds],
     mlCatalogProductId: null,
     attributes: {},
     mlListingType: defaults.mlListingType,
@@ -191,6 +239,8 @@ export function configFromDefaults(
     mlListingPrice: null,
     shopeeListingPrice: null,
     magaluListingPrice: null,
+    olxListingPrice: null,
+    facebookListingPrice: null,
   };
 }
 
@@ -213,6 +263,8 @@ export function buildPerProductOverrides(
   globalMlIds: string[],
   globalShopeeIds: string[],
   globalMagaluIds: string[] = [],
+  globalOlxIds: string[] = [],
+  globalFacebookIds: string[] = [],
 ): PerProductOverrides {
   const out: PerProductOverrides = {};
 
@@ -285,15 +337,52 @@ export function buildPerProductOverrides(
       }
     }
 
+    if (globalOlxIds.length > 0) {
+      if (cfg.includeOlx) {
+        const olx = pruneUndefined({
+          categoryId: cfg.olxCategoryOverride || undefined,
+          listingPrice: cfg.olxListingPrice ?? undefined,
+        }) as PerProductOlxOverride;
+        if (Object.keys(olx).length > 0) entry.olx = olx;
+        const disabled = globalOlxIds.filter(
+          (id) => !(cfg.olxAccountIds ?? []).includes(id),
+        );
+        if (disabled.length > 0) entry.disabledOlxAccountIds = disabled;
+      } else {
+        entry.disabledOlxAccountIds = [...globalOlxIds];
+      }
+    }
+
+    if (globalFacebookIds.length > 0) {
+      if (cfg.includeFacebook) {
+        const facebook = pruneUndefined({
+          categoryId: cfg.fbCategoryOverride || undefined,
+          listingPrice: cfg.facebookListingPrice ?? undefined,
+        }) as PerProductFacebookOverride;
+        if (Object.keys(facebook).length > 0) entry.facebook = facebook;
+        const disabled = globalFacebookIds.filter(
+          (id) => !(cfg.facebookAccountIds ?? []).includes(id),
+        );
+        if (disabled.length > 0) entry.disabledFacebookAccountIds = disabled;
+      } else {
+        entry.disabledFacebookAccountIds = [...globalFacebookIds];
+      }
+    }
+
     if (
       entry.ml ||
       entry.shopee ||
       entry.magalu ||
+      entry.olx ||
+      entry.facebook ||
       (entry.disabledMlAccountIds && entry.disabledMlAccountIds.length > 0) ||
       (entry.disabledShopeeAccountIds &&
         entry.disabledShopeeAccountIds.length > 0) ||
       (entry.disabledMagaluAccountIds &&
-        entry.disabledMagaluAccountIds.length > 0)
+        entry.disabledMagaluAccountIds.length > 0) ||
+      (entry.disabledOlxAccountIds && entry.disabledOlxAccountIds.length > 0) ||
+      (entry.disabledFacebookAccountIds &&
+        entry.disabledFacebookAccountIds.length > 0)
     ) {
       out[productId] = entry;
     }
@@ -311,7 +400,7 @@ export function countEffectiveItems(
   overrides: PerProductOverrides,
   productIds: string[],
   requests: Array<{
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
     accountId: string;
   }>,
 ): number {
@@ -324,7 +413,11 @@ export function countEffectiveItems(
           ? ov?.disabledMlAccountIds?.includes(r.accountId)
           : r.platform === "SHOPEE"
             ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-            : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+            : r.platform === "MAGALU"
+              ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+              : r.platform === "OLX"
+                ? ov?.disabledOlxAccountIds?.includes(r.accountId)
+                : ov?.disabledFacebookAccountIds?.includes(r.accountId);
       if (!disabled) total++;
     }
   }

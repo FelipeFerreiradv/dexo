@@ -37,6 +37,8 @@ export interface TeamProductivityReportData {
       ml: number;
       shopee: number;
       magalu: number;
+      olx?: number;
+      facebook?: number;
       outro: number;
     };
   };
@@ -50,6 +52,8 @@ export interface TeamProductivityReportData {
       ml: number;
       shopee: number;
       magalu: number;
+      olx?: number;
+      facebook?: number;
       outro: number;
     };
     lastActivityAt: string | null;
@@ -60,6 +64,8 @@ export interface TeamProductivityReportData {
     ml: number;
     shopee: number;
     magalu: number;
+    olx?: number;
+    facebook?: number;
   }>;
   // Orçamentos por vendedor (BLOCO 1) — emitidos + convertidos (count+valor).
   budgetsByVendedor: Array<{
@@ -171,7 +177,9 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
     (c) => c.produtos > 0 || c.anuncios.total > 0,
   ).length;
   const perDot = Math.max(1, Math.ceil(totals.anuncios.total / 130));
-  const areaSeries = data.timeseries.map((t) => t.ml + t.shopee + t.magalu);
+  const areaSeries = data.timeseries.map(
+    (t) => t.ml + t.shopee + t.magalu + (t.olx ?? 0) + (t.facebook ?? 0),
+  );
   const areaSecondary = data.timeseries.map((t) => t.produtos);
   const firstDate = data.timeseries[0]?.date;
   const lastDate = data.timeseries[data.timeseries.length - 1]?.date;
@@ -217,6 +225,16 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
             value={fmtInt(totals.anuncios.magalu)}
             dot={PLATFORM_COLOR.MAGALU}
           />
+          <Kpi
+            label="Anúncios OLX"
+            value={fmtInt(totals.anuncios.olx ?? 0)}
+            dot={PLATFORM_COLOR.OLX}
+          />
+          <Kpi
+            label="Anúncios Facebook"
+            value={fmtInt(totals.anuncios.facebook ?? 0)}
+            dot={PLATFORM_COLOR.FACEBOOK}
+          />
         </KpiRow>
 
         <View style={{ flexDirection: "row", gap: 14, marginBottom: 18 }}>
@@ -248,6 +266,8 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
               ml={totals.anuncios.ml}
               shopee={totals.anuncios.shopee}
               magalu={totals.anuncios.magalu}
+              olx={totals.anuncios.olx ?? 0}
+              facebook={totals.anuncios.facebook ?? 0}
               outro={totals.anuncios.outro}
             />
             <View
@@ -264,6 +284,14 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
               <LegendDot
                 color={PLATFORM_COLOR.MAGALU}
                 label={`Magalu ${pctLabel(totals.anuncios.magalu, totals.anuncios.total)}`}
+              />
+              <LegendDot
+                color={PLATFORM_COLOR.OLX}
+                label={`OLX ${pctLabel(totals.anuncios.olx ?? 0, totals.anuncios.total)}`}
+              />
+              <LegendDot
+                color={PLATFORM_COLOR.FACEBOOK}
+                label={`Facebook ${pctLabel(totals.anuncios.facebook ?? 0, totals.anuncios.total)}`}
               />
             </View>
           </View>
@@ -317,6 +345,8 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
             <LegendDot color={PLATFORM_COLOR.ML} label="ML" />
             <LegendDot color={PLATFORM_COLOR.SHOPEE} label="Shopee" />
             <LegendDot color={PLATFORM_COLOR.MAGALU} label="Magalu" />
+            <LegendDot color={PLATFORM_COLOR.OLX} label="OLX" />
+            <LegendDot color={PLATFORM_COLOR.FACEBOOK} label="Facebook" />
           </View>
         </View>
 
@@ -337,6 +367,8 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
           <Text style={[col.num, th]}>ML</Text>
           <Text style={[col.num, th]}>SHOPEE</Text>
           <Text style={[col.num, th]}>MAGALU</Text>
+          <Text style={[col.num, th]}>OLX</Text>
+          <Text style={[col.num, th]}>FB</Text>
           <Text style={[col.num, th]}>ANÚNC.</Text>
           <Text style={[col.share, th]}>PART.</Text>
         </View>
@@ -384,6 +416,8 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
                   ml={c.anuncios.ml}
                   shopee={c.anuncios.shopee}
                   magalu={c.anuncios.magalu}
+                  olx={c.anuncios.olx ?? 0}
+                  facebook={c.anuncios.facebook ?? 0}
                   outro={c.anuncios.outro}
                   widthPct={maxTotal ? (c.anuncios.total / maxTotal) * 100 : 0}
                 />
@@ -392,6 +426,8 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
               <Text style={[col.num, td]}>{fmtInt(c.anuncios.ml)}</Text>
               <Text style={[col.num, td]}>{fmtInt(c.anuncios.shopee)}</Text>
               <Text style={[col.num, td]}>{fmtInt(c.anuncios.magalu)}</Text>
+              <Text style={[col.num, td]}>{fmtInt(c.anuncios.olx ?? 0)}</Text>
+              <Text style={[col.num, td]}>{fmtInt(c.anuncios.facebook ?? 0)}</Text>
               <Text style={[col.num, td, { fontWeight: 700 }]}>
                 {fmtInt(c.anuncios.total)}
               </Text>
@@ -584,10 +620,10 @@ const axisLabel = {
 
 const col = {
   rank: { width: 16 },
-  name: { width: 150 },
-  bar: { flex: 1, minWidth: 70 },
-  num: { width: 38, textAlign: "right" as const },
-  share: { width: 34, textAlign: "right" as const },
+  name: { width: 120 },
+  bar: { flex: 1, minWidth: 56 },
+  num: { width: 30, textAlign: "right" as const },
+  share: { width: 30, textAlign: "right" as const },
 };
 
 // Colunas da tabela de orçamentos por vendedor (BLOCO 1).

@@ -135,7 +135,11 @@ export function ProductCard({
               ? "Shopee"
               : product.originPlatform === "MAGALU"
                 ? "Magalu"
-                : "Mercado Livre"}
+                : product.originPlatform === "OLX"
+                  ? "OLX"
+                  : product.originPlatform === "FACEBOOK"
+                    ? "Facebook"
+                    : "Mercado Livre"}
           </span>
         )}
       </div>

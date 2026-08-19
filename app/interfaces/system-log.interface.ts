@@ -43,6 +43,11 @@ export type LogAction =
   | "USER_ACTIVITY"
   | "OVERSELL_DETECTED"
   | "STOCK_SYNC_FAILED"
+  // Baixa de estoque represada há mais de 24h porque o kill-switch da
+  // integração (OLX/FACEBOOK_INTEGRATION_DISABLED) segue ligado. O job NÃO foi
+  // perdido — continua PENDING e reprocessa quando o operador religar. Este
+  // registro existe só para o adiamento deixar de ser silencioso.
+  | "STOCK_SYNC_DEFERRED_TOO_LONG"
   // Um único movimento levou um produto MULTI-UNIDADE (previousStock > 1) a
   // estoque zero. A aritmética de venda é decremental e nunca faz isso quando
   // a quantidade vendida é menor que o estoque; então este registro aponta ou
