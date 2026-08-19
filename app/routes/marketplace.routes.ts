@@ -3504,7 +3504,13 @@ small{color:#666}</style></head><body>
         });
         return reply.send({
           categoryId: categoryId != null ? String(categoryId) : null,
-          path: null,
+          // `path` é o que a tela EXIBE. Devolvê-lo nulo fazia o modal cair no
+          // `categoryId` cru e mostrar "2101" para o operador — o número é a
+          // identidade na OLX, não um nome que alguém deva decorar.
+          path:
+            categoryId != null
+              ? (OLX_CATEGORY_LABEL[categoryId] ?? null)
+              : null,
         });
       } catch (error) {
         return reply.status(500).send({
@@ -4025,7 +4031,15 @@ small{color:#666}</style></head><body>
         const categoryId = FacebookCategoryResolutionService.resolveCategory({
           name,
         });
-        return reply.send({ categoryId: categoryId ?? null, path: categoryId });
+        // `categoryId` é o path da taxonomia do Google — vai para a Meta e
+        // continua em inglês. `path` é só o rótulo da tela, e por isso é
+        // traduzido: o sistema inteiro é em português.
+        return reply.send({
+          categoryId: categoryId ?? null,
+          path: categoryId
+            ? (FACEBOOK_CATEGORY_LABEL[categoryId] ?? categoryId)
+            : null,
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao sugerir categoria Facebook",

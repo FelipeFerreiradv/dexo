@@ -111,6 +111,24 @@ export function resolveMarketplaceListingLinkState(
     };
   }
 
+  // FACEBOOK: o Catálogo do Meta NÃO gera URL pública por item. O campo `link`
+  // que a Meta exige em cada item aponta para a página fixa do vendedor
+  // (FB_PRODUCT_URL_BASE), e é ele que acabava gravado como `permalink` — então
+  // "Ver anúncio" abria a página da loja, não a peça. Botão que promete uma
+  // coisa e entrega outra é pior do que botão desligado: o operador clica,
+  // estranha, e abre chamado.
+  //
+  // Enquanto não houver link por item, o estado honesto é desabilitado com o
+  // motivo escrito. O item existe e está no ar; só não tem endereço próprio.
+  if (listing.platform === "FACEBOOK") {
+    return {
+      href: null,
+      isOpenable: false,
+      disabledReason:
+        "O Catálogo do Facebook não gera link público por item. Veja a peça no Commerce Manager.",
+    };
+  }
+
   if (permalink) {
     return {
       href: permalink,
@@ -159,17 +177,6 @@ export function resolveMarketplaceListingLinkState(
   // quando presente). Sem permalink não é derivável do externalListingId (SKU),
   // então degrada como o Magalu — nunca cai na lógica da Shopee.
   if (listing.platform === "OLX") {
-    return {
-      href: null,
-      isOpenable: false,
-      disabledReason: `Anuncio do ${label} ainda nao tem link disponivel.`,
-    };
-  }
-
-  // Facebook: o `link` do item de catálogo (página do produto) vem em
-  // `permalink` (tratado acima quando presente). Sem ele não é derivável do
-  // retailer_id (SKU), então degrada como OLX/Magalu — nunca cai na Shopee.
-  if (listing.platform === "FACEBOOK") {
     return {
       href: null,
       isOpenable: false,
