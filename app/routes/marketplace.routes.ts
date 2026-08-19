@@ -35,6 +35,10 @@ import {
   OLX_CATEGORY_MAP,
 } from "../marketplaces/olx/olx-category-map";
 import { FACEBOOK_CATEGORY_LABEL } from "../marketplaces/facebook/facebook-category-map";
+import {
+  resolveListingsPage,
+  totalDePaginas,
+} from "../marketplaces/lib/listings-page";
 import { getVehicleRootSet } from "../marketplaces/services/category-resolution.service";
 import {
   ML_BLOCKED_BRANCHES,
@@ -899,34 +903,64 @@ small{color:#666}</style></head><body>
           });
         }
 
-        const listingsArrays = await Promise.all(
-          accounts.map((acc) =>
-            prisma.productListing.findMany({
-              where: { marketplaceAccountId: acc.id },
-              select: {
-                id: true,
-                productId: true,
-                externalListingId: true,
-                externalSku: true,
-                permalink: true,
-                status: true,
-                lastError: true,
-                createdAt: true,
-                product: {
-                  select: { name: true, sku: true, stock: true },
-                },
-              },
-              orderBy: { createdAt: "desc" },
-            }),
-          ),
-        );
+        // TETO E PAGINAÇÃO (regra R7). Antes: um `findMany` POR CONTA, sem
+        // `take`, concatenados. Na maior conta de Mercado Livre — 36.185
+        // anúncios — a resposta media 13 MB; a Shopee tinha conta com 11.699.
+        // O banco nunca foi o gargalo (Index Scan em 72 ms): o custo era
+        // materializar dezenas de milhares de objetos no Node, serializar e
+        // transmitir. Com teto de 50 a mesma resposta cai para 18 kB.
+        //
+        // As N consultas viraram UMA (`in` nos ids das contas), o que também
+        // atende a regra de pré-carga em lote. Efeito colateral assumido: com
+        // MAIS DE UMA conta selecionada, as linhas passam a vir intercaladas por
+        // data em vez de agrupadas por conta. Paginar uma concatenação de listas
+        // ordenadas independentemente não tem página bem definida — as bordas
+        // pulariam. A tabela não mostra a conta em nenhuma coluna, então o que
+        // muda é só a ordem das linhas, e ela passa a ser a que o título promete:
+        // mais recentes primeiro.
+        //
+        // `id` entra como desempate: sem ele, dois anúncios com o mesmo
+        // `createdAt` podiam trocar de lugar entre requisições e reaparecer (ou
+        // sumir) na virada de página.
+        const { page, limit, skip } = resolveListingsPage(request.query);
+        const where = { marketplaceAccountId: { in: accounts.map((a) => a.id) } };
 
-        const listings = listingsArrays.flat();
+        const [total, listings] = await Promise.all([
+          prisma.productListing.count({ where }),
+          prisma.productListing.findMany({
+            where,
+            select: {
+              id: true,
+              productId: true,
+              externalListingId: true,
+              externalSku: true,
+              permalink: true,
+              status: true,
+              lastError: true,
+              createdAt: true,
+              product: {
+                select: { name: true, sku: true, stock: true },
+              },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: limit,
+            skip,
+          }),
+        ]);
 
         return reply.send({
           success: true,
+          // `count` segue sendo quantos vieram nesta página — o significado que
+          // sempre teve. `pagination.total` é a novidade, e é ela que diz
+          // quantos existem.
           count: listings.length,
           listings,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: totalDePaginas(total, limit),
+          },
         });
       } catch (error) {
         return reply.status(500).send({
@@ -1573,33 +1607,39 @@ small{color:#666}</style></head><body>
         }
 
         // Buscar listings de todas as contas selecionadas
-        const listingsArrays = await Promise.all(
-          accounts.map((acc) =>
-            prisma.productListing.findMany({
-              where: { marketplaceAccountId: acc.id },
-              select: {
-                id: true,
-                productId: true,
-                externalListingId: true,
-                externalSku: true,
-                status: true,
-                lastError: true,
-                permalink: true,
-                createdAt: true,
-                marketplaceAccount: { select: { shopId: true } },
-                product: {
-                  select: {
-                    name: true,
-                    sku: true,
-                    stock: true,
-                  },
+        // TETO E PAGINAÇÃO — mesma correção do Mercado Livre (ver o comentário
+        // longo lá): as N consultas por conta viraram UMA com `in`, com `take`,
+        // `skip` e `count`. Sem teto, a resposta crescia com o tamanho da conta.
+        const { page, limit, skip } = resolveListingsPage(request.query);
+        const where = { marketplaceAccountId: { in: accounts.map((a) => a.id) } };
+
+        const [total, listings] = await Promise.all([
+          prisma.productListing.count({ where }),
+          prisma.productListing.findMany({
+            where,
+            select: {
+              id: true,
+              productId: true,
+              externalListingId: true,
+              externalSku: true,
+              status: true,
+              lastError: true,
+              permalink: true,
+              createdAt: true,
+              marketplaceAccount: { select: { shopId: true } },
+              product: {
+                select: {
+                  name: true,
+                  sku: true,
+                  stock: true,
                 },
               },
-              orderBy: { createdAt: "desc" },
-            }),
-          ),
-        );
-        const listings = listingsArrays.flat();
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: limit,
+            skip,
+          }),
+        ]);
 
         return reply.send({
           success: true,
@@ -1608,6 +1648,12 @@ small{color:#666}</style></head><body>
             ...l,
             shopId: l.marketplaceAccount?.shopId ?? null,
           })),
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: totalDePaginas(total, limit),
+          },
         });
       } catch (error) {
         return reply.status(500).send({
@@ -2792,28 +2838,44 @@ small{color:#666}</style></head><body>
           });
         }
 
-        const listingsArrays = await Promise.all(
-          accounts.map((acc) =>
-            prisma.productListing.findMany({
-              where: { marketplaceAccountId: acc.id },
-              select: {
-                id: true,
-                productId: true,
-                externalListingId: true,
-                externalSku: true,
-                permalink: true,
-                status: true,
-                lastError: true,
-                createdAt: true,
-                product: { select: { name: true, sku: true, stock: true } },
-              },
-              orderBy: { createdAt: "desc" },
-            }),
-          ),
-        );
+        // TETO E PAGINAÇÃO — mesma correção do Mercado Livre (ver o comentário
+        // longo lá): as N consultas por conta viraram UMA com `in`, com `take`,
+        // `skip` e `count`. Sem teto, a resposta crescia com o tamanho da conta.
+        const { page, limit, skip } = resolveListingsPage(request.query);
+        const where = { marketplaceAccountId: { in: accounts.map((a) => a.id) } };
 
-        const listings = listingsArrays.flat();
-        return reply.send({ success: true, count: listings.length, listings });
+        const [total, listings] = await Promise.all([
+          prisma.productListing.count({ where }),
+          prisma.productListing.findMany({
+            where,
+            select: {
+              id: true,
+              productId: true,
+              externalListingId: true,
+              externalSku: true,
+              permalink: true,
+              status: true,
+              lastError: true,
+              createdAt: true,
+              product: { select: { name: true, sku: true, stock: true } },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: limit,
+            skip,
+          }),
+        ]);
+
+        return reply.send({
+          success: true,
+          count: listings.length,
+          listings,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: totalDePaginas(total, limit),
+          },
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao buscar anúncios",
@@ -3312,29 +3374,45 @@ small{color:#666}</style></head><body>
           });
         }
 
-        const listingsArrays = await Promise.all(
-          accounts.map((acc) =>
-            prisma.productListing.findMany({
-              where: { marketplaceAccountId: acc.id },
-              select: {
-                id: true,
-                productId: true,
-                externalListingId: true,
-                externalSku: true,
-                olxListId: true,
-                permalink: true,
-                status: true,
-                lastError: true,
-                createdAt: true,
-                product: { select: { name: true, sku: true, stock: true } },
-              },
-              orderBy: { createdAt: "desc" },
-            }),
-          ),
-        );
+        // TETO E PAGINAÇÃO — mesma correção do Mercado Livre (ver o comentário
+        // longo lá): as N consultas por conta viraram UMA com `in`, com `take`,
+        // `skip` e `count`. Sem teto, a resposta crescia com o tamanho da conta.
+        const { page, limit, skip } = resolveListingsPage(request.query);
+        const where = { marketplaceAccountId: { in: accounts.map((a) => a.id) } };
 
-        const listings = listingsArrays.flat();
-        return reply.send({ success: true, count: listings.length, listings });
+        const [total, listings] = await Promise.all([
+          prisma.productListing.count({ where }),
+          prisma.productListing.findMany({
+            where,
+            select: {
+              id: true,
+              productId: true,
+              externalListingId: true,
+              externalSku: true,
+              olxListId: true,
+              permalink: true,
+              status: true,
+              lastError: true,
+              createdAt: true,
+              product: { select: { name: true, sku: true, stock: true } },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: limit,
+            skip,
+          }),
+        ]);
+
+        return reply.send({
+          success: true,
+          count: listings.length,
+          listings,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: totalDePaginas(total, limit),
+          },
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao buscar anúncios",
@@ -3778,34 +3856,64 @@ small{color:#666}</style></head><body>
           });
         }
 
-        const listingsArrays = await Promise.all(
-          accounts.map(async (acc) => {
-            const rows = await prisma.productListing.findMany({
-              where: { marketplaceAccountId: acc.id },
-              select: {
-                id: true,
-                productId: true,
-                externalListingId: true,
-                externalSku: true,
-                fbCatalogItemId: true,
-                permalink: true,
-                status: true,
-                lastError: true,
-                createdAt: true,
-                product: { select: { name: true, sku: true, stock: true } },
-              },
-              orderBy: { createdAt: "desc" },
-            });
-            // O catálogo é POR CONTA e é o que monta o destino do "Ver anúncio"
-            // (Commerce Manager). Vem da conta que já está em mãos neste laço —
-            // nenhuma consulta a mais, e sem ele a tela não tem como saber para
-            // qual catálogo mandar o operador quando há mais de uma conta.
-            return rows.map((row) => ({ ...row, fbCatalogId: acc.fbCatalogId }));
+        // TETO E PAGINAÇÃO — mesma correção do Mercado Livre (ver o comentário
+        // longo lá): as N consultas por conta viraram UMA com `in`, com `take`,
+        // `skip` e `count`. Sem teto, a resposta crescia com o tamanho da conta.
+        // Aqui isso importa mais que nos outros: o catálogo Meta do cliente tem
+        // 22.414 itens, e uma importação transformaria isso em 22 mil vínculos.
+        const { page, limit, skip } = resolveListingsPage(request.query);
+        const where = { marketplaceAccountId: { in: accounts.map((a) => a.id) } };
+
+        const [total, linhas] = await Promise.all([
+          prisma.productListing.count({ where }),
+          prisma.productListing.findMany({
+            where,
+            select: {
+              id: true,
+              productId: true,
+              externalListingId: true,
+              externalSku: true,
+              fbCatalogItemId: true,
+              permalink: true,
+              status: true,
+              lastError: true,
+              createdAt: true,
+              // Só para resolver o catálogo da conta abaixo; NÃO vai na resposta.
+              marketplaceAccountId: true,
+              product: { select: { name: true, sku: true, stock: true } },
+            },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: limit,
+            skip,
+          }),
+        ]);
+
+        // O catálogo é POR CONTA e é o que monta o destino do "Ver anúncio"
+        // (Commerce Manager). Antes vinha da conta do laço; com uma consulta só,
+        // vem de um mapa montado das contas JÁ carregadas — continua sem
+        // nenhuma consulta a mais. Sem ele a tela não sabe para qual catálogo
+        // mandar o operador quando há mais de uma conta.
+        const catalogoPorConta = new Map(
+          accounts.map((acc) => [acc.id, acc.fbCatalogId ?? null]),
+        );
+        const listings = linhas.map(
+          ({ marketplaceAccountId, ...row }: any) => ({
+            ...row,
+            fbCatalogId: catalogoPorConta.get(marketplaceAccountId) ?? null,
           }),
         );
 
-        const listings = listingsArrays.flat();
-        return reply.send({ success: true, count: listings.length, listings });
+        return reply.send({
+          success: true,
+          count: listings.length,
+          listings,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: totalDePaginas(total, limit),
+          },
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao buscar anúncios",

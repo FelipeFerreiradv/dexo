@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import {
   Package,
@@ -29,6 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { ListingsPagination } from "@/app/integracoes/components/listings-pagination";
 import { MLListingsSkeleton } from "./ml-skeleton";
 
 interface Listing {
@@ -49,9 +50,24 @@ interface Listing {
 
 interface ListingsResponse {
   success: boolean;
+  /** Quantos vieram NESTA página. O total está em `pagination.total`. */
   count: number;
   listings: Listing[];
+  /**
+   * Teto e paginação (R7). Opcional no tipo por precaução: se um deploy antigo
+   * responder sem o campo, a aba cai num estado de página única em vez de
+   * quebrar — nunca em "nenhum anúncio".
+   */
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 }
+
+/** Mesmo teto do servidor. Muda aqui e lá junto, ou a conta de páginas mente. */
+const LISTINGS_POR_PAGINA = 50;
 
 export function MLListingsTab() {
   const { data: session } = useSession();
@@ -63,11 +79,28 @@ export function MLListingsTab() {
     Array<{ id: string; accountName: string }>
   >([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [page, setPage] = useState(1);
+  /**
+   * Bilhete da requisição em curso. Sem ele, duas buscas em voo (dois cliques
+   * rápidos em "Próximo", ou um refresh por cima de uma troca de conta) são
+   * aplicadas na ordem em que CHEGAM, não na ordem em que foram pedidas — e a
+   * resposta velha sobrescreve a nova. O sintoma era cruel: lista vazia numa
+   * conta que tem anúncios.
+   */
+  const requisicaoEmCurso = useRef(0);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    limit: LISTINGS_POR_PAGINA,
+    total: 0,
+    totalPages: 1,
+  });
 
   // Buscar listings
   const fetchListings = useCallback(
     async (showRefreshState = false) => {
       if (!session?.user?.email) return;
+
+      const bilhete = ++requisicaoEmCurso.current;
 
       if (showRefreshState) {
         setIsRefreshing(true);
@@ -80,6 +113,8 @@ export function MLListingsTab() {
         const url = new URL(`${getApiBaseUrl()}/marketplace/ml/listings`);
         if (selectedAccountId)
           url.searchParams.set("accountId", selectedAccountId);
+        url.searchParams.set("page", String(page));
+        url.searchParams.set("limit", String(LISTINGS_POR_PAGINA));
 
         const response = await fetch(url.toString(), {
           headers: {
@@ -91,6 +126,7 @@ export function MLListingsTab() {
           const data = await response.json();
           // Se não encontrou conta, não é erro - apenas não tem conexão
           if (response.status === 404) {
+            if (bilhete !== requisicaoEmCurso.current) return;
             setListings([]);
             return;
           }
@@ -98,15 +134,39 @@ export function MLListingsTab() {
         }
 
         const data: ListingsResponse = await response.json();
+        // Chegou depois de outra requisição ter sido disparada: descarta.
+        if (bilhete !== requisicaoEmCurso.current) return;
         setListings(data.listings);
+        // Servidor sem paginação (deploy antigo): trata como página única com o
+        // que veio, em vez de zerar o rodapé.
+        setPagination(
+          data.pagination ?? {
+            page: 1,
+            limit: LISTINGS_POR_PAGINA,
+            total: data.listings.length,
+            totalPages: 1,
+          },
+        );
+        // Beco sem saída: se a página atual ficou além do fim (anúncios apagados
+        // por outro caminho, ou refresh depois de uma limpeza), a tela mostraria
+        // uma lista vazia com os botões travados e nenhuma forma de voltar.
+        // Volta para a primeira — não há laço, porque a página 1 nunca reentra.
+        if (data.listings.length === 0 && page > 1) {
+          setPage(1);
+        }
       } catch (err) {
+        if (bilhete !== requisicaoEmCurso.current) return;
         setError(err instanceof Error ? err.message : "Erro desconhecido");
       } finally {
-        setIsLoading(false);
-        setIsRefreshing(false);
+        // Só a requisição mais nova desliga o "carregando"; senão a resposta
+        // velha destrava a tela enquanto a nova ainda está em voo.
+        if (bilhete === requisicaoEmCurso.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
       }
     },
-    [session?.user?.email, selectedAccountId],
+    [session?.user?.email, selectedAccountId, page],
   );
 
   useEffect(() => {
@@ -177,7 +237,16 @@ export function MLListingsTab() {
             <select
               className="rounded border px-2 py-1 text-sm"
               value={selectedAccountId}
-              onChange={(e) => setSelectedAccountId(e.target.value)}
+              onChange={(e) => {
+                // A página volta para 1 AQUI, no mesmo evento da troca de conta.
+                // Num `useEffect` separado, os dois viajavam em commits
+                // diferentes: a busca saía uma vez com a página antiga e outra
+                // com a nova — duas requisições, e a velha podia chegar por
+                // último e esvaziar a tela. No mesmo handler, o React agrupa as
+                // duas escritas e sai UMA busca.
+                setSelectedAccountId(e.target.value);
+                setPage(1);
+              }}
             >
               <option value="">Todas as contas</option>
               {accounts.map((acc) => (
@@ -311,17 +380,14 @@ export function MLListingsTab() {
         )}
 
         {listings.length > 0 && (
-          <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
-            <div className="flex items-center gap-1">
-              <AlertCircle className="h-4 w-4" />
-              <span>
-                {listings.length}{" "}
-                {listings.length === 1
-                  ? "vínculo encontrado"
-                  : "vínculos encontrados"}
-              </span>
-            </div>
-          </div>
+          <ListingsPagination
+            mostrando={listings.length}
+            total={pagination.total}
+            page={page}
+            totalPages={pagination.totalPages}
+            onPageChange={setPage}
+            carregando={isLoading || isRefreshing}
+          />
         )}
       </CardContent>
     </Card>
