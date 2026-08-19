@@ -195,11 +195,15 @@ const productSchema = z.object({
   createOlxListing: z.boolean().optional(),
   olxAccountIds: z.array(z.string()).optional(),
   olxCategory: z.string().optional(),
+  /** "Valor do Anúncio" da OLX — mesmo contrato do mlListingPrice. */
+  olxListingPrice: z.number().min(0).optional().nullable(),
 
   // Step Facebook (opcional). Categoria auto-resolvida no backend; opcional aqui.
   createFacebookListing: z.boolean().optional(),
   facebookAccountIds: z.array(z.string()).optional(),
   facebookCategory: z.string().optional(),
+  /** "Valor do Anúncio" do Facebook — mesmo contrato do mlListingPrice. */
+  facebookListingPrice: z.number().min(0).optional().nullable(),
 
   // Step 2: Preços e Estoque
   price: z
@@ -675,9 +679,9 @@ export function CreateProductDialog({
    * "continuar de onde parou?". Ref, não estado: só é lido na hora de salvar.
    */
   const defaultStockRef = useRef<number | null>(null);
-  const [olxOptions, setOlxOptions] = useState<
-    { id: string; value: string }[]
-  >([]);
+  const [olxOptions, setOlxOptions] = useState<{ id: string; value: string }[]>(
+    [],
+  );
   const [olxCategorySearch, setOlxCategorySearch] = useState("");
   const [olxCategoryDropdownOpen, setOlxCategoryDropdownOpen] = useState(false);
   const [olxCategoryLoading, setOlxCategoryLoading] = useState(false);
@@ -699,9 +703,9 @@ export function CreateProductDialog({
     [],
   );
   /** Posição aplicada a todas as compatibilidades. Vive fora do RHF, como elas. */
-  const [compatibilityPositions, setCompatibilityPositions] = useState<string[]>(
-    [],
-  );
+  const [compatibilityPositions, setCompatibilityPositions] = useState<
+    string[]
+  >([]);
 
   // Sucata selecionada para herdar dados do veículo
   const [selectedScrap, setSelectedScrap] = useState<{
@@ -796,9 +800,11 @@ export function CreateProductDialog({
       createOlxListing: false,
       olxAccountIds: [],
       olxCategory: "",
+      olxListingPrice: null,
       createFacebookListing: false,
       facebookAccountIds: [],
       facebookCategory: "",
+      facebookListingPrice: null,
       price: 0,
       stock: 0,
       costPrice: null,
@@ -1559,7 +1565,13 @@ export function CreateProductDialog({
   useEffect(() => {
     if (!OLX_ENABLED || !watchCreateOlxListing) return;
     const term = olxCategorySearch.trim();
-    if (term.length < 2) return;
+    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
+    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
+    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
+    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
+    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
+    // de propósito — lá são milhares de categorias.
+    if (term.length === 1) return;
     const handle = setTimeout(async () => {
       setOlxCategoryLoading(true);
       try {
@@ -1615,7 +1627,13 @@ export function CreateProductDialog({
   useEffect(() => {
     if (!FACEBOOK_ENABLED || !watchCreateFacebookListing) return;
     const term = facebookCategorySearch.trim();
-    if (term.length < 2) return;
+    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
+    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
+    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
+    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
+    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
+    // de propósito — lá são milhares de categorias.
+    if (term.length === 1) return;
     const handle = setTimeout(async () => {
       setFacebookCategoryLoading(true);
       try {
@@ -1636,7 +1654,11 @@ export function CreateProductDialog({
       }
     }, 400);
     return () => clearTimeout(handle);
-  }, [facebookCategorySearch, watchCreateFacebookListing, session?.user?.email]);
+  }, [
+    facebookCategorySearch,
+    watchCreateFacebookListing,
+    session?.user?.email,
+  ]);
 
   // AUTO-FILL A PARTIR DAS COMPATIBILIDADES (fonte primária)
   // Quando o usuário adiciona/altera compatibilidades, preenche marca/modelo/ano/versão
@@ -3079,6 +3101,7 @@ export function CreateProductDialog({
           accountIds: selectedOlxAccounts,
           // categoria escolhida no modal; se vazia, o backend resolve no envio.
           categoryId: data.olxCategory || undefined,
+          listingPrice: data.olxListingPrice ?? undefined,
           crossAccountIncrease: crossAccountCfg,
         });
       }
@@ -3089,6 +3112,7 @@ export function CreateProductDialog({
           accountIds: selectedFacebookAccounts,
           // categoria escolhida no modal; se vazia, o backend resolve no envio.
           categoryId: data.facebookCategory || undefined,
+          listingPrice: data.facebookListingPrice ?? undefined,
           crossAccountIncrease: crossAccountCfg,
         });
       }
@@ -5780,6 +5804,29 @@ export function CreateProductDialog({
                     </p>
                   </div>
                 )}
+
+                {watchCreateOlxListing && (
+                  <div className="space-y-2">
+                    <Label htmlFor="olxListingPrice">
+                      Valor do Anúncio (R$)
+                    </Label>
+                    <Controller
+                      name="olxListingPrice"
+                      control={control}
+                      render={({ field }) => (
+                        <CurrencyInput
+                          id="olxListingPrice"
+                          placeholder="Usar preço de venda do produto"
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Se não informado, será usado o preço de venda do produto.
+                    </p>
+                  </div>
+                )}
               </div>
             </section>
           )}
@@ -5948,23 +5995,22 @@ export function CreateProductDialog({
                         const term = facebookCategorySearch.trim();
                         return (
                           <div className="relative">
-                            {selectedLabel &&
-                              !facebookCategoryDropdownOpen && (
-                                <div
-                                  className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
-                                  onClick={() => {
-                                    setFacebookCategoryDropdownOpen(true);
-                                    setFacebookCategorySearch("");
-                                  }}
-                                >
-                                  <span className="truncate">
-                                    {selectedLabel}
-                                  </span>
-                                  <span className="ml-2 text-xs text-muted-foreground">
-                                    Alterar
-                                  </span>
-                                </div>
-                              )}
+                            {selectedLabel && !facebookCategoryDropdownOpen && (
+                              <div
+                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                onClick={() => {
+                                  setFacebookCategoryDropdownOpen(true);
+                                  setFacebookCategorySearch("");
+                                }}
+                              >
+                                <span className="truncate">
+                                  {selectedLabel}
+                                </span>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  Alterar
+                                </span>
+                              </div>
+                            )}
 
                             {(facebookCategoryDropdownOpen ||
                               !selectedLabel) && (
@@ -6037,6 +6083,29 @@ export function CreateProductDialog({
                             .filter(Boolean)
                             .join(" > ")
                         : "Nenhuma"}
+                    </p>
+                  </div>
+                )}
+
+                {watchCreateFacebookListing && (
+                  <div className="space-y-2">
+                    <Label htmlFor="facebookListingPrice">
+                      Valor do Anúncio (R$)
+                    </Label>
+                    <Controller
+                      name="facebookListingPrice"
+                      control={control}
+                      render={({ field }) => (
+                        <CurrencyInput
+                          id="facebookListingPrice"
+                          placeholder="Usar preço de venda do produto"
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Se não informado, será usado o preço de venda do produto.
                     </p>
                   </div>
                 )}

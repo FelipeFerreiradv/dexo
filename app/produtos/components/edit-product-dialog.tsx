@@ -442,7 +442,9 @@ export function EditProductDialog({
     [],
   );
   const [compatibilitiesLoading, setCompatibilitiesLoading] = useState(false);
-  const [compatibilityPositions, setCompatibilityPositions] = useState<string[]>(
+  const [compatibilityPositions, setCompatibilityPositions] = useState<
+    string[]
+  >(
     Array.isArray(product.compatibilityPositions)
       ? product.compatibilityPositions
       : [],
@@ -978,12 +980,24 @@ export function EditProductDialog({
         console.error("Erro ao sugerir categoria OLX:", err);
       }
     })();
-  }, [createOlxListing, watchName, setValue, session?.user?.email, product.name]);
+  }, [
+    createOlxListing,
+    watchName,
+    setValue,
+    session?.user?.email,
+    product.name,
+  ]);
 
   useEffect(() => {
     if (!OLX_ENABLED || !createOlxListing) return;
     const term = olxCategorySearch.trim();
-    if (term.length < 2) return;
+    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
+    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
+    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
+    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
+    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
+    // de propósito — lá são milhares de categorias.
+    if (term.length === 1) return;
     const handle = setTimeout(async () => {
       setOlxCategoryLoading(true);
       try {
@@ -1047,7 +1061,13 @@ export function EditProductDialog({
   useEffect(() => {
     if (!FACEBOOK_ENABLED || !createFacebookListing) return;
     const term = facebookCategorySearch.trim();
-    if (term.length < 2) return;
+    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
+    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
+    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
+    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
+    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
+    // de propósito — lá são milhares de categorias.
+    if (term.length === 1) return;
     const handle = setTimeout(async () => {
       setFacebookCategoryLoading(true);
       try {
@@ -1377,56 +1397,57 @@ export function EditProductDialog({
             facebookJson,
             compatJson,
           ]) => {
-          if (locJson)
-            setLocationOptions(
-              Array.isArray(locJson.locations) ? locJson.locations : [],
-            );
-          if (mlJson)
-            setMlAccounts(
-              Array.isArray(mlJson.accounts) ? mlJson.accounts : [],
-            );
-          if (shJson)
-            setShopeeAccounts(
-              Array.isArray(shJson.accounts) ? shJson.accounts : [],
-            );
-          if (magaluJson)
-            setMagaluAccounts(
-              Array.isArray(magaluJson.accounts) ? magaluJson.accounts : [],
-            );
-          if (olxJson)
-            setOlxAccounts(
-              Array.isArray(olxJson.accounts) ? olxJson.accounts : [],
-            );
-          if (facebookJson)
-            setFacebookAccounts(
-              Array.isArray(facebookJson.accounts)
-                ? facebookJson.accounts
-                : [],
-            );
-          if (compatJson) {
-            const items: CompatibilityEntry[] = (
-              compatJson.compatibilities || []
-            ).map(
-              (c: {
-                id: string;
-                brand: string;
-                model: string;
-                yearFrom?: number | null;
-                yearTo?: number | null;
-                version?: string | null;
-              }) => ({
-                _localId: c.id,
-                brand: c.brand,
-                model: c.model,
-                yearFrom: c.yearFrom ?? undefined,
-                yearTo: c.yearTo ?? undefined,
-                version: c.version ?? undefined,
-              }),
-            );
-            setCompatibilities(items);
-            setShowCompatibilitySection(items.length > 0);
-          }
-        })
+            if (locJson)
+              setLocationOptions(
+                Array.isArray(locJson.locations) ? locJson.locations : [],
+              );
+            if (mlJson)
+              setMlAccounts(
+                Array.isArray(mlJson.accounts) ? mlJson.accounts : [],
+              );
+            if (shJson)
+              setShopeeAccounts(
+                Array.isArray(shJson.accounts) ? shJson.accounts : [],
+              );
+            if (magaluJson)
+              setMagaluAccounts(
+                Array.isArray(magaluJson.accounts) ? magaluJson.accounts : [],
+              );
+            if (olxJson)
+              setOlxAccounts(
+                Array.isArray(olxJson.accounts) ? olxJson.accounts : [],
+              );
+            if (facebookJson)
+              setFacebookAccounts(
+                Array.isArray(facebookJson.accounts)
+                  ? facebookJson.accounts
+                  : [],
+              );
+            if (compatJson) {
+              const items: CompatibilityEntry[] = (
+                compatJson.compatibilities || []
+              ).map(
+                (c: {
+                  id: string;
+                  brand: string;
+                  model: string;
+                  yearFrom?: number | null;
+                  yearTo?: number | null;
+                  version?: string | null;
+                }) => ({
+                  _localId: c.id,
+                  brand: c.brand,
+                  model: c.model,
+                  yearFrom: c.yearFrom ?? undefined,
+                  yearTo: c.yearTo ?? undefined,
+                  version: c.version ?? undefined,
+                }),
+              );
+              setCompatibilities(items);
+              setShowCompatibilitySection(items.length > 0);
+            }
+          },
+        )
         .catch((err) => {
           console.error("Erro ao carregar dados do modal:", err);
         })

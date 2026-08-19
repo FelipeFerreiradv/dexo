@@ -60,7 +60,13 @@ export function FacebookListingFields({
   useEffect(() => {
     if (!includeFacebook) return;
     const term = categorySearch.trim();
-    if (term.length < 2) return;
+    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
+    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
+    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
+    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
+    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
+    // de propósito — lá são milhares de categorias.
+    if (term.length === 1) return;
     let cancelled = false;
     const handle = setTimeout(async () => {
       setLoading(true);
@@ -123,10 +129,7 @@ export function FacebookListingFields({
             <Label>Contas do Facebook</Label>
             <div className="space-y-2 rounded-md border p-3">
               {facebookAccounts.map((acc) => (
-                <label
-                  key={acc.id}
-                  className="flex items-center gap-2 text-sm"
-                >
+                <label key={acc.id} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
                     checked={selectedAccountIds.includes(acc.id)}
@@ -196,11 +199,9 @@ export function FacebookListingFields({
                                 onMouseDown={(e) => {
                                   e.preventDefault();
                                   field.onChange(o.id);
-                                  setValue(
-                                    "fbCategoryOverrideLabel",
-                                    o.value,
-                                    { shouldDirty: true },
-                                  );
+                                  setValue("fbCategoryOverrideLabel", o.value, {
+                                    shouldDirty: true,
+                                  });
                                   setCategorySearch("");
                                   setDropdownOpen(false);
                                 }}
@@ -233,7 +234,9 @@ export function FacebookListingFields({
 
           {/* Mesmo campo, rótulo e helper text do ML/Magalu. */}
           <div className="space-y-2">
-            <Label htmlFor="pp-facebookListingPrice">Valor do Anúncio (R$)</Label>
+            <Label htmlFor="pp-facebookListingPrice">
+              Valor do Anúncio (R$)
+            </Label>
             <Controller
               name="facebookListingPrice"
               control={control}

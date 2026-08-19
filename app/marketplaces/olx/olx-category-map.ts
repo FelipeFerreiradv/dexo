@@ -51,3 +51,22 @@ export const OLX_CATEGORY_MAP: Record<string, number> = {
 // insert acontece com categoria válida.
 export const OLX_DEFAULT_CATEGORY_ID: number | null =
   OLX_AUTOPARTS_CATEGORY.CARS;
+
+/**
+ * Nome de exibição de cada categoria — o que o operador lê na tela.
+ *
+ * ⚠️ NÃO confundir com as chaves de OLX_CATEGORY_MAP: aquelas são as PALAVRAS
+ * que a resolução procura no nome do produto ("moto", "caminhao", "lancha") e
+ * servem para casar, não para mostrar. Exibi-las levava a tela a dizer "moto"
+ * — ou, quando a lista ainda não tinha sido carregada, o número cru "2103".
+ *
+ * São só cinco: na OLX, autopeça é classificada por TIPO DE VEÍCULO. Não há
+ * árvore a navegar, então a tela mostra as cinco e pronto.
+ */
+export const OLX_CATEGORY_LABEL: Record<number, string> = {
+  [OLX_AUTOPARTS_CATEGORY.CARS]: "Carros, vans e utilitários",
+  [OLX_AUTOPARTS_CATEGORY.TRUCKS]: "Caminhões",
+  [OLX_AUTOPARTS_CATEGORY.MOTORCYCLES]: "Motos",
+  [OLX_AUTOPARTS_CATEGORY.BOATS]: "Barcos e aeronaves",
+  [OLX_AUTOPARTS_CATEGORY.BUSES]: "Ônibus",
+};
