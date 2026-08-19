@@ -14,10 +14,7 @@ import { OlxCategoryResolutionService } from "../services/olx-category-resolutio
 import { OlxRepublishService } from "../services/olx-republish.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
 import { formatMarketplaceError } from "../services/olx-facebook-error-message.service";
-import {
-  OLX_CONSTANTS,
-  resolveOlxSellerContact,
-} from "../olx/olx-constants";
+import { OLX_CONSTANTS, resolveOlxSellerContact } from "../olx/olx-constants";
 import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
 import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
@@ -121,6 +118,21 @@ export interface CreateListingResult {
   skipped?: boolean;
   // raw ML error payload (when available) to let callers decide handling/retries
   mlError?: string;
+  // Sinais de TRANSITORIEDADE do erro, para quem decide retry.
+  //
+  // `error` é só texto. Os classificadores (classifyOlxRemoveError /
+  // classifyFacebookRemoveError) decidem permanente vs. transitório lendo
+  // `status`, `responseData` e `code` do objeto de erro — que os api.services
+  // anexam e que se perdiam aqui, porque o resultado só carregava a mensagem.
+  //
+  // Sem estes campos, o ListingRetryService reconstruía um Error nu e TODO erro
+  // sem substring conhecida caía no default "permanente": um 503 da OLX ou um
+  // rate limit da Meta tirava o anúncio da fila para sempre, que é o oposto do
+  // que o retry existe para fazer. Opcionais e aditivos — quem não os lê
+  // continua igual.
+  errorStatus?: number;
+  errorResponseData?: unknown;
+  errorCode?: string;
 }
 
 export interface MLListingSettings {
@@ -851,7 +863,10 @@ export class ListingUseCase {
             attrs.push(entry);
           }
         }
-      } else if (resolvedCategoryId && positionCategories.has(resolvedCategoryId)) {
+      } else if (
+        resolvedCategoryId &&
+        positionCategories.has(resolvedCategoryId)
+      ) {
         // Fallback legado — usado quando o catálogo da categoria não pôde ser
         // carregado. Mantido byte-idêntico de propósito: só Dianteira/Traseira,
         // só nas 2 categorias de porta, sem value_id.
@@ -3023,8 +3038,7 @@ export class ListingUseCase {
             attemptCauses,
             categoryIdForML,
             {
-              somenteObrigatorios:
-                process.env.ML_ERROR_DETAIL_DISABLED === "1",
+              somenteObrigatorios: process.env.ML_ERROR_DETAIL_DISABLED === "1",
             },
           );
           if (actionable) {
@@ -4134,7 +4148,16 @@ export class ListingUseCase {
           );
         }
       }
-      return { success: false, error: message };
+      // Devolve também os sinais de transitoriedade. `OlxApiService.formatError`
+      // anexa `status`/`responseData` ao Error; sem repassá-los, o retry só via
+      // texto e tratava 503 e timeout como recusa definitiva.
+      return {
+        success: false,
+        error: message,
+        errorStatus: (error as any)?.status,
+        errorResponseData: (error as any)?.responseData,
+        errorCode: (error as any)?.code,
+      };
     }
   }
 
@@ -4642,8 +4665,7 @@ export class ListingUseCase {
           const { attributeList: mapped, report } = buildShopeeAttributeList({
             product: attrSourceProduct as any,
             categoryAttrs: attrs as any,
-            pickSafeMandatoryValue:
-              ListingUseCase.pickSafeMandatoryShopeeValue,
+            pickSafeMandatoryValue: ListingUseCase.pickSafeMandatoryShopeeValue,
             options: {
               legacyMandatoryFallback:
                 process.env.SHOPEE_ATTR_MAPPER_STRICT !== "true",
@@ -4689,72 +4711,72 @@ export class ListingUseCase {
             );
           }
         } else {
-        // ── Caminho LEGADO (flag desligada). Byte-idêntico ao anterior. ──
-        for (const attr of attrs) {
-          const attrNameLower = attr.attribute_name.toLowerCase();
-          const productValue = productAttrValues[attrNameLower];
+          // ── Caminho LEGADO (flag desligada). Byte-idêntico ao anterior. ──
+          for (const attr of attrs) {
+            const attrNameLower = attr.attribute_name.toLowerCase();
+            const productValue = productAttrValues[attrNameLower];
 
-          if (!productValue && !attr.is_mandatory) continue;
+            if (!productValue && !attr.is_mandatory) continue;
 
-          let valueId = 0;
-          let valueName = productValue || "";
+            let valueId = 0;
+            let valueName = productValue || "";
 
-          if (
-            attr.attribute_value_list &&
-            attr.attribute_value_list.length > 0
-          ) {
-            const exactMatch = attr.attribute_value_list.find(
-              (v) =>
-                v.value_name.toLowerCase() ===
-                (productValue || "").toLowerCase(),
-            );
-            if (exactMatch) {
-              valueId = exactMatch.value_id;
-              valueName = exactMatch.value_name;
-            } else if (productValue) {
-              const partialMatch = attr.attribute_value_list.find(
+            if (
+              attr.attribute_value_list &&
+              attr.attribute_value_list.length > 0
+            ) {
+              const exactMatch = attr.attribute_value_list.find(
                 (v) =>
-                  v.value_name
-                    .toLowerCase()
-                    .includes((productValue || "").toLowerCase()) ||
-                  (productValue || "")
-                    .toLowerCase()
-                    .includes(v.value_name.toLowerCase()),
+                  v.value_name.toLowerCase() ===
+                  (productValue || "").toLowerCase(),
               );
-              if (partialMatch) {
-                valueId = partialMatch.value_id;
-                valueName = partialMatch.value_name;
+              if (exactMatch) {
+                valueId = exactMatch.value_id;
+                valueName = exactMatch.value_name;
+              } else if (productValue) {
+                const partialMatch = attr.attribute_value_list.find(
+                  (v) =>
+                    v.value_name
+                      .toLowerCase()
+                      .includes((productValue || "").toLowerCase()) ||
+                    (productValue || "")
+                      .toLowerCase()
+                      .includes(v.value_name.toLowerCase()),
+                );
+                if (partialMatch) {
+                  valueId = partialMatch.value_id;
+                  valueName = partialMatch.value_name;
+                }
               }
+
+              if (attr.is_mandatory && !valueName) {
+                const picked = ListingUseCase.pickSafeMandatoryShopeeValue(
+                  attr.attribute_value_list,
+                );
+                valueId = picked.value_id;
+                valueName = picked.value_name;
+              }
+            } else if (attr.is_mandatory && !valueName) {
+              valueName = productValue || product.brand || product.name;
             }
 
-            if (attr.is_mandatory && !valueName) {
-              const picked = ListingUseCase.pickSafeMandatoryShopeeValue(
-                attr.attribute_value_list,
-              );
-              valueId = picked.value_id;
-              valueName = picked.value_name;
+            if (valueName) {
+              const attrValue: Record<string, unknown> = {
+                value_id: valueId,
+              };
+              if (valueId === 0) {
+                attrValue.original_value_name = valueName;
+              } else {
+                attrValue.original_value_name = valueName;
+                attrValue.value_id = valueId;
+              }
+              attributeList.push({
+                attribute_id: attr.attribute_id,
+                attribute_name: attr.attribute_name,
+                attribute_value_list: [attrValue as any],
+              });
             }
-          } else if (attr.is_mandatory && !valueName) {
-            valueName = productValue || product.brand || product.name;
           }
-
-          if (valueName) {
-            const attrValue: Record<string, unknown> = {
-              value_id: valueId,
-            };
-            if (valueId === 0) {
-              attrValue.original_value_name = valueName;
-            } else {
-              attrValue.original_value_name = valueName;
-              attrValue.value_id = valueId;
-            }
-            attributeList.push({
-              attribute_id: attr.attribute_id,
-              attribute_name: attr.attribute_name,
-              attribute_value_list: [attrValue as any],
-            });
-          }
-        }
         }
       } else {
         // Sem schema de atributos, mandar payload é garantia de rejeição da
@@ -5838,7 +5860,10 @@ export class ListingUseCase {
       // escapam do hook de rota): auto-pause por venda no PDV, pause manual em
       // /products e restore de cancelamento. No-op mantém DB e canal intactos.
       if (platform && isPlatformDisabled(platform)) {
-        return { success: false, error: `${platform} desativado por kill-switch` };
+        return {
+          success: false,
+          error: `${platform} desativado por kill-switch`,
+        };
       }
 
       // Magalu: a publicação é assíncrona (POST 202) e o `externalListingId` fica
@@ -6486,9 +6511,8 @@ export class ListingUseCase {
     if (!product) {
       return { success: false, error: "Produto do anúncio OLX não encontrado" };
     }
-    const { applyOverridesToProduct } = await import(
-      "../services/listing-overrides.service"
-    );
+    const { applyOverridesToProduct } =
+      await import("../services/listing-overrides.service");
     let listingForOverrides: any = listing;
     try {
       const prisma = (await import("../../lib/prisma")).default;
@@ -6764,7 +6788,10 @@ export class ListingUseCase {
             externalSku: product.sku,
             status: "error",
             // Idem OLX: traduz o JSON cru da Graph API.
-            lastError: formatMarketplaceError("FACEBOOK", message).slice(0, 490),
+            lastError: formatMarketplaceError("FACEBOOK", message).slice(
+              0,
+              490,
+            ),
             // Retry habilitado: branch FACEBOOK no ListingRetryService delega
             // para createFacebookListing. Cobre rate limit e 5xx da Meta.
             retryEnabled: true,
@@ -6780,7 +6807,16 @@ export class ListingUseCase {
           );
         }
       }
-      return { success: false, error: message };
+      // Idem OLX: `responseData.error.code` é o ÚNICO caminho para os códigos de
+      // rate limit da Graph (4, 17, 32, 613). Sem ele, "Application request
+      // limit reached" virava erro permanente.
+      return {
+        success: false,
+        error: message,
+        errorStatus: (error as any)?.status,
+        errorResponseData: (error as any)?.responseData,
+        errorCode: (error as any)?.code,
+      };
     }
   }
 
@@ -6891,7 +6927,10 @@ export class ListingUseCase {
   ): Promise<{ success: boolean; error?: string }> {
     const account = listing.marketplaceAccount;
     if (!account || !account.accessToken) {
-      return { success: false, error: "Conta Facebook sem credenciais válidas" };
+      return {
+        success: false,
+        error: "Conta Facebook sem credenciais válidas",
+      };
     }
     const retailerId = listing.externalListingId;
     if (!retailerId || retailerId.startsWith("PENDING_")) {
@@ -6954,9 +6993,8 @@ export class ListingUseCase {
         error: "Produto do anúncio Facebook não encontrado",
       };
     }
-    const { applyOverridesToProduct } = await import(
-      "../services/listing-overrides.service"
-    );
+    const { applyOverridesToProduct } =
+      await import("../services/listing-overrides.service");
     let listingForOverrides: any = listing;
     try {
       const prisma = (await import("../../lib/prisma")).default;
@@ -6995,7 +7033,9 @@ export class ListingUseCase {
     const itemData = FacebookPayloadBuilderService.build(effectiveProduct, {
       googleProductCategory,
       availability:
-        listing.status?.toLowerCase() === "paused" ? "out of stock" : "in stock",
+        listing.status?.toLowerCase() === "paused"
+          ? "out of stock"
+          : "in stock",
       quantity:
         typeof effectiveProduct?.stock === "number"
           ? effectiveProduct.stock
@@ -7835,8 +7875,9 @@ export class ListingUseCase {
         ATTR_RELEVANT_EDIT_FIELDS.some((k) => fields[k] !== undefined)
       ) {
         try {
-          const fullProduct =
-            await ListingUseCase.productRepository.findById(listing.productId);
+          const fullProduct = await ListingUseCase.productRepository.findById(
+            listing.productId,
+          );
           const rawCategoryId =
             (fields.shopeeCategoryOverride as string | undefined) ??
             (listing as any).shopeeCategoryOverride ??

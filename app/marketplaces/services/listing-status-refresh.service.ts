@@ -173,9 +173,20 @@ async function getFacebookItemStatuses(
   catalogId?: string | null,
 ): Promise<Map<string, string | undefined>> {
   const out = new Map<string, string | undefined>();
-  // Catálogo por conta (env só fallback) p/ não ler o catálogo global do .env.
-  const catalog = catalogId ?? FACEBOOK_CONSTANTS.CATALOG_ID;
-  if (retailerIds.length === 0 || !catalog) return out;
+  // Catálogo POR CONTA, sem cair no global do `.env`.
+  //
+  // O comentário anterior dizia "env só fallback p/ não ler o catálogo global"
+  // e o código fazia exatamente o contrário. A diferença importa aqui mais que
+  // nos outros pontos: este caminho ESCREVE o status lido de volta nos anúncios
+  // do tenant. Uma conta sem `fbCatalogId` passaria a espelhar o estado do
+  // catálogo de OUTRO tenant (o do `.env`) sobre os próprios anúncios — dado
+  // errado, não só dado a mais.
+  //
+  // Sem catálogo da conta o espelho simplesmente não roda, e o anúncio mantém o
+  // status do banco. É o que OLX e Magalu já fazem hoje: não ter espelho é o
+  // comportamento normal, ter espelho errado não.
+  if (retailerIds.length === 0 || !catalogId) return out;
+  const catalog = catalogId;
 
   const filter = JSON.stringify({ retailer_id: { is_any: retailerIds } });
   const url = new URL(`${facebookGraphBase()}/${catalog}/products`);
@@ -206,7 +217,10 @@ async function getFacebookItemStatuses(
       item.review_status &&
       item.review_status.toLowerCase() !== "approved" &&
       item.review_status.toLowerCase() !== "active";
-    out.set(item.retailer_id, reviewBlocked ? item.review_status : item.availability);
+    out.set(
+      item.retailer_id,
+      reviewBlocked ? item.review_status : item.availability,
+    );
   }
   return out;
 }

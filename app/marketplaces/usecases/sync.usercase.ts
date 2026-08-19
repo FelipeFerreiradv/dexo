@@ -4305,6 +4305,30 @@ export class SyncUseCase {
    * todo stockSyncJob de listing FACEBOOK falha em loop (o job é enfileirado p/
    * TODA listing, sem filtro de plataforma).
    */
+  /**
+   * Grava o status do anúncio do Facebook com GUARDA DE NOVIDADE e projeção
+   * enxuta — o mesmo desenho que o espelho do Mercado Livre já usa.
+   *
+   * Antes disto, cada volta da varredura chamava `updateStatus`, que é um
+   * `update` SEM `select`: o Prisma devolvia as ~46 colunas do ProductListing,
+   * incluindo os 20 campos `*Override` e os JSONBs de imagens, atributos e
+   * compatibilidades — mesmo quando o status local já era o desejado e nada
+   * havia mudado. Num botão "Sincronizar estoque" que varre a conta inteira,
+   * isso é a regra de egress "nada de leitura sem seleção explícita em caminho
+   * recorrente" sendo violada uma vez por anúncio.
+   *
+   * A guarda só evita ESCRITA redundante; a chamada externa continua saindo
+   * como antes, porque o status local pode estar defasado em relação ao
+   * catálogo da Meta e pular o envio exigiria o mesmo cuidado do `forceRemote`.
+   */
+  private static async espelharStatusFacebook(
+    listing: any,
+    status: "active" | "paused",
+  ): Promise<void> {
+    if (listing?.status === status) return;
+    await ListingRepository.updateStatusLean(listing.id, status);
+  }
+
   private static async syncFacebookProductStock(
     listing: any,
     product: any,
@@ -4358,7 +4382,7 @@ export class SyncUseCase {
           resp,
           catalogId,
         );
-        await ListingRepository.updateStatus(listing.id, "paused");
+        await this.espelharStatusFacebook(listing, "paused");
       } else {
         const resp = await FacebookApiService.setAvailability(
           account.accessToken,
@@ -4371,7 +4395,7 @@ export class SyncUseCase {
           resp,
           catalogId,
         );
-        await ListingRepository.updateStatus(listing.id, "active");
+        await this.espelharStatusFacebook(listing, "active");
       }
 
       await this.logSync(
@@ -5022,6 +5046,28 @@ export class SyncUseCase {
         throw new Error(
           "Conta do marketplace nÃ£o encontrada ou sem token de acesso",
         );
+      }
+
+      // Kill-switch de runtime — MESMA guarda que `syncProductStock` já tem.
+      // Sem ela, editar um produto com anúncio OLX/Facebook fazia chamada
+      // externa mesmo com a integração pausada: na OLX o `submitImport` com o
+      // mesmo id devolve o anúncio para a fila de revisão e, com estoque zero,
+      // o ramo de delete EXCLUI o anúncio — irreversível, porque a OLX não tem
+      // pausar. O operador via "integração parada" e o canal continuava sendo
+      // escrito. Entrada do caminho: PUT /products/:id → syncProductListings.
+      //
+      // `isPlatformDisabled` devolve false para ML/Shopee/Magalu, então os três
+      // canais de referência ficam byte-idênticos. O shape com `skipped` é o
+      // mesmo que o StockSyncRetryService já trata.
+      if (isPlatformDisabled(account.platform)) {
+        return {
+          success: true,
+          productId,
+          externalListingId,
+          platform: account.platform,
+          skipped: true,
+          skipReason: "integration_disabled",
+        } as SyncResult;
       }
 
       // 2.1 Buscar listing especifico desta conta para aplicar overrides

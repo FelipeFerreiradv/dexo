@@ -3328,9 +3328,23 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
+        // Conta selecionada no seletor da aba — MESMO bloco de /ml/sync. Sem
+        // ele o dropdown não tinha efeito: com N contas OLX conectadas, pedir
+        // a sincronização de UMA varria as N, multiplicando por N as leituras
+        // do banco e as chamadas à OLX. Ausente ⇒ `undefined` ⇒ varre todas,
+        // que é o comportamento de hoje e o do item "Todas as contas".
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
         void (async () => {
           try {
-            const result = await SyncUseCase.syncAllStock(userId, Platform.OLX);
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.OLX,
+              accountIds,
+            );
             console.log(
               `[olx/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
             );
@@ -3836,11 +3850,20 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
+        // Conta selecionada no seletor da aba — MESMO bloco de /ml/sync. Ver o
+        // comentário em /olx/sync: sem isto o dropdown não tinha efeito e cada
+        // conta extra multiplicava leituras do banco e chamadas à Meta.
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
         void (async () => {
           try {
             const result = await SyncUseCase.syncAllStock(
               userId,
               Platform.FACEBOOK,
+              accountIds,
             );
             console.log(
               `[facebook/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,

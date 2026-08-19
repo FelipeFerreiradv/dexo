@@ -406,7 +406,14 @@ export class ListingRepository {
     const liveStatuses =
       process.env.LISTING_STATUS_SYNC_DISABLED === "1"
         ? ["active", "paused"]
-        : ["active", "paused", "under_review", "reviewing", "unlist", "inactive"];
+        : [
+            "active",
+            "paused",
+            "under_review",
+            "reviewing",
+            "unlist",
+            "inactive",
+          ];
     return prisma.productListing.findFirst({
       where: {
         productId,
@@ -537,11 +544,19 @@ export class ListingRepository {
       nextRetryAt?: Date | null;
       retryEnabled?: boolean;
     },
+    // `increment: false` reagenda SEM consumir tentativa. Existe para o
+    // adiamento por kill-switch: a integração estar pausada não é falha do
+    // anúncio, e contar essas rodadas esgotava o teto de tentativas em ~2h30
+    // de pausa — quando o operador religasse, o anúncio já teria saído da fila
+    // sem nunca ter sido tentado. ADITIVO: default `true` = comportamento de
+    // sempre, então os outros nove call sites e ML/Shopee/Magalu não mudam.
+    opts?: { increment?: boolean },
   ) {
+    const deveIncrementar = opts?.increment !== false;
     return prisma.productListing.update({
       where: { id: listingId },
       data: {
-        retryAttempts: { increment: 1 },
+        ...(deveIncrementar ? { retryAttempts: { increment: 1 } } : {}),
         lastError: data.lastError ?? undefined,
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
@@ -893,10 +908,7 @@ export class ListingRepository {
    * NÃO leia outros campos de `listing.product` num caminho que passe
    * leanProduct — eles virão undefined em runtime.
    */
-  static async findById(
-    listingId: string,
-    opts?: { leanProduct?: boolean },
-  ) {
+  static async findById(listingId: string, opts?: { leanProduct?: boolean }) {
     const include = (
       opts?.leanProduct
         ? {

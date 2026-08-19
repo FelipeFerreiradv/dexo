@@ -18,7 +18,16 @@ vi.mock("../../services/facebook-api.service", () => ({
 }));
 
 vi.mock("../../repositories/listing.repository", () => ({
-  ListingRepository: { updateStatus: vi.fn().mockResolvedValue({}) },
+  ListingRepository: {
+    updateStatus: vi.fn().mockResolvedValue({}),
+    // O espelho de status do Facebook passou a usar a variante ENXUTA, atrás de
+    // guarda de novidade — o mesmo desenho do Mercado Livre. `updateStatus` é
+    // um `update` sem `select`: devolvia as ~46 colunas do ProductListing (com
+    // os 20 `*Override` e os JSONBs) a cada anúncio da varredura, mesmo quando
+    // nada mudava. Os casos abaixo continuam provando o que sempre provaram —
+    // que o Facebook NÃO deleta e que o status local acaba certo.
+    updateStatusLean: vi.fn().mockResolvedValue({}),
+  },
 }));
 
 import prisma from "@/app/lib/prisma";
@@ -26,7 +35,7 @@ import { FacebookApiService } from "../../services/facebook-api.service";
 import { ListingRepository } from "../../repositories/listing.repository";
 import { SyncUseCase } from "../sync.usercase";
 
-function productWith(stock: number) {
+function productWith(stock: number, statusLocal?: string) {
   return {
     id: "prod-1",
     name: "Farol Direito Gol 2012",
@@ -39,6 +48,7 @@ function productWith(stock: number) {
         id: "listing-1",
         externalListingId: "SKU1",
         externalSku: "SKU1",
+        status: statusLocal,
         marketplaceAccount: {
           id: "acc-fb",
           platform: Platform.FACEBOOK,
@@ -74,7 +84,7 @@ describe("SyncUseCase.syncProductStock — plataforma FACEBOOK", () => {
       "out of stock",
       { quantity: 0, catalogId: "cat-fb" },
     );
-    expect(ListingRepository.updateStatus).toHaveBeenCalledWith(
+    expect(ListingRepository.updateStatusLean).toHaveBeenCalledWith(
       "listing-1",
       "paused",
     );
@@ -92,7 +102,7 @@ describe("SyncUseCase.syncProductStock — plataforma FACEBOOK", () => {
       "in stock",
       { quantity: 5, catalogId: "cat-fb" },
     );
-    expect(ListingRepository.updateStatus).toHaveBeenCalledWith(
+    expect(ListingRepository.updateStatusLean).toHaveBeenCalledWith(
       "listing-1",
       "active",
     );
@@ -103,5 +113,51 @@ describe("SyncUseCase.syncProductStock — plataforma FACEBOOK", () => {
     (prisma as any).product.findUnique.mockResolvedValue(productWith(0));
     const results = await SyncUseCase.syncProductStock("prod-1");
     expect(results[0].error).toBeUndefined();
+  });
+
+  describe("guarda de novidade — não regrava status que já está certo", () => {
+    it("estoque 0 com o anúncio JÁ pausado: nenhuma escrita de status", async () => {
+      (prisma as any).product.findUnique.mockResolvedValue(
+        productWith(0, "paused"),
+      );
+
+      const results = await SyncUseCase.syncProductStock("prod-1");
+
+      expect(ListingRepository.updateStatusLean).not.toHaveBeenCalled();
+      expect(ListingRepository.updateStatus).not.toHaveBeenCalled();
+      // ⚠️ A guarda vale para a ESCRITA no banco, não para a chamada externa:
+      // o status local pode estar defasado em relação ao catálogo da Meta, e
+      // pular o envio exigiria o mesmo cuidado do `forceRemote`. Este assert
+      // trava essa fronteira — se alguém transformar a guarda num no-op do
+      // envio, o caso falha.
+      expect(FacebookApiService.setAvailability).toHaveBeenCalled();
+      expect(results[0].success).toBe(true);
+    });
+
+    it("estoque > 0 com o anúncio JÁ ativo: nenhuma escrita de status", async () => {
+      (prisma as any).product.findUnique.mockResolvedValue(
+        productWith(5, "active"),
+      );
+
+      const results = await SyncUseCase.syncProductStock("prod-1");
+
+      expect(ListingRepository.updateStatusLean).not.toHaveBeenCalled();
+      expect(results[0].success).toBe(true);
+    });
+
+    it("status local DIFERENTE do alvo continua sendo gravado", async () => {
+      // Controle negativo: sem ele os dois casos acima passariam mesmo se a
+      // gravação tivesse sumido de vez.
+      (prisma as any).product.findUnique.mockResolvedValue(
+        productWith(0, "active"),
+      );
+
+      await SyncUseCase.syncProductStock("prod-1");
+
+      expect(ListingRepository.updateStatusLean).toHaveBeenCalledWith(
+        "listing-1",
+        "paused",
+      );
+    });
   });
 });

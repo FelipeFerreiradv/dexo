@@ -26,7 +26,8 @@ const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
 // Pre-compiled regex for Shopee terminal error detection
-const SHOPEE_TERMINAL_RE = /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida|n[ãa]o foi poss[ií]vel obter os atributos da categoria/i;
+const SHOPEE_TERMINAL_RE =
+  /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida|n[ãa]o foi poss[ií]vel obter os atributos da categoria/i;
 
 export class ListingRetryService {
   private static running = false;
@@ -154,8 +155,11 @@ export class ListingRetryService {
                 Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
               ];
             await ListingRepository.incrementRetryAttempts(cand.id, {
-              lastError: (isTerminal ? "[TERMINAL] " : "") + msg.substring(0, 490),
-              nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+              lastError:
+                (isTerminal ? "[TERMINAL] " : "") + msg.substring(0, 490),
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
               retryEnabled: shouldRetry,
             });
             if (isTerminal) {
@@ -184,10 +188,18 @@ export class ListingRetryService {
           // publicando. Reagenda sem consumir tentativa — quando o operador
           // religar, o candidato volta à fila no estado em que estava.
           if (isPlatformDisabled(account.platform)) {
-            await ListingRepository.incrementRetryAttempts(cand.id, {
-              nextRetryAt: new Date(Date.now() + 30 * 60 * 1000),
-              lastError: `${nome} pausado por kill-switch — retry adiado`,
-            });
+            await ListingRepository.incrementRetryAttempts(
+              cand.id,
+              {
+                nextRetryAt: new Date(Date.now() + 30 * 60 * 1000),
+                lastError: `${nome} pausado por kill-switch — retry adiado`,
+              },
+              // O comentário acima prometia "sem consumir tentativa" e o código
+              // fazia o contrário: com o cron a cada 30 min, 2h30 de pausa
+              // esgotavam as 5 tentativas e o anúncio saía da fila sem NUNCA
+              // ter sido publicado.
+              { increment: false },
+            );
             continue;
           }
 
@@ -219,10 +231,25 @@ export class ListingRetryService {
               //
               // Classifica com o mesmo vocabulário já usado na remoção, para
               // erro permanente sair da fila na primeira vez.
+              // ⚠️ O Error precisa carregar os SINAIS, não só o texto.
+              //
+              // Os classificadores decidem permanente vs. transitório lendo
+              // `status` (5xx/429), `responseData.statusCode` (OLX) e
+              // `responseData.error.code` (rate limit da Graph: 4/17/32/613),
+              // além de `code` para ECONNRESET/ETIMEDOUT. Um `new Error(msg)`
+              // nu deixa todos eles `undefined` e o DEFAULT dos dois
+              // classificadores é "permanent" — então um 503 da OLX ou um rate
+              // limit da Meta tirava o anúncio da fila para SEMPRE, que é o
+              // oposto do que este bloco existe para fazer. Só as poucas
+              // substrings ("timeout", "socket hang up") escapavam.
               const msg = result.error ?? "Erro desconhecido";
+              const erroRico = new Error(msg);
+              (erroRico as any).status = result.errorStatus;
+              (erroRico as any).responseData = result.errorResponseData;
+              (erroRico as any).code = result.errorCode;
               const classificacao = ehOlx
-                ? classifyOlxRemoveError(new Error(msg))
-                : classifyFacebookRemoveError(new Error(msg));
+                ? classifyOlxRemoveError(erroRico)
+                : classifyFacebookRemoveError(erroRico);
               const ehPermanente = classificacao.kind === "permanent";
               const attempts = (cand.retryAttempts || 0) + 1;
               const shouldRetry = !ehPermanente && attempts < MAX_ATTEMPTS;
@@ -404,11 +431,12 @@ export class ListingRetryService {
         const hasValidStock = Number.isFinite(stockNum) && stockNum > 0;
         const hasValidPrice = Number.isFinite(priceNum) && priceNum > 0;
         if (!hasValidStock || !hasValidPrice) {
-          const reason = !hasValidStock && !hasValidPrice
-            ? "sem estoque e sem preço"
-            : !hasValidStock
-              ? "sem estoque (stock=0)"
-              : "sem preço (price=0)";
+          const reason =
+            !hasValidStock && !hasValidPrice
+              ? "sem estoque e sem preço"
+              : !hasValidStock
+                ? "sem estoque (stock=0)"
+                : "sem preço (price=0)";
           console.warn(
             `[ListingRetryService] skipping ${cand.id} permanently — produto ${reason}`,
           );
