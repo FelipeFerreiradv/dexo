@@ -3952,6 +3952,14 @@ export class ListingUseCase {
       if (!product) {
         return { success: false, error: "Produto não encontrado" };
       }
+      // BLOCO G — mesma sombra do Mercado Livre, da Magalu e da Shopee.
+      // Anunciar peça que já está numa venda em aberto é criar a venda dupla no
+      // ato do cadastro. Troca só em memória; nada é gravado em Product.
+      //
+      // Fica ANTES da guarda de estoque de propósito: peça inteiramente
+      // comprometida tem disponível 0 e não pode virar anúncio — é o mesmo
+      // ponto em que os outros três canais aplicam.
+      product = withAvailableStock(product);
       if (typeof product.stock !== "number" || product.stock <= 0) {
         return {
           success: false,
@@ -6618,6 +6626,10 @@ export class ListingUseCase {
       if (!product) {
         return { success: false, error: "Produto não encontrado" };
       }
+      // BLOCO G — mesma sombra do Mercado Livre, da Magalu e da Shopee.
+      // Anunciar peça que já está numa venda em aberto é criar a venda dupla no
+      // ato do cadastro. Troca só em memória; nada é gravado em Product.
+      product = withAvailableStock(product);
       if (typeof product.stock !== "number" || product.stock <= 0) {
         return {
           success: false,
