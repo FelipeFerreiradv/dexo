@@ -60,7 +60,13 @@ export function OlxListingFields({
   useEffect(() => {
     if (!includeOlx) return;
     const term = categorySearch.trim();
-    if (term.length < 2) return;
+    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
+    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
+    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
+    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
+    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
+    // de propósito — lá são milhares de categorias.
+    if (term.length === 1) return;
     let cancelled = false;
     const handle = setTimeout(async () => {
       setLoading(true);
@@ -120,10 +126,7 @@ export function OlxListingFields({
             <Label>Contas da OLX</Label>
             <div className="space-y-2 rounded-md border p-3">
               {olxAccounts.map((acc) => (
-                <label
-                  key={acc.id}
-                  className="flex items-center gap-2 text-sm"
-                >
+                <label key={acc.id} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
                     checked={selectedAccountIds.includes(acc.id)}

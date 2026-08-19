@@ -39,3 +39,17 @@ export const FACEBOOK_CATEGORY_MAP: Record<string, string> = {
 // Sem match de veículo no nome, cai aqui (não em null) — o item publica com uma
 // categoria válida.
 export const FACEBOOK_DEFAULT_CATEGORY: string = MOTOR_VEHICLE_PARTS;
+
+/**
+ * Nome de exibição em português de cada categoria do catálogo.
+ *
+ * ⚠️ TRADUZ O RÓTULO, NUNCA O VALOR. O que vai para a Meta é o caminho da
+ * taxonomia do Google, que existe só em inglês — traduzir o valor faria a Meta
+ * recusar o item. Por isso o de-para é uma camada separada: a chave é o path
+ * real (enviado ao canal) e o texto é apenas o que aparece na tela.
+ */
+export const FACEBOOK_CATEGORY_LABEL: Record<string, string> = {
+  [MOTOR_VEHICLE_PARTS]: "Peças de carros, vans e utilitários",
+  [MOTORCYCLE_PARTS]: "Peças de motos",
+  [WATERCRAFT_PARTS]: "Peças de barcos e embarcações",
+};

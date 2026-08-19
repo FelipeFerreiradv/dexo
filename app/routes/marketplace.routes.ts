@@ -30,8 +30,14 @@ import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-ord
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { OlxCategoryResolutionService } from "../marketplaces/services/olx-category-resolution.service";
 import { FacebookCategoryResolutionService } from "../marketplaces/services/facebook-category-resolution.service";
-import { OLX_CATEGORY_MAP } from "../marketplaces/olx/olx-category-map";
-import { FACEBOOK_CATEGORY_MAP } from "../marketplaces/facebook/facebook-category-map";
+import {
+  OLX_CATEGORY_LABEL,
+  OLX_CATEGORY_MAP,
+} from "../marketplaces/olx/olx-category-map";
+import {
+  FACEBOOK_CATEGORY_LABEL,
+  FACEBOOK_CATEGORY_MAP,
+} from "../marketplaces/facebook/facebook-category-map";
 import { getVehicleRootSet } from "../marketplaces/services/category-resolution.service";
 import {
   ML_BLOCKED_BRANCHES,
@@ -136,6 +142,15 @@ async function resolveMlAccountForCompat(
 /**
  * Rotas para gerenciar conexÃµes com marketplaces
  */
+/**
+ * Normaliza texto para busca: minúsculas e sem acento. Usado nas listas de
+ * categoria de OLX e Facebook, onde o operador digita "caminhão" e o rótulo é
+ * "Caminhões".
+ */
+function normalizarBusca(texto: string): string {
+  return texto.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+}
+
 export async function marketplaceRoutes(app: FastifyInstance) {
   // Kill-switch de runtime: bloqueia todas as rotas /marketplace/olx/* e
   // /marketplace/facebook/* quando OLX_INTEGRATION_DISABLED / FACEBOOK_INTEGRATION_DISABLED=1.
@@ -3425,9 +3440,19 @@ small{color:#666}</style></head><body>
           .replace(/[̀-ͯ]/g, "")
           .trim();
         const seen = new Set<number>();
-        const labelById = new Map<number, string>();
-        for (const [rawKey, id] of Object.entries(OLX_CATEGORY_MAP)) {
-          if (!labelById.has(id)) labelById.set(id, rawKey);
+        // Rótulo = NOME da categoria, não a palavra de casamento. As chaves de
+        // OLX_CATEGORY_MAP são termos de busca no nome do produto ("moto",
+        // "caminhao") e nunca deveriam chegar à tela.
+        //
+        // Mas elas seguem valendo na BUSCA, como sinônimos: o rótulo é
+        // "Caminhões" e o operador digita "caminhão", que normalizado vira
+        // "caminhao" e não casa com "caminhoes". Sem os sinônimos, procurar
+        // pelo singular não acha nada.
+        const sinonimosPorId = new Map<number, string[]>();
+        for (const [palavra, id] of Object.entries(OLX_CATEGORY_MAP)) {
+          const atuais = sinonimosPorId.get(id) ?? [];
+          atuais.push(normalizarBusca(palavra));
+          sinonimosPorId.set(id, atuais);
         }
         const categories = Object.values(OLX_CATEGORY_MAP)
           .filter((id) => {
@@ -3437,15 +3462,16 @@ small{color:#666}</style></head><body>
           })
           .map((id) => ({
             id: String(id),
-            value: labelById.get(id) ?? String(id),
+            value: OLX_CATEGORY_LABEL[id] ?? String(id),
           }))
           .filter((c) => {
             if (!search) return true;
-            const v = c.value
-              .toLowerCase()
-              .normalize("NFD")
-              .replace(/[̀-ͯ]/g, "");
-            return v.includes(search) || c.id.includes(search);
+            const rotulo = normalizarBusca(c.value);
+            if (rotulo.includes(search) || c.id.includes(search)) return true;
+            const sinonimos = sinonimosPorId.get(Number(c.id)) ?? [];
+            return sinonimos.some(
+              (p) => p.includes(search) || search.includes(p),
+            );
           });
         reply.header("Cache-Control", "private, max-age=600");
         return reply.send({ categories });
@@ -3955,7 +3981,13 @@ small{color:#666}</style></head><body>
             seen.add(path);
             return true;
           })
-          .map((path) => ({ id: path, value: path }))
+          // `id` continua sendo o path da taxonomia do Google — é ele que
+          // vai para a Meta. Só o `value`, que a tela exibe e a busca filtra,
+          // passa a ser português.
+          .map((path) => ({
+            id: path,
+            value: FACEBOOK_CATEGORY_LABEL[path] ?? path,
+          }))
           .filter((c) => {
             if (!search) return true;
             const v = c.value
