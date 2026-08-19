@@ -14,6 +14,7 @@ import {
 import { paymentMethodsForKind } from "@/app/lib/payment-methods";
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
 import { UnidadeSelect } from "../shared/unidade-select";
+import { BankAccountSelect } from "../shared/bank-account-select";
 import {
   ProductPickerBlock,
   type ProductMeta,
@@ -49,6 +50,13 @@ interface Props {
   setScrapMeta?: (
     updater: (m: Record<string, string>) => Record<string, string>,
   ) => void;
+  /**
+   * BLOCO A — mostra o seletor de conta bancária / caixa. AUSENTE ⇒ o passo
+   * renderiza exatamente como hoje, sem campo e sem request novo.
+   */
+  showBankAccount?: boolean;
+  /** Sugerir a conta PADRÃO (só na CRIAÇÃO — ver BankAccountSelect). */
+  autoSelectDefaultAccount?: boolean;
 }
 
 export function TitleStep({
@@ -62,6 +70,8 @@ export function TitleStep({
   setProductMeta,
   scrapMeta,
   setScrapMeta,
+  showBankAccount,
+  autoSelectDefaultAccount,
 }: Props) {
   const showPicker =
     !!balcaoEnabled &&
@@ -179,6 +189,30 @@ export function TitleStep({
           {paymentsUi ? " Para pagamento combinado, use o bloco abaixo." : ""}
         </p>
       </div>
+
+      {/* BLOCO A — vizinho da forma de pagamento porque é a outra metade da
+          mesma pergunta: "como" e "para onde". Flag OFF (ou nenhuma conta
+          cadastrada) ⇒ o seletor não é montado. */}
+      {showBankAccount && (
+        <div className="md:col-span-2">
+          <Controller
+            control={control}
+            name="bankAccountId"
+            render={({ field }) => (
+              <BankAccountSelect
+                value={field.value ?? null}
+                onChange={field.onChange}
+                label={
+                  kind === "payable"
+                    ? "Conta de onde sai o dinheiro"
+                    : "Conta onde o dinheiro entra"
+                }
+                autoSelectDefault={autoSelectDefaultAccount}
+              />
+            )}
+          />
+        </div>
+      )}
 
       {/* Bloco A — só na venda balcão (onde existe o conceito de fechamento de
           caixa) e só com a flag ligada. MESMA condição do `disabled` do

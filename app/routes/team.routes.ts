@@ -478,6 +478,63 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
    * a UI de gestão de equipe. Admin-only: blockCollaborator devolve 403 a quem
    * tem parentUserId (colaborador não gerencia sub-colaboradores).
    */
+  /**
+   * GET /me/team/sellers — BLOCO B
+   *
+   * Quem pode ser escolhido como VENDEDOR de uma venda: o admin do tenant mais
+   * os colaboradores ATIVOS. Somente leitura, payload mínimo (id + nome +
+   * e-mail), ordenado para a lista sair estável.
+   *
+   * Rota NOVA em vez de estender `GET /me/team`, por dois motivos:
+   *  1. contrato: aquela rota é consumida pelo cabeçalho e pela barra lateral,
+   *     e ela devolve `children: []` para quem É colaborador — que é
+   *     exatamente quem opera o PDV e precisa desta lista;
+   *  2. permissão: `/collaborators` é admin-only (`blockCollaborator`). Aqui
+   *     NÃO pode ser: o balconista precisa registrar em nome de quem vendeu.
+   *     Por isso a projeção é mínima — nada de status, avatar ou permissões.
+   *
+   * Sem `blockCollaborator`, e o tenant é resolvido no servidor (dataOwnerId),
+   * nunca vindo do cliente.
+   */
+  fastify.get(
+    "/sellers",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const me = (request as any).user as {
+          dataOwnerId?: string | null;
+          id: string;
+        };
+        // Colaborador ⇒ dataOwnerId é o admin; admin ⇒ é ele mesmo.
+        const ownerId = me.dataOwnerId ?? me.id;
+
+        const [dono, equipe] = await Promise.all([
+          prisma.user.findUnique({
+            where: { id: ownerId },
+            select: { id: true, name: true, email: true },
+          }),
+          prisma.user.findMany({
+            where: { parentUserId: ownerId, isActive: true },
+            select: { id: true, name: true, email: true },
+            orderBy: [{ name: "asc" }, { email: "asc" }],
+          }),
+        ]);
+
+        // O dono primeiro: na loja pequena ele é o vendedor da maioria das
+        // vendas, e a lista abre já na resposta mais provável.
+        const sellers = [...(dono ? [dono] : []), ...equipe];
+        return reply.send({ sellers });
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao carregar vendedores",
+        });
+      }
+    },
+  );
+
   fastify.get(
     "/collaborators",
     { preHandler: [authMiddleware, blockCollaborator] },

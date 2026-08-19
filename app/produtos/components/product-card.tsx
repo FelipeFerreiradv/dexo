@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { Eye, MapPin, Package, Pencil, Trash2 } from "lucide-react";
+import {
+  Eye,
+  MapPin,
+  Package,
+  Pencil,
+  ShoppingCart,
+  Trash2,
+} from "lucide-react";
 
 import {
   AlertDialog,
@@ -40,6 +47,12 @@ interface ProductCardProps {
   onTogglePause: (product: Product, status: "active" | "paused") => void;
   onOpenLightbox: (product: Product) => void;
   onOpenListings: (product: Product, platform: MarketplacePlatform) => void;
+  /**
+   * BLOCO I — "Vender no PDV". AUSENTE ⇒ o botão não existe e o card renderiza
+   * exatamente como hoje. A navegação é do pai (que tem o router); o card
+   * segue presentacional, como todas as outras ações dele.
+   */
+  onSell?: (product: Product) => void;
 }
 
 /**
@@ -63,6 +76,7 @@ export function ProductCard({
   onTogglePause,
   onOpenLightbox,
   onOpenListings,
+  onSell,
 }: ProductCardProps) {
   const [imgError, setImgError] = useState(false);
   const showImage = Boolean(product.imageUrl) && !imgError;
@@ -165,6 +179,22 @@ export function ProductCard({
             {formatPrice(product.price)}
           </span>
           <div className="flex gap-1">
+            {/* BLOCO I — vender esta peça no balcão. Vem primeiro por ser a
+                ação comercial da vitrine; as outras são de manutenção.
+                NÃO é desabilitado por estoque zero de propósito: a casa avisa
+                em vez de bloquear (o bloco de itens do PDV já mostra "Excede
+                estoque"), e num desmanche a peça às vezes está no pátio antes
+                de estar na contagem. */}
+            {onSell && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                title="Vender no PDV Balcão"
+                onClick={() => onSell(product)}
+              >
+                <ShoppingCart className="size-4" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon-sm"

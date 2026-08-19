@@ -40,6 +40,20 @@ export function isSaleCancelEnabled(): boolean {
   return SALE_CANCEL_ENABLED;
 }
 
+const PDV_EDIT_SALE_ENABLED =
+  process.env.NEXT_PUBLIC_PDV_EDIT_SALE_ENABLED === "true";
+
+/**
+ * BLOCO E — botão "Editar" no livro do dia, para venda ainda NÃO recebida.
+ *
+ * Flag OFF ⇒ a coluna de ações renderiza exatamente como hoje e o operador
+ * segue indo ao Financeiro. A regra de QUANDO editar (só PENDENTE/VENCIDA)
+ * vive em `pdv-edit-sale.ts`; esta flag só governa a existência do botão.
+ */
+export function isPdvEditSaleEnabled(): boolean {
+  return PDV_EDIT_SALE_ENABLED;
+}
+
 export type SaleStatusForActions =
   | "PENDENTE"
   | "PAGA"

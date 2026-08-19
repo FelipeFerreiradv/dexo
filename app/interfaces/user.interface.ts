@@ -35,6 +35,16 @@ export interface User {
   // Permissões de acesso por página (colaboradores). null = acesso total.
   pagePermissions?: Record<string, boolean> | null;
 
+  // Reabrir anúncio quando a peça volta ao estoque por cancelamento de venda
+  // (raw, da própria linha). Default true. OPCIONAL no tipo de propósito: há
+  // specs que montam `User` à mão (tests/auth.authorize.is-active.spec.ts:44) e
+  // um campo obrigatório os quebraria — o que a regra do projeto proíbe.
+  reopenListingsOnSaleCancel?: boolean;
+  // Efetivo: colaborador herda do admin pai. É o que a TELA deve exibir, senão
+  // o colaborador veria a própria linha (sempre true) e o toggle mentiria sobre
+  // o estado do tenant. Mesmo par de isActive/effectiveActive.
+  effectiveReopenListingsOnSaleCancel?: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -76,6 +86,12 @@ export interface UserUpdate {
 
   // Acesso liberado. Permite (re)ativar/bloquear via código. undefined => Prisma ignora.
   isActive?: boolean;
+
+  // Reabrir anúncio ao cancelar venda. undefined => não altera.
+  // ⚠️ Preferência de TENANT: a rota DESCARTA este campo quando quem chama é
+  // colaborador (user.routes.ts), porque a escrita iria para a linha dele — que
+  // nenhum dos dois motores de cancelamento lê.
+  reopenListingsOnSaleCancel?: boolean;
 
   role?: Role;
 

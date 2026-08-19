@@ -10,11 +10,20 @@ import { hashPassword, isHashed } from "../lib/password";
 
 class UserRepositoryPrisma implements UserRepository {
   private mapUser(
-    u: PrismaUser & { parent?: { isActive: boolean } | null },
+    u: PrismaUser & {
+      parent?: {
+        isActive: boolean;
+        reopenListingsOnSaleCancel?: boolean;
+      } | null;
+    },
   ): User {
     // default-safe: só `false` explícito bloqueia; null/undefined/true => liberado.
     const ownActive = u.isActive ?? true;
     const parentActive = u.parent?.isActive ?? true;
+    // Mesma disciplina para a reabertura de anúncio: ausente => LIGADO, que é o
+    // comportamento de sempre. O `?? true` aqui não defende contra NULL no banco
+    // (a coluna é NOT NULL) — defende contra projeção enxuta e mock de teste.
+    const ownReopen = u.reopenListingsOnSaleCancel ?? true;
     return {
       id: u.id,
       email: u.email,
@@ -46,6 +55,15 @@ class UserRepositoryPrisma implements UserRepository {
       isActive: ownActive,
       // Cascata: colaborador cai junto quando o admin pai é bloqueado.
       effectiveActive: ownActive && parentActive,
+
+      reopenListingsOnSaleCancel: ownReopen,
+      // HERANÇA, não cascata (diferente do isActive): a preferência é do TENANT,
+      // então o colaborador exibe o valor do PAI, não a conjunção dos dois. A
+      // linha do colaborador nunca é lida pelos motores de cancelamento — se a
+      // tela mostrasse `ownReopen`, ela mentiria sobre o que vai acontecer.
+      effectiveReopenListingsOnSaleCancel: u.parentUserId
+        ? (u.parent?.reopenListingsOnSaleCancel ?? true)
+        : ownReopen,
 
       // Permissões por página (colaboradores). null = acesso total.
       pagePermissions:
@@ -104,7 +122,14 @@ class UserRepositoryPrisma implements UserRepository {
         },
         // Status do admin pai junto (1 query, sem round-trip extra) p/ a
         // checagem de bloqueio em cascata. mapUser ignora `parent` fora disso.
-        include: { parent: { select: { isActive: true } } },
+        // `reopenListingsOnSaleCancel` do PAI entra aqui para o colaborador
+        // enxergar o valor do tenant. O include já existia — nenhum round-trip
+        // novo, só uma coluna a mais na projeção.
+        include: {
+          parent: {
+            select: { isActive: true, reopenListingsOnSaleCancel: true },
+          },
+        },
       });
       return data ? this.mapUser(data) : null;
     } catch (error) {
@@ -120,7 +145,14 @@ class UserRepositoryPrisma implements UserRepository {
         },
         // Status do admin pai junto (1 query, sem round-trip extra) p/ a
         // checagem de bloqueio em cascata. mapUser ignora `parent` fora disso.
-        include: { parent: { select: { isActive: true } } },
+        // `reopenListingsOnSaleCancel` do PAI entra aqui para o colaborador
+        // enxergar o valor do tenant. O include já existia — nenhum round-trip
+        // novo, só uma coluna a mais na projeção.
+        include: {
+          parent: {
+            select: { isActive: true, reopenListingsOnSaleCancel: true },
+          },
+        },
       });
       return data ? this.mapUser(data) : null;
     } catch (error) {
@@ -291,6 +323,11 @@ class UserRepositoryPrisma implements UserRepository {
 
           // Acesso liberado/bloqueado (somente se fornecido)
           ...(data.isActive !== undefined && { isActive: data.isActive }),
+
+          // Reabrir anúncio ao cancelar venda (somente se fornecido).
+          ...(data.reopenListingsOnSaleCancel !== undefined && {
+            reopenListingsOnSaleCancel: data.reopenListingsOnSaleCancel,
+          }),
 
           // Permissões por página (somente se fornecido; undefined → não altera)
           ...(data.pagePermissions !== undefined && {

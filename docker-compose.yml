@@ -17,6 +17,19 @@ services:
       # mandar imagens => DoS). O app (mesmo host) acessa via 127.0.0.1:8000.
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
+    # ZUMBIS (medido 12/08/2026: 3.261 acumulados em ~2 dias). O `uvicorn` é o
+    # PID 1 do container, e PID 1 tem o dever de dar `wait()` nos filhos órfãos
+    # — ele não faz isso. Cada execução do healthcheck (`python -c ...`, a cada
+    # 30s) deixava um processo em estado Z para sempre: ~2.880/dia, crescimento
+    # SEM TETO, 93% da tabela de processos do host.
+    #
+    # `init: true` põe o tini como PID 1: ele encaminha sinais para o uvicorn
+    # (inclusive melhora o shutdown gracioso) e COLHE os órfãos. Não muda nada
+    # no comportamento da aplicação.
+    #
+    # ⚠️ Zumbi NÃO consome CPU (só um slot na tabela, ~32 MB no total) — isto
+    # é higiene, não desempenho. Não confundir com a causa da fila.
+    init: true
     # Default 1 worker: o birefnet em CPU é memory-bound (mais workers não
     # aceleraram o lote nos testes); 1 worker = imagem única mais rápida (todos
     # os vCPUs) + menos RAM. Multi-worker fica disponível p/ tunar se o host
@@ -119,7 +132,21 @@ services:
     mem_limit: 16g
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]
-      interval: 30s
-      timeout: 5s
+      # Os prazos antigos (interval 30s / timeout 5s / start_period 60s) eram
+      # incompatíveis com o próprio serviço: com REMBG_ASYNC_OFFLOAD=false a
+      # inferência BLOQUEIA o event loop por ~10s, então o /health não tinha
+      # como responder em 5s sempre que houvesse trabalho. Resultado medido em
+      # 12/08: 33 falhas seguidas e o container marcado `unhealthy` estando
+      # perfeitamente funcional — um alarme que só mentia.
+      #
+      # timeout 20s > uma inferência (p95 ~14s). interval 60s corta pela metade
+      # a criação de processos filhos. start_period 120s cobre o carregamento
+      # do modelo, que levou 45-90s nas medições.
+      #
+      # NADA reage a `unhealthy` aqui (`restart: unless-stopped` não age nele),
+      # então este bloco é diagnóstico — o ponto é que ele volte a dizer a
+      # verdade.
+      interval: 60s
+      timeout: 20s
       retries: 3
-      start_period: 60s
+      start_period: 120s

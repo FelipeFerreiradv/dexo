@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   CapacityExceededError,
@@ -80,6 +81,36 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
   /**
    * GET /locations/select
    * Lista simplificada para selects/dropdowns (com fullPath)
+   *
+   * EGRESS: este payload é rebaixado INTEIRO a cada abertura do modal de
+   * criar/editar produto (o cache do products-list tem TTL de 15s e os modais
+   * nem o usam) — 53,8 KB comprimidos por chamada no maior tenant, ~233 MB/mês
+   * somando a base. Encolher o corpo não resolve: o `id` (cuid) sozinho é 64,6%
+   * do payload comprimido e é irredutível.
+   *
+   * Daí o ETag: `no-cache` faz o navegador REVALIDAR sempre (nunca serve dado
+   * velho) e, quando nada mudou, a resposta é um 304 sem corpo. Medido sobre 7
+   * dias de produção, 70% a 91% das revalidações não teriam mudança.
+   *
+   * Por que é seguro sem `Vary`: `private` impede cache compartilhado e
+   * `no-cache` força revalidação, então uma entrada de outro usuário no mesmo
+   * navegador nunca é servida — o ETag é recalculado para o usuário da vez e
+   * não bate. O corpo de um 200 é byte-idêntico ao de antes.
+   *
+   * NÃO ADIANTA IR ALÉM DAQUI — medido em produção (13/08, issue #269), não
+   * refazer a análise:
+   *  - Cache por TEMPO (no cliente ou via `max-age`) não pega quase nada: a
+   *    MEDIANA entre dois cadastros do mesmo usuário é de 434 s. Só 2,2% das
+   *    aberturas caem dentro de 60 s da anterior, e 1 em 6.446 dentro de 15 s —
+   *    é por isso que o cache de 15 s do `products-list` praticamente nunca
+   *    acerta. Para pegar a mediana o TTL teria que ser de ~7 min, defasagem
+   *    que nenhum contador aguenta.
+   *  - Cache SERVER-SIDE não tem o que economizar: no `pg_stat_statements` as
+   *    consultas desta rota somam 60 s de banco em 22 dias (3,7 ms por
+   *    chamada). O `groupBy` escopado do `findAllFlat` já matou o custo que
+   *    existia.
+   *  - Encolher o corpo já tinha sido descartado antes: o `id` (cuid) é 64,6%
+   *    do payload comprimido e é a chave de seleção.
    */
   fastify.get(
     "/select",
@@ -88,7 +119,30 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const locations = await locationUseCase.listForSelect(userId);
-        return reply.status(200).send({ locations });
+
+        // Serializa UMA vez: o mesmo buffer vira o ETag e o corpo.
+        const body = JSON.stringify({ locations });
+        const etag = `W/"${createHash("sha1").update(body).digest("base64url")}"`;
+
+        // `if-none-match` pode vir com uma lista; basta um casar.
+        const enviado = request.headers["if-none-match"];
+        if (
+          typeof enviado === "string" &&
+          enviado.split(",").some((candidato) => candidato.trim() === etag)
+        ) {
+          return reply
+            .header("ETag", etag)
+            .header("Cache-Control", "private, no-cache")
+            .status(304)
+            .send();
+        }
+
+        return reply
+          .header("ETag", etag)
+          .header("Cache-Control", "private, no-cache")
+          .type("application/json")
+          .status(200)
+          .send(body);
       } catch (error) {
         return reply.status(500).send({
           error:

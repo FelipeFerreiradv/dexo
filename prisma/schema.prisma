@@ -53,6 +53,20 @@ model User {
   // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
   whatsappEnabledAt DateTime?
 
+  // Reabrir o anúncio quando a peça volta ao estoque por CANCELAMENTO de venda
+  // (pedido de marketplace ou estorno de balcão). Default true = comportamento
+  // atual, então nenhum tenant muda ao migrar.
+  //
+  // Existe porque quem trabalha com peça USADA sofre com a reabertura: a peça
+  // física ainda não voltou ao pátio, outro comprador compra, e o lojista
+  // cancela de novo — o que machuca reputação no marketplace. Quem trabalha com
+  // peça nova quer o oposto, e por isso a escolha é por conta, não global.
+  //
+  // É preferência de TENANT: colaboradores herdam do admin pai (a leitura usa
+  // sempre o dataOwnerId), mesma regra de `whatsappEnabledAt`.
+  // Migração: prisma/ddl/2026-08-17-user-reopen-listings-on-sale-cancel.sql
+  reopenListingsOnSaleCancel Boolean @default(true)
+
   // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
   // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
   // bloqueado. Só afeta colaboradores; admin/superadmin sempre têm acesso total.
@@ -69,6 +83,10 @@ model User {
   products            Product[]
   productsCreated     Product[]           @relation("ProductCreatedBy")
   listingsCreated     ProductListing[]    @relation("ListingCreatedBy")
+  // BLOCO B — vendas em que esta pessoa foi o VENDEDOR (não o dono do tenant).
+  salesAsSeller       Receivable[]        @relation("ReceivableSeller")
+  // BLOCO A — contas bancárias / caixas do tenant.
+  bankAccounts        BankAccount[]
   systemLogs          SystemLog[]
   locations           Location[]
   scraps              Scrap[]
@@ -94,6 +112,21 @@ model Product {
   description            String?
   price                  Decimal                @db.Decimal(10, 2)
   stock                  Int                    @default(0)
+  // ── BLOCO G: estoque COMPROMETIDO ──
+  // Peças lançadas em venda PENDENTE (ainda não recebida). O estoque físico
+  // (`stock`) não muda: a peça continua no pátio. O que muda é quanto dela
+  // ainda pode ser vendido — `stock - reservedStock`.
+  //
+  // Existe porque criar uma venda de balcão NÃO toca estoque (a baixa só
+  // acontece em `markPaid`), então a peça segue anunciada e pode ser vendida
+  // de novo. Medido em 14/08: 65 vendas pendentes, a mais antiga há 51 dias.
+  //
+  // ⚠️ NESTA FASE O SYNC AINDA EMPURRA `stock` CRU. A virada dos 25 pontos de
+  // escrita para `stock - reservedStock` é fase própria, com dado de oversell
+  // na mão — decisão de 14/08. Por ora a reserva é informação para o operador.
+  //
+  // Migração: ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "reservedStock" INTEGER NOT NULL DEFAULT 0;
+  reservedStock          Int                    @default(0)
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
   costPrice              Decimal?               @db.Decimal(10, 2)
@@ -1077,14 +1110,90 @@ model Receivable {
   installmentNumber  Int?
   installmentTotal   Int?
 
+  // ── BLOCO A (2ª metade): liquidação ──
+  // Quando o dinheiro DE FATO caiu, distinto de `paidAt` ("a venda foi baixada,
+  // o estoque saiu"). Só é gravado quando alguém MARCA explicitamente — no caso
+  // comum a liquidação é DERIVADA da forma de pagamento em read-time
+  // (app/financeiro/lib/settlement.ts), como o VENCIDA sempre foi.
+  //
+  // NULL não significa "não caiu": significa "ninguém marcou", e aí a regra por
+  // forma decide. PIX derivado como liquidado tem `settledAt` NULL.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "settledAt" TIMESTAMP(3);
+  settledAt DateTime?
+
+  // ── BLOCO A: conta de destino do dinheiro ──
+  // Onde o dinheiro DESTA venda entrou. NULL = não informado (é o caso de 178
+  // das 260 contas existentes, importadas do legado sem forma de pagamento).
+  //
+  // Convive com o detalhe por forma (`ReceivablePayment.bankAccountId`) na
+  // MESMA precedência que `ReceivableItem.scrapId` já usa: a linha, quando
+  // preenchida, manda; senão vale o da conta. É o que faz o campo servir às 77
+  // vendas de forma única, que não têm linha nenhuma.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "bankAccountId" TEXT;
+  bankAccountId String?
+
+  // ── BLOCO F: estágio operacional da venda ──
+  // SEGUNDA DIMENSÃO, ortogonal ao `status` financeiro: uma venda pode estar
+  // PAGA e ainda "em separação". Segue o desenho aprovado do `BudgetStage`
+  // (schema:907-916) e a regra que ele mesmo escreveu: NUNCA governa receber,
+  // estornar, editar ou emitir nota. É informação, não trava.
+  //
+  // TEXT e não enum do Postgres (decisão de 14/08): acrescentar, renomear ou
+  // reordenar estágio passa a ser editar `app/financeiro/lib/sale-stage.ts`,
+  // sem migração — e `ALTER TYPE` não remove valor de enum, o que prenderia o
+  // pipeline nos primeiros 11 para sempre. Mesma escolha de `paymentMethod`,
+  // `cancelReasonCode` e `ReceivableEvent.type`.
+  //
+  // NULL = venda anterior ao recurso ⇒ DERIVA para o primeiro estágio em
+  // read-time, exatamente como o BudgetStage faz com "Novo". Nenhum backfill.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "saleStage" TEXT;
+  saleStage String?
+
+  // ── BLOCO B: vendedor da venda ──
+  // Quem VENDEU — que pode não ser quem operou o caixa (o caixa lança a venda
+  // do balconista, e a comissão é de quem vendeu). Distinto do `userId`
+  // (dono/tenant) e do autor registrado na timeline (quem clicou).
+  //
+  // NULL = venda anterior ao recurso ou lançamento sem vendedor informado →
+  // a tela exibe "—". Sem FK física no banco, mesma decisão do
+  // `Product.createdByUserId`: o Prisma resolve o include sem constraint, e um
+  // id órfão (colaborador excluído) vira relação null em vez de quebrar.
+  //
+  // Migração: ALTER TABLE "Receivable" ADD COLUMN IF NOT EXISTS "sellerUserId" TEXT;
+  sellerUserId String?
+
+  // ── BLOCO D: motivo do cancelamento ──
+  // Gravados SÓ pelo `POST /:id/reverse`, DENTRO da mesma transação que grava
+  // CANCELADA. Em coluna, e não apenas no log: informar o motivo é OPCIONAL
+  // (decisão de produto), mas o motivo que o operador digitou não pode se
+  // perder numa falha de auditoria — que é best-effort por natureza.
+  //
+  // Todos NULÁVEIS: conta não cancelada nunca os tem, e cancelamento sem
+  // motivo informado é um caso válido.
+  //
+  // As parcelas filhas canceladas junto NÃO herdam estes campos: o motivo é da
+  // VENDA (a conta-entrada, que carrega os itens), e replicá-lo faria um
+  // `GROUP BY cancelReasonCode` contar a mesma decisão N+1 vezes.
+  cancelReasonCode String? // vocabulário de app/financeiro/lib/cancel-reasons.ts
+  cancelReason     String? // observação livre do operador (<= 500 chars)
+  cancelledAt      DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   user     User                @relation(fields: [userId], references: [id])
+  seller   User?               @relation("ReceivableSeller", fields: [sellerUserId], references: [id])
+  // SetNull: desativar/apagar uma conta NUNCA pode apagar a venda. O caminho
+  // normal é `isActive: false`, que preserva o vínculo histórico.
+  bankAccount BankAccount?     @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
   customer Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
   unidade  Unidade?            @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
   items    ReceivableItem[]
   payments ReceivablePayment[]
+  events   ReceivableEvent[]
   budget   Budget?             @relation(fields: [budgetId], references: [id], onDelete: SetNull)
 
   parent   Receivable?  @relation("ReceivableSplit", fields: [parentReceivableId], references: [id], onDelete: SetNull)
@@ -1095,6 +1204,10 @@ model Receivable {
   @@index([customerId])
   @@index([userId, unidadeId])
   @@index([parentReceivableId])
+  // BLOCO B — serve ao relatório "vendas por vendedor no período".
+  @@index([userId, sellerUserId])
+  // BLOCO F — serve à contagem por coluna do painel de estágios.
+  @@index([userId, saleStage])
 }
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.
@@ -1124,12 +1237,19 @@ model Payable {
   // Forma de pagamento (opcional). Ver Receivable.paymentMethod.
   paymentMethod String?
 
+  // BLOCO A — conta de ONDE SAIU o dinheiro. Sem esta ponta o saldo por conta
+  // só cresceria: entradas sem saídas não respondem "quanto tem na conta X".
+  //
+  // Migração: ALTER TABLE "Payable" ADD COLUMN IF NOT EXISTS "bankAccountId" TEXT;
+  bankAccountId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user     User     @relation(fields: [userId], references: [id])
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  user        User         @relation(fields: [userId], references: [id])
+  customer    Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade     Unidade?     @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  bankAccount BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
 
   @@index([userId, dueDate])
   @@index([userId, status])
@@ -1197,9 +1317,62 @@ model ReceivablePayment {
   amount       Decimal  @db.Decimal(12, 2)
   createdAt    DateTime @default(now())
 
-  receivable Receivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+  // BLOCO A — destino DESTA forma. É o caso que o escalar da conta não cobre:
+  // "o PIX caiu no Itaú, o dinheiro ficou no caixa". NULL ⇒ vale o
+  // `Receivable.bankAccountId` (mesma precedência de `ReceivableItem.scrapId`).
+  //
+  // Migração: ALTER TABLE "ReceivablePayment" ADD COLUMN IF NOT EXISTS "bankAccountId" TEXT;
+  bankAccountId String?
+
+  // BLOCO A (2ª metade) — quando ESTA forma caiu. Só gravado por marcação
+  // explícita; no caso comum a liquidação é derivada da forma em read-time.
+  // É o que permite "o PIX já caiu, o cartão não" na MESMA venda.
+  //
+  // Migração: ALTER TABLE "ReceivablePayment" ADD COLUMN IF NOT EXISTS "settledAt" TIMESTAMP(3);
+  settledAt DateTime?
+
+  receivable  Receivable   @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+  bankAccount BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
 
   @@index([receivableId])
+}
+
+// BLOCO H — histórico da venda, legível pelo OPERADOR.
+//
+// Tabela dedicada em vez de `SystemLog` por uma razão concreta: existe rota
+// que apaga logs antigos (90 dias por padrão), então o histórico da venda
+// sumiria sozinho. Aqui ele dura o que a venda durar.
+//
+// `type` é String, não enum: um tipo de evento novo não pode exigir
+// `ALTER TYPE` no Postgres. Mesma escolha de `ReceivablePayment.method` e de
+// `SystemLog.action`.
+//
+// `actorName` é SNAPSHOT de propósito — o nome do colaborador muda, o
+// histórico não. Sem ele, renomear alguém reescreveria o passado.
+//
+// LGPD/egress: `details` guarda o MÍNIMO para a linha do tempo fazer sentido
+// (valores, contagens, ids). Nada de CPF, endereço ou payload de cliente.
+model ReceivableEvent {
+  id           String   @id @default(cuid())
+  receivableId String
+  // Dono dos dados (o admin do tenant). Escopo de toda leitura.
+  userId       String
+  // Quem OPEROU — colaborador ou o próprio admin. NULL = ação de sistema
+  // (ex.: rotina automática), que é diferente de "não sabemos".
+  actorId      String?
+  actorName    String?
+  // CREATED | UPDATED | PAID | REVERSED | FISCAL_EMITTED
+  type         String
+  // Texto pronto para o operador ler. A tela NÃO monta frase a partir do tipo.
+  message      String?
+  details      Json?
+  createdAt    DateTime @default(now())
+
+  receivable Receivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  // A leitura da timeline é sempre (venda, mais recente primeiro).
+  @@index([receivableId, createdAt])
+  @@index([userId, createdAt])
 }
 
 // Orçamento (proposta de venda ao cliente). Espelha Receivable/ReceivableItem
@@ -1280,6 +1453,48 @@ model BudgetItem {
 // Unidade (filial / loja física) — escopo por userId (= dataOwnerId), igual a
 // Customer/Location. Soft-delete via `active` porque Receivable/Payable têm FK
 // para cá; inativar preserva histórico e a semântica de "Sem unidade".
+// BLOCO A — onde o dinheiro entra e de onde sai.
+//
+// Espelha o desenho do `Unidade` (entidade de configuração do tenant): CRUD
+// próprio, desativação por flag em vez de exclusão, e vínculo NULÁVEL nos
+// lançamentos com `onDelete: SetNull` como rede de segurança.
+//
+// Por que desativar em vez de excluir: a conta é referenciada por lançamentos
+// históricos. Apagá-la responderia "de onde saiu esse dinheiro?" com silêncio.
+// `isActive: false` some dos seletores e continua explicando o passado.
+model BankAccount {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Nome que o operador reconhece: "Itaú da loja", "Caixa do balcão".
+  name String
+  /// Dados bancários, todos opcionais — "Caixa" e "carteira digital" não têm.
+  bankName      String?
+  agency        String?
+  accountNumber String?
+
+  /// BANCO | CAIXA | CARTEIRA_DIGITAL — vocabulário em
+  /// app/financeiro/lib/bank-accounts.ts. TEXT e não enum pelo mesmo motivo do
+  /// `paymentMethod`: tipo novo é editar um arquivo, sem DDL.
+  kind String @default("BANCO")
+
+  /// Conta sugerida nos formulários. "No máximo 1 default por usuário" é
+  /// garantido por UNIQUE PARCIAL no banco (ver o DDL), não pelo Prisma —
+  /// mesma decisão do `CompanyFiscalConfig`.
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User                @relation(fields: [userId], references: [id])
+  receivables Receivable[]
+  payables    Payable[]
+  payments    ReceivablePayment[]
+
+  @@index([userId, isActive])
+}
+
 model Unidade {
   id        String   @id @default(cuid())
   userId    String

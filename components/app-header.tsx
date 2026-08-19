@@ -90,7 +90,17 @@ export function AppHeader({ session }: AppHeaderProps) {
   useEffect(() => {
     if (!session) return;
     let active = true;
+    let inFlight = false;
     const load = async () => {
+      // EGRESS: aba em segundo plano NÃO consulta. Este era o único
+      // `setInterval` de dados do repo sem gate de visibilidade — uma aba
+      // esquecida aberta batia em `/dashboard/notifications` (5 findMany em
+      // paralelo) a cada 5min, para sempre, sem ninguém olhando. Ao voltar o
+      // foco recarrega na hora, então o usuário vê dado MAIS fresco que antes
+      // (não espera o resto do intervalo).
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (inFlight) return; // troca rápida de aba não dispara dois loads
+      inFlight = true;
       try {
         setLoadingNotif(true);
         const res = await fetch(
@@ -115,14 +125,24 @@ export function AppHeader({ session }: AppHeaderProps) {
       } catch (err) {
         console.error(err);
       } finally {
+        inFlight = false;
         if (active) setLoadingNotif(false);
       }
     };
     load();
     const id = setInterval(load, 300000); // 5 minutes
+    const onVisibilityChange = () => {
+      if (active && !document.hidden) void load();
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
       active = false;
       clearInterval(id);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
     // EGRESS: a dependência é o EMAIL, não o objeto `session`. O next-auth troca
     // a identidade de `session` a cada refresh/re-render, o que reexecutava este
@@ -158,8 +178,29 @@ export function AppHeader({ session }: AppHeaderProps) {
     loadUserProfile();
   }, [loadUserProfile]);
 
+  // O redirecionamento mora num EFEITO, não no corpo do render.
+  //
+  // Este componente é um Client Component, e Client Component também é
+  // renderizado no SERVIDOR para produzir o HTML inicial. Lá `session` chega
+  // null, o ramo executava, e `router.push` do next/navigation toca `location`
+  // — que não existe no Node. O resultado era um `ReferenceError: location is
+  // not defined` NÃO CAPTURADO a cada requisição: 3,88 milhões de ocorrências e
+  // 391 MB de log em produção, e ruído suficiente para mascarar o incidente de
+  // 17/08/2026 (ver o commit d3b7a0f).
+  //
+  // Efeito não roda no servidor, então o push só acontece no navegador — que é
+  // onde ele sempre precisou acontecer. Para o usuário nada muda: sem sessão a
+  // tela continua vazia e continua indo para /login.
+  //
+  // `app-sidebar.tsx` já fazia exatamente assim; este arquivo é que ficou para
+  // trás. Estamos alinhando com o irmão, não inventando padrão.
+  useEffect(() => {
+    if (!session) {
+      router.push("/login");
+    }
+  }, [router, session]);
+
   if (!session) {
-    router.push("/login");
     return null;
   }
 

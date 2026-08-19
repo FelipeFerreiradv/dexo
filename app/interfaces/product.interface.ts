@@ -93,6 +93,11 @@ export interface Product {
   name: string;
   description?: string;
   stock: number;
+  // BLOCO G — quanto deste estoque já está comprometido por venda em aberto.
+  // OPCIONAL de propósito: as projeções lean (productSelect da listagem) não
+  // trazem a coluna, e um campo obrigatório mentiria no tipo. É LEITURA: quem
+  // grava é o recálculo do serviço de reserva, nunca um caminho de produto.
+  reservedStock?: number;
   price: number;
   createdAt: Date;
   updatedAt: Date;

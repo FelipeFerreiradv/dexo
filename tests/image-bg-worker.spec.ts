@@ -46,7 +46,10 @@ vi.mock("../app/services/system-log.service", () => ({
   SystemLogService: { logError: (...a: any[]) => logErrorMock(...a) },
 }));
 
-import { ImageBgWorkerService } from "../app/marketplaces/services/image-bg-worker.service";
+import {
+  ImageBgWorkerService,
+  MAX_JOBS_PER_TICK,
+} from "../app/marketplaces/services/image-bg-worker.service";
 
 const BASE_JOB = {
   id: "job1",
@@ -299,5 +302,88 @@ describe("ImageBgWorkerService", () => {
     const sweepUpdate = jobUpdate.mock.calls[0][0];
     expect(sweepUpdate.data.swapSweepsLeft).toBe(1);
     expect(sweepUpdate.data.nextSweepAt).toBeInstanceOf(Date);
+  });
+
+  // --- Drenagem sem esperar o tick (12/08/2026) ---------------------------
+  // Antes: 1 job por tick de 5s ⇒ com a fila cheia o worker ficava parado até
+  // 5s depois de CADA foto. Agora o tick emenda os jobs enquanto houver fila.
+
+  function primeSuccessfulJob(id: string) {
+    jobFindFirst.mockResolvedValueOnce({ ...BASE_JOB, id });
+    jobUpdateMany.mockResolvedValueOnce({ count: 1 }); // claim CAS
+    readFileMock.mockResolvedValueOnce(Buffer.from("orig"));
+    processMock.mockResolvedValueOnce({
+      processed: Buffer.from("png-bytes"),
+      format: "png",
+      removedBackground: true,
+      shadowApplied: false,
+      width: 800,
+      height: 600,
+    });
+    swapMock.mockResolvedValueOnce({});
+    jobUpdate.mockResolvedValueOnce({});
+  }
+
+  it("emenda os jobs no mesmo tick enquanto houver fila", async () => {
+    primeEmptyMaintenance();
+    primeSuccessfulJob("job1");
+    primeSuccessfulJob("job2");
+    primeSuccessfulJob("job3");
+    jobFindFirst.mockResolvedValueOnce(null); // fila acabou
+
+    await ImageBgWorkerService.runOnce();
+
+    // Três recortes num único tick — antes seriam três ticks (≈10s parados).
+    expect(processMock).toHaveBeenCalledTimes(3);
+    expect(recordOutcomeMock).toHaveBeenCalledTimes(3);
+    // Manutenção (reclaim + sweeps) roda UMA vez por tick, não por job.
+    expect(jobFindMany).toHaveBeenCalledTimes(1);
+    // Estritamente sequencial: o sidecar tem 1 worker.
+    const ids = jobUpdate.mock.calls.map((c: any[]) => c[0].where.id);
+    expect(ids).toEqual(["job1", "job2", "job3"]);
+  });
+
+  it("para de emendar assim que a fila esvazia (sem varrer à toa)", async () => {
+    primeEmptyMaintenance();
+    primeSuccessfulJob("job1");
+    jobFindFirst.mockResolvedValueOnce(null);
+
+    await ImageBgWorkerService.runOnce();
+
+    expect(processMock).toHaveBeenCalledTimes(1);
+    // 1 job + 1 consulta que veio vazia: não fica girando até o teto.
+    expect(jobFindFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it("job que degrada ENCERRA o tick — não gira em cima de sidecar ruim", async () => {
+    primeEmptyMaintenance();
+    jobFindFirst.mockResolvedValueOnce(BASE_JOB);
+    jobUpdateMany.mockResolvedValueOnce({ count: 1 });
+    readFileMock.mockResolvedValueOnce(Buffer.from("orig"));
+    processMock.mockResolvedValueOnce({
+      processed: Buffer.from("webp"),
+      format: "webp",
+      removedBackground: false,
+      degradeReason: "budget_gate",
+    });
+    jobUpdateMany.mockResolvedValueOnce({ count: 1 }); // volta a PENDING
+
+    await ImageBgWorkerService.runOnce();
+
+    expect(processMock).toHaveBeenCalledTimes(1);
+    // Só a consulta do job que degradou: o backoff é quem manda agora.
+    expect(jobFindFirst).toHaveBeenCalledTimes(1);
+    expect(jobUpdateMany.mock.calls.at(-1)![0].data.status).toBe("PENDING");
+  });
+
+  it("respeita o teto de jobs por tick (reclaim/sweeps não ficam de fora)", async () => {
+    primeEmptyMaintenance();
+    for (let i = 0; i < MAX_JOBS_PER_TICK + 3; i++) {
+      primeSuccessfulJob(`job${i}`);
+    }
+
+    await ImageBgWorkerService.runOnce();
+
+    expect(processMock).toHaveBeenCalledTimes(MAX_JOBS_PER_TICK);
   });
 });

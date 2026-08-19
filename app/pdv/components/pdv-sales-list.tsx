@@ -3,7 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { ArrowRight, CheckCircle2, Loader2, ReceiptText } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Loader2,
+  Pencil,
+  ReceiptText,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -23,13 +29,33 @@ import {
 import { formatToBRL } from "@/components/ui/currency-input";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
-import { paymentMethodLabel } from "@/app/lib/payment-methods";
+import {
+  SaleStatusFilter,
+  type SaleStatusFilterCode,
+} from "@/app/financeiro/components/shared/sale-status-filter";
+import { SaleTimelineSheet } from "@/app/financeiro/components/shared/sale-timeline-sheet";
+import { isSaleTimelineUiEnabled } from "@/app/financeiro/lib/sale-timeline-client";
+import { describeCancelReason } from "@/app/financeiro/lib/cancel-reasons";
+import {
+  isSaleSellerUiEnabled,
+  sellerLabel,
+} from "@/app/financeiro/lib/sale-seller";
+import {
+  isSaleStageUiEnabled,
+  saleStageLabel,
+} from "@/app/financeiro/lib/sale-stage";
+import { SaleStageCell } from "@/app/financeiro/components/shared/sale-stage-cell";
+import {
+  paymentMethodLabel,
+  paymentMethodsSummary,
+} from "@/app/lib/payment-methods";
 import { SectionHeading } from "@/components/section-heading";
 import {
   isFiscalUiEnabled,
   isPdvActionsMenuEnabled,
   isSaleCancelEnabled,
 } from "../lib/pdv-actions";
+import { canEditSaleInPdv } from "../lib/pdv-edit-sale";
 import { PdvSaleActions } from "./pdv-sale-actions";
 
 // "Livro do dia" do PDV — as vendas balcão recentes (contas a receber COM
@@ -53,10 +79,26 @@ export interface PdvSaleRow {
   // Ausentes = venda à vista.
   installmentsCount?: number;
   installmentsAmount?: number;
+  // Fase 1.1 — linhas de pagamento quando a venda teve mais de uma forma.
+  // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
+  payments?: { method: string; amount: number }[];
+  // BLOCO D — motivo do cancelamento. Ausente em tudo que não foi cancelado
+  // com motivo informado.
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  // BLOCO B — quem vendeu. Ausente = venda sem vendedor informado.
+  seller?: { id: string; name: string | null; email: string | null } | null;
+  // BLOCO F — estágio operacional. Ausente/null ⇒ a tela DERIVA para o
+  // primeiro estágio (venda anterior ao recurso não fica fora do painel).
+  saleStage?: string | null;
 }
 
 interface Props {
   rows: PdvSaleRow[];
+  // BLOCO C — filtro de status do livro do dia. Controlado pelo PdvView,
+  // que é quem faz o fetch. Ausente => o cabeçalho fica como sempre foi.
+  statusFilters?: SaleStatusFilterCode[];
+  onStatusFiltersChange?: (v: SaleStatusFilterCode[]) => void;
   loading: boolean;
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
   onChanged?: () => void;
@@ -66,6 +108,14 @@ interface Props {
   // Bloco D (multi-CNPJ): emitente selecionado no caixa, repassado ao rascunho
   // de NF-e 55 do menu de ações. Ausente/null ⇒ CNPJ padrão (igual a hoje).
   nfceCompanyId?: string | null;
+  /**
+   * BLOCO E — abre a venda para correção. AUSENTE ⇒ o botão não existe e a
+   * coluna de ações é a de hoje. Quem carrega e abre o formulário é o PdvView
+   * (que já tem o FinanceDialog montado).
+   */
+  onEditSale?: (row: PdvSaleRow) => void;
+  /** Id em carregamento — vira spinner no botão da linha. */
+  editingSaleId?: string | null;
 }
 
 // Bloco D — menu "Ações". Flag OFF ⇒ a coluna renderiza EXATAMENTE os dois
@@ -73,6 +123,13 @@ interface Props {
 const ACTIONS_MENU = isPdvActionsMenuEnabled();
 // Bloco E — "Cancelar venda" no menu. Flag OFF ⇒ item nem existe.
 const SALE_CANCEL = isSaleCancelEnabled();
+// BLOCO H — "Histórico da venda" no menu. Flag OFF ⇒ item nem existe, e o
+// painel nem é montado.
+const TIMELINE_UI = isSaleTimelineUiEnabled();
+// BLOCO B — coluna "Vendedor". Flag OFF ⇒ a coluna não existe.
+const SELLER_UI = isSaleSellerUiEnabled();
+// BLOCO F — coluna "Etapa" (estágio operacional). Flag OFF ⇒ não existe.
+const STAGE_UI = isSaleStageUiEnabled();
 
 const SHOWN = 10;
 
@@ -103,15 +160,22 @@ function formatWhen(iso: string) {
 
 export function PdvSalesList({
   rows,
+  statusFilters,
+  onStatusFiltersChange,
   loading,
   onToast,
   onChanged,
   onNfce,
   nfceCompanyId,
+  onEditSale,
+  editingSaleId,
 }: Props) {
   const { data: session } = useSession();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [nfceBusyId, setNfceBusyId] = useState<string | null>(null);
+  // BLOCO H — venda com o histórico aberto. UM painel para a lista inteira,
+  // não um por linha.
+  const [timelineRow, setTimelineRow] = useState<PdvSaleRow | null>(null);
 
   const handleNfce = async (r: PdvSaleRow) => {
     if (!onNfce) return;
@@ -149,7 +213,7 @@ export function PdvSalesList({
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <SectionHeading
           eyebrow="Livro do dia · Balcão"
           title="Vendas"
@@ -160,6 +224,12 @@ export function PdvSalesList({
               : "Contas a receber de venda balcão. Edição, estorno e cupom ficam no Financeiro."
           }
         />
+        {onStatusFiltersChange && (
+          <SaleStatusFilter
+            value={statusFilters ?? []}
+            onChange={onStatusFiltersChange}
+          />
+        )}
       </CardHeader>
       <CardContent>
         {loading ? (
@@ -183,9 +253,24 @@ export function PdvSalesList({
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Cliente
                 </TableHead>
+                {/* BLOCO B — flag OFF ⇒ a coluna não existe e a tabela é
+                    exatamente a de hoje. */}
+                {SELLER_UI && (
+                  <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
+                    Vendedor
+                  </TableHead>
+                )}
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Forma
                 </TableHead>
+                {/* BLOCO F — a etapa é a SEGUNDA dimensão, e fica ao lado do
+                    status financeiro de propósito: "PAGA · em separação" é uma
+                    leitura, não duas. Flag OFF ⇒ a coluna não existe. */}
+                {STAGE_UI && (
+                  <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
+                    Etapa
+                  </TableHead>
+                )}
                 <TableHead className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   Status
                 </TableHead>
@@ -206,17 +291,67 @@ export function PdvSalesList({
                   <TableCell className="max-w-[200px] truncate font-medium">
                     {r.customer?.name ?? "—"}
                   </TableCell>
+                  {SELLER_UI && (
+                    <TableCell className="max-w-[140px] truncate text-sm">
+                      {r.seller ? (
+                        sellerLabel(r.seller)
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  )}
                   <TableCell>
                     {r.paymentMethod ? (
-                      <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                        {paymentMethodLabel(r.paymentMethod)}
-                      </span>
+                      (() => {
+                        // Fase 1.1 — venda em N formas mostrava só a
+                        // predominante, como se as outras não existissem.
+                        // Com 0 ou 1 linha o rótulo é idêntico ao de antes.
+                        const { label, detail } = paymentMethodsSummary(
+                          r.paymentMethod,
+                          r.payments,
+                        );
+                        return (
+                          <span
+                            className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                            title={detail ?? undefined}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })()
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
+                  {STAGE_UI && (
+                    <TableCell>
+                      {/* Venda CANCELADA não anda no pátio: mover etapa ali
+                          não significaria nada. Mostra o rótulo, sem controle. */}
+                      {r.status === "CANCELADA" ? (
+                        <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          {saleStageLabel(r.saleStage)}
+                        </span>
+                      ) : (
+                        <SaleStageCell
+                          receivableId={r.id}
+                          saleStage={r.saleStage}
+                          onToast={onToast}
+                          onChanged={onChanged}
+                        />
+                      )}
+                    </TableCell>
+                  )}
                   <TableCell>
+                    {/* BLOCO D — o motivo vira tooltip do badge, igual ao
+                        Financeiro. Sem motivo, title fica undefined e o badge
+                        é o de sempre. */}
                     <span
+                      title={
+                        describeCancelReason(
+                          r.cancelReasonCode,
+                          r.cancelReason,
+                        ) ?? undefined
+                      }
                       className={cn(
                         "inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
                         STATUS_STYLES[r.status] ?? STATUS_STYLES.PENDENTE,
@@ -251,6 +386,37 @@ export function PdvSalesList({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
+                      {/* BLOCO E — "Editar" MUDOU DE LUGAR: era um botão solto
+                          aqui e passou para dentro do menu de ações, por pedido
+                          do operador. A linha já tinha "Receber" como ação
+                          primária, e um segundo botão ao lado disputava o olho
+                          com ela.
+
+                          Só sobrou botão solto no caminho SEM menu de ações
+                          (flag `NEXT_PUBLIC_PDV_ACTIONS_MENU_ENABLED` off) —
+                          ali não existe menu onde encaixar, e sumir com a
+                          edição seria regressão. */}
+                      {!ACTIONS_MENU &&
+                        onEditSale &&
+                        canEditSaleInPdv(r.status) && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            title="Corrigir esta venda"
+                            disabled={
+                              editingSaleId !== null &&
+                              editingSaleId !== undefined
+                            }
+                            onClick={() => onEditSale(r)}
+                          >
+                            {editingSaleId === r.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Pencil className="h-4 w-4" />
+                            )}
+                            Editar
+                          </Button>
+                        )}
                       {r.status !== "PAGA" && r.status !== "CANCELADA" && (
                         <Button
                           size="sm"
@@ -284,6 +450,22 @@ export function PdvSalesList({
                           // permissão recebe 403 mesmo chamando por fora.
                           saleCancelUi={SALE_CANCEL}
                           onReversed={onChanged}
+                          // BLOCO H: ausente com a flag OFF ⇒ item não existe.
+                          onTimeline={
+                            TIMELINE_UI ? () => setTimelineRow(r) : undefined
+                          }
+                          // BLOCO E: ausente quando a venda já não pode ser
+                          // corrigida (paga/cancelada) ou com a flag OFF ⇒ o
+                          // item nem aparece no menu.
+                          onEdit={
+                            onEditSale && canEditSaleInPdv(r.status)
+                              ? () => onEditSale(r)
+                              : undefined
+                          }
+                          editBusy={
+                            editingSaleId !== null &&
+                            editingSaleId !== undefined
+                          }
                           onToast={onToast}
                         />
                       ) : (
@@ -324,6 +506,24 @@ export function PdvSalesList({
           </Link>
         </Button>
       </CardFooter>
+
+      {/* BLOCO H — UM painel para a lista inteira, não um por linha; o que o
+          abre é o `receivableId` não-nulo. Declarado dentro do Card só para
+          não reindentar o arquivo: o SheetContent vai para um portal no
+          `body`, então a posição no JSX não afeta o DOM renderizado. */}
+      {TIMELINE_UI && (
+        <SaleTimelineSheet
+          receivableId={timelineRow?.id ?? null}
+          saleLabel={
+            timelineRow
+              ? [timelineRow.customer?.name, formatWhen(timelineRow.createdAt)]
+                  .filter(Boolean)
+                  .join(" · ") || null
+              : null
+          }
+          onOpenChange={(o) => !o && setTimelineRow(null)}
+        />
+      )}
     </Card>
   );
 }

@@ -21,9 +21,14 @@ import {
   type StockDeductionResult,
   type StockOversellAlert,
 } from "../services/stock-deduction.service";
+import {
+  ScrapStatusReconcileService,
+  scrapReconcileTargetsAfterSale,
+} from "../services/scrap-status-reconcile.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { OrderCustomerService } from "../services/order-customer.service";
+import { resolveReopenPref } from "../../services/reopen-listings-preference";
 import { SyncUseCase } from "./sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import { normalizeSku } from "@/app/lib/sku";
@@ -3938,6 +3943,44 @@ export class OrderUseCase {
       // NÃO passamos pauseOnZero → Order não pausa anúncios ao zerar.
     });
 
+    // ── Reflexo no status do LOTE ao VENDER pelo marketplace (opt-in) ──
+    //
+    // Espelho do que já existe no cancelamento. Sem isto, uma sucata cujas
+    // peças foram todas vendidas pelo ML — e que nunca teve venda de balcão —
+    // fica `AVAILABLE` para sempre, porque `Scrap.status` é coluna persistida e
+    // o único gatilho de reconciliação vinha do balcão.
+    //
+    // DUAS TRAVAS, porque este código roda DENTRO DA IMPORTAÇÃO DE PEDIDOS —
+    // o caminho de maior volume e o mais sensível do sistema:
+    //
+    //  1. FLAG. Ausente ⇒ nada roda e a importação fica byte-idêntica. É env de
+    //     backend (não `NEXT_PUBLIC_`) de propósito: liga e desliga com um
+    //     restart do pm2, sem rebuild — o que importa quando a alavanca existe
+    //     justamente para ser puxada às pressas.
+    //
+    //  2. GATILHO ESTREITO: só produtos que ZERARAM. `deriveScrapStatus` só
+    //     move o lote para DEPLETED quando o estoque somado das peças chega a
+    //     zero, então reconciliar quando ninguém zerou seria trabalho garantido
+    //     inútil. É o mesmo critério que o `pauseOnZero` já usa. Numa
+    //     importação típica isso reduz o disparo a quase nada; sem o filtro,
+    //     seriam N transações serializadas com advisory lock POR PEDIDO.
+    //
+    // Consequência assumida: a transição AVAILABLE → IN_USE (primeira venda com
+    // estoque restante) NÃO é coberta aqui. Ficou de fora deliberadamente — ela
+    // exigiria reconciliar em toda venda, que é exatamente o custo que as duas
+    // travas existem para evitar.
+    //
+    // A decisão de disparo é função PURA (`scrapReconcileTargetsAfterSale`),
+    // testada à parte: política do caminho mais sensível do sistema não pode
+    // depender de teste que reimplementa a regra.
+    const aReconciliar = scrapReconcileTargetsAfterSale(deductions);
+    if (aReconciliar.length > 0) {
+      ScrapStatusReconcileService.reconcileForProducts({
+        productIds: aReconciliar,
+        logPrefix: "[OrderUseCase]",
+      });
+    }
+
     // Log de oversell preservado byte-idêntico (mesma message + details).
     if (oversellAlerts.length > 0) {
       try {
@@ -4014,7 +4057,21 @@ export class OrderUseCase {
           id: true,
           status: true,
           items: { select: { productId: true, quantity: true } },
-          marketplaceAccount: { select: { userId: true } },
+          marketplaceAccount: {
+            select: {
+              userId: true,
+              // Preferência de reabertura, no MESMO findFirst — nenhuma query
+              // nova. `parent` cobre a conta que foi conectada por um
+              // COLABORADOR: a preferência é do TENANT, então o valor do admin
+              // pai tem precedência sobre o da linha de quem conectou.
+              user: {
+                select: {
+                  reopenListingsOnSaleCancel: true,
+                  parent: { select: { reopenListingsOnSaleCancel: true } },
+                },
+              },
+            },
+          },
         },
       });
       if (!order) {
@@ -4135,13 +4192,54 @@ export class OrderUseCase {
       // do updateListingStatus faria no-op e o anúncio ficaria pausado para
       // sempre apesar do estoque restaurado.
       if (restorations.length > 0) {
+        // Preferência do TENANT (default LIGADO). Vem do findFirst lá em cima —
+        // zero query nova. `parent` tem precedência: conta conectada por
+        // colaborador obedece ao admin.
+        //
+        // FAIL-OPEN de graça: `user` ausente (relação não projetada, fixture de
+        // teste) ⇒ `undefined` ⇒ `resolveReopenPref` devolve LIGADO, que é o
+        // comportamento de sempre.
+        const contaDoPedido = order.marketplaceAccount;
+        const reabrirAnuncio = resolveReopenPref(
+          contaDoPedido.user?.parent?.reopenListingsOnSaleCancel ??
+            contaDoPedido.user?.reopenListingsOnSaleCancel,
+        );
+
+        // ⚠️ `firePostEffects` é chamado SEMPRE — o que muda é só a PRESENÇA da
+        // chave `reopenOnRefill`. Envolver a chamada num `if (reabrirAnuncio)`
+        // seria um desastre em dois eixos: ela também dispara o
+        // StockSyncRetryService (o estoque restaurado nunca chegaria aos
+        // marketplaces) e o bloco ainda hospeda a reconciliação de sucata logo
+        // abaixo (o lote ficaria "Esgotado" para sempre). Sem a chave, o motor
+        // executa o caminho "sem reabertura", já coberto e verde em
+        // tests/stock-deduction-service.spec.ts.
         StockDeductionService.firePostEffects({
           deductions: restorations,
           logPrefix,
-          reopenOnRefill: {
-            userId: order.marketplaceAccount.userId,
-            force: true,
-          },
+          ...(reabrirAnuncio
+            ? {
+                reopenOnRefill: {
+                  userId: contaDoPedido.userId,
+                  force: true,
+                },
+              }
+            : {}),
+        });
+
+        // Reflexo no status do LOTE. `Scrap.status` é coluna persistida; só o
+        // rótulo por peça se autocura (é derivado de estoque em tempo real).
+        // Sem isto, o estoque voltava e o anúncio reabria, mas a sucata seguia
+        // marcada "Esgotada" para sempre — peça "Em estoque" dentro de lote
+        // esgotado. Espelha o que o `reverse` do balcão já fazia; a query de
+        // fatos do serviço sempre soube ler os dois canais, só faltava quem
+        // disparasse pelo lado do marketplace.
+        //
+        // Best-effort e pós-commit, como o irmão: falha aqui nunca desfaz o
+        // cancelamento nem o estorno de estoque, que já commitaram.
+        ScrapStatusReconcileService.reconcileForProducts({
+          productIds: restorations.map((d) => d.productId),
+          userId: order.marketplaceAccount.userId,
+          logPrefix,
         });
       }
 

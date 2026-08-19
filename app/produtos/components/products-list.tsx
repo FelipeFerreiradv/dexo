@@ -119,6 +119,11 @@ import {
   BulkDeleteResultModal,
   type BulkDeleteProductResultView,
 } from "./bulk-delete-result-modal";
+import { useRouter } from "next/navigation";
+import {
+  isQuickSaleEnabled,
+  quickSaleHref,
+} from "@/app/pdv/lib/pdv-quick-sale";
 import { ProductsGalleryView } from "./products-gallery-view";
 import { ProductsGallerySkeleton } from "./products-gallery-skeleton";
 import { ProductsListView } from "./products-list-view";
@@ -129,6 +134,11 @@ import {
 import type { Product } from "@/app/produtos/lib/product-view-types";
 
 const BULK_DELETE_CHUNK_SIZE = 50;
+
+// BLOCO I — carrinho no card do catálogo. Exige a flag do atalho E a do PDV
+// (senão o botão levaria a um 404). Flag OFF ⇒ o card não recebe `onSell` e
+// renderiza exatamente como hoje.
+const QUICK_SALE_ENABLED = isQuickSaleEnabled();
 
 interface BulkDeleteResponseBody {
   results: BulkDeleteProductResultView[];
@@ -380,6 +390,8 @@ async function loadProductFilterOptions(email: string, force = false) {
 
 export function ProductsList() {
   const { data: session, status } = useSession();
+  // BLOCO I — navegação do carrinho do card para o PDV.
+  const router = useRouter();
   const [view, setView] = useProductsView("catalog");
   const [products, setProducts] = useState<Product[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
@@ -1939,6 +1951,14 @@ export function ProductsList() {
                         onOpenLightbox={openProductLightbox}
                         onOpenListings={(product, platform) =>
                           setListingsDialog({ product, platform })
+                        }
+                        // BLOCO I — só o ID viaja; o PDV busca o estado atual
+                        // da peça (o card pode estar velho na tela).
+                        onSell={
+                          QUICK_SALE_ENABLED
+                            ? (product) =>
+                                router.push(quickSaleHref(product.id))
+                            : undefined
                         }
                       />
                     ) : (

@@ -12,6 +12,7 @@ import { UserPlus } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { CustomerCombobox, CustomerOption } from "../shared/customer-combobox";
+import { SellerSelect } from "../shared/seller-select";
 import { maskCpf } from "@/app/lib/masks";
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
 
@@ -24,6 +25,17 @@ interface Props {
   // Cadastro rápido só faz sentido ao CRIAR conta. Na edição o fluxo é
   // exatamente o de antes (sem o switch).
   allowQuickCreate: boolean;
+  /**
+   * BLOCO B — mostra o campo "Vendedor". AUSENTE ⇒ o passo renderiza
+   * exatamente como hoje, sem campo e sem request novo.
+   *
+   * O vendedor mora aqui, e não no passo do título, porque este passo é
+   * literalmente "quem está envolvido" na venda: de um lado o cliente, do
+   * outro quem vendeu.
+   */
+  showSeller?: boolean;
+  /** Pré-selecionar quem está logado (só na CRIAÇÃO — ver SellerSelect). */
+  autoSelectMe?: boolean;
 }
 
 export function CustomerStep({
@@ -33,6 +45,8 @@ export function CustomerStep({
   onSelect,
   setValue,
   allowQuickCreate,
+  showSeller,
+  autoSelectMe,
 }: Props) {
   const quick = useWatch({ control, name: "quickCreateCustomer" }) === true;
   const isQuick = allowQuickCreate && quick;
@@ -161,6 +175,22 @@ export function CustomerStep({
             </div>
           )}
         </div>
+      )}
+
+      {/* BLOCO B — quem vendeu. Fora do bloco de cadastro rápido: vale para
+          venda nova e para edição. */}
+      {showSeller && (
+        <Controller
+          control={control}
+          name="sellerUserId"
+          render={({ field }) => (
+            <SellerSelect
+              value={field.value ?? null}
+              onChange={field.onChange}
+              autoSelectMe={autoSelectMe}
+            />
+          )}
+        />
       )}
     </div>
   );

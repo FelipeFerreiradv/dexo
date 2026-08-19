@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { recomputeReservedStockWithinTx } from "../marketplaces/services/stock-reservation.service";
 import {
   FinanceEntry,
   FinanceEntryCreate,
@@ -10,6 +11,45 @@ import {
   FinanceStatus,
   FinanceSummary,
 } from "../interfaces/finance.interface";
+import {
+  parseSaleStatusFilters,
+  needsFiscalLookup,
+  buildSaleStatusWhere,
+} from "../lib/finance-status-filters";
+
+/**
+ * Transição de status ATÔMICA (compare-and-swap) — opt-in.
+ *
+ * `markPaid` e `reverse` liam o status FORA da transação e escreviam dentro
+ * dela, sem condição: duas requisições simultâneas passavam as duas pelo guard
+ * de idempotência e baixavam (ou estornavam) o estoque DUAS vezes. Pior, em
+ * venda com peça avulsa as duas chamavam `promoteManualItems` sobre o mesmo
+ * snapshot e criavam DOIS produtos de catálogo para a mesma peça.
+ *
+ * Com o guard, o `UPDATE` só casa se o status ainda for o esperado. Sob READ
+ * COMMITTED do Postgres, a segunda transação bloqueia no row lock, e ao
+ * destravar reavalia o predicado contra a versão nova da linha (EvalPlanQual)
+ * — casa 0 linhas e perde a corrida sem efeito colateral.
+ *
+ * É OPT-IN de propósito: sem `guard`, o `where` fica byte-idêntico ao de
+ * sempre, e os caminhos de PUT/edição não mudam em nada.
+ *
+ * Precedente interno: `budget.repository.ts:366-380` já faz exatamente isto.
+ */
+export interface StatusGuard {
+  /** Só aplica se o status atual for DIFERENTE deste. */
+  statusNot?: FinanceStatus;
+  /** Só aplica se o status atual for EXATAMENTE este. */
+  statusIs?: FinanceStatus;
+}
+
+/** Perdeu a corrida: outra requisição já aplicou a transição. Não é erro de dado. */
+export class FinanceStatusConflictError extends Error {
+  constructor() {
+    super("Registro financeiro em estado conflitante");
+    this.name = "FinanceStatusConflictError";
+  }
+}
 
 function model(kind: FinanceKind): any {
   return kind === "receivable"
@@ -57,6 +97,40 @@ function toEntry(raw: any): FinanceEntry {
     parentReceivableId: raw.parentReceivableId ?? null,
     installmentNumber: raw.installmentNumber ?? null,
     installmentTotal: raw.installmentTotal ?? null,
+    // BLOCO D — motivo do cancelamento. NULL em conta não cancelada, em
+    // cancelamento sem motivo e em toda conta a pagar (mesmo tratamento que o
+    // `parentReceivableId` já recebia).
+    cancelReasonCode: raw.cancelReasonCode ?? null,
+    cancelReason: raw.cancelReason ?? null,
+    cancelledAt: raw.cancelledAt ?? null,
+    // BLOCO B — vendedor da venda. `seller` só vem quando o include/select o
+    // pediu (receivable); em conta a pagar e em parcela fica null, que é a
+    // leitura correta ("não se aplica" / "é da venda-mãe").
+    // BLOCO F — estágio operacional. NULL em venda anterior ao recurso e em
+    // toda conta a pagar; a DERIVAÇÃO para o primeiro estágio é de quem exibe,
+    // não daqui — o repositório devolve o que está gravado.
+    saleStage: raw.saleStage ?? null,
+    // BLOCO A (2ª metade) — marca explícita de liquidação. A DERIVAÇÃO (regra
+    // por forma) é de quem lê, não daqui.
+    settledAt: raw.settledAt ?? null,
+    // BLOCO A — conta de destino/origem. Vale para os DOIS kinds.
+    bankAccountId: raw.bankAccountId ?? null,
+    bankAccount: raw.bankAccount
+      ? {
+          id: raw.bankAccount.id,
+          name: raw.bankAccount.name,
+          kind: raw.bankAccount.kind ?? null,
+          bankName: raw.bankAccount.bankName ?? null,
+        }
+      : null,
+    sellerUserId: raw.sellerUserId ?? null,
+    seller: raw.seller
+      ? {
+          id: raw.seller.id,
+          name: raw.seller.name ?? null,
+          email: raw.seller.email ?? null,
+        }
+      : null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     customer: raw.customer
@@ -99,6 +173,13 @@ function toEntry(raw: any): FinanceEntry {
           method: p.method,
           amount: Number(p.amount),
           createdAt: p.createdAt,
+          // BLOCO A — destino DESTA forma. NULL ⇒ vale o da conta (a
+          // precedência mora em `effectiveBankAccountId`, não aqui: o
+          // repositório devolve o que está gravado).
+          bankAccountId: p.bankAccountId ?? null,
+          // BLOCO A (2ª metade) — marca explícita de liquidação. NULL ⇒ a
+          // regra por forma decide em read-time; o repositório não deriva.
+          settledAt: p.settledAt ?? null,
         }))
       : undefined,
   };
@@ -126,7 +207,17 @@ function buildInclude(kind: FinanceKind, withItems: boolean): any {
   const include: any = {
     customer: { select: { id: true, name: true, cpf: true, email: true } },
     unidade: { select: { id: true, name: true } },
+    // BLOCO A — conta de destino/origem. Nos DOIS kinds: a coluna existe em
+    // Receivable e em Payable (entrada e saída). Projeção mínima — é rótulo.
+    bankAccount: {
+      select: { id: true, name: true, kind: true, bankName: true },
+    },
   };
+  // BLOCO B — vendedor. Só receivable: a relação não existe em Payable, e
+  // pedi-la lá quebraria a consulta. Projeção mínima (é só um rótulo na tela).
+  if (kind === "receivable") {
+    include.seller = { select: { id: true, name: true, email: true } };
+  }
   if (withItems && kind === "receivable") {
     include.items = itemsInclude;
     // Viaja junto com os itens: quem precisa do detalhe da venda (edição,
@@ -208,11 +299,22 @@ export class FinanceRepository {
         status: (data.status as FinanceStatus) ?? "PENDENTE",
         paidAt: parseDate(data.paidAt ?? null),
         paymentMethod: data.paymentMethod ?? null,
+        // BLOCO B — vendedor. Só receivable (a coluna não existe em Payable) e
+        // só quando informado: ausente ⇒ nenhuma chave nova no objeto Prisma,
+        // e o INSERT fica byte-idêntico ao de hoje.
+        ...(kind === "receivable" && data.sellerUserId !== undefined
+          ? { sellerUserId: data.sellerUserId }
+          : {}),
+        // BLOCO A — conta de destino/origem. Vale para os DOIS kinds (a coluna
+        // existe em Receivable e Payable). Ausente ⇒ nenhuma chave nova.
+        ...(data.bankAccountId !== undefined
+          ? { bankAccountId: data.bankAccountId }
+          : {}),
       },
-      include: {
-        customer: { select: { id: true, name: true, cpf: true, email: true } },
-        unidade: { select: { id: true, name: true } },
-      },
+      // `buildInclude(kind, false)` devolve exatamente customer+unidade para os
+      // dois kinds, mais `seller` no receivable — a resposta da criação passa a
+      // trazer o vendedor sem que o caller precise reler a conta.
+      include: buildInclude(kind, false),
     });
     return toEntry(created);
   }
@@ -251,6 +353,21 @@ export class FinanceRepository {
         status: (data.status as FinanceStatus) ?? "PENDENTE",
         paidAt: parseDate(data.paidAt ?? null),
         paymentMethod: data.paymentMethod ?? null,
+        // BLOCO B — vendedor da venda. Ausente ⇒ nenhuma chave nova.
+        // As PARCELAS (criadas em createWithSplit) NÃO herdam, pelo mesmo
+        // motivo de `paymentMethod: null` lá: o vendedor é da VENDA, e
+        // replicá-lo faria um relatório por vendedor contar N+1 linhas para a
+        // mesma venda. Quem somar comissão junta entrada + parcelas pelo
+        // `parentReceivableId`, como a lista do PDV já faz.
+        ...(data.sellerUserId !== undefined
+          ? { sellerUserId: data.sellerUserId }
+          : {}),
+        // BLOCO A — conta de destino da venda. As PARCELAS também não herdam,
+        // pelo mesmo motivo do vendedor: a conta é do recebimento, e a parcela
+        // pode cair em outra (ou nem ter caído ainda).
+        ...(data.bankAccountId !== undefined
+          ? { bankAccountId: data.bankAccountId }
+          : {}),
       },
       // Não incluímos itens aqui (acabamos de criar e vamos preencher na
       // próxima query); a 2ª query traz o include completo.
@@ -282,9 +399,19 @@ export class FinanceRepository {
           receivableId: created.id,
           method: p.method,
           amount: p.amount,
+          // BLOCO A — destino desta forma. Spread condicional: sem destino, o
+          // objeto sai byte-idêntico ao de antes.
+          ...(p.bankAccountId ? { bankAccountId: p.bankAccountId } : {}),
         })),
       });
     }
+
+    // BLOCO G — a venda nasce PENDENTE e COMPROMETE as peças. Dentro da MESMA
+    // transação: se o create falhar, nada fica reservado.
+    await recomputeReservedStockWithinTx(
+      tx,
+      (data.items ?? []).map((i) => i.productId),
+    );
 
     const full = await (tx as any).receivable.findUnique({
       where: { id: created.id },
@@ -384,6 +511,7 @@ export class FinanceRepository {
     userId: string,
     data: FinanceEntryUpdate,
     tx?: Prisma.TransactionClient,
+    guard?: StatusGuard,
   ): Promise<FinanceEntry> {
     // `items` no payload significa "substituir lista de itens" (replace
     // strategy). Ausência (undefined) preserva itens existentes — fluxo atual
@@ -394,7 +522,7 @@ export class FinanceRepository {
     const hasPaymentsField = "payments" in data && data.payments !== undefined;
 
     if (!hasItemsField && !hasPaymentsField) {
-      return this.updateSingle(kind, id, userId, data, tx);
+      return this.updateSingle(kind, id, userId, data, tx, guard);
     }
     if (kind !== "receivable") {
       throw new Error(
@@ -416,6 +544,7 @@ export class FinanceRepository {
     userId: string,
     data: FinanceEntryUpdate,
     tx?: Prisma.TransactionClient,
+    guard?: StatusGuard,
   ): Promise<FinanceEntry> {
     const db: any = tx ?? prisma;
     const delegate: any = kind === "receivable" ? db.receivable : db.payable;
@@ -428,17 +557,29 @@ export class FinanceRepository {
     delete payload.userId;
 
     const res = await delegate.updateMany({
-      where: { id, userId },
+      // Sem `guard`, o spread de `{}` não acrescenta chave: o `where` continua
+      // literalmente `{ id, userId }` e todo caminho existente fica intacto.
+      where: {
+        id,
+        userId,
+        ...(guard?.statusNot ? { status: { not: guard.statusNot } } : {}),
+        ...(guard?.statusIs ? { status: guard.statusIs } : {}),
+      },
       data: payload,
     });
-    if (res.count === 0) throw new Error("Registro financeiro não encontrado");
+    if (res.count === 0) {
+      // Com guard, count 0 significa que o status mudou entre a leitura e a
+      // escrita — outra requisição ganhou a corrida. É um caso diferente de
+      // "não existe", e o chamador precisa distinguir para ser idempotente.
+      if (guard) throw new FinanceStatusConflictError();
+      throw new Error("Registro financeiro não encontrado");
+    }
 
     const updated = await delegate.findUnique({
       where: { id },
-      include: {
-        customer: { select: { id: true, name: true, cpf: true, email: true } },
-        unidade: { select: { id: true, name: true } },
-      },
+      // Mesmo motivo do createSingle: sem isto, editar uma venda devolveria a
+      // conta SEM o vendedor e a tela o mostraria como "—" até recarregar.
+      include: buildInclude(kind, false),
     });
     return toEntry(updated);
   }
@@ -476,7 +617,40 @@ export class FinanceRepository {
     //
     // Só toca a relação que veio no payload: um update que manda `payments`
     // sem `items` (ou vice-versa) NÃO pode apagar a outra lista.
+    //
+    // Declarado FORA do bloco: o recálculo da reserva (BLOCO G) acontece
+    // depois, e precisa saber quais produtos estavam na venda ANTES.
+    let produtosAntes: string[] = [];
     if (hasItemsField) {
+      // BLOCO E — `autoCreatedProduct` marca a peça avulsa que virou produto
+      // do catálogo no pagamento, e é ELE que dispara a compensação simétrica
+      // do estorno (finance.usecase.ts:1089). O replace o perdia: o formulário
+      // não conhece o campo, então nenhuma edição o reenviava, e o `reverse`
+      // seguinte devolvia +qty sem a saída — produto fantasma com estoque
+      // positivo de peça que já saiu da loja.
+      //
+      // Preservado NO SERVIDOR, e não confiado ao cliente: a marca é um fato
+      // do backend (quem promoveu foi o markPaid), e depender de cada tela
+      // lembrar de reenviá-la é a receita para perdê-la de novo.
+      //
+      // BLOCO G — a MESMA leitura serve à reserva: o produto que SAIU da venda
+      // precisa ser liberado, e olhar só os itens novos o deixaria reservado
+      // para sempre. Por isso lemos TODAS as linhas, não só as auto-criadas.
+      const anteriores = (await (tx as any).receivableItem.findMany({
+        where: { receivableId: id },
+        select: { productId: true, autoCreatedProduct: true },
+      })) as { productId: string | null; autoCreatedProduct: boolean }[];
+
+      const eraAutoCriado = new Set<string>(
+        (anteriores ?? [])
+          .filter((a) => a.autoCreatedProduct)
+          .map((a) => a.productId)
+          .filter((p): p is string => !!p),
+      );
+      produtosAntes = (anteriores ?? [])
+        .map((a) => a.productId)
+        .filter((p): p is string => !!p);
+
       await (tx as any).receivableItem.deleteMany({
         where: { receivableId: id },
       });
@@ -491,6 +665,12 @@ export class FinanceRepository {
             quantity: it.quantity,
             unitPrice: it.unitPrice,
             ...(it.createCatalogProduct ? { createCatalogProduct: true } : {}),
+            // Spread CONDICIONAL: sem marca a preservar, o objeto sai
+            // byte-idêntico ao de antes — inclusive para o teste que o afirma
+            // campo a campo.
+            ...(it.productId && eraAutoCriado.has(it.productId)
+              ? { autoCreatedProduct: true }
+              : {}),
           })),
         });
       }
@@ -506,9 +686,22 @@ export class FinanceRepository {
             receivableId: id,
             method: p.method,
             amount: p.amount,
+            // BLOCO A — idem ao create: spread condicional preserva o objeto.
+            ...(p.bankAccountId ? { bankAccountId: p.bankAccountId } : {}),
           })),
         });
       }
+    }
+
+    // BLOCO G — editar itens muda o que está comprometido. Os produtos a
+    // recalcular são a UNIÃO dos de antes e dos de depois: quem SAIU da venda
+    // precisa ser liberado, e olhar só os novos deixaria a peça removida
+    // reservada para sempre.
+    if (hasItemsField) {
+      await recomputeReservedStockWithinTx(tx, [
+        ...produtosAntes,
+        ...items.map((i) => i.productId),
+      ]);
     }
 
     const updated = await (tx as any).receivable.findUnique({
@@ -599,6 +792,46 @@ export class FinanceRepository {
       ];
     }
 
+    // ── BLOCO C — filtro por status da venda (múltipla seleção) ──
+    //
+    // Entra em `where.AND` e NUNCA em `where.OR`: o `OR` acima já é da busca
+    // textual, e sobrescrevê-lo faria a busca sumir. Como `AND` só é
+    // acrescentado quando há filtro, a consulta sem filtro fica byte-idêntica —
+    // e os specs que casam o objeto EXATO do `where` continuam valendo.
+    const statusCodes = parseSaleStatusFilters(filters.statusIn);
+    if (statusCodes.length > 0) {
+      let faturadaIds: string[] | undefined;
+      if (needsFiscalLookup(statusCodes)) {
+        // O vínculo venda↔nota é TEXTUAL (`numeroPedido = "receivable:<id>"`),
+        // não há relação Prisma — daí a pré-consulta. Ela é estreita: filtra
+        // pelo índice `(userId, status)` e só então pelo prefixo.
+        //
+        // MEDIDO em produção (14/08/2026): 6.612 notas, 6.332 autorizadas, mas
+        // só 16 ligadas a uma venda e 1 autorizada+ligada. O `IN` resultante é
+        // minúsculo. Se o balcão fiscal crescer para milhares de vínculos, esta
+        // lista precisa virar subconsulta — o número acima é o gatilho.
+        const notas = await prisma.nfeEmitida.findMany({
+          where: {
+            userId,
+            status: "AUTHORIZED",
+            numeroPedido: { startsWith: "receivable:" },
+          },
+          select: { numeroPedido: true },
+        });
+        faturadaIds = notas
+          .map((n) => n.numeroPedido?.slice("receivable:".length))
+          .filter((v): v is string => !!v);
+      }
+
+      const fragmentos = buildSaleStatusWhere(statusCodes, {
+        now: new Date(),
+        faturadaIds,
+      });
+      if (fragmentos && fragmentos.length > 0) {
+        where.AND = [...(where.AND ?? []), { OR: fragmentos }];
+      }
+    }
+
     const [rows, total] = await Promise.all([
       model(kind).findMany({
         where,
@@ -615,6 +848,13 @@ export class FinanceRepository {
           unidadeId: true,
           document: true,
           reason: true,
+          // Fase 1.0 — a edição hidrata o formulário a partir da LINHA da
+          // listagem. Todo campo editável ausente aqui volta para o default do
+          // form e é regravado por cima no PUT (o submit envia o form inteiro).
+          // `debtDetails` era o único editável fora do select: a alternativa
+          // seria um GET extra na edição de conta a pagar, o que mudaria a
+          // contagem de requests desse fluxo.
+          debtDetails: true,
           totalAmount: true,
           fineAmount: true,
           finePercent: true,
@@ -628,6 +868,36 @@ export class FinanceRepository {
           paymentMethod: true,
           createdAt: true,
           updatedAt: true,
+          // BLOCO A — conta de destino/origem na listagem: "esse PIX caiu em
+          // qual conta?" é pergunta de conferência e não deve exigir abrir o
+          // lançamento. Nos dois kinds.
+          bankAccountId: true,
+          bankAccount: {
+            select: { id: true, name: true, kind: true, bankName: true },
+          },
+          // BLOCO D — motivo do cancelamento, para a lista explicar o porquê
+          // sem exigir que o operador abra a venda. SÓ receivable: as colunas
+          // não existem em Payable, e pedi-las lá quebraria a consulta.
+          // Três colunas nuláveis (NULL na esmagadora maioria das linhas) por
+          // uma pergunta que hoje não tem resposta na tela: "cancelada por quê?"
+          ...(kind === "receivable"
+            ? {
+                cancelReasonCode: true,
+                cancelReason: true,
+                cancelledAt: true,
+                // BLOCO B — vendedor na listagem: a pergunta "quem vendeu?" é
+                // de conferência de caixa e não deve exigir abrir a venda.
+                sellerUserId: true,
+                seller: { select: { id: true, name: true, email: true } },
+                // BLOCO F — estágio na listagem: é a coluna do painel, e
+                // "onde está esta venda?" não pode exigir abrir a venda.
+                saleStage: true,
+                // BLOCO A (2ª metade) — a marca de liquidação. Sem ela a
+                // listagem não conseguiria distinguir "cartão que já caiu" de
+                // "cartão a caminho" sem uma consulta por linha.
+                settledAt: true,
+              }
+            : {}),
           customer: {
             select: { id: true, name: true, cpf: true, email: true },
           },
@@ -670,6 +940,44 @@ export class FinanceRepository {
         if (!f) continue;
         it.installmentsCount = f.count;
         it.installmentsAmount = f.amount;
+      }
+    }
+
+    // Fase 1.1 — pagamento combinado na LISTAGEM.
+    //
+    // O escalar `paymentMethod` guarda só o PREDOMINANTE, então uma venda em
+    // PIX + Crédito aparecia na lista como se fosse só "Crédito" — e o
+    // operador concluía, com razão, que a segunda forma não tinha sido salva.
+    //
+    // UMA consulta por página (índice em `receivableId`), no mesmo espírito do
+    // agregado de parcelas acima. Diferente daquele, roda também para a lista
+    // do Financeiro: é lá que o cliente confere a venda. Linhas sem pagamento
+    // detalhado não ganham campo nenhum — a resposta de uma conta comum segue
+    // byte-idêntica.
+    //
+    // ESCOPO DE TENANT: `ReceivablePayment` NÃO tem `userId`. Os ids já vêm de
+    // uma query escopada, mas o filtro por `receivable.userId` é a mesma
+    // defense-in-depth que `getScrapParts` aplica — sem ele, um id vazado
+    // atravessaria tenants.
+    if (kind === "receivable" && items.length > 0) {
+      const ids = items.map((i: FinanceEntry) => i.id);
+      const linhas = await prisma.receivablePayment.findMany({
+        where: { receivableId: { in: ids }, receivable: { userId } },
+        select: { receivableId: true, method: true, amount: true },
+        // Ordem em que o operador digitou — a mesma do cupom e da edição.
+        orderBy: { createdAt: "asc" },
+      });
+      if (linhas.length > 0) {
+        const porConta = new Map<string, { method: string; amount: number }[]>();
+        for (const l of linhas) {
+          const lista = porConta.get(l.receivableId) ?? [];
+          lista.push({ method: l.method, amount: Number(l.amount) });
+          porConta.set(l.receivableId, lista);
+        }
+        for (const it of items) {
+          const p = porConta.get(it.id);
+          if (p) it.payments = p;
+        }
       }
     }
 

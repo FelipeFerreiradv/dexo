@@ -9,6 +9,7 @@
 
 import prisma from "@/app/lib/prisma";
 import { findManyInChunks } from "@/app/lib/prisma-chunked";
+import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
@@ -21,10 +22,7 @@ import type { FacebookCatalogProduct } from "../types/facebook-api.types";
 import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
-import {
-  OLX_CONSTANTS,
-  resolveOlxSellerContact,
-} from "../olx/olx-constants";
+import { OLX_CONSTANTS, resolveOlxSellerContact } from "../olx/olx-constants";
 import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
 import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
@@ -397,22 +395,20 @@ export class SyncUseCase {
     // Buscar listings existentes em lote (EGRESS: só as colunas usadas abaixo).
     // Em lotes: contas grandes (>32k anúncios ativos) estouravam o teto de
     // bind variables do Postgres num único IN(...).
-    const existingListings = await findManyInChunks(
-      externalItemIds,
-      (ids) =>
-        prisma.productListing.findMany({
-          where: {
-            marketplaceAccountId: account.id,
-            externalListingId: { in: ids },
-          },
-          select: {
-            id: true,
-            externalListingId: true,
-            status: true,
-            permalink: true,
-            productId: true,
-          },
-        }),
+    const existingListings = await findManyInChunks(externalItemIds, (ids) =>
+      prisma.productListing.findMany({
+        where: {
+          marketplaceAccountId: account.id,
+          externalListingId: { in: ids },
+        },
+        select: {
+          id: true,
+          externalListingId: true,
+          status: true,
+          permalink: true,
+          productId: true,
+        },
+      }),
     );
     const existingListingsMap = new Map(
       existingListings.map((listing) => [listing.externalListingId, listing]),
@@ -1053,10 +1049,7 @@ export class SyncUseCase {
         `;
         for (const p of repescados) {
           // Indexa pela forma SANITIZADA, que é a chave que o item da Meta traz.
-          const chave = (p.skuNormalized ?? "").replace(
-            /[^a-z0-9_.\-]/g,
-            "_",
-          );
+          const chave = (p.skuNormalized ?? "").replace(/[^a-z0-9_.\-]/g, "_");
           if (chave && !productsMap.has(chave)) {
             productsMap.set(chave, {
               id: p.id,
@@ -3412,7 +3405,7 @@ export class SyncUseCase {
    */
   static async syncProductStock(productId: string): Promise<SyncResult[]> {
     // 1. Buscar produto com seus listings
-    const product = await prisma.product.findUnique({
+    const carregado = await prisma.product.findUnique({
       where: { id: productId },
       include: {
         listings: {
@@ -3422,6 +3415,15 @@ export class SyncUseCase {
         },
       },
     });
+
+    // BLOCO G — desconta o estoque COMPROMETIDO por vendas ainda em aberto,
+    // UMA VEZ, na entrada do funil. Daqui para baixo os três métodos por
+    // plataforma e todos os gates leem o valor efetivo sem saber que existe
+    // reserva — é o que impede que um deles divirja dos outros.
+    //
+    // Só troca o número EM MEMÓRIA: este caminho nunca escreve em `Product`.
+    // Flag desligada ⇒ devolve o mesmo objeto, sem cópia.
+    const product = carregado ? withAvailableStock(carregado) : carregado;
 
     if (!product) {
       return [
@@ -4027,9 +4029,8 @@ export class SyncUseCase {
             listingForOverrides = listing;
           }
         }
-        const { applyOverridesToProduct } = await import(
-          "../services/listing-overrides.service"
-        );
+        const { applyOverridesToProduct } =
+          await import("../services/listing-overrides.service");
         const effectiveProduct = applyOverridesToProduct(
           fullProduct,
           listingForOverrides,
@@ -4818,8 +4819,16 @@ export class SyncUseCase {
         //   (7.459 calls @285ms).
         // A árvore de sync de estoque (syncMLProductStock, syncShopeeProductStock,
         // logMLStockWarningAndReturn, alertMLReactivationRisk) lê APENAS
-        // listing.id e listing.externalListingId + product.{id,sku,stock,name}
+        // listing.id e listing.externalListingId +
+        // product.{id,sku,stock,reservedStock,name}
         // + marketplaceAccount.* — MESMAS linhas, sem trafegar o resto.
+        //
+        // BLOCO G — `reservedStock` entra no select porque este caminho é o de
+        // MAIOR volume (o botão "Sincronizar Estoque" varre a conta inteira) e
+        // era o único que ficava de fora da sombra. Sem a coluna aqui, aplicar
+        // `withAvailableStock` abaixo seria um segundo no-op silencioso — o
+        // mesmo defeito que o publish tinha. Custo: um Int de 4 bytes por
+        // linha, inline, sem TOAST; mesmo precedente do reconciliador.
         select: {
           id: true,
           externalListingId: true,
@@ -4827,6 +4836,10 @@ export class SyncUseCase {
           status: true,
           // A republicação da OLX reenvia o anúncio inteiro, então o select da
           // OLX precisa dos campos que o build lê (preço/descrição/imagens/quality).
+          //
+          // `reservedStock` entra nos DOIS ramos: o BLOCO G aplica a sombra no
+          // chamador, abaixo, e sem a coluna aqui `withAvailableStock` viraria
+          // no-op silencioso — o mesmo defeito que o publish tinha.
           product: {
             select:
               platform === Platform.OLX
@@ -4834,6 +4847,7 @@ export class SyncUseCase {
                     id: true,
                     sku: true,
                     stock: true,
+                    reservedStock: true,
                     name: true,
                     description: true,
                     price: true,
@@ -4841,7 +4855,13 @@ export class SyncUseCase {
                     imageUrls: true,
                     quality: true,
                   }
-                : { id: true, sku: true, stock: true, name: true },
+                : {
+                    id: true,
+                    sku: true,
+                    stock: true,
+                    reservedStock: true,
+                    name: true,
+                  },
           },
           marketplaceAccount: true,
         },
@@ -4880,21 +4900,25 @@ export class SyncUseCase {
                 : platform === Platform.FACEBOOK
                   ? 20000
                   : 15000;
+            // BLOCO G — a sombra fica AQUI, no chamador, e não dentro dos cinco
+            // métodos por plataforma. Dentro deles seria aplicada duas vezes
+            // nos caminhos que já descontam na entrada (`syncProductStock`) e
+            // no retry pós-refresh de token da Shopee, que reentra no próprio
+            // método. Um ponto só por funil é a regra; a idempotência de
+            // `withAvailableStock` é o cinto de segurança.
+            const produto = withAvailableStock(listing.product!);
             const syncPromise = (async () => {
               switch (platform) {
                 case Platform.MERCADO_LIVRE:
-                  return this.syncMLProductStock(listing, listing.product);
+                  return this.syncMLProductStock(listing, produto);
                 case Platform.SHOPEE:
-                  return this.syncShopeeProductStock(listing, listing.product);
+                  return this.syncShopeeProductStock(listing, produto);
                 case Platform.MAGALU:
-                  return this.syncMagaluProductStock(listing, listing.product);
+                  return this.syncMagaluProductStock(listing, produto);
                 case Platform.OLX:
-                  return this.syncOlxProductStock(listing, listing.product);
+                  return this.syncOlxProductStock(listing, produto);
                 case Platform.FACEBOOK:
-                  return this.syncFacebookProductStock(
-                    listing,
-                    listing.product,
-                  );
+                  return this.syncFacebookProductStock(listing, produto);
                 default:
                   return {
                     success: false,
@@ -4975,13 +4999,19 @@ export class SyncUseCase {
 
     try {
       // 1. Buscar produto
-      const product = await prisma.product.findUnique({
+      const carregado = await prisma.product.findUnique({
         where: { id: productId },
       });
 
-      if (!product) {
+      if (!carregado) {
         throw new Error(`Produto ${productId} nÃ£o encontrado`);
       }
+
+      // BLOCO G — MESMA troca do `syncProductStock`, e este é o ponto que mais
+      // importa: `syncProductData` roda em TODA EDIÇÃO DE PRODUTO, num fluxo
+      // separado do sync de estoque. Sem isto, editar qualquer peça reescreveria
+      // a quantidade BRUTA no marketplace e desfaria a reserva em silêncio.
+      const product = withAvailableStock(carregado);
 
       // 2. Buscar conta do marketplace
       const account = await prisma.marketplaceAccount.findUnique({
@@ -5240,8 +5270,7 @@ export class SyncUseCase {
                 ? compareMLTitles(desiredTitle, familyNameFromMl)
                 : null;
               const cmpTitle = compareMLTitles(desiredTitle, currentItem.title);
-              const equivalent =
-                !!cmpFamily?.equivalent || cmpTitle.equivalent;
+              const equivalent = !!cmpFamily?.equivalent || cmpTitle.equivalent;
 
               // Materialidade contra o family_name quando existe: o title tem
               // tokens a mais (os atributos) e sempre pareceria "mudou".
@@ -5253,7 +5282,9 @@ export class SyncUseCase {
 
               const decision = material ? "republish" : "skip";
               const reason = equivalent
-                ? (cmpFamily?.equivalent ? cmpFamily.reason : cmpTitle.reason)
+                ? cmpFamily?.equivalent
+                  ? cmpFamily.reason
+                  : cmpTitle.reason
                 : material
                   ? "different"
                   : "not_material";
@@ -5583,8 +5614,11 @@ export class SyncUseCase {
               // Só envia se mudou: comparar evita gastar chamada e arriscar
               // rejeição à toa em anúncio que já está com as fotos certas.
               const atuais = (
-                (currentItem as { pictures?: Array<{ url?: string; secure_url?: string }> })
-                  .pictures ?? []
+                (
+                  currentItem as {
+                    pictures?: Array<{ url?: string; secure_url?: string }>;
+                  }
+                ).pictures ?? []
               )
                 .map((p) => p?.secure_url || p?.url || "")
                 .filter(Boolean);

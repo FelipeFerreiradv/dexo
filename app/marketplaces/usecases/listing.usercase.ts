@@ -1,6 +1,7 @@
 ﻿import { Platform } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
+import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluApiService } from "../services/magalu-api.service";
@@ -1458,14 +1459,24 @@ export class ListingUseCase {
       }
 
       // 2. Buscar dados do produto
-      const product =
+      const produtoCarregado =
         await ListingUseCase.productRepository.findById(productId);
-      if (!product) {
+      if (!produtoCarregado) {
         return {
           success: false,
           error: "Produto nÃ£o encontrado",
         };
       }
+      // BLOCO G — publicar um anúncio novo também respeita o comprometido:
+      // anunciar peça que já está numa venda em aberto é criar a venda dupla
+      // no ato do cadastro. Troca só em memória; nada é gravado em Product.
+      //
+      // O `as any` que existia aqui não era cosmético: ele fazia o genérico
+      // aceitar um tipo SEM `reservedStock`, e a função virava no-op silencioso
+      // porque o mapeador do repositório não copiava a coluna. Tipar direto é
+      // o que garante que um mapeador que pare de trazer o campo vire erro de
+      // compilação em vez de estoque bruto no anúncio.
+      const product = withAvailableStock(produtoCarregado);
 
       // Override do title (cirúrgico): substitui apenas em memória para esta
       // execução; não persiste no banco. Usado pela republicação UP para
@@ -3659,6 +3670,10 @@ export class ListingUseCase {
       if (!product) {
         return { success: false, error: "Produto não encontrado" };
       }
+      // BLOCO G — mesma sombra do Mercado Livre. Anunciar peça que já está numa
+      // venda em aberto é criar a venda dupla no ato do cadastro. Troca só em
+      // memória; nada é gravado em Product.
+      product = withAvailableStock(product);
       if (typeof product.stock !== "number" || product.stock <= 0) {
         return {
           success: false,
@@ -4357,14 +4372,17 @@ export class ListingUseCase {
       }
 
       // 2. Buscar dados do produto
-      const product =
+      const produtoCru =
         await ListingUseCase.productRepository.findById(productId);
-      if (!product) {
+      if (!produtoCru) {
         return {
           success: false,
           error: "Produto não encontrado",
         };
       }
+      // BLOCO G — mesma sombra do Mercado Livre e da Magalu: o que vai para o
+      // `seller_stock` é o DISPONÍVEL, não o bruto. Troca só em memória.
+      const product = withAvailableStock(produtoCru);
 
       // Produto EFETIVO (com os overrides do anúncio) — usado EXCLUSIVAMENTE
       // como fonte da ficha técnica. Deliberadamente não substitui `product`

@@ -1,4 +1,5 @@
 import prisma from "@/app/lib/prisma";
+import { availableForSale } from "@/app/financeiro/lib/stock-reservation";
 
 const RECONCILE_WINDOW_MS = 60 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 15 * 60 * 1000;
@@ -100,7 +101,11 @@ export class StockReconciliationService {
         id: true,
         productId: true,
         marketplaceAccountId: true,
-        product: { select: { stock: true } },
+        // BLOCO G — `reservedStock` entra no select porque o alvo do job
+        // precisa ser o estoque DISPONÍVEL. Sem isto o reconciliador
+        // enfileiraria o estoque BRUTO e desfaria a reserva a cada tick de
+        // 15 minutos — silenciosamente, e para todos os anúncios de uma vez.
+        product: { select: { stock: true, reservedStock: true } },
         marketplaceAccount: { select: { platform: true, status: true } },
       },
     });
@@ -109,7 +114,7 @@ export class StockReconciliationService {
       .filter((r) => r.marketplaceAccount?.status === "ACTIVE")
       .map((r) => ({
         productId: r.productId,
-        stock: r.product.stock,
+        stock: availableForSale(r.product.stock, r.product.reservedStock),
         listingId: r.id,
         marketplaceAccountId: r.marketplaceAccountId,
         platform: r.marketplaceAccount.platform,

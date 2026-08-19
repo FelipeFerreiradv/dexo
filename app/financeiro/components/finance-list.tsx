@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  History,
   Loader2,
   Pencil,
   Plus,
@@ -55,12 +56,30 @@ import { getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
+import { financeRowToFormSeed, entryPaymentsToForm } from "../lib/row-to-form";
 import { downloadReceipt } from "../lib/download-receipt";
 import { reverseSale } from "../lib/reverse-sale";
 import {
   paymentMethodsForKind,
-  paymentMethodLabel,
+  paymentMethodsSummary,
 } from "@/app/lib/payment-methods";
+import {
+  SaleStatusFilter,
+  type SaleStatusFilterCode,
+} from "./shared/sale-status-filter";
+import { SaleTimelineSheet } from "./shared/sale-timeline-sheet";
+import { isSaleTimelineUiEnabled } from "../lib/sale-timeline-client";
+import {
+  CancelReasonField,
+  EMPTY_CANCEL_REASON,
+  type CancelReasonValue,
+} from "./shared/cancel-reason-field";
+import {
+  describeCancelReason,
+  isCancelReasonUiEnabled,
+} from "../lib/cancel-reasons";
+import { isSettlementUiEnabled } from "../lib/settlement";
+import { SettlementBadge } from "./shared/settlement-badge";
 
 interface FinanceRow {
   id: string;
@@ -70,7 +89,33 @@ interface FinanceRow {
   totalAmount: number;
   installments: number;
   dueDate: string;
+  // Fase 1.0 — campos EDITÁVEIS que a API já devolvia mas o tipo não
+  // declarava. Sem eles em `base`, o `reset({...DEFAULT, ...initialData})` os
+  // preenchia com o default do form e o submit os regravava por cima: editar
+  // uma conta zerava multa/juros/tolerância/detalhes e fixava periodDays=30.
+  debtDetails?: string | null;
+  fineAmount?: number | null;
+  finePercent?: number | null;
+  interestPercent?: number | null;
+  toleranceDays?: number | null;
+  periodDays?: number | null;
+  // Fase 1.1 — linhas de pagamento quando a venda teve mais de uma forma.
+  // Ausente = uma forma só, e aí `paymentMethod` já conta a história toda.
+  payments?: { method: string; amount: number }[];
   status: "PENDENTE" | "PAGA" | "VENCIDA" | "CANCELADA";
+  paidAt?: string | null;
+  // BLOCO A (2ª metade) — marca explícita de liquidação. Ausente/null ⇒ a
+  // regra por forma decide (o cálculo é do `settlement.ts`, não daqui).
+  settledAt?: string | null;
+  // BLOCO D — motivo do cancelamento. Ausente em tudo que não foi cancelado
+  // com motivo informado. Só leitura: o formulário de edição não os conhece
+  // (`row-to-form.ts` é uma tabela explícita, não um spread da linha).
+  cancelReasonCode?: string | null;
+  cancelReason?: string | null;
+  // BLOCO B — vendedor da venda. `sellerUserId` alimenta o formulário de
+  // edição; `seller` é só o rótulo.
+  sellerUserId?: string | null;
+  seller?: { id: string; name: string | null; email: string | null } | null;
   customer: { id: string; name: string; cpf: string | null } | null;
   unidadeId?: string | null;
   unidade?: { id: string; name: string } | null;
@@ -98,6 +143,13 @@ const BALCAO_SALE_ENABLED =
 // à de hoje (marcar paga, cupom, editar, excluir).
 const SALE_CANCEL_ENABLED =
   process.env.NEXT_PUBLIC_SALE_CANCEL_ENABLED === "true";
+
+// BLOCO H — botão "Histórico". Flag OFF ⇒ o botão não existe e nenhum request
+// novo acontece. Só em contas a RECEBER: a timeline é da venda.
+const TIMELINE_UI_ENABLED = isSaleTimelineUiEnabled();
+
+// BLOCO A (2ª metade) — selo "a liquidar". Flag OFF ⇒ o selo não existe.
+const SETTLEMENT_UI_ENABLED = isSettlementUiEnabled();
 
 // Sentinela do filtro de forma de pagamento (Radix Select não aceita value="").
 // "todas" = não envia o parâmetro => resultado idêntico ao atual.
@@ -136,6 +188,19 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   // Bloco E — alvo do estorno e id em voo (a linha vira spinner).
   const [reverseTarget, setReverseTarget] = useState<FinanceRow | null>(null);
   const [reversingId, setReversingId] = useState<string | null>(null);
+  // BLOCO D — motivo do cancelamento. Zerado ao abrir e ao fechar: motivo de
+  // uma venda jamais pode vazar para a próxima.
+  const [motivo, setMotivo] = useState<CancelReasonValue>(EMPTY_CANCEL_REASON);
+  // Id em voo do "marcar como paga" — o botão não tinha guarda nenhuma e o
+  // duplo clique disparava dois POST /pay (ver handleMarkPaid).
+  const [payingId, setPayingId] = useState<string | null>(null);
+  // BLOCO C — status selecionados. Vazio = todos (não envia o parâmetro,
+  // então a consulta fica idêntica à de hoje).
+  const [statusFilters, setStatusFilters] = useState<SaleStatusFilterCode[]>(
+    [],
+  );
+  // BLOCO H — venda com o histórico aberto. null = painel fechado.
+  const [timelineTarget, setTimelineTarget] = useState<FinanceRow | null>(null);
   // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
   // egress). Guarda o id em carregamento p/ feedback no botão de editar.
   const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
@@ -172,6 +237,9 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       if (unidadeId) params.set("unidadeId", unidadeId);
       // methodFilter ausente => não envia => resultado idêntico ao atual.
       if (methodFilter) params.set("paymentMethod", methodFilter);
+      // Ausente => não envia => resultado idêntico ao atual.
+      if (statusFilters.length > 0)
+        params.set("statusIn", statusFilters.join(","));
       const res = await fetch(`${getApiBaseUrl()}${basePath}?${params}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -193,6 +261,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     searchTerm,
     unidadeId,
     methodFilter,
+    statusFilters,
     basePath,
     onToast,
   ]);
@@ -207,22 +276,10 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   };
 
   const handleEdit = async (r: FinanceRow) => {
-    const base: Partial<FinanceEntryFormData> & {
-      id?: string;
-      customer?: FinanceRow["customer"];
-      items?: unknown[];
-    } = {
-      id: r.id,
-      customerId: r.customer?.id || "",
-      customer: r.customer,
-      unidadeId: r.unidadeId ?? null,
-      document: r.document,
-      reason: r.reason,
-      paymentMethod: r.paymentMethod ?? null,
-      totalAmount: r.totalAmount,
-      installments: r.installments,
-      dueDate: r.dueDate?.slice(0, 10),
-    };
+    // Fase 1.0 — a montagem é uma TABELA PURA (`lib/row-to-form.ts`): todo
+    // campo editável tem de constar lá, senão o submit o regrava com o default
+    // do formulário. Ver o cabeçalho daquele arquivo.
+    const base = financeRowToFormSeed(r);
 
     // Receivables podem ter itens (venda balcão). A lista NÃO os traz (egress),
     // então carregamos sob demanda ao editar. Sem os itens no form, adicionar
@@ -258,6 +315,12 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
         } else {
           throw new Error("Resposta sem itens");
         }
+        // Fase 1.1 — as linhas de pagamento viajam JUNTO dos itens no mesmo
+        // `GET /:id` (buildInclude traz as duas relações). Só faltava lê-las:
+        // sem isto o bloco de pagamento combinado reabria vazio e a venda
+        // parecia ter perdido as formas.
+        const pagamentos = entryPaymentsToForm(data?.entry?.payments);
+        if (pagamentos) base.payments = pagamentos;
       } catch {
         onToast(
           "Não foi possível carregar os itens desta conta. Tente novamente.",
@@ -276,6 +339,13 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   const handleMarkPaid = async (r: FinanceRow) => {
     const email = session?.user?.email;
     if (!email) return;
+    // Defesa em profundidade contra o duplo clique. A proteção de verdade é o
+    // compare-and-swap no backend (dois POST /pay simultâneos baixavam estoque
+    // duas vezes); isto só evita que o operador dispare a corrida sem querer —
+    // e não cobre duas abas nem dois operadores. Espelha o `reversingId` que a
+    // ação de estorno já usa logo abaixo.
+    if (payingId) return;
+    setPayingId(r.id);
     try {
       const res = await fetch(`${getApiBaseUrl()}${basePath}/${r.id}/pay`, {
         method: "POST",
@@ -287,6 +357,8 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       onChanged?.();
     } catch (e) {
       onToast(e instanceof Error ? e.message : "Erro", "error");
+    } finally {
+      setPayingId(null);
     }
   };
 
@@ -309,7 +381,12 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     if (!email) return;
     setReversingId(reverseTarget.id);
     try {
-      await reverseSale(reverseTarget.id, email);
+      // BLOCO D: com a flag de UI desligada `motivo` nunca sai do vazio, e o
+      // helper monta a requisição SEM body — byte-idêntica à de antes.
+      await reverseSale(reverseTarget.id, email, {
+        cancelReasonCode: motivo.code,
+        cancelReason: motivo.note,
+      });
       onToast(
         "Venda estornada — estoque devolvido e anúncios reabertos.",
         "success",
@@ -401,6 +478,16 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                 ))}
               </SelectContent>
             </Select>
+            {/* BLOCO C — filtro por status. Componente compartilhado com o
+                livro do dia do PDV: rótulo e comportamento idênticos por
+                construção. */}
+            <SaleStatusFilter
+              value={statusFilters}
+              onChange={(v) => {
+                setStatusFilters(v);
+                setPage(1);
+              }}
+            />
           </div>
 
           <div className="rounded-xl border border-border/70 overflow-hidden">
@@ -448,23 +535,67 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                         : "—"}
                     </TableCell>
                     <TableCell>
-                      {r.paymentMethod ? (
-                        <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          {paymentMethodLabel(r.paymentMethod)}
-                        </span>
-                      ) : (
-                        "—"
-                      )}
+                      {r.paymentMethod
+                        ? (() => {
+                            // Fase 1.1 — venda em N formas mostrava só a
+                            // predominante, como se as outras não existissem.
+                            // Com 0 ou 1 linha o rótulo é idêntico ao de antes.
+                            const { label, detail } = paymentMethodsSummary(
+                              r.paymentMethod,
+                              r.payments,
+                            );
+                            return (
+                              <span
+                                className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                                title={detail ?? undefined}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })()
+                        : "—"}
                     </TableCell>
                     <TableCell>
-                      <span
-                        className={cn(
-                          "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
-                          STATUS_STYLES[r.status],
+                      {/* BLOCO D — o motivo vira tooltip do próprio badge: a
+                          pergunta "cancelada por quê?" se responde onde ela
+                          nasce, sem abrir nada. Sem motivo, o badge é o de
+                          sempre (title undefined). */}
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span
+                          title={
+                            describeCancelReason(
+                              r.cancelReasonCode,
+                              r.cancelReason,
+                            ) ?? undefined
+                          }
+                          className={cn(
+                            "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
+                            STATUS_STYLES[r.status],
+                          )}
+                        >
+                          {r.status}
+                        </span>
+                        {/* BLOCO A (2ª metade) — o selo só aparece quando há
+                            dinheiro a cair. PAGA no PIX não ganha selo: marcar
+                            "liquidado" no que já liquidou sozinho criaria fila
+                            para confirmar o óbvio. */}
+                        {SETTLEMENT_UI_ENABLED && kind === "receivable" && (
+                          <SettlementBadge
+                            receivableId={r.id}
+                            status={r.status}
+                            paidAt={r.paidAt}
+                            paymentMethod={r.paymentMethod}
+                            settledAt={r.settledAt}
+                            payments={r.payments}
+                            totalAmount={r.totalAmount}
+                            onToast={onToast}
+                            onChanged={() => {
+                              fetchList();
+                              onChanged?.();
+                            }}
+                          />
                         )}
-                      >
-                        {r.status}
-                      </span>
+                      </div>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">
@@ -474,8 +605,13 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                             variant="ghost"
                             title="Marcar como paga"
                             onClick={() => handleMarkPaid(r)}
+                            disabled={payingId === r.id}
                           >
-                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            {payingId === r.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            )}
                           </Button>
                         )}
                         {kind === "receivable" && (
@@ -486,6 +622,19 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                             onClick={() => handleDownloadReceipt(r)}
                           >
                             <Receipt className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {/* BLOCO H — histórico. Somente leitura: abre um painel
+                            e faz 1 GET, e só quando o operador clica. Flag OFF
+                            ⇒ o botão não existe. */}
+                        {TIMELINE_UI_ENABLED && kind === "receivable" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Histórico desta venda"
+                            onClick={() => setTimelineTarget(r)}
+                          >
+                            <History className="h-4 w-4" />
                           </Button>
                         )}
                         <Button
@@ -571,6 +720,25 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
         </CardContent>
       </Card>
 
+      {/* BLOCO H — painel lateral do histórico. UM para a lista inteira; o que
+          o abre é o `receivableId` não-nulo. Flag OFF ⇒ nem é montado. */}
+      {TIMELINE_UI_ENABLED && (
+        <SaleTimelineSheet
+          receivableId={timelineTarget?.id ?? null}
+          saleLabel={
+            timelineTarget
+              ? [
+                  timelineTarget.document || timelineTarget.reason,
+                  timelineTarget.customer?.name,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || null
+              : null
+          }
+          onOpenChange={(o) => !o && setTimelineTarget(null)}
+        />
+      )}
+
       <FinanceDialog
         kind={kind}
         open={dialogOpen}
@@ -607,7 +775,11 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       {/* Bloco E — confirmação do estorno. */}
       <AlertDialog
         open={!!reverseTarget}
-        onOpenChange={(o) => !o && setReverseTarget(null)}
+        onOpenChange={(o) => {
+          if (o) return;
+          setReverseTarget(null);
+          setMotivo(EMPTY_CANCEL_REASON);
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -620,6 +792,15 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
               tem prazo próprio e é feito em Notas Fiscais.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* BLOCO D — fora da Description: o campo é interativo, e a
+              AlertDialogDescription vira o `aria-describedby` do diálogo. */}
+          {isCancelReasonUiEnabled() && (
+            <CancelReasonField
+              value={motivo}
+              onChange={setMotivo}
+              disabled={reversingId !== null}
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reversingId !== null}>
               Voltar
