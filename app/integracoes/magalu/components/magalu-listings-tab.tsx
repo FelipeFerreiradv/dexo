@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import {
   Package,
@@ -80,6 +80,14 @@ export function MagaluListingsTab() {
   >([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [page, setPage] = useState(1);
+  /**
+   * Bilhete da requisição em curso. Sem ele, duas buscas em voo (dois cliques
+   * rápidos em "Próximo", ou um refresh por cima de uma troca de conta) são
+   * aplicadas na ordem em que CHEGAM, não na ordem em que foram pedidas — e a
+   * resposta velha sobrescreve a nova. O sintoma era cruel: lista vazia numa
+   * conta que tem anúncios.
+   */
+  const requisicaoEmCurso = useRef(0);
   const [pagination, setPagination] = useState({
     page: 1,
     limit: LISTINGS_POR_PAGINA,
@@ -90,6 +98,8 @@ export function MagaluListingsTab() {
   const fetchListings = useCallback(
     async (showRefreshState = false) => {
       if (!session?.user?.email) return;
+
+      const bilhete = ++requisicaoEmCurso.current;
 
       if (showRefreshState) {
         setIsRefreshing(true);
@@ -112,6 +122,7 @@ export function MagaluListingsTab() {
         if (!response.ok) {
           const data = await response.json();
           if (response.status === 404) {
+            if (bilhete !== requisicaoEmCurso.current) return;
             setListings([]);
             return;
           }
@@ -119,6 +130,8 @@ export function MagaluListingsTab() {
         }
 
         const data: ListingsResponse = await response.json();
+        // Chegou depois de outra requisição ter sido disparada: descarta.
+        if (bilhete !== requisicaoEmCurso.current) return;
         setListings(data.listings);
         // Servidor sem paginação (deploy antigo): trata como página única com o
         // que veio, em vez de zerar o rodapé.
@@ -138,21 +151,19 @@ export function MagaluListingsTab() {
           setPage(1);
         }
       } catch (err) {
+        if (bilhete !== requisicaoEmCurso.current) return;
         setError(err instanceof Error ? err.message : "Erro desconhecido");
       } finally {
-        setIsLoading(false);
-        setIsRefreshing(false);
+        // Só a requisição mais nova desliga o "carregando"; senão a resposta
+        // velha destrava a tela enquanto a nova ainda está em voo.
+        if (bilhete === requisicaoEmCurso.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
       }
     },
     [session?.user?.email, selectedAccountId, page],
   );
-
-  // Trocar de conta volta para a primeira página. Sem isto, quem estivesse na
-  // página 40 de uma conta grande e trocasse para uma conta pequena veria a
-  // lista vazia e concluiria que a conta não tem anúncios.
-  useEffect(() => {
-    setPage(1);
-  }, [selectedAccountId]);
 
   useEffect(() => {
     if (session?.user?.email) {
@@ -221,7 +232,16 @@ export function MagaluListingsTab() {
             <select
               className="rounded border px-2 py-1 text-sm"
               value={selectedAccountId}
-              onChange={(e) => setSelectedAccountId(e.target.value)}
+              onChange={(e) => {
+                // A página volta para 1 AQUI, no mesmo evento da troca de conta.
+                // Num `useEffect` separado, os dois viajavam em commits
+                // diferentes: a busca saía uma vez com a página antiga e outra
+                // com a nova — duas requisições, e a velha podia chegar por
+                // último e esvaziar a tela. No mesmo handler, o React agrupa as
+                // duas escritas e sai UMA busca.
+                setSelectedAccountId(e.target.value);
+                setPage(1);
+              }}
             >
               <option value="">Todas as contas</option>
               {accounts.map((acc) => (
@@ -357,7 +377,7 @@ export function MagaluListingsTab() {
           <ListingsPagination
             mostrando={listings.length}
             total={pagination.total}
-            page={pagination.page}
+            page={page}
             totalPages={pagination.totalPages}
             onPageChange={setPage}
             carregando={isLoading || isRefreshing}
