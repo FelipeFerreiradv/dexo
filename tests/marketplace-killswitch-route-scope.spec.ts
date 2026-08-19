@@ -15,17 +15,17 @@ import { afterEach, describe, expect, it } from "vitest";
 // conectar/desconectar, que só troca token e escreve no NOSSO banco. Sem isso,
 // uma reautorização em produção exigiria DESLIGAR o kill-switch.
 //
-// Este spec reproduz a decisão do hook isoladamente — o predicado é a regra, e
-// é ele que precisa ficar travado contra regressão.
+// Este spec trava o predicado do hook — ele É a regra.
+//
+// ⚠️ Até 19/08/2026 este arquivo carregava uma CÓPIA transcrita à mão do
+// predicado, e testava a cópia. Isso é um teste que mente por construção: no dia
+// em que a regra de produção mudasse, a cópia continuaria verde provando a si
+// mesma, e o spec anunciaria uma cobertura que não existe. O predicado passou a
+// ser exportado por marketplace.routes.ts só para que ele possa ser IMPORTADO
+// aqui — é a função real que responde aos casos abaixo.
 // ──────────────────────────────────────────────────────────
 
-/** Cópia fiel do predicado de marketplace.routes.ts (hook onRequest). */
-function mexeNosAnunciosDoCanal(metodo: string, path: string): boolean {
-  if (metodo === "GET") return false;
-  if (/\/sync(\/|$)/.test(path)) return true;
-  if (/\/import(\/|$)/.test(path)) return true;
-  return false;
-}
+import { mexeNosAnunciosDoCanal } from "../app/routes/marketplace.routes";
 
 /** true = a requisição é barrada com 503 quando a flag está ligada. */
 const bloqueada = (metodo: string, path: string) =>

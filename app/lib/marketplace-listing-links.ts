@@ -9,6 +9,13 @@ export interface MarketplaceListingLinkInput {
   shopId?: number | null;
   status?: string | null;
   updatedAt?: Date | string | null;
+  /**
+   * FACEBOOK: id do Catálogo da CONTA (`MarketplaceAccount.fbCatalogId`). É o
+   * único dado que permite montar um destino real para o item — ver o bloco
+   * FACEBOOK em `resolveMarketplaceListingLinkState`. Opcional: sem ele o
+   * comportamento é exatamente o de antes (botão desabilitado).
+   */
+  fbCatalogId?: string | null;
 }
 
 export interface MarketplaceListingLinkState {
@@ -61,6 +68,37 @@ export function buildMercadoLivreShortUrl(
   return `https://produto.mercadolivre.com.br/${site}-${num}`;
 }
 
+/**
+ * Texto único para o destino do Facebook. Fica aqui (e não repetido nas telas)
+ * porque quem sabe PARA ONDE o link vai é este módulo.
+ */
+export const FACEBOOK_COMMERCE_MANAGER_HINT =
+  "Abre os itens do catálogo no Commerce Manager — a peça aparece pelo SKU.";
+
+/**
+ * Monta a URL do Commerce Manager para o catálogo da conta.
+ *
+ * NÃO EXISTE URL POR ITEM. Isso foi medido, não suposto: o roteador da Meta
+ * responde `permissions_needed?...&target_tab=products` para
+ * `/commerce/catalogs/{id}/products/` (rota reconhecida) e cai no login
+ * genérico para `/products/{itemId}/` — exatamente como responde para um
+ * caminho inventado usado como controle negativo. Idem `/product/{id}/`,
+ * `/items/`, `/products/edit/{id}/`. O que existe é a lista de itens DO
+ * CATÁLOGO CERTO, onde o operador acha a peça pelo SKU que a própria tela
+ * mostra ao lado do botão.
+ *
+ * O id é digitado pelo operador na aba de conexão, então só aceita dígitos:
+ * qualquer outra coisa (texto colado, caminho com `../`, URL inteira) devolve
+ * null e o botão volta ao estado desabilitado, em vez de virar link torto.
+ */
+export function buildFacebookCommerceManagerUrl(
+  catalogId?: string | null,
+): string | null {
+  const id = normalizeText(catalogId);
+  if (!id || !/^\d+$/.test(id)) return null;
+  return `https://business.facebook.com/commerce/catalogs/${id}/products/`;
+}
+
 function getShopeeItemId(listing: MarketplaceListingLinkInput) {
   const externalListingId = normalizeText(listing.externalListingId);
 
@@ -111,21 +149,25 @@ export function resolveMarketplaceListingLinkState(
     };
   }
 
-  // FACEBOOK: o Catálogo do Meta NÃO gera URL pública por item. O campo `link`
-  // que a Meta exige em cada item aponta para a página fixa do vendedor
-  // (FB_PRODUCT_URL_BASE), e é ele que acabava gravado como `permalink` — então
-  // "Ver anúncio" abria a página da loja, não a peça. Botão que promete uma
-  // coisa e entrega outra é pior do que botão desligado: o operador clica,
-  // estranha, e abre chamado.
+  // FACEBOOK: o `permalink` gravado é a página fixa do vendedor
+  // (FB_PRODUCT_URL_BASE), que a Meta exige em todo item do catálogo — não a
+  // peça. Por isso o Facebook é resolvido ANTES do bloco de permalink: deixá-lo
+  // cair lá é o que fazia "Ver anúncio" abrir a loja em vez do anúncio.
   //
-  // Enquanto não houver link por item, o estado honesto é desabilitado com o
-  // motivo escrito. O item existe e está no ar; só não tem endereço próprio.
+  // O destino real é a lista de itens DO CATÁLOGO DA CONTA no Commerce Manager
+  // (ver `buildFacebookCommerceManagerUrl` para por que não há URL por item).
+  // Sem catálogo configurado na conta, permanece o estado desabilitado — o
+  // mesmo de antes, agora dizendo o que fazer para destravá-lo.
   if (listing.platform === "FACEBOOK") {
+    const href = buildFacebookCommerceManagerUrl(listing.fbCatalogId);
+    if (href) {
+      return { href, isOpenable: true, disabledReason: null };
+    }
     return {
       href: null,
       isOpenable: false,
       disabledReason:
-        "O Catálogo do Facebook não gera link público por item. Veja a peça no Commerce Manager.",
+        "Informe o ID do Catálogo na conta do Facebook para abrir a peça no Commerce Manager.",
     };
   }
 

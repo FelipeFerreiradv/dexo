@@ -4878,6 +4878,16 @@ export class SyncUseCase {
                     imageUrl: true,
                     imageUrls: true,
                     quality: true,
+                    // A memória de categoria do produto — `resolveCategoryId`
+                    // a lê PRIMEIRO, antes do de-para por nome. Sem a coluna
+                    // aqui ela chega `undefined` e a republicação em massa cai
+                    // no default 2101 (Carros): peça de moto/caminhão/barco
+                    // volta ao ar na categoria errada, em lote, com o relatório
+                    // dizendo "Sucesso". O caminho unitário
+                    // (POST /marketplace/olx/sync/:productId) carrega o produto
+                    // inteiro e por isso acertava — a divergência entre os dois
+                    // era o sintoma.
+                    olxCategoryId: true,
                   }
                 : {
                     id: true,

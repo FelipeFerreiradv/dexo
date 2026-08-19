@@ -117,4 +117,69 @@ describe("SyncUseCase.syncAllStock — OLX com produto enxuto", () => {
     expect(OlxApiService.submitImport).not.toHaveBeenCalled();
     expect(result.failed).toBe(1);
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // A CATEGORIA SALVA PRECISA SOBREVIVER À REPUBLICAÇÃO EM MASSA.
+  //
+  // `resolveCategoryId` lê `product.olxCategoryId` ANTES do de-para por nome, e
+  // nunca devolve null — sem o campo ela cai no default 2101 (Carros). O select
+  // enxuto trazia todos os campos que o build lê (preço, fotos, quality) e
+  // esquecia justamente esse. Efeito: um clique em "Sincronizar Estoque com a
+  // OLX" republicava peça de moto/caminhão/barco na categoria de carro, em
+  // lote, com o relatório dizendo "Sucesso". Pelo caminho unitário
+  // (POST /marketplace/olx/sync/:productId) saía certo, porque lá o produto é
+  // carregado inteiro — a divergência entre os dois era o sintoma.
+  //
+  // O teste ataca o elo real: é o SELECT que decide se o campo chega. Um teste
+  // que só passasse o produto pronto pelo mock provaria o resolvedor, não o bug.
+  it("o select da OLX pede olxCategoryId — é ele que decide se a categoria salva chega", async () => {
+    (prisma as any).productListing.findMany.mockResolvedValue([]);
+
+    await SyncUseCase.syncAllStock("user-1", Platform.OLX);
+
+    const args = (prisma as any).productListing.findMany.mock.calls[0][0];
+    const camposDoProduto = args.select.product.select;
+    expect(camposDoProduto.olxCategoryId).toBe(true);
+    // Controle: os campos que o build já lia continuam lá (nada foi trocado).
+    for (const campo of [
+      "price",
+      "description",
+      "imageUrl",
+      "imageUrls",
+      "quality",
+      "reservedStock",
+    ]) {
+      expect(camposDoProduto[campo], campo).toBe(true);
+    }
+  });
+
+  it("com categoria salva, a republicação em massa usa ELA e não o default 2101", async () => {
+    const paused = leanListing("paused");
+    // Produto de MOTO com a categoria já escolhida pelo operador. O nome não
+    // tem palavra de veículo de propósito: sem `olxCategoryId` o de-para cairia
+    // em 2101 (Carros), que é exatamente o defeito.
+    (paused as any).product = {
+      id: "prod-1",
+      sku: "SKU1",
+      stock: 5,
+      reservedStock: 0,
+      name: "Farol Dianteiro",
+      description: "Peça em bom estado",
+      price: 200,
+      imageUrl: "https://x/1.jpg",
+      imageUrls: ["https://x/1.jpg"],
+      quality: "SUCATA",
+      olxCategoryId: "2103",
+    };
+    (prisma as any).productListing.findMany.mockResolvedValue([paused]);
+    (prisma as any).productListing.findUnique.mockResolvedValue(null);
+
+    await SyncUseCase.syncAllStock("user-1", Platform.OLX);
+
+    expect(OlxApiService.submitImport).toHaveBeenCalled();
+    const [, anuncios] = (OlxApiService.submitImport as any).mock.calls[0];
+    const ad = Array.isArray(anuncios) ? anuncios[0] : anuncios?.ad_list?.[0];
+    expect(Number(ad.category)).toBe(2103);
+    expect(Number(ad.category)).not.toBe(2101);
+  });
 });

@@ -34,10 +34,7 @@ import {
   OLX_CATEGORY_LABEL,
   OLX_CATEGORY_MAP,
 } from "../marketplaces/olx/olx-category-map";
-import {
-  FACEBOOK_CATEGORY_LABEL,
-  FACEBOOK_CATEGORY_MAP,
-} from "../marketplaces/facebook/facebook-category-map";
+import { FACEBOOK_CATEGORY_LABEL } from "../marketplaces/facebook/facebook-category-map";
 import { getVehicleRootSet } from "../marketplaces/services/category-resolution.service";
 import {
   ML_BLOCKED_BRANCHES,
@@ -151,6 +148,29 @@ function normalizarBusca(texto: string): string {
   return texto.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
 }
 
+/**
+ * O predicado do kill-switch de rota: true = a requisição MEXE nos anúncios do
+ * canal e deve ser barrada com 503 quando a integração está pausada.
+ *
+ * Exportado de propósito, e não por elegância: enquanto ele era uma `const`
+ * dentro de `marketplaceRoutes`, o spec que o cobre
+ * (tests/marketplace-killswitch-route-scope.spec.ts) mantinha uma CÓPIA
+ * transcrita à mão. Cópia é um teste que mente por construção — o dia em que a
+ * regra daqui mudar, a cópia continua verde provando a si mesma. Agora o spec
+ * importa esta função.
+ */
+export function mexeNosAnunciosDoCanal(metodo: string, path: string): boolean {
+  // Toda leitura destas rotas é do banco local — nunca sai chamada.
+  if (metodo === "GET") return false;
+  // Publicar/sincronizar estoque e importar catálogo: é o que o kill-switch
+  // existe para parar.
+  if (/\/sync(\/|$)/.test(path)) return true;
+  if (/\/import(\/|$)/.test(path)) return true;
+  // O resto (OAuth, dados do vendedor, desconectar) é CONFIGURAÇÃO: mexe só
+  // no nosso banco e no vínculo da conta, nunca nos anúncios do vendedor.
+  return false;
+}
+
 export async function marketplaceRoutes(app: FastifyInstance) {
   // Kill-switch de runtime: bloqueia todas as rotas /marketplace/olx/* e
   // /marketplace/facebook/* quando OLX_INTEGRATION_DISABLED / FACEBOOK_INTEGRATION_DISABLED=1.
@@ -173,18 +193,6 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   // (vive em /listings/*, filtrada por isPlatformDisabled em listing.routes.ts
   // :946/:1274/:1521 e product.routes.ts:940/948) e pausar/reativar tem guarda
   // própria em ListingUseCase.updateListingStatus.
-  const mexeNosAnunciosDoCanal = (metodo: string, path: string): boolean => {
-    // Toda leitura destas rotas é do banco local — nunca sai chamada.
-    if (metodo === "GET") return false;
-    // Publicar/sincronizar estoque e importar catálogo: é o que o kill-switch
-    // existe para parar.
-    if (/\/sync(\/|$)/.test(path)) return true;
-    if (/\/import(\/|$)/.test(path)) return true;
-    // O resto (OAuth, dados do vendedor, desconectar) é CONFIGURAÇÃO: mexe só
-    // no nosso banco e no vínculo da conta, nunca nos anúncios do vendedor.
-    return false;
-  };
-
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
     const metodo = request.method.toUpperCase();
@@ -3439,31 +3447,30 @@ small{color:#666}</style></head><body>
           .normalize("NFD")
           .replace(/[̀-ͯ]/g, "")
           .trim();
-        const seen = new Set<number>();
-        // Rótulo = NOME da categoria, não a palavra de casamento. As chaves de
-        // OLX_CATEGORY_MAP são termos de busca no nome do produto ("moto",
-        // "caminhao") e nunca deveriam chegar à tela.
+        // A LISTA SAI DOS RÓTULOS, NÃO DO DE-PARA DE BUSCA.
         //
-        // Mas elas seguem valendo na BUSCA, como sinônimos: o rótulo é
-        // "Caminhões" e o operador digita "caminhão", que normalizado vira
-        // "caminhao" e não casa com "caminhoes". Sem os sinônimos, procurar
-        // pelo singular não acha nada.
+        // Enquanto ela era montada com `Object.values(OLX_CATEGORY_MAP)`, a
+        // categoria 2101 — "Carros, vans e utilitários" — NUNCA aparecia: ela é
+        // o DEFAULT da resolução (`OLX_DEFAULT_CATEGORY_ID`) e por isso não tem
+        // nenhuma palavra-chave no de-para. Ou seja, sumia da tela justamente a
+        // categoria da esmagadora maioria das peças de um desmanche. O operador
+        // não conseguia escolhê-la, e ao reabrir uma peça já salva com ela o
+        // campo vinha em branco, porque nenhuma opção casava com o valor salvo.
+        //
+        // OLX_CATEGORY_LABEL é o conjunto autoritativo: tem uma entrada para
+        // cada categoria que a resolução pode devolver, default incluído.
+        //
+        // OLX_CATEGORY_MAP continua valendo, mas só para a BUSCA, como
+        // sinônimos: o rótulo é "Caminhões" e o operador digita "caminhão", que
+        // normalizado vira "caminhao" e não casa com "caminhoes".
         const sinonimosPorId = new Map<number, string[]>();
         for (const [palavra, id] of Object.entries(OLX_CATEGORY_MAP)) {
           const atuais = sinonimosPorId.get(id) ?? [];
           atuais.push(normalizarBusca(palavra));
           sinonimosPorId.set(id, atuais);
         }
-        const categories = Object.values(OLX_CATEGORY_MAP)
-          .filter((id) => {
-            if (seen.has(id)) return false;
-            seen.add(id);
-            return true;
-          })
-          .map((id) => ({
-            id: String(id),
-            value: OLX_CATEGORY_LABEL[id] ?? String(id),
-          }))
+        const categories = Object.entries(OLX_CATEGORY_LABEL)
+          .map(([id, value]) => ({ id: String(id), value }))
           .filter((c) => {
             if (!search) return true;
             const rotulo = normalizarBusca(c.value);
@@ -3772,8 +3779,8 @@ small{color:#666}</style></head><body>
         }
 
         const listingsArrays = await Promise.all(
-          accounts.map((acc) =>
-            prisma.productListing.findMany({
+          accounts.map(async (acc) => {
+            const rows = await prisma.productListing.findMany({
               where: { marketplaceAccountId: acc.id },
               select: {
                 id: true,
@@ -3788,8 +3795,13 @@ small{color:#666}</style></head><body>
                 product: { select: { name: true, sku: true, stock: true } },
               },
               orderBy: { createdAt: "desc" },
-            }),
-          ),
+            });
+            // O catálogo é POR CONTA e é o que monta o destino do "Ver anúncio"
+            // (Commerce Manager). Vem da conta que já está em mãos neste laço —
+            // nenhuma consulta a mais, e sem ele a tela não tem como saber para
+            // qual catálogo mandar o operador quando há mais de uma conta.
+            return rows.map((row) => ({ ...row, fbCatalogId: acc.fbCatalogId }));
+          }),
         );
 
         const listings = listingsArrays.flat();
@@ -3980,20 +3992,17 @@ small{color:#666}</style></head><body>
           .normalize("NFD")
           .replace(/[̀-ͯ]/g, "")
           .trim();
-        const seen = new Set<string>();
-        const categories = Object.values(FACEBOOK_CATEGORY_MAP)
-          .filter((path) => {
-            if (seen.has(path)) return false;
-            seen.add(path);
-            return true;
-          })
-          // `id` continua sendo o path da taxonomia do Google — é ele que
-          // vai para a Meta. Só o `value`, que a tela exibe e a busca filtra,
-          // passa a ser português.
-          .map((path) => ({
-            id: path,
-            value: FACEBOOK_CATEGORY_LABEL[path] ?? path,
-          }))
+        // Mesma correção da OLX: a lista sai dos RÓTULOS, não do de-para de
+        // busca. Com `Object.values(FACEBOOK_CATEGORY_MAP)`, o caminho
+        // "Peças de carros, vans e utilitários" (MOTOR_VEHICLE_PARTS) nunca
+        // aparecia — é o DEFAULT (`FACEBOOK_DEFAULT_CATEGORY`) e, como tal, não
+        // tem palavra-chave no de-para. Restavam só motos e barcos na tela.
+        //
+        // `id` continua sendo o path da taxonomia do Google — é ele que vai
+        // para a Meta. Só o `value`, que a tela exibe e a busca filtra, é
+        // português.
+        const categories = Object.entries(FACEBOOK_CATEGORY_LABEL)
+          .map(([path, value]) => ({ id: path, value }))
           .filter((c) => {
             if (!search) return true;
             const v = c.value

@@ -154,10 +154,22 @@ export function PauseListingsButton({
   const title =
     state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
   const confirmLabel = state === "all-active" ? "Pausar" : "Despausar";
+  // A OLX não tem pausa. O que a API de autoupload oferece é `delete`, e o
+  // "despausar" é uma publicação NOVA: list_id novo, URL nova, fila de
+  // moderação de novo. A frase padrão ("ficarão invisíveis... até serem
+  // despausados") é verdadeira no ML, na Shopee e na Magalu, e falsa aqui — o
+  // operador que mandou o link por WhatsApp descobre depois que o endereço
+  // morreu. Só acrescenta a ressalva quando existe anúncio de OLX no produto.
+  const temOlx = (product.listings ?? []).some(
+    (l) => (l as { platform?: string } | null)?.platform === "OLX",
+  );
+  const ressalvaOlx = temOlx
+    ? " Atenção: na OLX não existe pausa — o anúncio é excluído e, ao despausar, é recriado com um novo endereço e passa outra vez pela revisão da OLX."
+    : "";
   const description =
     state === "all-active"
-      ? `Pausar todos os anúncios publicados de "${product.name}"? Eles ficarão invisíveis nos marketplaces até serem despausados.`
-      : `Reativar todos os anúncios publicados de "${product.name}"? Eles voltarão a aparecer nos marketplaces.`;
+      ? `Pausar todos os anúncios publicados de "${product.name}"? Eles ficarão invisíveis nos marketplaces até serem despausados.${ressalvaOlx}`
+      : `Reativar todos os anúncios publicados de "${product.name}"? Eles voltarão a aparecer nos marketplaces.${ressalvaOlx}`;
 
   return (
     <AlertDialog>

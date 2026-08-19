@@ -208,9 +208,9 @@ export function OlxListingsTab() {
               Nenhum vínculo encontrado
             </h3>
             <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-              Seus anúncios da OLX ainda não estão vinculados aos produtos do
-              seu estoque. Use a aba de Sincronização para importar e vincular
-              anúncios.
+              A OLX não permite ler os anúncios já publicados: a API de
+              autoupload só insere e remove. Os vínculos aparecem aqui conforme
+              você publica peças do seu estoque na OLX pela tela de Produtos.
             </p>
           </div>
         ) : (
