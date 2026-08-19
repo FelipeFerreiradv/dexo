@@ -4362,6 +4362,16 @@ export function EditProductDialog({
                         Opcional — se vazio, a categoria é resolvida
                         automaticamente no Facebook.
                       </p>
+                      {/* Mesmo motivo do modal de criação: o rótulo é tradução
+                          nossa, o valor é o caminho da taxonomia do Google. */}
+                      {watch("facebookCategory") ? (
+                        <p className="text-[11px] text-muted-foreground/80">
+                          Enviado à Meta:{" "}
+                          <span className="font-mono">
+                            {watch("facebookCategory")}
+                          </span>
+                        </p>
+                      ) : null}
                     </div>
                   </>
                 )}
