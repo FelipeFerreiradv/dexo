@@ -6,6 +6,7 @@ import {
 } from "../facebook/facebook-constants";
 import type {
   FacebookAvailability,
+  FacebookBatchMethod,
   FacebookBatchRequest,
   FacebookBatchStatusEntry,
   FacebookBatchStatusResponse,
@@ -131,6 +132,32 @@ export class FacebookApiService {
   }
 
   /**
+   * Monta UM request do items_batch.
+   *
+   * ⚠️ O identificador vai DENTRO de `data`, no campo `id` — não no nível do
+   * request. Isso não é preferência de estilo: a Meta responde
+   * `{"validation_status":[{"errors":[{"message":"Can not find required field
+   * id"}]}]}` quando o `id` não está em `data`, e como o items_batch devolve
+   * HTTP 200 mesmo rejeitando, a falha só aparece no corpo.
+   *
+   * Verificado contra o catálogo real em 19/08/2026, com um DELETE de
+   * `retailer_id` inexistente (no-op) nos dois formatos:
+   *   {method, retailer_id, data}      → "Can not find required field id"
+   *   {method, data:{id, ...}}         → {"handles":[...]}
+   *
+   * Os quatro caminhos (upsert, update, availability, delete) passam por aqui
+   * de propósito: com o formato repetido em cada um, foi possível ficarem três
+   * certos e um errado sem ninguém perceber.
+   */
+  private static montarRequest(
+    method: FacebookBatchMethod,
+    retailerId: string,
+    data?: FacebookCatalogItemData,
+  ): FacebookBatchRequest {
+    return { method, data: { ...(data ?? {}), id: retailerId } };
+  }
+
+  /**
    * Insere/edita UM item (CREATE com allow_upsert → cria ou atualiza pelo
    * retailer_id). Editar = mesmo retailer_id.
    */
@@ -142,7 +169,7 @@ export class FacebookApiService {
   ): Promise<FacebookItemsBatchResponse> {
     return this.submitItemsBatch(
       accessToken,
-      [{ method: "CREATE", retailer_id: retailerId, data }],
+      [this.montarRequest("CREATE", retailerId, data)],
       { catalogId: opts?.catalogId, allowUpsert: true },
     );
   }
@@ -156,7 +183,7 @@ export class FacebookApiService {
   ): Promise<FacebookItemsBatchResponse> {
     return this.submitItemsBatch(
       accessToken,
-      [{ method: "UPDATE", retailer_id: retailerId, data }],
+      [this.montarRequest("UPDATE", retailerId, data)],
       { catalogId: opts?.catalogId },
     );
   }
@@ -181,7 +208,7 @@ export class FacebookApiService {
     }
     return this.submitItemsBatch(
       accessToken,
-      [{ method: "UPDATE", retailer_id: retailerId, data }],
+      [this.montarRequest("UPDATE", retailerId, data)],
       { catalogId: opts?.catalogId },
     );
   }
@@ -194,7 +221,7 @@ export class FacebookApiService {
   ): Promise<FacebookItemsBatchResponse> {
     return this.submitItemsBatch(
       accessToken,
-      [{ method: "DELETE", retailer_id: retailerId }],
+      [this.montarRequest("DELETE", retailerId)],
       { catalogId: opts?.catalogId },
     );
   }

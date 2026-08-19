@@ -21,6 +21,9 @@ export type FacebookCondition = "new" | "refurbished" | "used";
  * image_url + additional_image_urls (1ª = principal).
  */
 export interface FacebookCatalogItemData {
+  // Identificador do item no catálogo do vendedor (= SKU). A Meta o exige
+  // AQUI, dentro de `data` — ver o comentário de FacebookApiService.montarRequest.
+  id?: string;
   name?: string;
   description?: string;
   availability?: FacebookAvailability;
@@ -36,11 +39,18 @@ export interface FacebookCatalogItemData {
   [key: string]: unknown;
 }
 
-/** Uma operação no `requests[]` do items_batch. */
+/**
+ * Uma operação no `requests[]` do items_batch.
+ *
+ * ⚠️ NÃO existe `retailer_id` no nível do request. O identificador é
+ * `data.id`, e `data` é OBRIGATÓRIO até no DELETE — sem ele a Meta responde
+ * HTTP 200 com "Can not find required field id" no corpo, e a falha passa
+ * despercebida. O campo foi removido daqui de propósito: assim o compilador
+ * recusa a forma antiga em vez de deixá-la voltar em silêncio.
+ */
 export interface FacebookBatchRequest {
   method: FacebookBatchMethod;
-  retailer_id: string;
-  data?: FacebookCatalogItemData;
+  data: FacebookCatalogItemData & { id: string };
 }
 
 /** Corpo do POST /{catalog_id}/items_batch. */

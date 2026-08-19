@@ -119,7 +119,11 @@ describe("ListingUseCase.updateListingFields — Facebook (items_batch real)", (
     // virar "duplicar no catálogo" (CREATE) ou "sumir o anúncio" (DELETE).
     expect((requests as any[]).length).toBe(1);
     expect((requests as any[])[0].method).toBe("UPDATE");
-    expect((requests as any[])[0].retailer_id).toBe(RETAILER_ID);
+    // O identificador vive em `data.id` — a Meta recusa `retailer_id` no nível
+    // do request com "Can not find required field id", e como ela responde
+    // HTTP 200 mesmo assim, a falha não estourava em lugar nenhum.
+    expect((requests as any[])[0].data?.id).toBe(RETAILER_ID);
+    expect((requests as any[])[0].retailer_id).toBeUndefined();
     expect((requests as any[]).some((r) => r.method === "CREATE")).toBe(false);
     expect((requests as any[]).some((r) => r.method === "DELETE")).toBe(false);
     // upsertItem liga allow_upsert=true; o UPDATE puro não deve ligar — se ligasse,

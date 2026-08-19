@@ -30,7 +30,7 @@ describe("FacebookApiService", () => {
   it("submitItemsBatch → POST /{catalog}/items_batch com Bearer + item_type", async () => {
     await FacebookApiService.submitItemsBatch(
       "access-tok",
-      [{ method: "CREATE", retailer_id: "SKU1", data: { name: "Peça" } }],
+      [{ method: "CREATE", data: { id: "SKU1", name: "Peça" } }],
       { catalogId: CATALOG, allowUpsert: true },
     );
     const [url, body, cfg] = (mockedAxios as any).post.mock.calls[0];
@@ -51,7 +51,8 @@ describe("FacebookApiService", () => {
     );
     const body = (mockedAxios as any).post.mock.calls[0][1];
     expect(body.requests[0].method).toBe("CREATE");
-    expect(body.requests[0].retailer_id).toBe("SKU1");
+    expect(body.requests[0].data.id).toBe("SKU1");
+    expect(body.requests[0].retailer_id).toBeUndefined();
     expect(body.allow_upsert).toBe(true);
   });
 
@@ -70,7 +71,62 @@ describe("FacebookApiService", () => {
     await FacebookApiService.deleteItem("tok", "SKU1", { catalogId: CATALOG });
     const body = (mockedAxios as any).post.mock.calls[0][1];
     expect(body.requests[0].method).toBe("DELETE");
-    expect(body.requests[0].retailer_id).toBe("SKU1");
+    expect(body.requests[0].data.id).toBe("SKU1");
+    expect(body.requests[0].retailer_id).toBeUndefined();
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // A trava que faltava. Os quatro caminhos montavam o request cada um por si,
+  // e três ficaram certos enquanto o publish ficou errado — a Meta responde
+  // HTTP 200 com "Can not find required field id" no corpo, então nada
+  // estourava. Verificado contra o catálogo real em 19/08/2026.
+  // ─────────────────────────────────────────────────────────────
+  it("TODOS os caminhos põem o id DENTRO de data, e nenhum usa retailer_id", async () => {
+    const chamadas: Array<[string, () => Promise<unknown>]> = [
+      [
+        "upsertItem",
+        () =>
+          FacebookApiService.upsertItem(
+            "tok",
+            "SKU1",
+            { name: "P" },
+            { catalogId: CATALOG },
+          ),
+      ],
+      [
+        "updateItem",
+        () =>
+          FacebookApiService.updateItem(
+            "tok",
+            "SKU1",
+            { name: "P" },
+            { catalogId: CATALOG },
+          ),
+      ],
+      [
+        "setAvailability",
+        () =>
+          FacebookApiService.setAvailability("tok", "SKU1", "in stock", {
+            catalogId: CATALOG,
+          }),
+      ],
+      [
+        "deleteItem",
+        () =>
+          FacebookApiService.deleteItem("tok", "SKU1", { catalogId: CATALOG }),
+      ],
+    ];
+
+    for (const [nome, executar] of chamadas) {
+      (mockedAxios as any).post.mockClear();
+      await executar();
+      const req = (mockedAxios as any).post.mock.calls[0][1].requests[0];
+      expect(req.data?.id, `${nome}: o id tem que estar em data`).toBe("SKU1");
+      expect(
+        req.retailer_id,
+        `${nome}: retailer_id no nível do request é recusado pela Meta`,
+      ).toBeUndefined();
+    }
   });
 
   it("checkBatchStatus → GET check_batch_request_status?handle=", async () => {
