@@ -29,6 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { ListingsPagination } from "@/app/integracoes/components/listings-pagination";
 import { MLListingsSkeleton } from "./ml-skeleton";
 
 interface Listing {
@@ -49,9 +50,24 @@ interface Listing {
 
 interface ListingsResponse {
   success: boolean;
+  /** Quantos vieram NESTA página. O total está em `pagination.total`. */
   count: number;
   listings: Listing[];
+  /**
+   * Teto e paginação (R7). Opcional no tipo por precaução: se um deploy antigo
+   * responder sem o campo, a aba cai num estado de página única em vez de
+   * quebrar — nunca em "nenhum anúncio".
+   */
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 }
+
+/** Mesmo teto do servidor. Muda aqui e lá junto, ou a conta de páginas mente. */
+const LISTINGS_POR_PAGINA = 50;
 
 export function MLListingsTab() {
   const { data: session } = useSession();
@@ -63,6 +79,13 @@ export function MLListingsTab() {
     Array<{ id: string; accountName: string }>
   >([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    limit: LISTINGS_POR_PAGINA,
+    total: 0,
+    totalPages: 1,
+  });
 
   // Buscar listings
   const fetchListings = useCallback(
@@ -80,6 +103,8 @@ export function MLListingsTab() {
         const url = new URL(`${getApiBaseUrl()}/marketplace/ml/listings`);
         if (selectedAccountId)
           url.searchParams.set("accountId", selectedAccountId);
+        url.searchParams.set("page", String(page));
+        url.searchParams.set("limit", String(LISTINGS_POR_PAGINA));
 
         const response = await fetch(url.toString(), {
           headers: {
@@ -99,6 +124,23 @@ export function MLListingsTab() {
 
         const data: ListingsResponse = await response.json();
         setListings(data.listings);
+        // Servidor sem paginação (deploy antigo): trata como página única com o
+        // que veio, em vez de zerar o rodapé.
+        setPagination(
+          data.pagination ?? {
+            page: 1,
+            limit: LISTINGS_POR_PAGINA,
+            total: data.listings.length,
+            totalPages: 1,
+          },
+        );
+        // Beco sem saída: se a página atual ficou além do fim (anúncios apagados
+        // por outro caminho, ou refresh depois de uma limpeza), a tela mostraria
+        // uma lista vazia com os botões travados e nenhuma forma de voltar.
+        // Volta para a primeira — não há laço, porque a página 1 nunca reentra.
+        if (data.listings.length === 0 && page > 1) {
+          setPage(1);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Erro desconhecido");
       } finally {
@@ -106,8 +148,15 @@ export function MLListingsTab() {
         setIsRefreshing(false);
       }
     },
-    [session?.user?.email, selectedAccountId],
+    [session?.user?.email, selectedAccountId, page],
   );
+
+  // Trocar de conta volta para a primeira página. Sem isto, quem estivesse na
+  // página 40 de uma conta grande e trocasse para uma conta pequena veria a
+  // lista vazia e concluiria que a conta não tem anúncios.
+  useEffect(() => {
+    setPage(1);
+  }, [selectedAccountId]);
 
   useEffect(() => {
     if (session?.user?.email) {
@@ -311,17 +360,14 @@ export function MLListingsTab() {
         )}
 
         {listings.length > 0 && (
-          <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
-            <div className="flex items-center gap-1">
-              <AlertCircle className="h-4 w-4" />
-              <span>
-                {listings.length}{" "}
-                {listings.length === 1
-                  ? "vínculo encontrado"
-                  : "vínculos encontrados"}
-              </span>
-            </div>
-          </div>
+          <ListingsPagination
+            mostrando={listings.length}
+            total={pagination.total}
+            page={pagination.page}
+            totalPages={pagination.totalPages}
+            onPageChange={setPage}
+            carregando={isLoading || isRefreshing}
+          />
         )}
       </CardContent>
     </Card>
