@@ -211,6 +211,8 @@ export function PerProductReviewStep({
         globalMlAccounts={globalMlAccounts}
         globalShopeeAccounts={globalShopeeAccounts}
         globalMagaluAccounts={globalMagaluAccounts}
+        globalOlxAccounts={globalOlxAccounts}
+        globalFacebookAccounts={globalFacebookAccounts}
         mlOptions={mlOptions}
         shopeeOptions={shopeeOptions}
         magaluOptions={magaluOptions}
@@ -274,6 +276,8 @@ function LivePreview({
   globalMlAccounts,
   globalShopeeAccounts,
   globalMagaluAccounts,
+  globalOlxAccounts = [],
+  globalFacebookAccounts = [],
   mlOptions,
   shopeeOptions,
   magaluOptions,
@@ -283,6 +287,8 @@ function LivePreview({
   globalMlAccounts: ReviewAccountLite[];
   globalShopeeAccounts: ReviewAccountLite[];
   globalMagaluAccounts: ReviewAccountLite[];
+  globalOlxAccounts?: ReviewAccountLite[];
+  globalFacebookAccounts?: ReviewAccountLite[];
   mlOptions: ReviewCategoryOption[];
   shopeeOptions: ReviewCategoryOption[];
   magaluOptions: ReviewCategoryOption[];
@@ -308,10 +314,19 @@ function LivePreview({
     mlCategory: values.mlCategory,
     shopeeCategory: values.shopeeCategory,
     magaluCategory: values.magaluCategory,
+    // OLX e Facebook: o preço já viajava, o TOGGLE e a categoria não. Sem o
+    // toggle a Prévia nunca desenhava as abas dos dois canais — com só eles
+    // marcados, a área dizia "Nada para pré-visualizar" e o operador concluía
+    // que nada seria publicado. Numa tela que se chama "Revisão individual",
+    // justamente o que ela existe para evitar.
+    olxCategory: values.olxCategoryOverride,
+    facebookCategory: values.fbCategoryOverride,
     attributes: values.attributes,
     createMLListing: values.includeMl,
     createShopeeListing: values.includeShopee,
     createMagaluListing: values.includeMagalu,
+    createOlxListing: values.includeOlx,
+    createFacebookListing: values.includeFacebook,
   };
 
   // Resolve o NOME da categoria na Prévia mesmo antes de a lista de 12k carregar.
@@ -328,6 +343,27 @@ function LivePreview({
         values.shopeeCategoryLabel,
       ),
     [shopeeOptions, values.shopeeCategory, values.shopeeCategoryLabel],
+  );
+  // OLX e Facebook não têm lista pré-carregada neste passo (as opções vivem nos
+  // campos de cada canal). A opção sintética com o rótulo já capturado é o que
+  // faz a Prévia mostrar o NOME da categoria em vez do código.
+  const olxOptionsForPreview = useMemo(
+    () =>
+      withSelectedLabel(
+        [],
+        values.olxCategoryOverride,
+        values.olxCategoryOverrideLabel,
+      ),
+    [values.olxCategoryOverride, values.olxCategoryOverrideLabel],
+  );
+  const facebookOptionsForPreview = useMemo(
+    () =>
+      withSelectedLabel(
+        [],
+        values.fbCategoryOverride,
+        values.fbCategoryOverrideLabel,
+      ),
+    [values.fbCategoryOverride, values.fbCategoryOverrideLabel],
   );
   // Magalu busca a categoria server-side (sem lista pré-carregada): a opção
   // sintética com o rótulo capturado resolve o caminho na Prévia.
@@ -357,6 +393,12 @@ function LivePreview({
         magaluAccounts={globalMagaluAccounts}
         selectedMagaluAccountIds={values.magaluAccountIds ?? []}
         magaluOptions={magaluOptionsForPreview}
+        olxAccounts={globalOlxAccounts}
+        selectedOlxAccountIds={values.olxAccountIds ?? []}
+        olxOptions={olxOptionsForPreview}
+        facebookAccounts={globalFacebookAccounts}
+        selectedFacebookAccountIds={values.facebookAccountIds ?? []}
+        facebookOptions={facebookOptionsForPreview}
       />
     </div>
   );

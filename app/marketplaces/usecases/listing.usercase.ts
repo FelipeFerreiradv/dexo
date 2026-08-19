@@ -5780,6 +5780,22 @@ export class ListingUseCase {
 
       const platform = listing.marketplaceAccount?.platform;
 
+      // Kill-switch, igual ao irmão `updateListingStatus`. Salvar um override
+      // aqui NÃO é operação local: na OLX "editar" é um insert com o mesmo id,
+      // que devolve o anúncio à fila de revisão e o tira do ar até a OLX
+      // reprocessar; no Facebook é um UPDATE no item do catálogo. Sem a guarda,
+      // o operador lê "integração pausada" na tela de Integrações e mesmo assim
+      // escreve no canal.
+      //
+      // Não afeta os outros três: `isPlatformDisabled` só conhece OLX e
+      // FACEBOOK e devolve false para o resto.
+      if (platform && isPlatformDisabled(platform)) {
+        return {
+          success: false,
+          error: `${platform} desativado por kill-switch`,
+        };
+      }
+
       if (platform === Platform.MERCADO_LIVRE) {
         return await ListingUseCase.updateMLListingFields(listing, fields);
       }
@@ -6984,15 +7000,23 @@ export class ListingUseCase {
     // Recarrega o produto CHEIO (updateListingFields usa leanProduct) p/ não
     // reenviar título/preço/imagens vazios e apagar o item vivo — mesmo padrão
     // do caminho Shopee (findById(listing.productId)).
-    const product = await ListingUseCase.productRepository.findById(
+    const produtoCru = await ListingUseCase.productRepository.findById(
       listing.productId,
     );
-    if (!product) {
+    if (!produtoCru) {
       return {
         success: false,
         error: "Produto do anúncio Facebook não encontrado",
       };
     }
+    // BLOCO G: desconta o estoque reservado, como o create do Facebook e como a
+    // edição da OLX já fazem. Sem isto a edição desfaz o que o create respeitou:
+    // peça com stock=1 e reservedStock=1 (vendida, venda em aberto) foi ao ar
+    // com quantity 0, e bastava editar título/preço — ou o próprio override de
+    // "Valor do Anúncio" rodar depois do create — para o item voltar ao catálogo
+    // com quantity 1. Peça única de desmanche não tem reposição: seria venda
+    // dupla. No-op quando a reserva está desligada.
+    const product = withAvailableStock(produtoCru);
     const { applyOverridesToProduct } =
       await import("../services/listing-overrides.service");
     let listingForOverrides: any = listing;

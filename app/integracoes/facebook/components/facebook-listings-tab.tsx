@@ -12,7 +12,10 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
-import { resolveMarketplaceListingLinkState } from "@/app/lib/marketplace-listing-links";
+import {
+  FACEBOOK_COMMERCE_MANAGER_HINT,
+  resolveMarketplaceListingLinkState,
+} from "@/app/lib/marketplace-listing-links";
 import {
   Card,
   CardContent,
@@ -37,6 +40,9 @@ interface Listing {
   externalListingId: string;
   externalSku: string | null;
   permalink: string | null;
+  // Catálogo da conta dona do vínculo — vem do GET /facebook/listings e é o
+  // que abre a peça no Commerce Manager.
+  fbCatalogId?: string | null;
   status: string;
   lastError?: string | null;
   createdAt: string;
@@ -264,6 +270,7 @@ export function FacebookListingsTab() {
                           platform: "FACEBOOK" as const,
                           externalListingId: listing.externalListingId,
                           permalink: listing.permalink,
+                          fbCatalogId: listing.fbCatalogId,
                           status: listing.status,
                         };
                         const linkState =
@@ -291,6 +298,7 @@ export function FacebookListingsTab() {
                               href={linkState.href ?? "#"}
                               target="_blank"
                               rel="noopener noreferrer"
+                              title={FACEBOOK_COMMERCE_MANAGER_HINT}
                             >
                               <ExternalLink className="h-4 w-4" />
                               <span className="sr-only">Ver no Facebook</span>

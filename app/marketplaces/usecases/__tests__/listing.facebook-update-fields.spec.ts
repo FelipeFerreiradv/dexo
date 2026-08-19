@@ -271,4 +271,152 @@ describe("ListingUseCase.updateListingFields — Facebook (items_batch real)", (
       else process.env.FACEBOOK_CATALOG_ID = catalogoGlobalOriginal;
     }
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // A EDIÇÃO NÃO PODE DESFAZER A RESERVA QUE A PUBLICAÇÃO RESPEITOU.
+  //
+  // O create do Facebook aplica `withAvailableStock` (BLOCO G) e publica peça
+  // já vendida com quantity 0. A edição recarregava o produto CRU e mandava
+  // `stock` puro — então bastava mexer no título, no preço, ou o próprio
+  // override de "Valor do Anúncio" rodar depois do create, para o item voltar
+  // ao catálogo com quantity 1. Peça única de desmanche não tem reposição:
+  // seria venda dupla.
+  //
+  // A edição da OLX já fazia certo; era só o Facebook fora do padrão.
+  it("peça reservada continua indisponível depois da edição (não volta a quantity 1)", async () => {
+    process.env.STOCK_RESERVATION_ENABLED = "1";
+    const listing = baseFbListing();
+    // stock 1 e reservedStock 1 = vendida, venda em aberto ⇒ disponível 0.
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fullFbProduct({ stock: 1, reservedStock: 1 }),
+    );
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    (prisma as any).productListing.findUnique.mockResolvedValue(listing);
+    mockWrites();
+    const upsert = vi
+      .spyOn(FacebookApiService, "updateItem")
+      .mockResolvedValue({ handles: [] } as any);
+
+    await ListingUseCase.updateListingFields(FB_LISTING_ID, USER_ID, {
+      titleOverride: "Farol Direito Gol 2012 — original",
+    });
+
+    expect(upsert).toHaveBeenCalled();
+    const itemData = (upsert.mock.calls[0] as any[])[2];
+    expect(itemData.quantity_to_sell_on_facebook).toBe(0);
+  });
+
+  it("sem reserva, a quantidade enviada continua sendo o estoque cheio", async () => {
+    // Controle negativo: se `withAvailableStock` tivesse virado "sempre zero",
+    // ou se eu tivesse trocado o campo errado, este caso pega.
+    process.env.STOCK_RESERVATION_ENABLED = "1";
+    const listing = baseFbListing();
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fullFbProduct({ stock: 4, reservedStock: 0 }),
+    );
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    (prisma as any).productListing.findUnique.mockResolvedValue(listing);
+    mockWrites();
+    const upsert = vi
+      .spyOn(FacebookApiService, "updateItem")
+      .mockResolvedValue({ handles: [] } as any);
+
+    await ListingUseCase.updateListingFields(FB_LISTING_ID, USER_ID, {
+      titleOverride: "Farol Direito Gol 2012 — original",
+    });
+
+    const itemData = (upsert.mock.calls[0] as any[])[2];
+    expect(itemData.quantity_to_sell_on_facebook).toBe(4);
+  });
+});
+
+/**
+ * Kill-switch na EDIÇÃO de anúncio.
+ *
+ * `updateListingStatus` (pausar/reativar) já tinha a guarda; `updateListingFields`
+ * não. Salvar um override não é operação local: na OLX "editar" é um insert com o
+ * mesmo id — o anúncio volta para a fila de revisão e SAI DO AR até a OLX
+ * reprocessar; no Facebook é um UPDATE no item do catálogo. Com a integração
+ * pausada — que é a postura recomendada de rollout — o operador lia "pausada" na
+ * tela e mesmo assim escrevia no canal.
+ */
+describe("ListingUseCase.updateListingFields — kill-switch", () => {
+  afterEach(() => {
+    delete process.env.OLX_INTEGRATION_DISABLED;
+    delete process.env.FACEBOOK_INTEGRATION_DISABLED;
+  });
+
+  it("Facebook pausado: não chama a Meta e não grava override nenhum", async () => {
+    process.env.FACEBOOK_INTEGRATION_DISABLED = "1";
+    const listing = baseFbListing();
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    const writes = mockWrites();
+    const upsert = vi
+      .spyOn(FacebookApiService, "updateItem")
+      .mockResolvedValue({ handles: [] } as any);
+
+    const r = await ListingUseCase.updateListingFields(
+      FB_LISTING_ID,
+      USER_ID,
+      { titleOverride: "novo título" },
+    );
+
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/kill-switch/i);
+    expect(upsert).not.toHaveBeenCalled();
+    // Barrar DEPOIS da gravação deixaria o banco dizendo uma coisa e o canal
+    // outra — o override ficaria salvo sem nunca ter sido enviado.
+    expect(writes.updateListing).not.toHaveBeenCalled();
+    expect(writes.updatePriceOverride).not.toHaveBeenCalled();
+  });
+
+  it("com a flag desligada, a edição do Facebook segue normalmente", async () => {
+    process.env.FACEBOOK_INTEGRATION_DISABLED = "0";
+    const listing = baseFbListing();
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    (prisma as any).productListing.findUnique.mockResolvedValue(listing);
+    mockWrites();
+    const upsert = vi
+      .spyOn(FacebookApiService, "updateItem")
+      .mockResolvedValue({ handles: [] } as any);
+
+    await ListingUseCase.updateListingFields(FB_LISTING_ID, USER_ID, {
+      titleOverride: "novo título",
+    });
+
+    expect(upsert).toHaveBeenCalled();
+  });
+
+  it("a guarda NÃO alcança Mercado Livre, Shopee nem Magalu", async () => {
+    // `isPlatformDisabled` só conhece OLX e FACEBOOK. Se alguém a generalizasse,
+    // ligar o kill-switch da OLX passaria a travar a edição dos três canais que
+    // já estavam em produção — regressão silenciosa e larga.
+    process.env.OLX_INTEGRATION_DISABLED = "1";
+    process.env.FACEBOOK_INTEGRATION_DISABLED = "1";
+    const listing = baseFbListing({
+      marketplaceAccount: {
+        id: "acc-ml-1",
+        platform: Platform.MERCADO_LIVRE,
+        accessToken: "tok-ml",
+      },
+    });
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    mockWrites();
+    // Sela o caminho do ML: sem isto o caso sai para a rede de verdade (a API do
+    // ML devolve 400 num id falso) — lento e frágil. O que interessa aqui é se a
+    // guarda deixou passar, e isso se prova pela chamada ao colaborador.
+    const ml = vi
+      .spyOn(ListingUseCase as any, "updateMLListingFields")
+      .mockResolvedValue({ success: true });
+
+    const r = await ListingUseCase.updateListingFields(
+      FB_LISTING_ID,
+      USER_ID,
+      { titleOverride: "novo título" },
+    );
+
+    expect(ml).toHaveBeenCalled();
+    expect(r.success).toBe(true);
+    expect(r.error ?? "").not.toMatch(/kill-switch/i);
+  });
 });

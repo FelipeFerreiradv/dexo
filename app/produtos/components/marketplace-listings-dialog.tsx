@@ -25,6 +25,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  FACEBOOK_COMMERCE_MANAGER_HINT,
   resolveMarketplaceListingLinkState,
   type MarketplaceListingPlatform,
 } from "@/app/lib/marketplace-listing-links";
@@ -43,6 +44,9 @@ type ApiListing = {
   status: string | null;
   externalListingId: string | null;
   permalink: string | null;
+  // Só vem preenchido nas linhas do Facebook (GET /listings/status). É o
+  // catálogo da conta, destino do "Ver anúncio" no Commerce Manager.
+  fbCatalogId?: string | null;
   lastError: string | null;
   retryAttempts?: number | null;
   retryEnabled?: boolean | null;
@@ -287,6 +291,7 @@ export function MarketplaceListingsDialog({
                   marketplaceAccountId: listing.accountId,
                   externalListingId: listing.externalListingId,
                   permalink: listing.permalink,
+                  fbCatalogId: listing.fbCatalogId,
                   shopId:
                     listing.externalListingId
                       ? shopIdByExternalId.get(listing.externalListingId) ?? null
@@ -333,6 +338,11 @@ export function MarketplaceListingsDialog({
                             href={linkState.href}
                             target="_blank"
                             rel="noopener noreferrer"
+                            title={
+                              listing.platform === "FACEBOOK"
+                                ? FACEBOOK_COMMERCE_MANAGER_HINT
+                                : undefined
+                            }
                           >
                             <ExternalLink className="mr-1.5 size-3" />
                             Ver anúncio

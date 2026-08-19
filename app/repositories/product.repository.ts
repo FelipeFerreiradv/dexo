@@ -23,6 +23,10 @@ import {
   reduceVariants,
   isCodeLikeQuery,
 } from "./product-search-terms";
+// Rótulos curados de OLX/Facebook — constantes puras, sem I/O; usadas só para
+// exibição no filtro "Categoria publicada".
+import { OLX_CATEGORY_LABEL } from "../marketplaces/olx/olx-category-map";
+import { FACEBOOK_CATEGORY_LABEL } from "../marketplaces/facebook/facebook-category-map";
 
 const LOW_STOCK_THRESHOLD = 10;
 
@@ -1654,8 +1658,24 @@ class ProductRepositoryPrisma implements ProductRepository {
 
     return Array.from(distinctCategories.values())
       .map((item) => {
+        // OLX e Facebook não têm linha na tabela Category (o de-para delas é
+        // curado no código), então caíam direto no `rawCategoryId` — e o filtro
+        // oferecia "OLX • 2101" e "Facebook • Vehicles & Parts > Vehicle Parts
+        // & Accessories > Motor Vehicle Parts". É o mesmo sintoma que o modal já
+        // corrigiu, sobrevivendo numa terceira tela.
+        //
+        // Só o LABEL muda. O `value` continua sendo o par plataforma+código que
+        // vai para a query — traduzir o valor quebraria o filtro.
+        const rotuloCurado =
+          item.platform === "OLX"
+            ? OLX_CATEGORY_LABEL[Number(item.normalizedCategoryId)]
+            : item.platform === "FACEBOOK"
+              ? FACEBOOK_CATEGORY_LABEL[item.normalizedCategoryId]
+              : undefined;
         const categoryName =
-          categoryLookup.get(item.normalizedCategoryId) || item.rawCategoryId;
+          rotuloCurado ||
+          categoryLookup.get(item.normalizedCategoryId) ||
+          item.rawCategoryId;
 
         return {
           value: buildProductListingCategoryValue(

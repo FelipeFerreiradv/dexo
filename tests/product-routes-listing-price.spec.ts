@@ -384,3 +384,178 @@ describe("POST /products — Valor do Anúncio nas 3 plataformas", () => {
     expect(dispatchedTemplate()).toBeFalsy();
   });
 });
+
+/**
+ * OLX e Facebook — os dois que ficaram de fora do mapa.
+ *
+ * O campo "Valor do Anúncio" foi acrescentado às seções de OLX e Facebook do
+ * modal, e a etapa Prévia passou a exibi-lo. Só que `PLATAFORMA_PARA_CHAVE`, em
+ * product.routes.ts, continuou com três entradas. O valor digitado chegava
+ * intacto ao servidor, era lido pelo laço, não casava com nenhuma chave, e o
+ * anúncio nascia com o preço de VENDA do produto. Sem erro, sem log: só olhando
+ * o anúncio no canal.
+ *
+ * Tudo a jusante já existia — `PerProductOverrideEntry` tem `olx`/`facebook`, o
+ * dispatcher lê as duas, o fluxo em massa monta as duas. Faltava o mapa.
+ *
+ * Os casos abaixo são deliberadamente os MESMOS do bloco das três plataformas:
+ * é a comparação com o irmão que torna a omissão visível.
+ */
+describe("POST /products — Valor do Anúncio na OLX e no Facebook", () => {
+  let app: ReturnType<typeof fastify>;
+
+  const payloadCanaisNovos = (
+    precos: Partial<Record<"olx" | "facebook", number>>,
+  ) => ({
+    sku: "PROD-NOVOS",
+    name: "Farol Dianteiro Gol",
+    price: 100.0,
+    stock: 5,
+    imageUrl: "http://localhost:3333/uploads/test.jpg",
+    category: "Carroceria e Lataria",
+    heightCm: 25,
+    widthCm: 25,
+    lengthCm: 45,
+    weightKg: 10,
+    listings: [
+      {
+        platform: "OLX",
+        accountIds: ["acc-olx"],
+        categoryId: "2101",
+        ...(precos.olx !== undefined ? { listingPrice: precos.olx } : {}),
+      },
+      {
+        platform: "FACEBOOK",
+        accountIds: ["acc-fb"],
+        ...(precos.facebook !== undefined
+          ? { listingPrice: precos.facebook }
+          : {}),
+      },
+    ],
+  });
+
+  beforeEach(async () => {
+    // O kill-switch derruba OLX/Facebook do dispatch. Fixa desligado para o
+    // teste não depender do .env do worktree — que o vitest LÊ.
+    process.env.OLX_INTEGRATION_DISABLED = "0";
+    process.env.FACEBOOK_INTEGRATION_DISABLED = "0";
+
+    app = fastify();
+    await app.register(productRoutes, { prefix: "/products" });
+
+    (CategoryResolutionService.resolveMLCategory as any).mockResolvedValue({
+      externalId: "MLB-MOCK",
+      fullPath: "Mock > Category",
+      source: "explicit",
+    });
+    (CategoryResolutionService.ensureLeafLocalOnly as any).mockResolvedValue({
+      externalId: "MLB-MOCK",
+      fullPath: "Mock > Category",
+    });
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
+      async (data: any) =>
+        ({
+          id: "prod-1",
+          sku: data.sku,
+          name: data.name,
+          price: data.price ?? 0,
+          stock: data.stock ?? 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }) as any,
+    );
+    vi.spyOn(ListingDispatcher, "dispatch").mockReturnValue({
+      queued: [],
+    } as any);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  const post = (payload: unknown) =>
+    app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: payload as any,
+    });
+
+  it("o preço digitado vira override nas chaves `olx` e `facebook`", async () => {
+    const res = await post(payloadCanaisNovos({ olx: 450, facebook: 470 }));
+
+    expect(res.statusCode, res.payload).toBe(201);
+    const ov = dispatchedTemplate()?.perProductOverrides?.["prod-1"];
+    expect(ov?.olx?.listingPrice).toBe(450);
+    expect(ov?.facebook?.listingPrice).toBe(470);
+  });
+
+  it("preço só na OLX não contamina o Facebook", async () => {
+    const res = await post(payloadCanaisNovos({ olx: 199.9 }));
+
+    expect(res.statusCode, res.payload).toBe(201);
+    const ov = dispatchedTemplate()?.perProductOverrides?.["prod-1"];
+    expect(ov?.olx?.listingPrice).toBe(199.9);
+    expect(ov?.facebook).toBeUndefined();
+  });
+
+  it("zero e negativo herdam o preço do produto (nunca publica por R$ 0)", async () => {
+    const res = await post(payloadCanaisNovos({ olx: 0, facebook: -10 }));
+
+    expect(res.statusCode, res.payload).toBe(201);
+    expect(dispatchedTemplate()).toBeFalsy();
+  });
+
+  it("sem preço informado, o dispatch fica idêntico ao de antes", async () => {
+    const res = await post(payloadCanaisNovos({}));
+
+    expect(res.statusCode, res.payload).toBe(201);
+    expect(dispatchedTemplate()).toBeFalsy();
+  });
+
+  it("as CINCO plataformas convivem no mesmo cadastro, cada uma com seu preço", async () => {
+    const res = await post({
+      ...payloadCanaisNovos({ olx: 450, facebook: 470 }),
+      listings: [
+        {
+          platform: "MERCADO_LIVRE",
+          accountIds: ["acc-ml"],
+          categoryId: "MLB1744",
+          listingPrice: 410,
+        },
+        {
+          platform: "SHOPEE",
+          accountIds: ["acc-shp"],
+          categoryId: "SHP_102298",
+          listingPrice: 420,
+        },
+        { platform: "MAGALU", accountIds: ["acc-mgl"], listingPrice: 430 },
+        {
+          platform: "OLX",
+          accountIds: ["acc-olx"],
+          categoryId: "2101",
+          listingPrice: 450,
+        },
+        { platform: "FACEBOOK", accountIds: ["acc-fb"], listingPrice: 470 },
+      ],
+    });
+
+    expect(res.statusCode, res.payload).toBe(201);
+    const ov = dispatchedTemplate()?.perProductOverrides?.["prod-1"];
+    expect(ov?.ml?.listingPrice).toBe(410);
+    expect(ov?.shopee?.listingPrice).toBe(420);
+    expect(ov?.magalu?.listingPrice).toBe(430);
+    expect(ov?.olx?.listingPrice).toBe(450);
+    expect(ov?.facebook?.listingPrice).toBe(470);
+  });
+});

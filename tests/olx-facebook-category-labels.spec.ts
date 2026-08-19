@@ -100,3 +100,34 @@ describe("Facebook — rótulo em português, valor em inglês", () => {
     );
   });
 });
+
+describe("a SUGESTÃO automática também devolve nome, não código", () => {
+  // ⚠️ Era aqui que a primeira correção errou o alvo: eu consertei a LISTA
+  // (GET /categories) e o que a tela mostra vem da SUGESTÃO
+  // (GET /category-suggest), que é outro caminho. O modal faz
+  // `label = data.path || data.categoryId` — com `path` nulo (OLX) ele exibia
+  // "2101", e com `path` em inglês (Facebook) exibia a hierarquia do Google.
+  //
+  // Estes casos travam o CONTRATO que a tela consome: para todo código que a
+  // resolução pode devolver, existe rótulo em português.
+  it("OLX: todo código resolvível tem nome para o `path` da sugestão", () => {
+    for (const id of new Set(Object.values(OLX_CATEGORY_MAP))) {
+      const path = OLX_CATEGORY_LABEL[id] ?? null;
+      expect(
+        path,
+        `categoria ${id} devolveria path nulo → tela mostra o número`,
+      ).toBeTruthy();
+      expect(/^\d+$/.test(String(path))).toBe(false);
+    }
+  });
+
+  it("Facebook: todo caminho resolvível tem nome em português para o `path`", () => {
+    const resolviveis = new Set(Object.values(FACEBOOK_CATEGORY_MAP));
+    resolviveis.add(FACEBOOK_DEFAULT_CATEGORY);
+    for (const cat of resolviveis) {
+      const path = FACEBOOK_CATEGORY_LABEL[cat] ?? cat;
+      expect(path).not.toContain("Vehicles & Parts");
+      expect(path).not.toBe(cat);
+    }
+  });
+});

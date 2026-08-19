@@ -37,7 +37,7 @@ npx vitest run
 **Onda 5 (kill-switch de runtime) — CONCLUÍDA.** Rec de Rollback da auditoria. `tsc`=104.
 - `app/lib/integration-flags.ts`: `isOlxDisabled`/`isFacebookDisabled`/`isPlatformDisabled` (padrão `*_DISABLED`, lidas por chamada, sem rebuild).
 - Cobertura: hook `onRequest` bloqueia todo `/marketplace/{olx,facebook}/*` (503); `POST /listings/dispatch` e `/bulk` (503); dispatch do modal de novo produto pula OLX/FB; `updateListingStatus` no-op p/ OLX/FB (cobre auto-pause do PDV, pause manual e restore de cancelamento — caminhos fora do prefixo `/marketplace`); `ListingStatusSweepService` tira FB da varredura.
-- **Migrations versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 3 migrations novas. Servem apenas p/ reproduzir o schema em **dev local / banco limpo** — **o deploy em São Paulo continua por DDL manual** (F0.1–F0.8 abaixo), como manda o `MIGRACAO_BANCO_SAO_PAULO.md`. **NÃO** rodar `prisma migrate deploy` contra o banco SP.
+- **Migrations versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 4 migrations novas (a 4ª, `add_product_olx_facebook_category_memory`, entrou depois e é a que o item F0.6 cobre). Servem apenas p/ reproduzir o schema em **dev local / banco limpo** — **o deploy em São Paulo continua por DDL manual** (F0.1–F0.8 abaixo), como manda o `MIGRACAO_BANCO_SAO_PAULO.md`. **NÃO** rodar `prisma migrate deploy` contra o banco SP.
 
 **Próximo:** só resta **F4.8** (vínculo por SKU na OLX — depende da doc da *Consulta de Anúncios Publicados* da OLX, externo, não é nosso). Todo o resto que é nosso está feito: Fases 1–3, 5, 6 e o Facebook da Fase 4 concluídos.
 
@@ -47,9 +47,10 @@ npx vitest run
 
 > ⚠️ **Deploy SP = DDL manual (inalterado).** As migrations **são versionadas** neste
 > repo (as 16 antigas já estavam trackeadas; a linha `prisma/migrations/` do gitignore
-> não destrackeava nada e foi removida) e as 3 novas (`add_olx_platform`,
-> `add_facebook_platform`, `add_olx_facebook_account_and_category_fields`) cobrem os 8
-> campos + enum — mas elas servem só p/ **dev local / banco limpo**. No banco de São
+> não destrackeava nada e foi removida) e as 4 novas (`add_olx_platform`,
+> `add_facebook_platform`, `add_olx_facebook_account_and_category_fields` e
+> `add_product_olx_facebook_category_memory`) cobrem os 14 campos + enum — mas elas
+> servem só p/ **dev local / banco limpo**. No banco de São
 > Paulo o schema evolui por **SQL manual** (F0.1–F0.8), conforme
 > `MIGRACAO_BANCO_SAO_PAULO.md`: **NUNCA rodar `prisma migrate deploy/dev` contra o
 > banco SP** (schema+dados = dump; qualquer processo pm2 que escreve pode colidir).
@@ -67,7 +68,25 @@ npx vitest run
 - [ ] **F0.3** Conferir: `SELECT unnest(enum_range(NULL::"Platform"));` (deve listar 5)
 - [ ] **F0.4** `ProductListing`: add col `olxListId TEXT`, `fbCatalogItemId TEXT`
 - [ ] **F0.5** `ProductListing`: add col `olxCategoryOverride TEXT`, `fbCategoryOverride TEXT`
-- [ ] ~~**F0.6** `Product`: add col `olxCategoryId TEXT`, `fbCategory TEXT`~~ — **REMOVIDO (rodada 3):** eram colunas mortas (lidas, nunca escritas). A categoria explícita OLX/FB vem da rota/override no call-site, não de coluna do Product. **Não criar** estas colunas no SP. A migration `20260730120000` também deixou de adicioná-las.
+- [x] **F0.6 — RESTABELECIDO (e JÁ APLICADO em São Paulo, conferido em 19/08/2026).** A remoção da rodada 3 estava certa naquele momento — as colunas eram mortas — mas o commit `5adf64c` passou a ESCREVÊ-LAS: `product.repository.ts` lista as seis no `create`, e sem elas o INSERT do Prisma falha com `42703` e o **cadastro de produto quebra para TODOS os canais**, não só OLX/Facebook. A instrução "não criar" ficou perigosa no instante em que o código mudou; se algum ambiente novo seguir este runbook ao pé da letra, ele sobe quebrado.
+
+      ```sql
+      ALTER TABLE "Product"
+        ADD COLUMN IF NOT EXISTS "olxCategoryId" TEXT,
+        ADD COLUMN IF NOT EXISTS "olxCategorySource" TEXT,
+        ADD COLUMN IF NOT EXISTS "olxCategoryChosenAt" TIMESTAMP(3),
+        ADD COLUMN IF NOT EXISTS "fbCategoryId" TEXT,
+        ADD COLUMN IF NOT EXISTS "fbCategorySource" TEXT,
+        ADD COLUMN IF NOT EXISTS "fbCategoryChosenAt" TIMESTAMP(3);
+      ```
+
+      Conferência (deve devolver 6 linhas):
+      ```sql
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'Product'
+         AND column_name IN ('olxCategoryId','olxCategorySource','olxCategoryChosenAt',
+                             'fbCategoryId','fbCategorySource','fbCategoryChosenAt');
+      ```
 - [ ] **F0.7** `MarketplaceAccount`: add col `olxSellerPhone TEXT`, `olxSellerZipcode TEXT`, `fbCatalogId TEXT`, `fbProductUrlBase TEXT` (NULL = usa .env; aditivo, não muda nada p/ Jotabê)
 - [ ] **F0.8** Pós-DDL: `npx prisma generate` → `npm run build` → restart. Flags em `false`.
 

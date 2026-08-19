@@ -1028,12 +1028,26 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           // significa herdar o preço do produto, nunca publicar por R$ 0.
           //
           // Antes lia apenas a entrada MERCADO_LIVRE e gravava em `ml`
-          // hardcoded — o campo existia só na seção ML do modal. Agora as três
+          // hardcoded — o campo existia só na seção ML do modal. Agora as CINCO
           // entradas são lidas, cada uma para a sua chave.
+          //
+          // OLX e FACEBOOK entraram aqui depois: o campo "Valor do Anúncio"
+          // delas foi acrescentado ao modal sem que este mapa crescesse junto.
+          // O resultado era mudo e caro — a tela aceitava o valor, a etapa
+          // Prévia o exibia, e a peça era publicada no canal pelo preço de
+          // VENDA do produto. Nenhum erro, nenhum log: só dava para descobrir
+          // olhando o anúncio na OLX/no Facebook.
+          //
+          // Nada mais precisou mudar: `PerProductOverrideEntry` já tem as
+          // chaves `olx`/`facebook`, o dispatcher já as lê
+          // (listing-dispatcher.service.ts) e o fluxo em massa já as monta.
+          // Só este mapa estava com três de cinco.
           const PLATAFORMA_PARA_CHAVE = {
             MERCADO_LIVRE: "ml",
             SHOPEE: "shopee",
             MAGALU: "magalu",
+            OLX: "olx",
+            FACEBOOK: "facebook",
           } as const;
           const produtoId = data.id as string;
           for (const [plataforma, chave] of Object.entries(

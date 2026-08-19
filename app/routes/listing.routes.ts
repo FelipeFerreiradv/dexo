@@ -813,6 +813,13 @@ export async function listingRoutes(app: FastifyInstance) {
                 id: true,
                 accountName: true,
                 platform: true,
+                // fbCatalogId sai do bloco `live`: ele não é insumo do refresh,
+                // é o DESTINO do botão "Ver anúncio" do Facebook. Preso ao
+                // live=1, um chamador que consultasse sem live receberia o
+                // botão desabilitado sem motivo aparente — armadilha silenciosa.
+                // Custo: uma string curta e nula em todo canal que não é o
+                // Facebook, e a resposta só a emite nas linhas FACEBOOK.
+                fbCatalogId: true,
                 // EGRESS: campos extras SÓ quando live=1 (o refresh precisa
                 // deles); a resposta é mapeada campo-a-campo e não expõe
                 // credenciais em nenhum dos dois modos.
@@ -823,7 +830,6 @@ export async function listingRoutes(app: FastifyInstance) {
                       refreshToken: true,
                       expiresAt: true,
                       shopId: true,
-                      fbCatalogId: true,
                     }
                   : {}),
               },
@@ -870,6 +876,11 @@ export async function listingRoutes(app: FastifyInstance) {
             retryEnabled: l.retryEnabled,
             nextRetryAt: l.nextRetryAt,
             updatedAt: changed?.get(l.id)?.updatedAt ?? l.updatedAt,
+            // Só no Facebook: nas demais plataformas o campo nem aparece, então
+            // o payload de ML/Shopee/Magalu/OLX segue byte a byte o de antes.
+            ...(l.marketplaceAccount?.platform === "FACEBOOK"
+              ? { fbCatalogId: l.marketplaceAccount?.fbCatalogId ?? null }
+              : {}),
           })),
         });
       } catch (error) {
