@@ -123,19 +123,79 @@ No terminal 1 você deve ver a linha
 
 ### Os dois modos
 
-| | Modo seguro (padrão) | Modo publicação (`-Publicar`) |
-|---|---|---|
-| UI de OLX/Facebook | completa | completa |
-| **Conectar/desconectar conta** | **liberado** | liberado |
-| Ler contas, salvar telefone/CEP | liberado | liberado |
-| Publicar, sincronizar, importar | **bloqueado** | **real** |
-| Serve para | tudo do §3 | só o §4 |
+|                                 | Modo seguro (padrão) | Modo publicação (`-Publicar`) |
+| ------------------------------- | -------------------- | ----------------------------- |
+| UI de OLX/Facebook              | completa             | completa                      |
+| **Conectar/desconectar conta**  | **liberado**         | liberado                      |
+| Ler contas, salvar telefone/CEP | liberado             | liberado                      |
+| Publicar, sincronizar, importar | **bloqueado**        | **real**                      |
+| Serve para                      | tudo do §3           | só o §4                       |
 
 O kill-switch para de **mexer nos anúncios**, não de administrar a conta: dá para
 conectar a OLX e o Facebook e deixar tudo configurado com a integração pausada. É o mesmo
 que você vai querer em produção numa reautorização — sem precisar desligar a proteção.
 
 Comece pelo seguro. Ele cobre os 11 primeiros testes.
+
+### Conectar a conta em teste local (o 404 é esperado)
+
+A OLX e a Meta só devolvem o navegador para o endereço **registrado** nelas —
+`https://usedexo.com.br/integracoes/<canal>/callback`. Como a produção ainda roda a
+`main`, que não tem as páginas de OLX/Facebook, depois do login o popup cai num **404**.
+Isso é esperado em teste local e **não é erro da integração**: o `code` está vivo na barra
+de endereço dessa janela; só falta entregá-lo para a sua API, que é quem guarda o `state`.
+
+Então o passo a passo do "Conectar" é:
+
+0. preencha **E-mail da conta da OLX** (o e-mail com que você entra na OLX). Esse campo
+   é obrigatório e existe **só na OLX** — veja _Por que a OLX pede o e-mail_ abaixo;
+1. clique em **Conectar**, faça o login na OLX (e-mail, senha, código);
+2. a janela do popup mostra o 404 em `usedexo.com.br` — **copie a barra de endereço
+   inteira** (`Ctrl+L`, `Ctrl+C`) e feche a janela;
+3. num terminal, rode:
+
+```bash
+.\scripts\dev-local\finalizar-conexao.ps1
+```
+
+4. recarregue `http://localhost:3000/integracoes/olx` — a conta aparece conectada.
+
+O script lê a URL da área de transferência (ou aceita `-Url "..."`), tira o `code` e o
+`state` e chama a sua API local. Ele serve para os dois canais — reconhece pelo endereço
+se é OLX ou Facebook.
+
+**Prazos:** o `code` da OLX vale **10 minutos** e o `state` é de **uso único**, guardado na
+memória da API. Se o terminal 1 reiniciou no meio (uma edição em `.ts` faz o `tsx watch`
+recarregar), clique em Conectar de novo.
+
+> **Não adianta apontar o retorno para o localhost.** Testado em 12/08/2026: a OLX joga
+> para `oops.olx.com.br` depois do login. O endereço dela é registrado por e-mail no
+> suporte e não aceita substituto. No **Facebook** dá para usar
+> `.\scripts\dev-local\api.ps1 -CallbackLocal`, mas só depois de cadastrar
+> `http://localhost:3000/integracoes/facebook/callback` em _Login do Facebook →
+> Configurações → URIs de redirecionamento do OAuth válidos_.
+>
+> Tudo isso deixa de existir no dia em que a branch estiver em produção: o endereço
+> registrado passa a responder e o popup fecha sozinho.
+
+### Por que a OLX pede o e-mail da conta
+
+Os outros canais dizem quem é o dono do token: o Mercado Livre devolve o `user_id`, a
+Shopee o `shop_id`, a Magalu o e-mail no JWT. É com esse identificador que o Dexo sabe
+que "reconectar" é a mesma conta (em vez de criar outra) e que impede **dois clientes do
+Dexo vincularem a mesma conta do canal** sem ninguém perceber.
+
+Na OLX isso vinha de `POST /oauth_api/basic_user_info`. **Esse endereço saiu do ar**:
+`apps.olx.com.br` responde 404 nele, com qualquer método ou cabeçalho, embora a
+documentação oficial ainda o descreva. Não é bloqueio de robô — o mesmo servidor, do
+mesmo IP, responde normalmente em `/autoupload/v1/published`.
+
+Por isso o e-mail passou a ser declarado na tela de conexão. O Dexo continua tentando
+perguntar para a OLX primeiro; quando ela voltar a responder, a resposta dela tem
+precedência e o campo deixa de ter efeito, sem precisar mexer em nada.
+
+Verificado em 12/08/2026. Vale abrir chamado no `suporteintegrador@olxbr.com` para
+confirmar se o endpoint volta.
 
 ---
 
@@ -148,10 +208,11 @@ Marque conforme for passando.
 - [ ] **T1** — Menu lateral mostra **OLX** e **Facebook** em Integrações.
       `http://localhost:3000/integracoes/olx` e `/integracoes/facebook` abrem (não dão 404).
 - [ ] **T2** — Mercado Livre, Shopee e Magalu continuam **exatamente** como antes:
-      abas, listagens e sincronizações intactas. *É o teste mais importante da lista.*
+      abas, listagens e sincronizações intactas. _É o teste mais importante da lista._
 - [ ] **T3** — Aba de conexão da OLX abre sem banner de erro, e o botão
       **Conectar à OLX** funciona **no modo seguro** (conectar é configuração, não
-      publicação). Depois de conectado, os campos **Telefone** e **CEP do vendedor**
+      publicação) — seguindo os 4 passos de _Conectar a conta em teste local_, logo acima.
+      Depois de conectado, os campos **Telefone** e **CEP do vendedor**
       aparecem, salvam e persistem após recarregar. Idem no Facebook, com o **catálogo**.
 - [ ] **T3b** — Ainda em modo seguro, clicar em **Sincronizar estoque** na aba de
       Sincronização devolve "Integração pausada". É o kill-switch fazendo o trabalho dele:
@@ -204,15 +265,20 @@ Marque conforme for passando.
 
 ## 5. Se algo der errado
 
-| Sintoma | Causa provável |
-|---|---|
-| `/integracoes/olx` dá 404 | subiu o front sem o script (as flags `NEXT_PUBLIC_*` são inlinadas no start) |
-| Toda ação OLX/FB responde "desativado por kill-switch" | é o modo seguro funcionando — use `-Publicar` |
-| Erro de coluna inexistente | faltou algum passo do §1; rode o **Passo 4** para ver o que falta |
-| Mudei o código e a API responde igual | processo antigo pendurado na 3333. `Get-NetTCPConnection -LocalPort 3333 -State Listen` e `Stop-Process -Id <PID> -Force` |
-| "Integração pausada" ao sincronizar/importar | correto em modo seguro. Conectar e configurar passam; publicar não |
-| `invalid input value for enum "Platform"` | o **Passo 1** não commitou; rode-o sozinho de novo |
-| Front chama produção | subiu o Next sem o script (`API_URL` do `.env` tem prioridade no server-side) |
+| Sintoma                                                                             | Causa provável                                                                                                            |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `/integracoes/olx` dá 404                                                           | subiu o front sem o script (as flags `NEXT_PUBLIC_*` são inlinadas no start)                                              |
+| Toda ação OLX/FB responde "desativado por kill-switch"                              | é o modo seguro funcionando — use `-Publicar`                                                                             |
+| Erro de coluna inexistente                                                          | faltou algum passo do §1; rode o **Passo 4** para ver o que falta                                                         |
+| Mudei o código e a API responde igual                                               | processo antigo pendurado na 3333. `Get-NetTCPConnection -LocalPort 3333 -State Listen` e `Stop-Process -Id <PID> -Force` |
+| "Integração pausada" ao sincronizar/importar                                        | correto em modo seguro. Conectar e configurar passam; publicar não                                                        |
+| `invalid input value for enum "Platform"`                                           | o **Passo 1** não commitou; rode-o sozinho de novo                                                                        |
+| Depois do login o popup dá **404 em `usedexo.com.br`** e a aba fica "Conectando..." | esperado em teste local — a produção ainda não tem as páginas. Copie a URL do 404 e rode o `finalizar-conexao.ps1`        |
+| Depois do login cai em **`oops.olx.com.br`**                                        | você subiu com `-CallbackLocal`. A OLX recusa endereço que não seja o registrado — suba a API sem essa flag               |
+| `State inválido ou expirado` ao finalizar                                           | passaram 10 min, a API reiniciou (o `state` fica na memória dela) ou a URL já foi usada. Clique em Conectar de novo       |
+| `Não foi possível identificar a conta da OLX`                                       | o e-mail da conta não foi preenchido antes de Conectar. Preencha e refaça                                                 |
+| Botão **Conectar à OLX** fica cinza                                                 | falta preencher o **E-mail da conta da OLX** (ou o e-mail está incompleto)                                                |
+| Front chama produção                                                                | subiu o Next sem o script (`API_URL` do `.env` tem prioridade no server-side)                                             |
 
 Para conferir a suíte a qualquer momento:
 

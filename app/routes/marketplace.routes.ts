@@ -20,6 +20,7 @@ import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.servic
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { OlxOAuthService } from "../marketplaces/services/olx-oauth.service";
 import { MagaluWebhookSignatureService } from "../marketplaces/services/magalu-webhook-signature.service";
 import { ShopeeWebhookSignatureService } from "../marketplaces/services/shopee-webhook-signature.service";
 import { SHOPEE_CONSTANTS } from "../marketplaces/shopee/shopee-constants";
@@ -179,10 +180,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       path === "/marketplace/facebook" ||
       path.startsWith("/marketplace/facebook/");
 
-    if (
-      (isOlxDisabled() && ehOlx) ||
-      (isFacebookDisabled() && ehFacebook)
-    ) {
+    if ((isOlxDisabled() && ehOlx) || (isFacebookDisabled() && ehFacebook)) {
       if (!mexeNosAnunciosDoCanal(metodo, path)) return;
 
       const nome = ehOlx ? "OLX" : "Facebook";
@@ -3034,13 +3032,34 @@ small{color:#666}</style></head><body>
   // ====================================================================
 
   /** POST /marketplace/olx/auth — inicia o OAuth da OLX. */
-  app.post<{ Reply: { authUrl: string; state: string } }>(
+  app.post<{
+    Body: { accountEmail?: string };
+    Reply: { authUrl: string; state: string };
+  }>(
     "/olx/auth",
     { preHandler: [authMiddleware, blockCollaborator] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const { authUrl, state } = MarketplaceUseCase.initiateOlxOAuth(userId);
+
+        // A OLX não expõe mais quem é o dono do token (basic_user_info fora do
+        // ar), então a identidade da conta vem declarada aqui. Validar ANTES do
+        // consentimento evita mandar o vendedor fazer todo o login para só
+        // então descobrir que a conexão não fecha.
+        const accountEmail = (request.body as { accountEmail?: string } | null)
+          ?.accountEmail;
+        if (!OlxOAuthService.isValidAccountEmail(accountEmail)) {
+          return reply.status(400).send({
+            error: "E-mail da conta OLX inválido",
+            message:
+              "Informe o e-mail da conta da OLX que você vai autorizar. Ele identifica a conta e impede que a mesma conta seja vinculada duas vezes.",
+          });
+        }
+
+        const { authUrl, state } = MarketplaceUseCase.initiateOlxOAuth(
+          userId,
+          accountEmail,
+        );
         return reply.send({ authUrl, state });
       } catch (error) {
         return reply.status(500).send({

@@ -25,16 +25,43 @@ import type {
 export class OlxOAuthService {
   // Estados CSRF in-memory (paridade com ML/Shopee/Magalu). `code` da OLX
   // expira em 10 min → o state usa o mesmo TTL.
+  //
+  // `accountEmail` viaja junto porque o callback chega como redirect do
+  // navegador, sem corpo: é a única forma de a identidade declarada pelo
+  // vendedor sobreviver à ida e volta na OLX. Ver `fetchBasicUserInfo`.
   private static pendingStates = new Map<
     string,
-    { expiresAt: Date; userId?: string }
+    { expiresAt: Date; userId?: string; accountEmail?: string }
   >();
+
+  /** Formato mínimo de e-mail. Não valida existência — só descarta digitação solta. */
+  private static readonly ACCOUNT_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  /**
+   * Normaliza o e-mail declarado da conta OLX para uso como `externalUserId`.
+   *
+   * Aqui o lowercase é DELIBERADO e não contradiz a regra de e-mail de
+   * colaborador (que preserva a caixa): lá o e-mail é dado de exibição e de
+   * login; aqui ele é CHAVE de identidade da conta no canal. Sem normalizar,
+   * "Loja@x.com" e "loja@x.com" viram duas contas e a trava cross-tenant
+   * deixaria de enxergar a colisão que existe para valer.
+   */
+  static normalizeAccountEmail(raw?: string | null): string {
+    return (raw ?? "").trim().toLowerCase();
+  }
+
+  static isValidAccountEmail(raw?: string | null): boolean {
+    return this.ACCOUNT_EMAIL_PATTERN.test(this.normalizeAccountEmail(raw));
+  }
 
   /**
    * Inicia o fluxo OAuth gerando a URL de consentimento da OLX.
-   * Sem PKCE — apenas state (CSRF) + userId associado.
+   * Sem PKCE — apenas state (CSRF) + userId e e-mail da conta associados.
    */
-  static generateAuthUrl(userId?: string): { authUrl: string; state: string } {
+  static generateAuthUrl(
+    userId?: string,
+    accountEmail?: string,
+  ): { authUrl: string; state: string } {
     validateOlxConfig();
 
     const state = randomBytes(OLX_CONSTANTS.STATE_LENGTH)
@@ -42,7 +69,11 @@ export class OlxOAuthService {
       .substring(0, OLX_CONSTANTS.STATE_LENGTH);
 
     const expiresAt = new Date(Date.now() + OLX_CONSTANTS.STATE_TTL_MS);
-    this.pendingStates.set(state, { expiresAt, userId });
+    this.pendingStates.set(state, {
+      expiresAt,
+      userId,
+      accountEmail: this.normalizeAccountEmail(accountEmail) || undefined,
+    });
 
     const authUrl = new URL(
       OLX_CONSTANTS.OAUTH_AUTHORIZE_ENDPOINT,
@@ -58,7 +89,11 @@ export class OlxOAuthService {
   }
 
   /** Valida o state recebido no callback (TTL + uso único). */
-  static validateState(state: string): { valid: boolean; userId?: string } {
+  static validateState(state: string): {
+    valid: boolean;
+    userId?: string;
+    accountEmail?: string;
+  } {
     const pendingState = this.pendingStates.get(state);
     if (!pendingState) {
       return { valid: false };
@@ -68,7 +103,11 @@ export class OlxOAuthService {
       return { valid: false };
     }
     this.pendingStates.delete(state); // uso único
-    return { valid: true, userId: pendingState.userId };
+    return {
+      valid: true,
+      userId: pendingState.userId,
+      accountEmail: pendingState.accountEmail,
+    };
   }
 
   /**
@@ -124,7 +163,17 @@ export class OlxOAuthService {
   /**
    * Busca nome/email da conta (POST /oauth_api/basic_user_info). Usado no
    * callback para nomear a MarketplaceAccount e derivar o externalUserId.
-   * Best-effort: se falhar, o callback ainda persiste a conta com fallback.
+   *
+   * ⚠️ FORA DO AR desde (pelo menos) 12/08/2026: `apps.olx.com.br` devolve 404
+   * do nginx de origem neste path, com qualquer método, User-Agent ou corpo —
+   * mesmo com a doc oficial (developers.olx.com.br, seção "API olx.com.br")
+   * ainda documentando o endpoint. Não é bloqueio de bot: o mesmo host, no
+   * mesmo IP, responde 401 com JSON em `/autoupload/v1/published`, e a resposta
+   * 404 vem com `cf-cache-status: DYNAMIC` e sem `cf-mitigated`.
+   *
+   * Por isso a chamada continua BEST-EFFORT e o callback tem uma segunda fonte
+   * de identidade: o e-mail declarado pelo vendedor ao conectar. Se a OLX
+   * restaurar o endpoint, ele volta a ter precedência sozinho, sem mudar nada.
    */
   static async fetchBasicUserInfo(
     accessToken: string,

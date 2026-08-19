@@ -904,8 +904,11 @@ export class MarketplaceUseCase {
   private static readonly OLX_NO_EXPIRY = new Date("9999-12-31T00:00:00.000Z");
 
   /** Inicia o fluxo OAuth da OLX (Authorization Code, sem PKCE, scope autoupload). */
-  static initiateOlxOAuth(userId?: string): { authUrl: string; state: string } {
-    const oauthData = OlxOAuthService.generateAuthUrl(userId);
+  static initiateOlxOAuth(
+    userId?: string,
+    accountEmail?: string,
+  ): { authUrl: string; state: string } {
+    const oauthData = OlxOAuthService.generateAuthUrl(userId, accountEmail);
     return { authUrl: oauthData.authUrl, state: oauthData.state };
   }
 
@@ -934,14 +937,16 @@ export class MarketplaceUseCase {
         data.code,
       );
 
-      // Identifica a conta via basic_user_info (best-effort). O user_email é o
-      // externalUserId (chave estável da conta OLX). Sem ele, cai num fallback
-      // derivado do userId para não bloquear a conexão.
+      // Identifica a conta via basic_user_info (best-effort — o endpoint está
+      // fora do ar na OLX, ver OlxOAuthService.fetchBasicUserInfo). O user_email
+      // é o externalUserId: a chave estável da conta OLX.
       let externalUserId = "";
       let accountName = "OLX";
       try {
         const info = await OlxOAuthService.fetchBasicUserInfo(accessToken);
-        externalUserId = String(info.user_email ?? info.user_name ?? "").trim();
+        externalUserId = OlxOAuthService.normalizeAccountEmail(
+          String(info.user_email ?? info.user_name ?? ""),
+        );
         if (info.user_name) accountName = `OLX ${info.user_name}`;
         else if (info.user_email) accountName = `OLX ${info.user_email}`;
       } catch (infoErr) {
@@ -950,13 +955,22 @@ export class MarketplaceUseCase {
           infoErr instanceof Error ? infoErr.message : String(infoErr),
         );
       }
+
+      // Segunda fonte: o e-mail que o vendedor declarou ao clicar em Conectar,
+      // carregado pelo `state`. A OLX tem precedência quando responde — o
+      // declarado nunca sobrescreve a identidade que veio do canal.
+      if (!externalUserId && stateValidation.accountEmail) {
+        externalUserId = stateValidation.accountEmail;
+        accountName = `OLX ${stateValidation.accountEmail}`;
+      }
+
       if (!externalUserId) {
         // NÃO ancorar no userId do Dexo: um externalUserId derivado do userId
         // anula a checagem cross-user (cada usuário viraria uma chave distinta),
-        // deixando DOIS tenants vincularem a MESMA conta OLX. Sem a identidade
-        // real da conta (user_email/name) a conexão é recusada.
+        // deixando DOIS tenants vincularem a MESMA conta OLX. Sem identidade —
+        // nem da OLX, nem declarada — a conexão é recusada.
         throw new Error(
-          "Não foi possível identificar a conta da OLX (basic_user_info indisponível). Tente reconectar em instantes.",
+          "Não foi possível identificar a conta da OLX. Informe o e-mail da conta OLX ao conectar e tente de novo.",
         );
       }
 

@@ -65,6 +65,14 @@ export function OlxConnectionTab() {
     Record<string, { phone: string; zipcode: string }>
   >({});
   const [savingSellerId, setSavingSellerId] = useState<string | null>(null);
+  // E-mail da conta da OLX que vai ser autorizada. A OLX não expõe mais quem é
+  // o dono do token (o endpoint basic_user_info dela responde 404), então é
+  // este e-mail que identifica a conta e impede vincular a mesma conta duas
+  // vezes. Só existe na OLX — os outros canais devolvem a identidade sozinhos.
+  const [emailConta, setEmailConta] = useState("");
+  const emailContaValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+    emailConta.trim().toLowerCase(),
+  );
   // Guard contra chamadas simultâneas de fetchStatus (type-safe via ref,
   // em vez de anexar propriedade à função como em ML/Shopee).
   const isFetchingRef = useRef(false);
@@ -107,13 +115,19 @@ export function OlxConnectionTab() {
           setAccounts(accountsList);
           setSellerDrafts(
             Object.fromEntries(
-              accountsList.map((acc: { id: string; olxSellerPhone?: string | null; olxSellerZipcode?: string | null }) => [
-                acc.id,
-                {
-                  phone: acc.olxSellerPhone ?? "",
-                  zipcode: acc.olxSellerZipcode ?? "",
-                },
-              ]),
+              accountsList.map(
+                (acc: {
+                  id: string;
+                  olxSellerPhone?: string | null;
+                  olxSellerZipcode?: string | null;
+                }) => [
+                  acc.id,
+                  {
+                    phone: acc.olxSellerPhone ?? "",
+                    zipcode: acc.olxSellerZipcode ?? "",
+                  },
+                ],
+              ),
             ),
           );
         } else {
@@ -140,6 +154,11 @@ export function OlxConnectionTab() {
       return;
     }
 
+    if (!emailContaValido) {
+      setError("Informe o e-mail da conta da OLX que você vai autorizar.");
+      return;
+    }
+
     setIsConnecting(true);
     setError(null);
 
@@ -147,7 +166,7 @@ export function OlxConnectionTab() {
       const response = await fetch(`${getApiBaseUrl()}/marketplace/olx/auth`, {
         method: "POST",
         headers: { "Content-Type": "application/json", email: userEmail },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ accountEmail: emailConta.trim() }),
       });
 
       if (!response.ok) {
@@ -335,6 +354,35 @@ export function OlxConnectionTab() {
     return <OlxConnectionSkeleton />;
   }
 
+  // `jaTemConta` só muda o texto: com uma conta na tela, o campo é para a
+  // PRÓXIMA conta — sem isso o rótulo parece pedir de novo a que já está ali, e
+  // o botão desabilitado ao lado passa a impressão de tela travada.
+  const renderCampoEmailConta = (jaTemConta: boolean) => (
+    <div className="space-y-1.5">
+      <Label htmlFor="olx-account-email">
+        {jaTemConta
+          ? "E-mail da conta OLX que você quer adicionar"
+          : "E-mail da conta da OLX"}
+      </Label>
+      <Input
+        id="olx-account-email"
+        type="email"
+        inputMode="email"
+        autoComplete="email"
+        placeholder="vendedor@empresa.com.br"
+        value={emailConta}
+        onChange={(e) => setEmailConta(e.target.value)}
+        disabled={isConnecting}
+        className="max-w-sm"
+      />
+      <p className="text-xs text-muted-foreground">
+        É o e-mail com que você entra na OLX. Ele identifica a conta aqui dentro
+        e impede que a mesma conta seja conectada duas vezes.
+        {jaTemConta && " Preencha para liberar o botão de adicionar."}
+      </p>
+    </div>
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -463,62 +511,67 @@ export function OlxConnectionTab() {
             </div>
 
             {!isCollaborator && (
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleConnect}
-                  disabled={isConnecting || isDisconnecting}
-                >
-                  {isConnecting ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Conectando...
-                    </>
-                  ) : (
-                    <>
-                      <ExternalLink className="mr-2 h-4 w-4" />
-                      Adicionar nova conta
-                    </>
-                  )}
-                </Button>
+              <div className="space-y-3">
+                {renderCampoEmailConta(true)}
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleConnect}
+                    disabled={
+                      isConnecting || isDisconnecting || !emailContaValido
+                    }
+                  >
+                    {isConnecting ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Conectando...
+                      </>
+                    ) : (
+                      <>
+                        <ExternalLink className="mr-2 h-4 w-4" />
+                        Adicionar nova conta
+                      </>
+                    )}
+                  </Button>
 
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="destructive" disabled={isDisconnecting}>
-                      {isDisconnecting ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Desconectando...
-                        </>
-                      ) : (
-                        <>
-                          <Unplug className="mr-2 h-4 w-4" />
-                          Desconectar todas
-                        </>
-                      )}
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        Desconectar todas as contas OLX?
-                      </AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Esta ação removerá as conexões das contas da OLX. Você
-                        não perderá seus anúncios, mas a sincronização será
-                        interrompida.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() => handleDisconnect()}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      >
-                        Desconectar tudo
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="destructive" disabled={isDisconnecting}>
+                        {isDisconnecting ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Desconectando...
+                          </>
+                        ) : (
+                          <>
+                            <Unplug className="mr-2 h-4 w-4" />
+                            Desconectar todas
+                          </>
+                        )}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          Desconectar todas as contas OLX?
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Esta ação removerá as conexões das contas da OLX. Você
+                          não perderá seus anúncios, mas a sincronização será
+                          interrompida.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => handleDisconnect()}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          Desconectar tudo
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
               </div>
             )}
             {isCollaborator && (
@@ -537,22 +590,27 @@ export function OlxConnectionTab() {
                 : "Ao conectar, você poderá sincronizar automaticamente o estoque dos seus produtos com os anúncios da OLX."}
             </p>
             {!isCollaborator && (
-              <Button
-                onClick={handleConnect}
-                disabled={isConnecting || !session?.user?.email}
-              >
-                {isConnecting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Conectando...
-                  </>
-                ) : (
-                  <>
-                    <ExternalLink className="mr-2 h-4 w-4" />
-                    Conectar à OLX
-                  </>
-                )}
-              </Button>
+              <div className="space-y-3">
+                {renderCampoEmailConta(false)}
+                <Button
+                  onClick={handleConnect}
+                  disabled={
+                    isConnecting || !session?.user?.email || !emailContaValido
+                  }
+                >
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Conectando...
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Conectar à OLX
+                    </>
+                  )}
+                </Button>
+              </div>
             )}
           </div>
         )}
