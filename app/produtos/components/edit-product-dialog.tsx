@@ -41,7 +41,7 @@ import {
   type ListingFieldOrigin,
 } from "../lib/listing-field-origin";
 import { ChannelCategoryPicker } from "./channel-category-picker";
-import { LockedCategoryField } from "./locked-category-field";
+import { LockedMarketplaceField } from "./locked-marketplace-field";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
@@ -376,6 +376,14 @@ const AVISO_POR_CANAL: Record<
     "No Facebook a edição atualiza o item do catálogo por inteiro, então os campos chegam.",
 };
 
+/**
+ * Só o OEM. No cadastro do produto, os outros imutáveis do ML (marca,
+ * modelo, ano) não são renderizados pela ficha técnica — quem os edita são
+ * os campos fixos do formulário. Travar a lista inteira ali não travaria
+ * nada e ainda esconderia atributos que o ML aceita alterar.
+ */
+const ML_OEM_ATTR_ID = ["OEM"] as const;
+
 const ML_IMMUTABLE_ATTR_IDS = [
   "BRAND",
   "MODEL",
@@ -467,6 +475,17 @@ export function EditProductDialog({
     () => contarPublicadosPorCanal(produtoListings),
     [produtoListings],
   );
+
+  // O código de peça vive em DOIS campos da tela: "Part Number", nos dados
+  // básicos, e "Código OEM", dentro da ficha técnica. É o mesmo dado e o
+  // Mercado Livre congela os dois na publicação — então uma trava só governa
+  // os dois, e liberar num lugar libera no outro.
+  const [codigoPecaLiberado, setCodigoPecaLiberado] = useState(false);
+  // Enquanto a lista de anúncios não responde, trava — o inverso deixaria
+  // uma janela em que o campo parece livre e não é.
+  const oemTravadoNoProduto =
+    !codigoPecaLiberado &&
+    (produtoListingsLoading || (publicadosPorCanal.MERCADO_LIVRE ?? 0) > 0);
 
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -2229,12 +2248,53 @@ export function EditProductDialog({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="edit-partNumber">Part Number</Label>
-                <Input
-                  id="edit-partNumber"
-                  placeholder="OEM / Código original"
-                  {...register("partNumber")}
-                />
+                {isMlListingMode ? (
+                  // No modo anúncio do ML não há o que liberar: o código de
+                  // peça é congelado na publicação e `partNumberOverride` é
+                  // persistido sem nunca chegar ao anúncio.
+                  <div className="space-y-1">
+                    <Label>Part Number</Label>
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {watch("partNumber") || "—"}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Definido na criação do anúncio. O Mercado Livre não
+                      aceita alterar o código de peça depois de publicado.
+                    </p>
+                  </div>
+                ) : isListingMode ? (
+                  // Shopee, OLX e Facebook ACEITAM o código de peça na edição
+                  // (os três reconstroem a ficha ou o anúncio). Travar aqui com
+                  // a contagem de anúncios do ML seria mentira em dose dupla.
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-partNumber">Part Number</Label>
+                    <Input
+                      id="edit-partNumber"
+                      placeholder="OEM / Código original"
+                      {...register("partNumber")}
+                    />
+                  </div>
+                ) : (
+                  <LockedMarketplaceField
+                    key={`pn-${product.id}`}
+                    canal="Mercado Livre"
+                    campo="codigo"
+                    rotulo="Part Number"
+                    anunciosPublicados={publicadosPorCanal.MERCADO_LIVRE ?? 0}
+                    carregando={produtoListingsLoading}
+                    valorAtual={watch("partNumber") || null}
+                    onLiberadoChange={setCodigoPecaLiberado}
+                  >
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-partNumber">Part Number</Label>
+                      <Input
+                        id="edit-partNumber"
+                        placeholder="OEM / Código original"
+                        {...register("partNumber")}
+                      />
+                    </div>
+                  </LockedMarketplaceField>
+                )}
               </div>
             </div>
 
@@ -2296,7 +2356,7 @@ export function EditProductDialog({
               />
               <div className="flex items-start justify-between text-xs text-muted-foreground">
                 <span className="pr-3">
-                  Atualizada ao editar nome ou part number
+                  Texto livre — o que estiver aqui vai para o anúncio
                 </span>
                 <span>{watchDescription.length}/4000</span>
               </div>
@@ -2888,12 +2948,13 @@ export function EditProductDialog({
                       </div>
                     ) : (
                     <>
-                    <LockedCategoryField
+                    <LockedMarketplaceField
                       // Remonta ao trocar de produto: a liberação vale para
                       // o produto que o operador confirmou, não para o
                       // próximo que ele abrir.
                       key={`ml-${product.id}`}
                       canal="Mercado Livre"
+                      campo="categoria"
                       rotulo="Categoria no Mercado Livre"
                       anunciosPublicados={publicadosPorCanal.MERCADO_LIVRE ?? 0}
                       carregando={produtoListingsLoading}
@@ -3048,7 +3109,7 @@ export function EditProductDialog({
                         o Mercado Livre não aceita a troca depois de publicado.
                       </p>
                     </div>
-                    </LockedCategoryField>
+                    </LockedMarketplaceField>
 
                     {mlCategoryWarning && (
                       <p
@@ -3072,7 +3133,11 @@ export function EditProductDialog({
                           onChange={(next) => field.onChange(next as any)}
                           email={session?.user?.email || undefined}
                           readOnlyAttrIds={
-                            isMlListingMode ? ML_IMMUTABLE_ATTR_IDS : undefined
+                            isMlListingMode
+                              ? ML_IMMUTABLE_ATTR_IDS
+                              : oemTravadoNoProduto
+                                ? ML_OEM_ATTR_ID
+                                : undefined
                           }
                         />
                       )}
@@ -3292,9 +3357,10 @@ export function EditProductDialog({
                     </p>
                   </div>
                 ) : (
-                    <LockedCategoryField
+                    <LockedMarketplaceField
                       key={`shopee-${product.id}`}
                       canal="Shopee"
+                      campo="categoria"
                       rotulo="Categoria no Shopee"
                       anunciosPublicados={publicadosPorCanal.SHOPEE ?? 0}
                       carregando={produtoListingsLoading}
@@ -3422,7 +3488,7 @@ export function EditProductDialog({
                         no produto.
                       </p>
                     </div>
-                    </LockedCategoryField>
+                    </LockedMarketplaceField>
                 )}
               </div>
             )}
