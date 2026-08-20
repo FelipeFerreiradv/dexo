@@ -652,10 +652,14 @@ export function EditProductDialog({
   const rotuloCategoriaShopee = useMemo(() => {
     const id = watchShopeeCategory || "";
     if (!id) return null;
-    return (
-      [...shopeeSuggestedOptions, ...shopeeOptions].find((o) => o.id === id)
-        ?.value ?? id
-    );
+    const nome = [...shopeeSuggestedOptions, ...shopeeOptions].find(
+      (o) => o.id === id,
+    )?.value;
+    // As categorias da Shopee só são buscadas quando o operador abre o
+    // seletor — de propósito, para não custar 2 requisições em toda abertura
+    // do modal. Enquanto isso o campo travado teria só o número cru, que
+    // parece defeito. Rotular resolve sem gastar rede.
+    return nome ?? `Categoria nº ${id}`;
   }, [watchShopeeCategory, shopeeSuggestedOptions, shopeeOptions]);
 
   // Lazy-load ML categories: chamado apenas quando o usuário abre o seletor ou
@@ -2885,6 +2889,10 @@ export function EditProductDialog({
                     ) : (
                     <>
                     <LockedCategoryField
+                      // Remonta ao trocar de produto: a liberação vale para
+                      // o produto que o operador confirmou, não para o
+                      // próximo que ele abrir.
+                      key={`ml-${product.id}`}
                       canal="Mercado Livre"
                       rotulo="Categoria no Mercado Livre"
                       anunciosPublicados={publicadosPorCanal.MERCADO_LIVRE ?? 0}
@@ -3285,6 +3293,7 @@ export function EditProductDialog({
                   </div>
                 ) : (
                     <LockedCategoryField
+                      key={`shopee-${product.id}`}
                       canal="Shopee"
                       rotulo="Categoria no Shopee"
                       anunciosPublicados={publicadosPorCanal.SHOPEE ?? 0}

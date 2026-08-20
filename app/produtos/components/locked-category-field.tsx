@@ -8,6 +8,12 @@ import { Label } from "@/components/ui/label";
 
 export type CanalCategoria = "Mercado Livre" | "Shopee";
 
+/** Slug estável para `data-testid` — o nome do canal tem espaço. */
+const SLUG: Record<CanalCategoria, string> = {
+  "Mercado Livre": "ml",
+  Shopee: "shopee",
+};
+
 interface LockedCategoryFieldProps {
   canal: CanalCategoria;
   rotulo: string;
@@ -71,7 +77,7 @@ export function LockedCategoryField({
   }
 
   return (
-    <div className="space-y-1" data-testid={`categoria-travada-${canal}`}>
+    <div className="space-y-1" data-testid={`categoria-travada-${SLUG[canal]}`}>
       <Label>{rotulo}</Label>
 
       <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
