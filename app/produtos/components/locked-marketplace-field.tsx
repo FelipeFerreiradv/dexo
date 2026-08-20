@@ -1,45 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Lock, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import {
+  SLUG_CANAL,
+  TEXTO_CAMPO,
+  precisaTravar,
+  type CampoTravado,
+  type CanalTravado,
+} from "../lib/marketplace-field-lock";
 
-export type CanalTravado = "Mercado Livre" | "Shopee";
-
-/** Slug estável para `data-testid` — o nome do canal tem espaço. */
-const SLUG: Record<CanalTravado, string> = {
-  "Mercado Livre": "ml",
-  Shopee: "shopee",
-};
-
-/**
- * Os dois campos que o marketplace congela na publicação. Cada um tem a sua
- * frase porque a concordância muda ("a categoria … ela"; "o código … ele"), e
- * texto de aviso mal escrito é texto que o operador não lê.
- */
-export type CampoTravado = "categoria" | "codigo";
-
-const CAMPO: Record<
-  CampoTravado,
-  { nome: string; naoAceita: string; continuam: string; personalizacao: string }
-> = {
-  categoria: {
-    nome: "categoria",
-    naoAceita: "trocar a categoria de um anúncio que já está no ar",
-    continuam: "continuam na categoria atual",
-    personalizacao:
-      "Se algum anúncio tiver categoria personalizada, ela é desfeita",
-  },
-  codigo: {
-    nome: "código de peça",
-    naoAceita: "alterar o código de peça de um anúncio que já está no ar",
-    continuam: "continuam com o código atual",
-    personalizacao:
-      "Se algum anúncio tiver código personalizado, ele é desfeito",
-  },
-};
+export type { CampoTravado, CanalTravado };
 
 interface LockedMarketplaceFieldProps {
   canal: CanalTravado;
@@ -52,9 +26,11 @@ interface LockedMarketplaceFieldProps {
   /** Valor atual, legível, para exibir enquanto travado. */
   valorAtual: string | null;
   /**
-   * Avisa o pai quando o operador libera o campo. Existe porque o código de
-   * peça vive em DOIS lugares da tela (o campo "Part Number" e o "Código OEM"
-   * da ficha técnica) — é o mesmo dado, e uma trava só governa os dois.
+   * Avisa o pai quando o operador libera o campo — e quando a liberação deixa
+   * de valer. Existe porque o código de peça é cobrado em DOIS campos da tela
+   * (o "Part Number" e o "Código OEM" da ficha técnica): são atributos
+   * diferentes do Mercado Livre, congelados pela mesma regra, e uma confirmação
+   * só destrava os dois.
    */
   onLiberadoChange?: (liberado: boolean) => void;
   /** O campo de verdade. Só é montado quando está liberado. */
@@ -88,7 +64,22 @@ export function LockedMarketplaceField({
 }: LockedMarketplaceFieldProps) {
   const [liberado, setLiberado] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
-  const txt = CAMPO[campo];
+  const txt = TEXTO_CAMPO[campo];
+
+  // Por ref, e não na dependência do efeito: um pai que passe arrow inline
+  // recriaria a função a cada render, o efeito rodaria de novo e a limpeza
+  // desfaria a liberação que o operador acabou de confirmar.
+  const avisarRef = useRef(onLiberadoChange);
+  useEffect(() => {
+    avisarRef.current = onLiberadoChange;
+  }, [onLiberadoChange]);
+
+  // Se este campo sai da tela — o operador trocou de produto, ou entrou no modo
+  // anúncio, que renderiza outro ramo — a liberação morre junto. Sem isto o pai
+  // continuaria achando que houve confirmação, e o "Código OEM" da ficha
+  // ficaria destravado enquanto o "Part Number" volta travado: a trava que
+  // governa os dois campos passaria a discordar de si mesma.
+  useEffect(() => () => avisarRef.current?.(false), []);
 
   const liberar = () => {
     setLiberado(true);
@@ -96,9 +87,7 @@ export function LockedMarketplaceField({
     onLiberadoChange?.(true);
   };
 
-  const precisaTravar = carregando || anunciosPublicados > 0;
-
-  if (!precisaTravar || liberado) {
+  if (!precisaTravar({ carregando, anunciosPublicados, liberado })) {
     return (
       <div className="space-y-2">
         {children}
@@ -122,14 +111,16 @@ export function LockedMarketplaceField({
   return (
     <div
       className="space-y-1"
-      data-testid={`campo-travado-${campo}-${SLUG[canal]}`}
+      data-testid={`campo-travado-${campo}-${SLUG_CANAL[canal]}`}
     >
       <Label>{rotulo}</Label>
 
       <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
         <Lock className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate">
-          {carregando ? "Verificando anúncios publicados…" : (valorAtual ?? "—")}
+          {carregando
+            ? "Verificando anúncios publicados…"
+            : (valorAtual ?? "—")}
         </span>
       </div>
 

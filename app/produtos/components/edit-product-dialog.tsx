@@ -30,6 +30,8 @@ import {
   type ListingEditContext,
 } from "./product-listings-list";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
+import { OEM_FIELD_ATTR_ID } from "./ml-dynamic-attributes.logic";
+import { oemTravadoNoProduto } from "../lib/marketplace-field-lock";
 import {
   buildListingOverridesPayload,
   isCategoryUnderVehicleRoot,
@@ -381,8 +383,12 @@ const AVISO_POR_CANAL: Record<
  * modelo, ano) não são renderizados pela ficha técnica — quem os edita são
  * os campos fixos do formulário. Travar a lista inteira ali não travaria
  * nada e ainda esconderia atributos que o ML aceita alterar.
+ *
+ * Vem da constante que a própria ficha usa para desenhar o campo: escrever
+ * o literal "OEM" aqui faria a trava calar em silêncio no dia em que o id
+ * mudasse de lado só.
  */
-const ML_OEM_ATTR_ID = ["OEM"] as const;
+const ML_OEM_ATTR_ID = [OEM_FIELD_ATTR_ID] as const;
 
 const ML_IMMUTABLE_ATTR_IDS = [
   "BRAND",
@@ -476,16 +482,18 @@ export function EditProductDialog({
     [produtoListings],
   );
 
-  // O código de peça vive em DOIS campos da tela: "Part Number", nos dados
-  // básicos, e "Código OEM", dentro da ficha técnica. É o mesmo dado e o
-  // Mercado Livre congela os dois na publicação — então uma trava só governa
-  // os dois, e liberar num lugar libera no outro.
+  // O código de peça é cobrado em DOIS campos da tela: "Part Number", nos
+  // dados básicos, e "Código OEM", dentro da ficha técnica. Não são o mesmo
+  // valor — viram os atributos `PART_NUMBER` e `OEM` do Mercado Livre,
+  // alimentados por campos diferentes do produto — mas os dois estão na
+  // mesma lista de imutáveis, então uma confirmação só destrava os dois.
   const [codigoPecaLiberado, setCodigoPecaLiberado] = useState(false);
-  // Enquanto a lista de anúncios não responde, trava — o inverso deixaria
-  // uma janela em que o campo parece livre e não é.
-  const oemTravadoNoProduto =
-    !codigoPecaLiberado &&
-    (produtoListingsLoading || (publicadosPorCanal.MERCADO_LIVRE ?? 0) > 0);
+  const oemTravado = oemTravadoNoProduto({
+    emModoAnuncio: isListingMode,
+    liberado: codigoPecaLiberado,
+    carregando: produtoListingsLoading,
+    anunciosPublicadosMl: publicadosPorCanal.MERCADO_LIVRE ?? 0,
+  });
 
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -3135,9 +3143,18 @@ export function EditProductDialog({
                           readOnlyAttrIds={
                             isMlListingMode
                               ? ML_IMMUTABLE_ATTR_IDS
-                              : oemTravadoNoProduto
+                              : oemTravado
                                 ? ML_OEM_ATTR_ID
                                 : undefined
+                          }
+                          // No modo anúncio o texto padrão da ficha está
+                          // certo. No modo produto, não: ali não há anúncio
+                          // nenhum sendo editado, e o operador precisa saber
+                          // que existe saída — ela fica no Part Number.
+                          readOnlyHint={
+                            oemTravado
+                              ? "Travado porque este produto já tem anúncio publicado no Mercado Livre, que não aceita alterar o código depois de publicado. Para alterar assim mesmo, libere pelo campo Part Number, acima."
+                              : undefined
                           }
                         />
                       )}
