@@ -39,6 +39,7 @@ import {
   resolveListingCategory,
   type ListingFieldOrigin,
 } from "../lib/listing-field-origin";
+import { ChannelCategoryPicker } from "./channel-category-picker";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
@@ -80,10 +81,7 @@ import {
   parseTitleToFields,
   suggestCategoryFromTitle,
   mapSuggestedCategory,
-
-  ML_CATEGORIES,
-  ML_CATEGORY_OPTIONS,
-} from "../../lib/product-parser"; // ML_CATEGORIES (top-level) + ML_CATEGORY_OPTIONS (detailed)
+} from "../../lib/product-parser";
 import { getMeasurementsForCategory } from "../../lib/ml-measurements";
 
 // Category suggestion centralized in `suggestCategoryFromTitle` in app/lib/product-parser.ts
@@ -622,10 +620,6 @@ export function EditProductDialog({
   // Índices memoizados para lookups O(1) em mlOptions (evita find() em arrays grandes a cada render)
   const mlOptionsById = useMemo(
     () => new Map(mlOptions.map((c) => [c.id, c])),
-    [mlOptions],
-  );
-  const mlOptionsByValue = useMemo(
-    () => new Map(mlOptions.map((c) => [c.value, c])),
     [mlOptions],
   );
 
@@ -2856,63 +2850,6 @@ export function EditProductDialog({
                     ) : (
                     <>
                     <div>
-                      <Label htmlFor="edit-category">
-                        Categoria ML (top-level)
-                      </Label>
-                      <Controller
-                        name="category"
-                        control={control}
-                        render={({ field }) => {
-                          const mlById = mlOptionsById.get(
-                            watch("mlCategory") || "",
-                          )?.value;
-                          const mlByFull = mlOptionsByValue.get(
-                            watch("category") || "",
-                          )?.value;
-                          const staticById = ML_CATEGORY_OPTIONS.find(
-                            (c) => c.id === watch("mlCategory"),
-                          )?.value;
-                          const staticByFull = ML_CATEGORY_OPTIONS.find(
-                            (c) => c.value === watch("category"),
-                          )?.value;
-                          const detailed =
-                            mlById || mlByFull || staticById || staticByFull;
-
-                          return (
-                            <Select
-                              onValueChange={(val) => {
-                                field.onChange(val);
-                                const match =
-                                  mlOptionsByValue.get(val) ||
-                                  ML_CATEGORY_OPTIONS.find(
-                                    (c) => c.value === val,
-                                  );
-                                setValue("mlCategory", match?.id || "");
-                              }}
-                              value={field.value || undefined}
-                            >
-                              <SelectTrigger>
-                                <SelectValue>
-                                  {detailed || field.value || undefined}
-                                </SelectValue>
-                              </SelectTrigger>
-                              <SelectContent>
-                                {ML_CATEGORIES.map((cat) => (
-                                  <SelectItem
-                                    key={`${cat.id}-${cat.value}`}
-                                    value={cat.value}
-                                  >
-                                    {cat.value}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          );
-                        }}
-                      />
-                    </div>
-
-                    <div>
                       <Label>Categoria no Mercado Livre</Label>
                       <Controller
                         name="mlCategory"
@@ -2977,6 +2914,18 @@ export function EditProductDialog({
                                             value={`${opt.value} ${opt.id}`}
                                             onSelect={() => {
                                               field.onChange(opt.id);
+                                              // `category` (a categoria de
+                                              // topo do produto) deixou de
+                                              // ter campo proprio: passa a
+                                              // ser derivada do 1o segmento
+                                              // da folha, mesma regra que o
+                                              // auto-suggest ja usava. Assim
+                                              // as duas nunca discordam.
+                                              setValue(
+                                                "category",
+                                                opt.value.split(" > ")[0].trim(),
+                                                { shouldDirty: true },
+                                              );
                                               setMlLeafSelectOpen(false);
                                             }}
                                           >
@@ -3003,6 +2952,18 @@ export function EditProductDialog({
                                             value={`${opt.value} ${opt.id}`}
                                             onSelect={() => {
                                               field.onChange(opt.id);
+                                              // `category` (a categoria de
+                                              // topo do produto) deixou de
+                                              // ter campo proprio: passa a
+                                              // ser derivada do 1o segmento
+                                              // da folha, mesma regra que o
+                                              // auto-suggest ja usava. Assim
+                                              // as duas nunca discordam.
+                                              setValue(
+                                                "category",
+                                                opt.value.split(" > ")[0].trim(),
+                                                { shouldDirty: true },
+                                              );
                                               setMlLeafSelectOpen(false);
                                             }}
                                           >
@@ -3029,8 +2990,12 @@ export function EditProductDialog({
                         }}
                       />
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Obrigatório para publicar no Mercado Livre. Use o campo
-                        de busca para filtrar a lista.
+                        Vale para o produto e para os anúncios publicados daqui
+                        em diante.{" "}
+                        <strong>
+                          Anúncio que já está no ar não muda de categoria:
+                        </strong>{" "}
+                        o Mercado Livre não aceita a troca depois de publicado.
                       </p>
                     </div>
 
@@ -3235,30 +3200,25 @@ export function EditProductDialog({
 
             {(isOlxListingMode || isFacebookListingMode) && (
               <div className="space-y-1">
-                <Label htmlFor="listing-channel-category">
-                  {isOlxListingMode
-                    ? "Categoria na OLX"
-                    : "Categoria no Facebook"}
-                </Label>
-                <Input
-                  id="listing-channel-category"
+                {/* Mesmo seletor com busca do fluxo de criação. Antes era um
+                    campo de texto puro esperando o id cru — o operador
+                    digitava "roda" e a tela não respondia nada. */}
+                <ChannelCategoryPicker
+                  channel={isOlxListingMode ? "OLX" : "FACEBOOK"}
                   value={
                     isOlxListingMode ? olxCategoryOverride : fbCategoryOverride
                   }
-                  onChange={(e) =>
+                  onChange={(next) =>
                     isOlxListingMode
-                      ? setOlxCategoryOverride(e.target.value)
-                      : setFbCategoryOverride(e.target.value)
+                      ? setOlxCategoryOverride(next)
+                      : setFbCategoryOverride(next)
                   }
-                  placeholder="Vazio = resolvida automaticamente"
+                  email={session?.user?.email || undefined}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {isOlxListingMode
-                    ? "Id numérico da categoria da OLX."
-                    : "Caminho da taxonomia do Google enviado à Meta."}{" "}
                   Diferente do Mercado Livre e da Shopee, aqui a troca chega
                   no anúncio: os dois canais reconstroem o anúncio inteiro na
-                  edição. Deixe vazio para o canal voltar a resolver sozinho.
+                  edição.
                 </p>
               </div>
             )}
