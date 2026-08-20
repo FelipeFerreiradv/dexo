@@ -38,13 +38,45 @@ import { marketplaceRoutes } from "../app/routes/marketplace.routes";
 import { MarketplaceRepository } from "../app/marketplaces/repositories/marketplace.repository";
 import { ShopeeApiService } from "../app/marketplaces/services/shopee-api.service";
 
+// Espelha a LINHA do banco, credenciais inclusive: e o que o `findMany` sem
+// `select` devolve hoje, e e o que a resposta NAO pode carregar adiante.
 const CONTA = {
   id: "acc-1",
+  userId: "owner-1",
+  platform: "SHOPEE",
   accountName: "Shopee Shop 1547916297",
   shopId: 1547916297,
-  accessToken: "tok",
   status: "ACTIVE",
+  externalUserId: "555",
+  accessToken: "TOKEN-SECRETO-DA-LOJA",
+  refreshToken: "REFRESH-SECRETO-DA-LOJA",
+  appClientId: "client-id-do-app",
+  appClientSecret: "SEGREDO-DO-APP-OAUTH",
+  expiresAt: new Date("2026-09-01T00:00:00Z"),
+  createdAt: new Date("2026-07-01T00:00:00Z"),
+  updatedAt: new Date("2026-08-01T00:00:00Z"),
 };
+
+/** Todo campo que jamais pode sair desta rota. */
+const SEGREDOS = [
+  "accessToken",
+  "refreshToken",
+  "appClientSecret",
+  "appClientId",
+] as const;
+
+function conferirQueNaoVazou(corpo: any) {
+  const bruto = JSON.stringify(corpo);
+  for (const conta of corpo.accounts) {
+    for (const campo of SEGREDOS) {
+      expect(conta).not.toHaveProperty(campo);
+    }
+  }
+  // Rede de seguranca: nem o VALOR pode aparecer, ainda que sob outra chave.
+  expect(bruto).not.toContain("TOKEN-SECRETO-DA-LOJA");
+  expect(bruto).not.toContain("REFRESH-SECRETO-DA-LOJA");
+  expect(bruto).not.toContain("SEGREDO-DO-APP-OAUTH");
+}
 
 async function subirApp() {
   const app = fastify();
@@ -186,6 +218,87 @@ describe("GET /shopee/accounts — egress", () => {
 
     expect(ShopeeApiService.getShopInfo).not.toHaveBeenCalled();
     expect(r.statusCode).toBe(200);
+
+    await app.close();
+  });
+});
+
+// ── SEGURANÇA / EGRESS ───────────────────────────────────────────────────────
+// A rota devolvia `{ ...acc }`: a linha inteira de MarketplaceAccount, com
+// `accessToken`, `refreshToken` e `appClientSecret` dentro. Cinco telas
+// consultam esta rota, então as credenciais da loja iam para o navegador em toda
+// abertura — e nenhum dos cinco consumidores usa esses campos.
+//
+// Há TRÊS caminhos de saída, e o vazamento estava nos três. Um teste que
+// cobrisse só o caminho feliz deixaria dois abertos.
+describe("GET /shopee/accounts — credenciais não saem do servidor", () => {
+  it("caminho normal: resposta sem token, refresh ou segredo do app", async () => {
+    const app = await subirApp();
+    const r = await get(app);
+
+    expect(r.statusCode).toBe(200);
+    conferirQueNaoVazou(r.json());
+
+    await app.close();
+  });
+
+  it("caminho de FALHA do get_shop_info: idem", async () => {
+    vi.mocked(ShopeeApiService.getShopInfo).mockRejectedValue(
+      new Error("403 IP undeclared"),
+    );
+
+    const app = await subirApp();
+    const r = await get(app);
+
+    expect(r.statusCode).toBe(200);
+    conferirQueNaoVazou(r.json());
+
+    await app.close();
+  });
+
+  it("caminho da conta SEM token: idem", async () => {
+    vi.mocked(
+      MarketplaceRepository.findAllByUserIdAndPlatform,
+    ).mockResolvedValue([{ ...CONTA, shopId: null, accessToken: null }] as any);
+
+    const app = await subirApp();
+    const r = await get(app);
+
+    expect(r.statusCode).toBe(200);
+    conferirQueNaoVazou(r.json());
+
+    await app.close();
+  });
+
+  it("CONTRATO PRESERVADO: os campos que as cinco telas desenham continuam lá", async () => {
+    // O outro lado da moeda. Cortar demais quebraria a aba de Integrações
+    // (que mostra @merchant e região) tão silenciosamente quanto o vazamento.
+    const app = await subirApp();
+    const conta = (await get(app)).json().accounts[0];
+
+    expect(conta.id).toBe("acc-1");
+    expect(conta.accountName).toBe("SHOPEE JOTABE AUTOPECAS");
+    expect(conta.status).toBe("ACTIVE");
+    expect(conta.shopId).toBe(1547916297);
+    expect(conta.externalUserId).toBe("555");
+    expect(conta.shopName).toBe("JOTABE AUTOPECAS");
+    expect(conta.region).toBe("BR");
+    expect(conta.merchantName).toBe("jotabe");
+
+    await app.close();
+  });
+
+  it("conta sem token ainda APARECE na lista (só sem os campos da Shopee)", async () => {
+    vi.mocked(
+      MarketplaceRepository.findAllByUserIdAndPlatform,
+    ).mockResolvedValue([{ ...CONTA, shopId: null, accessToken: null }] as any);
+
+    const app = await subirApp();
+    const contas = (await get(app)).json().accounts;
+
+    expect(contas).toHaveLength(1);
+    expect(contas[0].id).toBe("acc-1");
+    expect(contas[0].accountName).toBe("Shopee Shop 1547916297");
 
     await app.close();
   });

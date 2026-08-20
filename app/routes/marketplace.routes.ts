@@ -1448,6 +1448,64 @@ small{color:#666}</style></head><body>
   const SHOP_INFO_TTL_MS = 600_000;
 
   /**
+   * O que esta rota DEVOLVE. Lista explicita — nunca `...acc`.
+   *
+   * A linha de `MarketplaceAccount` carrega `accessToken`, `refreshToken` e
+   * `appClientSecret`. Espalhar a linha inteira mandava as CREDENCIAIS da loja
+   * para o navegador a cada abertura desta rota — que cinco telas consultam —,
+   * e nenhuma delas usa esses campos. Credencial em resposta de API fica em
+   * cache de navegador, DevTools e extensao; nao ha uso legitimo que justifique.
+   *
+   * Tambem alinha a rota a regra 1 de egress do projeto: nada de entregar campo
+   * que a tela nao desenha, em caminho recorrente.
+   *
+   * LISTA DE PERMISSAO, e nao de proibicao. `/olx/accounts` e `/facebook/accounts`
+   * ja resolvem isto com `({ accessToken: _a, refreshToken: _r, ...rest }) => rest`,
+   * que remove DOIS campos e deixa passar tudo o mais — inclusive
+   * `appClientSecret`, e inclusive qualquer coluna que venha a ser adicionada ao
+   * modelo depois. Aqui a direcao e a inversa: so sai o que esta escrito abaixo,
+   * entao uma coluna nova nasce privada em vez de nascer exposta.
+   *
+   * Os campos abaixo sao a UNIAO do que os cinco consumidores leem:
+   *   id, accountName            todas as telas
+   *   status                     conexao, criacao de produto, publicacao em massa
+   *   shopId                     conexao, criacao de produto, anuncios
+   *   externalUserId             conexao (linha @merchant)
+   *   shopName/region/merchantName   conexao
+   *
+   * `extras` ausente = o caminho em que nao se consultou a Shopee (conta sem
+   * token, ou falha no `get_shop_info`). Os tres campos saem `undefined` e o
+   * JSON simplesmente nao os traz — exatamente como o `return acc` fazia antes.
+   */
+  type ContaShopeeLinha = {
+    id: string;
+    accountName: string;
+    status: string;
+    shopId: number | null;
+    externalUserId: string | null;
+  };
+  function contaShopeeVisivel(
+    acc: ContaShopeeLinha,
+    extras?: {
+      accountName?: string;
+      shopName?: string;
+      region?: string;
+      merchantName?: string;
+    },
+  ) {
+    return {
+      id: acc.id,
+      accountName: extras?.accountName ?? acc.accountName,
+      status: acc.status,
+      shopId: acc.shopId,
+      externalUserId: acc.externalUserId,
+      shopName: extras?.shopName,
+      region: extras?.region,
+      merchantName: extras?.merchantName,
+    };
+  }
+
+  /**
    * POST /marketplace/shopee/import
    * Importa todos os itens do Shopee e tenta vincular por SKU
    * Retorna lista de itens importados com status de vinculação
@@ -1465,7 +1523,11 @@ small{color:#666}</style></head><body>
 
         const enriched = await Promise.all(
           accounts.map(async (acc) => {
-            if (!acc.shopId || !acc.accessToken) return acc;
+            // Sem token nao ha o que perguntar a Shopee — mas a conta ainda
+            // aparece na lista, so que sem os campos que dependem dela.
+            if (!acc.shopId || !acc.accessToken) {
+              return contaShopeeVisivel(acc);
+            }
             try {
               const emCache = shopInfoCache.get(acc.id);
               let payload: any;
@@ -1523,13 +1585,18 @@ small{color:#666}</style></head><body>
                 }
               }
 
-              return { ...acc, accountName, shopName, region, merchantName };
+              return contaShopeeVisivel(acc, {
+                accountName,
+                shopName,
+                region,
+                merchantName,
+              });
             } catch (err) {
               request.log?.warn?.(
                 { err, accountId: acc.id },
                 "shopee get_shop_info falhou, usando fallback",
               );
-              return acc;
+              return contaShopeeVisivel(acc);
             }
           }),
         );
