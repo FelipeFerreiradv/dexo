@@ -37,8 +37,7 @@ export type { MLAttributeValue, MLDynamicAttribute };
  * comportamento anterior byte-idêntico (inclusive os `return null` quando não
  * há atributo visível). Flag de BUILD-TIME: mudar exige rebuild do front.
  */
-const OEM_FIELD_ENABLED =
-  process.env.NEXT_PUBLIC_ML_OEM_FIELD_DISABLED !== "1";
+const OEM_FIELD_ENABLED = process.env.NEXT_PUBLIC_ML_OEM_FIELD_DISABLED !== "1";
 
 interface MLDynamicAttributesSectionProps {
   categoryId: string | null | undefined;
@@ -57,6 +56,13 @@ interface MLDynamicAttributesSectionProps {
    * Ausente = nenhum campo travado, renderização idêntica à de antes.
    */
   readOnlyAttrIds?: readonly string[];
+  /**
+   * Substitui a explicação exibida sob o Código OEM quando ele está travado.
+   * Sem ela vale o texto de sempre, escrito para o modo anúncio; o modal usa
+   * a prop no modo produto, onde aquele texto seria falso e não indicaria a
+   * saída. Aditiva: quem não passa nada renderiza igual a hoje.
+   */
+  readOnlyHint?: string;
 }
 
 /**
@@ -79,6 +85,7 @@ export function MLDynamicAttributesSection({
   disabled,
   email,
   readOnlyAttrIds,
+  readOnlyHint,
 }: MLDynamicAttributesSectionProps) {
   const [attrs, setAttrs] = useState<MLDynamicAttribute[]>([]);
   // Categoria DONA dos attrs carregados: durante a troca de categoria, `attrs`
@@ -246,7 +253,8 @@ export function MLDynamicAttributesSection({
             />
             <p className="text-xs text-muted-foreground">
               {isReadOnly(OEM_FIELD_ATTR_ID)
-                ? "Definido na criação do anúncio. O Mercado Livre não aceita alterar o código OEM depois de publicado."
+                ? (readOnlyHint ??
+                  "Definido na criação do anúncio. O Mercado Livre não aceita alterar o código OEM depois de publicado.")
                 : "Código original do fabricante da peça. Enviado ao Mercado Livre na publicação, quando a categoria aceitar o atributo."}
             </p>
           </div>
