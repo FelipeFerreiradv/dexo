@@ -31,7 +31,6 @@ import {
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import {
   buildListingOverridesPayload,
-  isProductVehicular,
   isCategoryUnderVehicleRoot,
   sanityCheckInitialMlCategory,
 } from "./edit-product-dialog.helpers";
@@ -81,10 +80,10 @@ import {
   parseTitleToFields,
   suggestCategoryFromTitle,
   mapSuggestedCategory,
-  ML_CATALOG,
+
   ML_CATEGORIES,
   ML_CATEGORY_OPTIONS,
-} from "../../lib/product-parser"; // ML_CATALOG + ML_CATEGORIES (top-level) + ML_CATEGORY_OPTIONS (detailed)
+} from "../../lib/product-parser"; // ML_CATEGORIES (top-level) + ML_CATEGORY_OPTIONS (detailed)
 import { getMeasurementsForCategory } from "../../lib/ml-measurements";
 
 // Category suggestion centralized in `suggestCategoryFromTitle` in app/lib/product-parser.ts
@@ -125,9 +124,7 @@ const productEditSchema = z.object({
   category: z.string().max(500).optional().nullable(),
   mlCategory: z.string().optional().nullable(),
   shopeeCategory: z.string().optional().nullable(),
-  magaluCategory: z.string().optional().nullable(),
-  olxCategory: z.string().optional().nullable(),
-  facebookCategory: z.string().optional().nullable(),
+
   location: z.string().max(100).optional().nullable(),
   locationId: z.string().optional().nullable(),
   partNumber: z.string().max(100).optional().nullable(),
@@ -246,10 +243,18 @@ interface Product {
  *    específico daquela conta;
  *  - settings ML (listingType/garantia/frete/...) são pré-populados a partir
  *    do listing escolhido (não do "primeiro qualquer");
- *  - a seção "Publicar anúncios" (criar em outras contas) é escondida —
- *    estamos editando um existente;
- *  - ao salvar, faz PUT /listings/:listingId além do PUT /products/:id, sem
- *    disparar o dispatcher de criação de novos anúncios.
+ *  - categoria e ficha técnica vêm do ANÚNCIO, com precedência
+ *    `override ?? requestedCategoryId ?? produto` — sem isso um anúncio
+ *    publicado em outra categoria aparecia com a do produto;
+ *  - o que o canal não aceita mudar depois de publicado (categoria no ML e
+ *    na Shopee, OEM e os demais `IMMUTABLE_ATTRS`) aparece em LEITURA e
+ *    fica fora do corpo do PUT;
+ *  - a lista "Anúncios deste produto" some (você já está dentro de um);
+ *  - ao salvar, faz PUT /listings/:listingId e NÃO toca no produto — a
+ *    alteração não vaza para os anúncios das outras contas.
+ *
+ * O modal não cria mais anúncio nenhum, em modo algum: o caminho oficial de
+ * publicação é o Anunciar em massa.
  */
 export interface EditProductDialogListingContext {
   listingId: string;
@@ -323,13 +328,6 @@ const shopeeSuggestCache = new Map<string, CatOption[]>();
 // entre aberturas do modal; chave = title.trim().toLowerCase().
 const mlSuggestCache = new Map<string, CatOption[]>();
 
-// Magalu (3º marketplace) só aparece com a flag. Módulo (não é dep de hook).
-const MAGALU_ENABLED =
-  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
-// OLX e Facebook (novas plataformas) atrás das próprias flags.
-const OLX_ENABLED = process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
-const FACEBOOK_ENABLED =
-  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
 
 const PLATFORM_LABELS: Record<
   EditProductDialogListingContext["platform"],
@@ -353,6 +351,31 @@ function platformLabel(platform: EditProductDialogListingContext["platform"]) {
  * publicado o campo aparece preenchido, mas travado: oferecer a edição seria
  * convidar o operador a digitar um valor que morre no caminho.
  */
+/**
+ * O que cada canal REALMENTE aplica no anúncio quando a edição é salva.
+ *
+ * Não é detalhe de implementação: `PUT /listings/:id` aceita os 22 overrides
+ * em qualquer plataforma e devolve 200, mas só o Mercado Livre tem canal de
+ * warning. No Magalu, na OLX e no Facebook o backend persiste parte e
+ * descarta o resto em silêncio. Dizer isso na tela é a diferença entre "o
+ * operador sabe" e "o operador descobre semanas depois no painel do canal".
+ */
+const AVISO_POR_CANAL: Record<
+  EditProductDialogListingContext["platform"],
+  string
+> = {
+  MERCADO_LIVRE:
+    "No Mercado Livre chegam título, descrição, preço, fotos, ficha técnica (menos os atributos que o ML congela na criação) e as configurações do anúncio. Se o ML recusar algum campo, o aviso aparece depois de salvar.",
+  SHOPEE:
+    "Na Shopee chegam título, descrição, preço, peso e dimensões. Os demais campos ficam salvos no Dexo e valem na próxima republicação.",
+  MAGALU:
+    "No Magalu chegam título, descrição e preço. Os demais campos ficam salvos no Dexo e valem na próxima republicação.",
+  OLX: 
+    "Na OLX a edição reconstrói o anúncio inteiro, então os campos chegam — e o anúncio volta para a fila de revisão da OLX até ser reprocessado.",
+  FACEBOOK:
+    "No Facebook a edição atualiza o item do catálogo por inteiro, então os campos chegam.",
+};
+
 const ML_IMMUTABLE_ATTR_IDS = [
   "BRAND",
   "MODEL",
@@ -396,11 +419,25 @@ export function EditProductDialog({
     label: string | null;
     origin: ListingFieldOrigin;
   } | null>(null);
+  // Categoria de OLX/Facebook: id cru, sem seletor. Vinha do
+  // `edit-listing-dialog`, que era o único lugar do app com esses dois
+  // campos e não era renderizado por ninguém.
+  const [olxCategoryOverride, setOlxCategoryOverride] = useState("");
+  const [fbCategoryOverride, setFbCategoryOverride] = useState("");
+  const [listingStatus, setListingStatus] = useState<string | null>(null);
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   const isListingMode = !!listingContext;
   const listingPlatform = listingContext?.platform ?? null;
   const isMlListingMode = listingPlatform === "MERCADO_LIVRE";
   const isShopeeListingMode = listingPlatform === "SHOPEE";
+  // OLX e Facebook são os DOIS canais em que trocar a categoria de um
+  // anúncio publicado realmente chega no marketplace: os dois reconstroem o
+  // anúncio inteiro na edição (`submitImport` com o mesmo id / `items_batch`
+  // com o mesmo `retailer_id`). Por isso aqui o campo é editável, ao
+  // contrário do ML e da Shopee.
+  const isOlxListingMode = listingPlatform === "OLX";
+  const isFacebookListingMode = listingPlatform === "FACEBOOK";
   // Categoria + ficha técnica do ML: no modo produto sempre (é lá que se define
   // o padrão do produto); no modo anúncio, só quando o anúncio é do ML.
   const showMlCategoryFields = !isListingMode || isMlListingMode;
@@ -445,70 +482,6 @@ export function EditProductDialog({
   const [shopeeCategoryOpen, setShopeeCategoryOpen] = useState(false);
   const shopeeOptionsFetchedRef = useRef(false);
   const shopeeOptionsFetchingRef = useRef(false);
-  const [mlAccounts, setMlAccounts] = useState<
-    Array<{ id: string; accountName?: string }>
-  >([]);
-  const [shopeeAccounts, setShopeeAccounts] = useState<
-    Array<{ id: string; accountName?: string }>
-  >([]);
-  const [selectedMlAccounts, setSelectedMlAccounts] = useState<string[]>([]);
-  const [selectedShopeeAccounts, setSelectedShopeeAccounts] = useState<
-    string[]
-  >([]);
-  const [createMlListing, setCreateMlListing] = useState(false);
-  const [createShopeeListing, setCreateShopeeListing] = useState(false);
-  // Magalu (3º marketplace, atrás da flag) — espelha ML/Shopee (toggle + contas);
-  // a categoria é resolvida no backend, então não há seletor de categoria aqui.
-  const [magaluAccounts, setMagaluAccounts] = useState<
-    Array<{ id: string; accountName?: string }>
-  >([]);
-  const [selectedMagaluAccounts, setSelectedMagaluAccounts] = useState<
-    string[]
-  >([]);
-  const [createMagaluListing, setCreateMagaluListing] = useState(false);
-  // Categoria Magalu (opcional; se vazia o backend resolve). Espelha o modal de
-  // criação — sugestão 1x no toggle + busca server-side debounced.
-  const [magaluOptions, setMagaluOptions] = useState<
-    { id: string; value: string }[]
-  >([]);
-  const [magaluCategorySearch, setMagaluCategorySearch] = useState("");
-  const [magaluCategoryDropdownOpen, setMagaluCategoryDropdownOpen] =
-    useState(false);
-  const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
-  const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
-  const magaluSuggestedRef = useRef(false);
-  // OLX e Facebook (atrás das flags) — espelham Magalu (toggle + contas +
-  // categoria opcional). Sugestão 1x no toggle + busca server-side debounced;
-  // vazia = o backend resolve automaticamente.
-  const [olxAccounts, setOlxAccounts] = useState<
-    Array<{ id: string; accountName?: string }>
-  >([]);
-  const [selectedOlxAccounts, setSelectedOlxAccounts] = useState<string[]>([]);
-  const [createOlxListing, setCreateOlxListing] = useState(false);
-  const [olxOptions, setOlxOptions] = useState<{ id: string; value: string }[]>(
-    [],
-  );
-  const [olxCategorySearch, setOlxCategorySearch] = useState("");
-  const [olxCategoryDropdownOpen, setOlxCategoryDropdownOpen] = useState(false);
-  const [olxCategoryLoading, setOlxCategoryLoading] = useState(false);
-  const [olxSelectedLabel, setOlxSelectedLabel] = useState("");
-  const olxSuggestedRef = useRef(false);
-  const [facebookAccounts, setFacebookAccounts] = useState<
-    Array<{ id: string; accountName?: string }>
-  >([]);
-  const [selectedFacebookAccounts, setSelectedFacebookAccounts] = useState<
-    string[]
-  >([]);
-  const [createFacebookListing, setCreateFacebookListing] = useState(false);
-  const [facebookOptions, setFacebookOptions] = useState<
-    { id: string; value: string }[]
-  >([]);
-  const [facebookCategorySearch, setFacebookCategorySearch] = useState("");
-  const [facebookCategoryDropdownOpen, setFacebookCategoryDropdownOpen] =
-    useState(false);
-  const [facebookCategoryLoading, setFacebookCategoryLoading] = useState(false);
-  const [facebookSelectedLabel, setFacebookSelectedLabel] = useState("");
-  const facebookSuggestedRef = useRef(false);
 
   // ML listing settings (loaded from user defaults)
   const [mlListingType, setMlListingType] = useState("bronze");
@@ -520,9 +493,7 @@ export function EditProductDialog({
   const [mlFreeShipping, setMlFreeShipping] = useState(false);
   const [mlLocalPickup, setMlLocalPickup] = useState(false);
   const [mlManufacturingTime, setMlManufacturingTime] = useState(0);
-  // Aumento percentual escalonado entre contas ML (anti-penalização)
-  const [crossAccountIncrease, setCrossAccountIncrease] = useState(false);
-  const [crossAccountPercent, setCrossAccountPercent] = useState<string>("");
+
   const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
     [],
   );
@@ -615,9 +586,7 @@ export function EditProductDialog({
       category: product.category || "",
       mlCategory: product.mlCategory || "",
       shopeeCategory: product.shopeeCategoryId || "",
-      magaluCategory: "",
-      olxCategory: product.olxCategoryId || "",
-      facebookCategory: product.fbCategory || "",
+
       location: product.location || "",
       partNumber: product.partNumber || "",
       quality: product.quality || null,
@@ -779,10 +748,6 @@ export function EditProductDialog({
     }
   }, [session?.user?.email, product.name]);
 
-  // Lazy-load categorias ML quando o usuário ativa publicação ML
-  useEffect(() => {
-    if (createMlListing) void fetchMlCategories();
-  }, [createMlListing, fetchMlCategories]);
 
   const fetchShopeeCategories = useCallback(async () => {
     if (shopeeOptionsFetchedRef.current || shopeeOptionsFetchingRef.current)
@@ -901,281 +866,6 @@ export function EditProductDialog({
     }
   }, [session?.user?.email, product.name]);
 
-  useEffect(() => {
-    if (createShopeeListing) void fetchShopeeCategories();
-  }, [createShopeeListing, fetchShopeeCategories]);
-
-  // Ao habilitar a criação de anúncio, selecionar automaticamente todas as contas disponíveis
-  useEffect(() => {
-    if (!createMlListing) return;
-    if (mlAccounts.length === 0) return;
-    setSelectedMlAccounts((prev) => {
-      const allIds = mlAccounts.map((acc) => acc.id);
-      const hasAll =
-        prev.length === allIds.length &&
-        allIds.every((id) => prev.includes(id));
-      return hasAll ? prev : allIds;
-    });
-  }, [createMlListing, mlAccounts]);
-
-  useEffect(() => {
-    if (!createShopeeListing) return;
-    if (shopeeAccounts.length === 0) return;
-    setSelectedShopeeAccounts((prev) => {
-      const allIds = shopeeAccounts.map((acc) => acc.id);
-      const hasAll =
-        prev.length === allIds.length &&
-        allIds.every((id) => prev.includes(id));
-      return hasAll ? prev : allIds;
-    });
-  }, [createShopeeListing, shopeeAccounts]);
-
-  useEffect(() => {
-    if (!createMagaluListing) return;
-    if (magaluAccounts.length === 0) return;
-    setSelectedMagaluAccounts((prev) => {
-      const allIds = magaluAccounts.map((acc) => acc.id);
-      const hasAll =
-        prev.length === allIds.length &&
-        allIds.every((id) => prev.includes(id));
-      return hasAll ? prev : allIds;
-    });
-  }, [createMagaluListing, magaluAccounts]);
-
-  useEffect(() => {
-    if (!createOlxListing) return;
-    if (olxAccounts.length === 0) return;
-    setSelectedOlxAccounts((prev) => {
-      const allIds = olxAccounts.map((acc) => acc.id);
-      const hasAll =
-        prev.length === allIds.length &&
-        allIds.every((id) => prev.includes(id));
-      return hasAll ? prev : allIds;
-    });
-  }, [createOlxListing, olxAccounts]);
-
-  useEffect(() => {
-    if (!createFacebookListing) return;
-    if (facebookAccounts.length === 0) return;
-    setSelectedFacebookAccounts((prev) => {
-      const allIds = facebookAccounts.map((acc) => acc.id);
-      const hasAll =
-        prev.length === allIds.length &&
-        allIds.every((id) => prev.includes(id));
-      return hasAll ? prev : allIds;
-    });
-  }, [createFacebookListing, facebookAccounts]);
-
-  // Sugere a categoria Magalu 1x quando o toggle liga (ref-guard = 1 fetch, não
-  // por tecla). Usa o nome atual do produto. Espelha o modal de criação.
-  useEffect(() => {
-    if (!MAGALU_ENABLED || !createMagaluListing) {
-      magaluSuggestedRef.current = false;
-      return;
-    }
-    if (magaluSuggestedRef.current) return;
-    const name = (watchName || product.name || "").trim();
-    if (!name) return;
-    magaluSuggestedRef.current = true;
-    (async () => {
-      try {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/marketplace/magalu/category-suggest?name=${encodeURIComponent(
-            name,
-          )}`,
-          { headers: { email: session?.user?.email || "" } },
-        );
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data?.categoryId) {
-          const label = data.path || data.categoryId;
-          setValue("magaluCategory", data.categoryId, { shouldDirty: true });
-          setMagaluSelectedLabel(label);
-          setMagaluOptions([{ id: data.categoryId, value: label }]);
-        }
-      } catch (err) {
-        console.error("Erro ao sugerir categoria Magalu:", err);
-      }
-    })();
-  }, [
-    createMagaluListing,
-    watchName,
-    setValue,
-    session?.user?.email,
-    product.name,
-  ]);
-
-  // Busca server-side (debounced 400ms, só com >=2 chars e dropdown aberto) —
-  // não dispara por tecla nem sem intenção. Espelha o modal de criação.
-  useEffect(() => {
-    if (!MAGALU_ENABLED || !createMagaluListing) return;
-    const term = magaluCategorySearch.trim();
-    if (term.length < 2) return;
-    const handle = setTimeout(async () => {
-      setMagaluCategoryLoading(true);
-      try {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/marketplace/magalu/categories?search=${encodeURIComponent(
-            term,
-          )}`,
-          { headers: { email: session?.user?.email || "" } },
-        );
-        if (resp.ok) {
-          const data = await resp.json();
-          setMagaluOptions(
-            Array.isArray(data?.categories) ? data.categories : [],
-          );
-        }
-      } catch (err) {
-        console.error("Erro ao buscar categorias Magalu:", err);
-      } finally {
-        setMagaluCategoryLoading(false);
-      }
-    }, 400);
-    return () => clearTimeout(handle);
-  }, [magaluCategorySearch, createMagaluListing, session?.user?.email]);
-
-  // Sugere a categoria OLX 1x quando o toggle liga. Espelha o fluxo Magalu.
-  useEffect(() => {
-    if (!OLX_ENABLED || !createOlxListing) {
-      olxSuggestedRef.current = false;
-      return;
-    }
-    if (olxSuggestedRef.current) return;
-    const name = (watchName || product.name || "").trim();
-    if (!name) return;
-    olxSuggestedRef.current = true;
-    (async () => {
-      try {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/marketplace/olx/category-suggest?name=${encodeURIComponent(
-            name,
-          )}`,
-          { headers: { email: session?.user?.email || "" } },
-        );
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data?.categoryId) {
-          const label = data.path || data.categoryId;
-          setValue("olxCategory", data.categoryId, { shouldDirty: true });
-          setOlxSelectedLabel(label);
-          setOlxOptions([{ id: data.categoryId, value: label }]);
-        }
-      } catch (err) {
-        console.error("Erro ao sugerir categoria OLX:", err);
-      }
-    })();
-  }, [
-    createOlxListing,
-    watchName,
-    setValue,
-    session?.user?.email,
-    product.name,
-  ]);
-
-  useEffect(() => {
-    if (!OLX_ENABLED || !createOlxListing) return;
-    const term = olxCategorySearch.trim();
-    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
-    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
-    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
-    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
-    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
-    // de propósito — lá são milhares de categorias.
-    if (term.length === 1) return;
-    const handle = setTimeout(async () => {
-      setOlxCategoryLoading(true);
-      try {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/marketplace/olx/categories?search=${encodeURIComponent(
-            term,
-          )}`,
-          { headers: { email: session?.user?.email || "" } },
-        );
-        if (resp.ok) {
-          const data = await resp.json();
-          setOlxOptions(Array.isArray(data?.categories) ? data.categories : []);
-        }
-      } catch (err) {
-        console.error("Erro ao buscar categorias OLX:", err);
-      } finally {
-        setOlxCategoryLoading(false);
-      }
-    }, 400);
-    return () => clearTimeout(handle);
-  }, [olxCategorySearch, createOlxListing, session?.user?.email]);
-
-  // Sugere a categoria Facebook 1x quando o toggle liga. Espelha o fluxo Magalu.
-  useEffect(() => {
-    if (!FACEBOOK_ENABLED || !createFacebookListing) {
-      facebookSuggestedRef.current = false;
-      return;
-    }
-    if (facebookSuggestedRef.current) return;
-    const name = (watchName || product.name || "").trim();
-    if (!name) return;
-    facebookSuggestedRef.current = true;
-    (async () => {
-      try {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/marketplace/facebook/category-suggest?name=${encodeURIComponent(
-            name,
-          )}`,
-          { headers: { email: session?.user?.email || "" } },
-        );
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data?.categoryId) {
-          const label = data.path || data.categoryId;
-          setValue("facebookCategory", data.categoryId, { shouldDirty: true });
-          setFacebookSelectedLabel(label);
-          setFacebookOptions([{ id: data.categoryId, value: label }]);
-        }
-      } catch (err) {
-        console.error("Erro ao sugerir categoria Facebook:", err);
-      }
-    })();
-  }, [
-    createFacebookListing,
-    watchName,
-    setValue,
-    session?.user?.email,
-    product.name,
-  ]);
-
-  useEffect(() => {
-    if (!FACEBOOK_ENABLED || !createFacebookListing) return;
-    const term = facebookCategorySearch.trim();
-    // OLX tem 5 categorias e o Facebook 3 — a lista inteira cabe numa resposta,
-    // e o endpoint manda Cache-Control de 10 min. Exigir 2 letras deixava a
-    // lista VAZIA quando o campo vinha pré-preenchido pela sugestão, e a tela
-    // caía no id cru ("2101" / o path em inglês) por não achar o rótulo.
-    // Termo vazio carrega tudo; 1 letra é ruído. O Magalu segue exigindo busca
-    // de propósito — lá são milhares de categorias.
-    if (term.length === 1) return;
-    const handle = setTimeout(async () => {
-      setFacebookCategoryLoading(true);
-      try {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/marketplace/facebook/categories?search=${encodeURIComponent(
-            term,
-          )}`,
-          { headers: { email: session?.user?.email || "" } },
-        );
-        if (resp.ok) {
-          const data = await resp.json();
-          setFacebookOptions(
-            Array.isArray(data?.categories) ? data.categories : [],
-          );
-        }
-      } catch (err) {
-        console.error("Erro ao buscar categorias Facebook:", err);
-      } finally {
-        setFacebookCategoryLoading(false);
-      }
-    }, 400);
-    return () => clearTimeout(handle);
-  }, [facebookCategorySearch, createFacebookListing, session?.user?.email]);
 
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   // e padrões de anúncio ML. Em seguida, sobrepõe com settings já persistidos
@@ -1204,11 +894,7 @@ export function EditProductDialog({
         if (!product.description && desc) setValue("description", desc);
 
         if (user.defaultListingType) setMlListingType(user.defaultListingType);
-        if (
-          user.crossAccountPriceIncreasePercent != null &&
-          Number(user.crossAccountPriceIncreasePercent) > 0
-        )
-          setCrossAccountPercent(String(user.crossAccountPriceIncreasePercent));
+
         if (
           user.defaultHasWarranty !== undefined &&
           user.defaultHasWarranty !== null
@@ -1381,31 +1067,6 @@ export function EditProductDialog({
       });
       // Abrir seção de autopeças se houver dados
       setShowAutopartsSection(hasAutopartsData);
-      setCreateMlListing(false);
-      setCreateShopeeListing(false);
-      setCreateMagaluListing(false);
-      setCreateOlxListing(false);
-      setCreateFacebookListing(false);
-      setSelectedMlAccounts([]);
-      setSelectedShopeeAccounts([]);
-      setSelectedMagaluAccounts([]);
-      setSelectedOlxAccounts([]);
-      setSelectedFacebookAccounts([]);
-      magaluSuggestedRef.current = false;
-      setMagaluSelectedLabel("");
-      setMagaluOptions([]);
-      setMagaluCategorySearch("");
-      setMagaluCategoryDropdownOpen(false);
-      olxSuggestedRef.current = false;
-      setOlxSelectedLabel("");
-      setOlxOptions([]);
-      setOlxCategorySearch("");
-      setOlxCategoryDropdownOpen(false);
-      facebookSuggestedRef.current = false;
-      setFacebookSelectedLabel("");
-      setFacebookOptions([]);
-      setFacebookCategorySearch("");
-      setFacebookCategoryDropdownOpen(false);
 
       setMlCategoryWarning(null);
 
@@ -1436,80 +1097,20 @@ export function EditProductDialog({
         fetch(`${base}/locations/select`, { headers }).then((r) =>
           r.ok ? r.json() : null,
         ),
-        // 2. Contas ML
-        email
-          ? fetch(`${base}/marketplace/ml/accounts`, { headers }).then((r) =>
-              r.ok ? r.json() : null,
-            )
-          : null,
-        // 3. Contas Shopee
-        email
-          ? fetch(`${base}/marketplace/shopee/accounts`, { headers }).then(
-              (r) => (r.ok ? r.json() : null),
-            )
-          : null,
-        // 3b. Contas Magalu (atrás da flag)
-        email && MAGALU_ENABLED
-          ? fetch(`${base}/marketplace/magalu/accounts`, { headers }).then(
-              (r) => (r.ok ? r.json() : null),
-            )
-          : null,
-        // 3c. Contas OLX (atrás da flag)
-        email && OLX_ENABLED
-          ? fetch(`${base}/marketplace/olx/accounts`, { headers }).then((r) =>
-              r.ok ? r.json() : null,
-            )
-          : null,
-        // 3d. Contas Facebook (atrás da flag)
-        email && FACEBOOK_ENABLED
-          ? fetch(`${base}/marketplace/facebook/accounts`, { headers }).then(
-              (r) => (r.ok ? r.json() : null),
-            )
-          : null,
-        // 4. Compatibilidades
+        // 2. Compatibilidades
         email && product.id
           ? fetch(`${base}/products/${product.id}/compatibilities`, {
               headers,
             }).then((r) => (r.ok ? r.json() : null))
           : null,
-        // 5. Descrição padrão do usuário
+        // 3. Descrição padrão do usuário
         fetchDefaultDescriptionRef.current(),
       ])
         .then(
-          ([
-            locJson,
-            mlJson,
-            shJson,
-            magaluJson,
-            olxJson,
-            facebookJson,
-            compatJson,
-          ]) => {
+          ([locJson, compatJson]) => {
             if (locJson)
               setLocationOptions(
                 Array.isArray(locJson.locations) ? locJson.locations : [],
-              );
-            if (mlJson)
-              setMlAccounts(
-                Array.isArray(mlJson.accounts) ? mlJson.accounts : [],
-              );
-            if (shJson)
-              setShopeeAccounts(
-                Array.isArray(shJson.accounts) ? shJson.accounts : [],
-              );
-            if (magaluJson)
-              setMagaluAccounts(
-                Array.isArray(magaluJson.accounts) ? magaluJson.accounts : [],
-              );
-            if (olxJson)
-              setOlxAccounts(
-                Array.isArray(olxJson.accounts) ? olxJson.accounts : [],
-              );
-            if (facebookJson)
-              setFacebookAccounts(
-                Array.isArray(facebookJson.accounts)
-                  ? facebookJson.accounts
-                  : [],
               );
             if (compatJson) {
               const items: CompatibilityEntry[] = (
@@ -1553,6 +1154,9 @@ export function EditProductDialog({
       mlSettingsSnapshotRef.current = null;
       setListingHydrated(false);
       setListingCategory(null);
+      setOlxCategoryOverride("");
+      setFbCategoryOverride("");
+      setListingStatus(null);
     }
   }, [open]);
 
@@ -1581,6 +1185,7 @@ export function EditProductDialog({
         }
         const json = (await resp.json()) as {
           listing?: {
+            status: string | null;
             requestedCategoryId: string | null;
             requestedCategoryPath: string | null;
             olxCategoryOverride: string | null;
@@ -1686,6 +1291,12 @@ export function EditProductDialog({
         setListingCategory(
           listingContext.platform === "SHOPEE" ? shopeeCat : mlCat,
         );
+
+        setOlxCategoryOverride(l.olxCategoryOverride ?? "");
+        setFbCategoryOverride(l.fbCategoryOverride ?? "");
+        // O status do contexto vem da lista, que tem cache de 30s; o do GET
+        // é o do banco agora. Quem manda no botão pausar/reativar é este.
+        if (l.status) setListingStatus(l.status);
         if (l.partNumberOverride !== null)
           setValue("partNumber", l.partNumberOverride);
         if (l.qualityOverride !== null)
@@ -2151,6 +1762,58 @@ export function EditProductDialog({
     }
   }, [watchCategory, watchMlCategory, mlOptionsById, setValue, watch, trigger]);
 
+  // Pausar/reativar o anúncio. Vinha do `edit-listing-dialog`, que detinha
+  // esse botão e não era renderizado por lugar nenhum do app.
+  const currentListingStatus = (
+    listingStatus ?? listingContext?.status ?? ""
+  ).toLowerCase();
+  const listingIsPaused = currentListingStatus === "paused";
+
+  const handleToggleListingStatus = async () => {
+    if (!listingContext || !session?.user?.email) return;
+    const nextStatus: "active" | "paused" = listingIsPaused
+      ? "active"
+      : "paused";
+    setStatusUpdating(true);
+    try {
+      const resp = await fetch(
+        `${getApiBaseUrl()}/listings/${encodeURIComponent(
+          listingContext.listingId,
+        )}/status`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email || "",
+          },
+          body: JSON.stringify({ status: nextStatus }),
+        },
+      );
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(
+          body?.message || body?.error || `HTTP ${resp.status}`,
+        );
+      }
+      setListingStatus(nextStatus);
+      invalidateListingsStatusCache(product.id);
+      onToast(
+        nextStatus === "paused" ? "Anúncio pausado." : "Anúncio reativado.",
+        "success",
+      );
+      onProductUpdated();
+    } catch (err) {
+      onToast(
+        err instanceof Error
+          ? `Erro ao alterar o status: ${err.message}`
+          : "Erro ao alterar o status do anúncio.",
+        "error",
+      );
+    } finally {
+      setStatusUpdating(false);
+    }
+  };
+
   const onSubmit = async (data: ProductEditFormData) => {
     // Salvar antes de o GET /listings/:id responder mandaria o form ainda
     // cheio de valores do PRODUTO como se fossem deste anúncio: apagava
@@ -2165,102 +1828,6 @@ export function EditProductDialog({
     }
     setIsSubmitting(true);
     try {
-      if (createMlListing && selectedMlAccounts.length === 0) {
-        onToast(
-          "Selecione ao menos uma conta do Mercado Livre para criar o anúncio.",
-          "error",
-        );
-        setIsSubmitting(false);
-        return;
-      }
-      if (
-        createMlListing &&
-        !(
-          data.mlCategory ||
-          autoDetectedRef.current?.mlCategory ||
-          data.category ||
-          product.mlCategory ||
-          product.category
-        )
-      ) {
-        onToast(
-          "Defina uma categoria (topo ou ML) antes de criar o anúncio.",
-          "error",
-        );
-        setIsSubmitting(false);
-        return;
-      }
-
-      // Guard de domínio: produto veicular só pode criar anúncio ML com
-      // categoria sob o nicho de autopeças. Usa a lista mlOptions já
-      // carregada; se verdict for "unknown", confia no backend (fail-open).
-      if (createMlListing && isProductVehicular(data)) {
-        const candidateCategory =
-          data.mlCategory ||
-          autoDetectedRef.current?.mlCategory ||
-          product.mlCategory ||
-          "";
-        const verdict = isCategoryUnderVehicleRoot(
-          candidateCategory,
-          mlOptions,
-        );
-        if (verdict === false) {
-          onToast(
-            "Selecione uma categoria de autopeças antes de publicar no Mercado Livre.",
-            "error",
-          );
-          setMlCategoryWarning(
-            "Categoria fora do nicho de autopeças. Escolha uma categoria sob 'Acessórios para Veículos'.",
-          );
-          setIsSubmitting(false);
-          return;
-        }
-      }
-
-      console.info("[EditModalML] submit", {
-        productId: product.id,
-        persisted: product.mlCategory,
-        sent: data.mlCategory,
-      });
-
-      // Categoria ML não obrigatória no frontend quando houver categoria de topo;
-      // o backend resolve/normaliza para uma folha válida.
-
-      if (createShopeeListing && selectedShopeeAccounts.length === 0) {
-        onToast(
-          "Selecione ao menos uma conta do Shopee para criar o anúncio.",
-          "error",
-        );
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (createMagaluListing && selectedMagaluAccounts.length === 0) {
-        onToast(
-          "Selecione ao menos uma conta do Magalu para criar o anúncio.",
-          "error",
-        );
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (createOlxListing && selectedOlxAccounts.length === 0) {
-        onToast(
-          "Selecione ao menos uma conta da OLX para criar o anúncio.",
-          "error",
-        );
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (createFacebookListing && selectedFacebookAccounts.length === 0) {
-        onToast(
-          "Selecione ao menos uma conta do Facebook para criar o anúncio.",
-          "error",
-        );
-        setIsSubmitting(false);
-        return;
-      }
 
       const mlCategorySourceToSend = data.mlCategory
         ? autoDetectedRef.current?.mlCategory === data.mlCategory
@@ -2318,19 +1885,6 @@ export function EditProductDialog({
         compatibilityPositions,
       };
 
-      const fetchWithTimeout = async (
-        input: RequestInfo | URL,
-        init: RequestInit = {},
-        timeoutMs = 15000,
-      ) => {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-        try {
-          return await fetch(input, { ...init, signal: controller.signal });
-        } finally {
-          clearTimeout(timer);
-        }
-      };
 
       const base = getApiBaseUrl();
 
@@ -2396,6 +1950,18 @@ export function EditProductDialog({
           ],
         });
 
+        // OLX e Facebook não têm campo no produto — o override é o único
+        // lugar em que essa categoria existe. Vazio = `null` = "volta a ser
+        // resolvida automaticamente".
+        if (isOlxListingMode) {
+          overridesPayload.olxCategoryOverride =
+            olxCategoryOverride.trim() || null;
+        }
+        if (isFacebookListingMode) {
+          overridesPayload.fbCategoryOverride =
+            fbCategoryOverride.trim() || null;
+        }
+
         try {
           const respListing = await fetch(
             `${base}/listings/${listingContext.listingId}`,
@@ -2416,7 +1982,8 @@ export function EditProductDialog({
                 "Falha ao atualizar este anúncio.",
               "error",
             );
-            onOpenChange(false);
+            // NÃO fecha: o modal guarda tudo o que o operador digitou, e
+            // fechar em erro obrigava a redigitar para tentar de novo.
             return;
           }
 
@@ -2437,7 +2004,6 @@ export function EditProductDialog({
               : "Erro ao atualizar este anúncio.",
             "error",
           );
-          onOpenChange(false);
           return;
         }
 
@@ -2476,135 +2042,6 @@ export function EditProductDialog({
 
       // Compatibilidades já foram salvas atomicamente no PUT acima
 
-      // Monta um único POST /listings/dispatch com todas as plataformas e contas.
-      // O endpoint retorna 202 imediato (fire-and-forget) — sem timeout síncrono
-      // de 60s por conta. O status final aparece na aba Anúncios conforme os
-      // jobs terminam em background.
-      const dispatchRequests: Array<{
-        platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
-        accountId?: string;
-        categoryId?: string;
-        mlSettings?: Record<string, unknown>;
-      }> = [];
-
-      if (createMlListing && selectedMlAccounts.length > 0) {
-        const mlCategoryId =
-          data.mlCategory && data.mlCategory !== product.mlCategory
-            ? data.mlCategory
-            : autoDetectedRef.current?.mlCategory || undefined;
-        for (const accountId of selectedMlAccounts) {
-          dispatchRequests.push({
-            platform: "MERCADO_LIVRE",
-            accountId,
-            categoryId: mlCategoryId,
-            mlSettings: {
-              listingType: mlListingType,
-              hasWarranty: mlHasWarranty,
-              warrantyUnit: mlWarrantyUnit,
-              warrantyDuration: mlWarrantyDuration,
-              itemCondition: mlItemCondition,
-              shippingMode: mlShippingMode,
-              freeShipping: mlFreeShipping,
-              localPickup: mlLocalPickup,
-              manufacturingTime: mlManufacturingTime,
-            },
-          });
-        }
-      }
-
-      if (createShopeeListing && selectedShopeeAccounts.length > 0) {
-        const shopeeCategoryId =
-          data.shopeeCategory || product.shopeeCategoryId || undefined;
-        for (const accountId of selectedShopeeAccounts) {
-          dispatchRequests.push({
-            platform: "SHOPEE",
-            accountId,
-            categoryId: shopeeCategoryId,
-          });
-        }
-      }
-
-      // Magalu: envia a categoria escolhida (se houver); vazia → o backend
-      // resolve automaticamente (mesmo comportamento do modal de criação).
-      if (createMagaluListing && selectedMagaluAccounts.length > 0) {
-        const magaluCategoryId = data.magaluCategory || undefined;
-        for (const accountId of selectedMagaluAccounts) {
-          dispatchRequests.push({
-            platform: "MAGALU",
-            accountId,
-            categoryId: magaluCategoryId,
-          });
-        }
-      }
-
-      // OLX/Facebook: mesma semântica do Magalu — categoria opcional, vazia →
-      // resolvida no backend no momento do envio.
-      if (createOlxListing && selectedOlxAccounts.length > 0) {
-        const olxCategoryId =
-          data.olxCategory || product.olxCategoryId || undefined;
-        for (const accountId of selectedOlxAccounts) {
-          dispatchRequests.push({
-            platform: "OLX",
-            accountId,
-            categoryId: olxCategoryId,
-          });
-        }
-      }
-
-      if (createFacebookListing && selectedFacebookAccounts.length > 0) {
-        const facebookCategoryId =
-          data.facebookCategory || product.fbCategory || undefined;
-        for (const accountId of selectedFacebookAccounts) {
-          dispatchRequests.push({
-            platform: "FACEBOOK",
-            accountId,
-            categoryId: facebookCategoryId,
-          });
-        }
-      }
-
-      let dispatched = 0;
-      if (dispatchRequests.length > 0) {
-        try {
-          const resp = await fetch(`${base}/listings/dispatch`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              email: session?.user?.email || "",
-            },
-            body: JSON.stringify({
-              productId: product.id,
-              requests: dispatchRequests,
-              crossAccountIncrease: crossAccountIncrease
-                ? {
-                    enabled: true,
-                    percent: crossAccountPercent
-                      ? Number(crossAccountPercent)
-                      : undefined,
-                  }
-                : undefined,
-            }),
-          });
-          const body = await resp.json().catch(() => ({}));
-          if (resp.ok && Array.isArray(body?.queued)) {
-            dispatched = body.queued.length;
-          } else {
-            onToast(
-              body?.message ||
-                body?.error ||
-                "Falha ao enfileirar anúncios. Confira a aba Anúncios.",
-              "error",
-            );
-          }
-        } catch (err) {
-          onToast(
-            err instanceof Error
-              ? `Erro ao enfileirar anúncios: ${err.message}`
-              : "Erro ao enfileirar anúncios",
-            "error",
-          );
-        }
-      }
 
       // Sumário do re-sync de anúncios EXISTENTES feito dentro do PUT
       // /products/:id (ProductUseCase.update → syncProductListings).
@@ -2641,9 +2078,6 @@ export function EditProductDialog({
           summaryMsg = `Produto atualizado, mas ${failedItems.length} anúncio(s) falhou(aram): ${failedSummary}${moreFailed}.`;
           summaryType = "warning";
         }
-      }
-      if (dispatched > 0) {
-        summaryMsg += ` ${dispatched} novo(s) anúncio(s) em processamento — acompanhe na aba Anúncios.`;
       }
 
       onToast(summaryMsg, summaryType);
@@ -2688,6 +2122,29 @@ export function EditProductDialog({
             compartilhado e os anúncios de outras contas continuam intactos.
             Para limpar uma personalização e voltar a herdar do produto, deixe o
             campo igual ao valor original do produto.
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleToggleListingStatus}
+                disabled={statusUpdating || isSubmitting}
+              >
+                {statusUpdating ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Alterando...
+                  </>
+                ) : listingIsPaused ? (
+                  "Reativar anúncio"
+                ) : (
+                  "Pausar anúncio"
+                )}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">
+                Status atual: {currentListingStatus || "—"}
+              </span>
+            </div>
           </div>
         )}
         <form
@@ -3302,148 +2759,59 @@ export function EditProductDialog({
             </CollapsibleContent>
           </Collapsible>
 
-          {/* PublicaÃ§Ã£o de anÃºncios multi-contas (escondida no modo "editar anúncio") */}
+          {/* Este espaço já foi a criação de anúncios, conta a conta. Saiu:
+              o caminho oficial de publicação é o Anunciar em massa, e ter dois
+              caminhos para a mesma coisa só multiplicava as formas de errar.
+              Agora é por aqui que se ENTRA na edição de um anúncio que já
+              existe. */}
+          {!isListingMode && (
+            <div className="space-y-4 rounded-lg border p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Anúncios deste produto</p>
+                <p className="text-xs text-muted-foreground">
+                  Edite um anúncio já publicado. Para publicar em novas
+                  contas, use o <strong>Anunciar em massa</strong>.
+                </p>
+              </div>
+              <ProductListingsList
+                product={product}
+                platform={null}
+                listings={produtoListings}
+                loading={produtoListingsLoading}
+                error={produtoListingsError}
+                onEditListing={onEditListing}
+                emptyMessage="Este produto ainda não tem anúncios publicados."
+                emptyHint={
+                  <span className="text-xs">
+                    Para publicar, use o <strong>Anunciar em massa</strong>.
+                  </span>
+                }
+              />
+            </div>
+          )}
+
           <div className="space-y-4 rounded-lg border p-4">
             <div className="space-y-1">
               <p className="text-sm font-medium">
                 {listingContext
                   ? "Configurações deste anúncio"
-                  : "Publicar anúncios"}
+                  : "Categoria e ficha técnica"}
               </p>
               <p className="text-xs text-muted-foreground">
                 {listingContext
-                  ? `Os ajustes abaixo serão aplicados apenas neste anúncio · ${platformLabel(
+                  ? `Os ajustes abaixo valem apenas para este anúncio · ${platformLabel(
                       listingContext.platform,
                     )}.`
-                  : "Crie anúncios nas contas selecionadas."}
+                  : "Valem para o produto e para os anúncios que herdam dele."}
               </p>
+              {listingContext && (
+                <p className="text-xs text-muted-foreground">
+                  {AVISO_POR_CANAL[listingContext.platform]}
+                </p>
+              )}
             </div>
 
-            {!isListingMode && (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Anúncios deste produto</p>
-                <ProductListingsList
-                  product={product}
-                  platform={null}
-                  listings={produtoListings}
-                  loading={produtoListingsLoading}
-                  error={produtoListingsError}
-                  onEditListing={onEditListing}
-                  emptyMessage="Este produto ainda não tem anúncios publicados."
-                  emptyHint={
-                    <span className="text-xs">
-                      Para publicar, use o <strong>Anunciar em massa</strong>.
-                    </span>
-                  }
-                />
-              </div>
-            )}
-
             <div className="space-y-2">
-              {!listingContext && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Switch
-                    id="edit-create-ml-listing"
-                    checked={createMlListing}
-                    onCheckedChange={setCreateMlListing}
-                  />
-                  <Label
-                    htmlFor="edit-create-ml-listing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio no Mercado Livre
-                  </Label>
-                </div>
-              )}
-              {!listingContext && createMlListing && (
-                <>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {mlAccounts.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        Conecte ao menos uma conta do Mercado Livre.
-                      </p>
-                    ) : (
-                      mlAccounts.map((acc) => (
-                        <label
-                          key={acc.id}
-                          className="flex items-center justify-between rounded-md border p-2 text-sm"
-                        >
-                          <span>{acc.accountName || acc.id}</span>
-                          <Switch
-                            checked={selectedMlAccounts.includes(acc.id)}
-                            onCheckedChange={(checked) =>
-                              setSelectedMlAccounts((prev) =>
-                                checked
-                                  ? [...prev, acc.id]
-                                  : prev.filter((id) => id !== acc.id),
-                              )
-                            }
-                          />
-                        </label>
-                      ))
-                    )}
-                  </div>
-
-                  {/* Aumento percentual escalonado entre contas (por marketplace).
-                      O flag viaja top-level no dispatch, então vale para ML,
-                      Shopee e Magalu — escada independente em cada um. Mostra o
-                      controle quando QUALQUER marketplace tem 2+ contas. */}
-                  {(mlAccounts.length > 1 ||
-                    shopeeAccounts.length > 1 ||
-                    magaluAccounts.length > 1 ||
-                    olxAccounts.length > 1 ||
-                    facebookAccounts.length > 1) && (
-                    <div className="mt-2 space-y-2 rounded-md border p-3">
-                      <label className="flex items-center justify-between gap-2 text-sm font-medium">
-                        <span>
-                          Aumentar percentual nas demais contas (por
-                          marketplace)
-                        </span>
-                        <Switch
-                          checked={crossAccountIncrease}
-                          onCheckedChange={setCrossAccountIncrease}
-                        />
-                      </label>
-                      {crossAccountIncrease && (
-                        <div className="space-y-1">
-                          <Label
-                            htmlFor="edit-cross-account-percent"
-                            className="text-xs text-muted-foreground"
-                          >
-                            Percentual de aumento composto entre contas
-                          </Label>
-                          <div className="relative w-40">
-                            <Input
-                              id="edit-cross-account-percent"
-                              type="number"
-                              inputMode="decimal"
-                              min={0}
-                              max={100}
-                              step="0.01"
-                              value={crossAccountPercent}
-                              onChange={(e) =>
-                                setCrossAccountPercent(e.target.value)
-                              }
-                              placeholder="Ex.: 10"
-                              className="pr-7"
-                            />
-                            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                              %
-                            </span>
-                          </div>
-                          <p className="text-[11px] leading-relaxed text-muted-foreground">
-                            Aplicado em cascata e por marketplace: em cada um
-                            (Mercado Livre, Shopee, Magalu), a 1ª conta
-                            selecionada mantém o preço base e cada conta
-                            seguinte recebe este % sobre o preço da anterior.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                </>
-              )}
 
               {/* Categoria ML + ficha técnica.
                   Já viveram dentro do toggle "Criar anúncio no Mercado Livre" —
@@ -3683,9 +3051,7 @@ export function EditProductDialog({
               )}
 
               {/* Configurações do Anúncio ML */}
-              {(createMlListing ||
-                (listingContext &&
-                  listingContext.platform === "MERCADO_LIVRE")) && (
+              {isMlListingMode && (
                 <div className="space-y-3 rounded-md border p-3">
                   <p className="text-xs font-medium text-muted-foreground">
                     Configurações do Anúncio
@@ -3853,49 +3219,33 @@ export function EditProductDialog({
               )}
             </div>
 
-            {!listingContext && (
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Switch
-                    id="edit-create-shopee-listing"
-                    checked={createShopeeListing}
-                    onCheckedChange={setCreateShopeeListing}
-                  />
-                  <Label
-                    htmlFor="edit-create-shopee-listing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio no Shopee
-                  </Label>
-                </div>
-                {createShopeeListing && (
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {shopeeAccounts.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          Conecte ao menos uma conta do Shopee.
-                        </p>
-                      ) : (
-                        shopeeAccounts.map((acc) => (
-                          <label
-                            key={acc.id}
-                            className="flex items-center justify-between rounded-md border p-2 text-sm"
-                          >
-                            <span>{acc.accountName || acc.id}</span>
-                            <Switch
-                              checked={selectedShopeeAccounts.includes(acc.id)}
-                              onCheckedChange={(checked) =>
-                                setSelectedShopeeAccounts((prev) =>
-                                  checked
-                                    ? [...prev, acc.id]
-                                    : prev.filter((id) => id !== acc.id),
-                                )
-                              }
-                            />
-                          </label>
-                        ))
-                      )}
-                    </div>
-                )}
+            {(isOlxListingMode || isFacebookListingMode) && (
+              <div className="space-y-1">
+                <Label htmlFor="listing-channel-category">
+                  {isOlxListingMode
+                    ? "Categoria na OLX"
+                    : "Categoria no Facebook"}
+                </Label>
+                <Input
+                  id="listing-channel-category"
+                  value={
+                    isOlxListingMode ? olxCategoryOverride : fbCategoryOverride
+                  }
+                  onChange={(e) =>
+                    isOlxListingMode
+                      ? setOlxCategoryOverride(e.target.value)
+                      : setFbCategoryOverride(e.target.value)
+                  }
+                  placeholder="Vazio = resolvida automaticamente"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {isOlxListingMode
+                    ? "Id numérico da categoria da OLX."
+                    : "Caminho da taxonomia do Google enviado à Meta."}{" "}
+                  Diferente do Mercado Livre e da Shopee, aqui a troca chega
+                  no anúncio: os dois canais reconstroem o anúncio inteiro na
+                  edição. Deixe vazio para o canal voltar a resolver sozinho.
+                </p>
               </div>
             )}
 
@@ -4048,477 +3398,6 @@ export function EditProductDialog({
               </div>
             )}
 
-            {!listingContext && MAGALU_ENABLED && (
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Switch
-                    id="edit-create-magalu-listing"
-                    checked={createMagaluListing}
-                    onCheckedChange={setCreateMagaluListing}
-                  />
-                  <Label
-                    htmlFor="edit-create-magalu-listing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio no Magalu
-                  </Label>
-                </div>
-                {createMagaluListing && (
-                  <>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {magaluAccounts.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          Conecte ao menos uma conta do Magalu.
-                        </p>
-                      ) : (
-                        magaluAccounts.map((acc) => (
-                          <label
-                            key={acc.id}
-                            className="flex items-center justify-between rounded-md border p-2 text-sm"
-                          >
-                            <span>{acc.accountName || acc.id}</span>
-                            <Switch
-                              checked={selectedMagaluAccounts.includes(acc.id)}
-                              onCheckedChange={(checked) =>
-                                setSelectedMagaluAccounts((prev) =>
-                                  checked
-                                    ? [...prev, acc.id]
-                                    : prev.filter((id) => id !== acc.id),
-                                )
-                              }
-                            />
-                          </label>
-                        ))
-                      )}
-                    </div>
-                    <div className="mt-2 space-y-1">
-                      <Label htmlFor="magaluCategory">
-                        Categoria no Magalu
-                      </Label>
-                      <Controller
-                        name="magaluCategory"
-                        control={control}
-                        render={({ field }) => {
-                          // path "A/B/C" → breadcrumb "A > B > C" (igual ML/Shopee).
-                          const fmt = (v: string) =>
-                            v
-                              .split("/")
-                              .map((s) => s.trim())
-                              .filter(Boolean)
-                              .join(" > ");
-                          const rawLabel =
-                            magaluSelectedLabel ||
-                            magaluOptions.find((o) => o.id === field.value)
-                              ?.value ||
-                            "";
-                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
-                          const term = magaluCategorySearch.trim();
-                          return (
-                            <div className="relative">
-                              {selectedLabel && !magaluCategoryDropdownOpen && (
-                                <div
-                                  className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
-                                  onClick={() => {
-                                    setMagaluCategoryDropdownOpen(true);
-                                    setMagaluCategorySearch("");
-                                  }}
-                                >
-                                  <span className="truncate">
-                                    {selectedLabel}
-                                  </span>
-                                  <span className="ml-2 text-xs text-muted-foreground">
-                                    Alterar
-                                  </span>
-                                </div>
-                              )}
-                              {(magaluCategoryDropdownOpen ||
-                                !selectedLabel) && (
-                                <>
-                                  <Input
-                                    placeholder="Buscar categoria do Magalu..."
-                                    value={magaluCategorySearch}
-                                    onChange={(e) =>
-                                      setMagaluCategorySearch(e.target.value)
-                                    }
-                                    onBlur={() => {
-                                      setTimeout(
-                                        () =>
-                                          setMagaluCategoryDropdownOpen(false),
-                                        200,
-                                      );
-                                    }}
-                                    autoFocus={magaluCategoryDropdownOpen}
-                                  />
-                                  {term && magaluOptions.length > 0 && (
-                                    <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-background shadow-md">
-                                      {magaluOptions.map((o) => (
-                                        <button
-                                          type="button"
-                                          key={o.id}
-                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
-                                            o.id === field.value
-                                              ? "bg-accent font-medium"
-                                              : ""
-                                          }`}
-                                          onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            field.onChange(o.id);
-                                            setMagaluSelectedLabel(o.value);
-                                            setMagaluCategorySearch("");
-                                            setMagaluCategoryDropdownOpen(
-                                              false,
-                                            );
-                                          }}
-                                        >
-                                          {fmt(o.value)}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {term &&
-                                    !magaluCategoryLoading &&
-                                    magaluOptions.length === 0 && (
-                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
-                                        Nenhuma categoria encontrada
-                                      </div>
-                                    )}
-                                  {magaluCategoryLoading && (
-                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
-                                      Buscando…
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          );
-                        }}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Opcional — se vazio, a categoria é resolvida
-                        automaticamente no Magalu.
-                      </p>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {!listingContext && OLX_ENABLED && (
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Switch
-                    id="edit-create-olx-listing"
-                    checked={createOlxListing}
-                    onCheckedChange={setCreateOlxListing}
-                  />
-                  <Label
-                    htmlFor="edit-create-olx-listing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio na OLX
-                  </Label>
-                </div>
-                {createOlxListing && (
-                  <>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {olxAccounts.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          Conecte ao menos uma conta da OLX.
-                        </p>
-                      ) : (
-                        olxAccounts.map((acc) => (
-                          <label
-                            key={acc.id}
-                            className="flex items-center justify-between rounded-md border p-2 text-sm"
-                          >
-                            <span>{acc.accountName || acc.id}</span>
-                            <Switch
-                              checked={selectedOlxAccounts.includes(acc.id)}
-                              onCheckedChange={(checked) =>
-                                setSelectedOlxAccounts((prev) =>
-                                  checked
-                                    ? [...prev, acc.id]
-                                    : prev.filter((id) => id !== acc.id),
-                                )
-                              }
-                            />
-                          </label>
-                        ))
-                      )}
-                    </div>
-                    <div className="mt-2 space-y-1">
-                      <Label htmlFor="olxCategory">Categoria na OLX</Label>
-                      <Controller
-                        name="olxCategory"
-                        control={control}
-                        render={({ field }) => {
-                          const fmt = (v: string) =>
-                            v
-                              .split("/")
-                              .map((s) => s.trim())
-                              .filter(Boolean)
-                              .join(" > ");
-                          const rawLabel =
-                            olxSelectedLabel ||
-                            olxOptions.find((o) => o.id === field.value)
-                              ?.value ||
-                            "";
-                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
-                          const term = olxCategorySearch.trim();
-                          return (
-                            <div className="relative">
-                              {selectedLabel && !olxCategoryDropdownOpen && (
-                                <div
-                                  className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
-                                  onClick={() => {
-                                    setOlxCategoryDropdownOpen(true);
-                                    setOlxCategorySearch("");
-                                  }}
-                                >
-                                  <span className="truncate">
-                                    {selectedLabel}
-                                  </span>
-                                  <span className="ml-2 text-xs text-muted-foreground">
-                                    Alterar
-                                  </span>
-                                </div>
-                              )}
-                              {(olxCategoryDropdownOpen || !selectedLabel) && (
-                                <>
-                                  <Input
-                                    placeholder="Buscar categoria da OLX..."
-                                    value={olxCategorySearch}
-                                    onChange={(e) =>
-                                      setOlxCategorySearch(e.target.value)
-                                    }
-                                    onBlur={() => {
-                                      setTimeout(
-                                        () => setOlxCategoryDropdownOpen(false),
-                                        200,
-                                      );
-                                    }}
-                                    autoFocus={olxCategoryDropdownOpen}
-                                  />
-                                  {term && olxOptions.length > 0 && (
-                                    <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-background shadow-md">
-                                      {olxOptions.map((o) => (
-                                        <button
-                                          type="button"
-                                          key={o.id}
-                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
-                                            o.id === field.value
-                                              ? "bg-accent font-medium"
-                                              : ""
-                                          }`}
-                                          onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            field.onChange(o.id);
-                                            setOlxSelectedLabel(o.value);
-                                            setOlxCategorySearch("");
-                                            setOlxCategoryDropdownOpen(false);
-                                          }}
-                                        >
-                                          {fmt(o.value)}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {term &&
-                                    !olxCategoryLoading &&
-                                    olxOptions.length === 0 && (
-                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
-                                        Nenhuma categoria encontrada
-                                      </div>
-                                    )}
-                                  {olxCategoryLoading && (
-                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
-                                      Buscando…
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          );
-                        }}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Opcional — se vazio, a categoria é resolvida
-                        automaticamente na OLX.
-                      </p>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {!listingContext && FACEBOOK_ENABLED && (
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Switch
-                    id="edit-create-facebook-listing"
-                    checked={createFacebookListing}
-                    onCheckedChange={setCreateFacebookListing}
-                  />
-                  <Label
-                    htmlFor="edit-create-facebook-listing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio no Facebook
-                  </Label>
-                </div>
-                {createFacebookListing && (
-                  <>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {facebookAccounts.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          Conecte ao menos uma conta do Facebook.
-                        </p>
-                      ) : (
-                        facebookAccounts.map((acc) => (
-                          <label
-                            key={acc.id}
-                            className="flex items-center justify-between rounded-md border p-2 text-sm"
-                          >
-                            <span>{acc.accountName || acc.id}</span>
-                            <Switch
-                              checked={selectedFacebookAccounts.includes(
-                                acc.id,
-                              )}
-                              onCheckedChange={(checked) =>
-                                setSelectedFacebookAccounts((prev) =>
-                                  checked
-                                    ? [...prev, acc.id]
-                                    : prev.filter((id) => id !== acc.id),
-                                )
-                              }
-                            />
-                          </label>
-                        ))
-                      )}
-                    </div>
-                    <div className="mt-2 space-y-1">
-                      <Label htmlFor="facebookCategory">
-                        Categoria no Facebook
-                      </Label>
-                      <Controller
-                        name="facebookCategory"
-                        control={control}
-                        render={({ field }) => {
-                          const fmt = (v: string) =>
-                            v
-                              .split("/")
-                              .map((s) => s.trim())
-                              .filter(Boolean)
-                              .join(" > ");
-                          const rawLabel =
-                            facebookSelectedLabel ||
-                            facebookOptions.find((o) => o.id === field.value)
-                              ?.value ||
-                            "";
-                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
-                          const term = facebookCategorySearch.trim();
-                          return (
-                            <div className="relative">
-                              {selectedLabel &&
-                                !facebookCategoryDropdownOpen && (
-                                  <div
-                                    className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
-                                    onClick={() => {
-                                      setFacebookCategoryDropdownOpen(true);
-                                      setFacebookCategorySearch("");
-                                    }}
-                                  >
-                                    <span className="truncate">
-                                      {selectedLabel}
-                                    </span>
-                                    <span className="ml-2 text-xs text-muted-foreground">
-                                      Alterar
-                                    </span>
-                                  </div>
-                                )}
-                              {(facebookCategoryDropdownOpen ||
-                                !selectedLabel) && (
-                                <>
-                                  <Input
-                                    placeholder="Buscar categoria do Facebook..."
-                                    value={facebookCategorySearch}
-                                    onChange={(e) =>
-                                      setFacebookCategorySearch(e.target.value)
-                                    }
-                                    onBlur={() => {
-                                      setTimeout(
-                                        () =>
-                                          setFacebookCategoryDropdownOpen(
-                                            false,
-                                          ),
-                                        200,
-                                      );
-                                    }}
-                                    autoFocus={facebookCategoryDropdownOpen}
-                                  />
-                                  {term && facebookOptions.length > 0 && (
-                                    <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-background shadow-md">
-                                      {facebookOptions.map((o) => (
-                                        <button
-                                          type="button"
-                                          key={o.id}
-                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
-                                            o.id === field.value
-                                              ? "bg-accent font-medium"
-                                              : ""
-                                          }`}
-                                          onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            field.onChange(o.id);
-                                            setFacebookSelectedLabel(o.value);
-                                            setFacebookCategorySearch("");
-                                            setFacebookCategoryDropdownOpen(
-                                              false,
-                                            );
-                                          }}
-                                        >
-                                          {fmt(o.value)}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {term &&
-                                    !facebookCategoryLoading &&
-                                    facebookOptions.length === 0 && (
-                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
-                                        Nenhuma categoria encontrada
-                                      </div>
-                                    )}
-                                  {facebookCategoryLoading && (
-                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
-                                      Buscando…
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          );
-                        }}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Opcional — se vazio, a categoria é resolvida
-                        automaticamente no Facebook.
-                      </p>
-                      {/* Mesmo motivo do modal de criação: o rótulo é tradução
-                          nossa, o valor é o caminho da taxonomia do Google. */}
-                      {watch("facebookCategory") ? (
-                        <p className="text-[11px] text-muted-foreground/80">
-                          Enviado à Meta:{" "}
-                          <span className="font-mono">
-                            {watch("facebookCategory")}
-                          </span>
-                        </p>
-                      ) : null}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
           </div>
 
           <DialogFooter>
