@@ -22,7 +22,12 @@ import { cn } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
-import { invalidateListingsStatusCache } from "./marketplace-listings-dialog";
+import { invalidateListingsStatusCache } from "../lib/listings-status-cache";
+import {
+  ProductListingsList,
+  useProductListings,
+  type ListingEditContext,
+} from "./product-listings-list";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import {
   buildListingOverridesPayload,
@@ -30,6 +35,11 @@ import {
   isCategoryUnderVehicleRoot,
   sanityCheckInitialMlCategory,
 } from "./edit-product-dialog.helpers";
+import {
+  listingFieldOriginLabel,
+  resolveListingCategory,
+  type ListingFieldOrigin,
+} from "../lib/listing-field-origin";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
@@ -215,6 +225,15 @@ interface Product {
   mlCatalogProductId?: string | null;
   /** Posição das compatibilidades no ML (["Dianteira","Esquerda"]). */
   compatibilityPositions?: string[] | null;
+  /**
+   * Anúncios já conhecidos do produto. Só o `shopId` importa aqui: é o que
+   * o link "Ver anúncio" da Shopee precisa para montar a URL.
+   */
+  listings?: Array<{
+    marketplaceAccountId?: string | null;
+    externalListingId?: string | null;
+    shopId?: number | null;
+  } | null> | null;
 }
 
 /**
@@ -251,6 +270,12 @@ interface EditProductDialogProps {
   onProductUpdated: () => void;
   onToast: (message: string, type: "success" | "error" | "warning") => void;
   listingContext?: EditProductDialogListingContext | null;
+  /**
+   * Abre o modo "editar anúncio" para outro anúncio DO MESMO produto, a
+   * partir da seção "Anúncios deste produto". O host já tem esse fluxo
+   * montado (`products-list.tsx`) — aqui só o disparamos.
+   */
+  onEditListing?: (ctx: ListingEditContext) => void;
 }
 
 const qualityOptions = [
@@ -320,6 +345,25 @@ function platformLabel(platform: EditProductDialogListingContext["platform"]) {
   return PLATFORM_LABELS[platform] ?? platform;
 }
 
+/**
+ * Atributos que o Mercado Livre fixa na criação do anúncio e recusa alterar
+ * depois. Espelha o `IMMUTABLE_ATTRS` de `updateMLListingFields`
+ * (`app/marketplaces/usecases/listing.usercase.ts`) e do sync — lá eles são
+ * descartados em silêncio antes do `PUT /items`. Na edição de um anúncio
+ * publicado o campo aparece preenchido, mas travado: oferecer a edição seria
+ * convidar o operador a digitar um valor que morre no caminho.
+ */
+const ML_IMMUTABLE_ATTR_IDS = [
+  "BRAND",
+  "MODEL",
+  "YEAR",
+  "VEHICLE_YEAR",
+  "PART_NUMBER",
+  "MPN",
+  "OEM",
+  "SELLER_SKU",
+] as const;
+
 export function EditProductDialog({
   product,
   open,
@@ -327,6 +371,7 @@ export function EditProductDialog({
   onProductUpdated,
   onToast,
   listingContext = null,
+  onEditListing,
 }: EditProductDialogProps) {
   // Ref usada dentro de callbacks (fetchDefaultDescription) para evitar
   // recriar o useCallback quando listingContext mudar.
@@ -336,6 +381,45 @@ export function EditProductDialog({
   useEffect(() => {
     listingContextRef.current = listingContext;
   }, [listingContext]);
+
+  // Modo e plataforma do modal. Decidem quais campos aparecem e quais ficam em
+  // leitura: o que o canal NÃO consegue alterar num anúncio já publicado não
+  // pode ser oferecido como se conseguisse.
+  // Categoria efetiva do anúncio + trava de hidratação. Enquanto o
+  // GET /listings/:id não responde, salvar significaria mandar o form ainda
+  // cheio de valores do PRODUTO como se fossem deste anúncio — foi assim que
+  // `attributesOverride` era apagado e `compatibilitiesOverride` virava `[]`
+  // (que não é "herdar", é "zero veículos neste anúncio").
+  const [listingHydrated, setListingHydrated] = useState(false);
+  const [listingCategory, setListingCategory] = useState<{
+    id: string | null;
+    label: string | null;
+    origin: ListingFieldOrigin;
+  } | null>(null);
+
+  const isListingMode = !!listingContext;
+  const listingPlatform = listingContext?.platform ?? null;
+  const isMlListingMode = listingPlatform === "MERCADO_LIVRE";
+  const isShopeeListingMode = listingPlatform === "SHOPEE";
+  // Categoria + ficha técnica do ML: no modo produto sempre (é lá que se define
+  // o padrão do produto); no modo anúncio, só quando o anúncio é do ML.
+  const showMlCategoryFields = !isListingMode || isMlListingMode;
+  const showShopeeCategoryField = !isListingMode || isShopeeListingMode;
+
+  // Anúncios do produto — mesma fonte do modal "Anúncios publicados".
+  // `live: false` de propósito: o modal de edição abre muito mais vezes que
+  // aquele dialog, e um refresh remoto por abertura seria egress sem
+  // contrapartida. O status do banco basta para escolher qual anúncio editar.
+  const {
+    listings: produtoListings,
+    loading: produtoListingsLoading,
+    error: produtoListingsError,
+  } = useProductListings({
+    enabled: open && !isListingMode,
+    productId: product.id,
+    platform: null,
+    live: false,
+  });
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [defaultDescription, setDefaultDescription] = useState("");
@@ -1239,7 +1323,10 @@ export function EditProductDialog({
 
   useEffect(() => {
     if (open) {
-      const openKey = product.id;
+      // A chave inclui o anúncio: sem isso, trocar de anúncio com o modal
+      // aberto mantinha os settings ML do anterior (o corpo do efeito não
+      // reexecutava porque o produto era o mesmo).
+      const openKey = `${product.id}|${listingContext?.listingId ?? ""}`;
       if (lastOpenKeyRef.current === openKey) {
         return;
       }
@@ -1456,7 +1543,7 @@ export function EditProductDialog({
           setCompatibilitiesLoading(false);
         });
     }
-  }, [open, product.id, reset, session?.user?.email]);
+  }, [open, product.id, listingContext?.listingId, reset, session?.user?.email]);
 
   // Ao fechar, libera a guarda para permitir reabrir e reexecutar o corpo.
   useEffect(() => {
@@ -1464,6 +1551,8 @@ export function EditProductDialog({
       lastOpenKeyRef.current = null;
       sanityAppliedRef.current = null;
       mlSettingsSnapshotRef.current = null;
+      setListingHydrated(false);
+      setListingCategory(null);
     }
   }, [open]);
 
@@ -1486,9 +1575,16 @@ export function EditProductDialog({
             signal: controller.signal,
           },
         );
-        if (!resp.ok) return;
+        if (!resp.ok) {
+          if (!cancelled) setListingHydrated(true);
+          return;
+        }
         const json = (await resp.json()) as {
           listing?: {
+            requestedCategoryId: string | null;
+            requestedCategoryPath: string | null;
+            olxCategoryOverride: string | null;
+            fbCategoryOverride: string | null;
             listingType: string | null;
             itemCondition: string | null;
             hasWarranty: boolean | null;
@@ -1559,10 +1655,37 @@ export function EditProductDialog({
         if (l.versionOverride !== null) setValue("version", l.versionOverride);
         if (l.categoryOverride !== null)
           setValue("category", l.categoryOverride);
-        if (l.mlCategoryOverride !== null)
-          setValue("mlCategory", l.mlCategoryOverride);
-        if (l.shopeeCategoryOverride !== null)
-          setValue("shopeeCategory", l.shopeeCategoryOverride);
+        // CATEGORIA — a precedência que faltava.
+        //
+        // `requestedCategoryId` é a categoria com que ESTE anúncio foi
+        // publicado. Sem ela, "override é null" era lido como "é igual ao
+        // produto" e a tela mostrava a categoria do PRODUTO — que pode ser
+        // outra. O id é da plataforma do anúncio, então só alimenta o campo do
+        // canal correspondente: um id de Shopee não é categoria de ML.
+        const daPlataforma = (plat: string) =>
+          listingContext.platform === plat
+            ? (l.requestedCategoryId ?? null)
+            : null;
+
+        const mlCat = resolveListingCategory({
+          override: l.mlCategoryOverride,
+          requestedCategoryId: daPlataforma("MERCADO_LIVRE"),
+          requestedCategoryPath: l.requestedCategoryPath,
+          productCategoryId: product.mlCategory ?? product.mlCategoryId ?? null,
+        });
+        if (mlCat.id) setValue("mlCategory", mlCat.id);
+
+        const shopeeCat = resolveListingCategory({
+          override: l.shopeeCategoryOverride,
+          requestedCategoryId: daPlataforma("SHOPEE"),
+          requestedCategoryPath: null,
+          productCategoryId: product.shopeeCategoryId ?? null,
+        });
+        if (shopeeCat.id) setValue("shopeeCategory", shopeeCat.id);
+
+        setListingCategory(
+          listingContext.platform === "SHOPEE" ? shopeeCat : mlCat,
+        );
         if (l.partNumberOverride !== null)
           setValue("partNumber", l.partNumberOverride);
         if (l.qualityOverride !== null)
@@ -1605,6 +1728,10 @@ export function EditProductDialog({
         }
       } catch {
         /* aborted ou network — silencioso */
+      } finally {
+        // Libera o save mesmo em falha: travar para sempre seria pior que o
+        // problema que a trava resolve.
+        if (!cancelled) setListingHydrated(true);
       }
     })();
 
@@ -1612,7 +1739,15 @@ export function EditProductDialog({
       cancelled = true;
       controller.abort();
     };
-  }, [open, listingContext, session?.user?.email, setValue]);
+  }, [
+    open,
+    listingContext,
+    session?.user?.email,
+    setValue,
+    product.mlCategory,
+    product.mlCategoryId,
+    product.shopeeCategoryId,
+  ]);
 
   // Sanity-check + auto-suggest de categoria ML.
   // Executa no máximo uma vez por (open, productId, mlOptions-ready):
@@ -1621,6 +1756,12 @@ export function EditProductDialog({
   //    do título, SOMENTE entre categorias sob a raiz veicular.
   useEffect(() => {
     if (!open) return;
+    // NUNCA no modo "editar anúncio". Este efeito pode limpar `mlCategory` ou
+    // auto-sugerir outra, com `shouldDirty: false` — e no save daquele modo o
+    // campo vira `mlCategoryOverride`. Quem abria o modal só para mexer no
+    // preço saía com override de categoria gravado sem nunca ter tocado nele.
+    // A categoria de um anúncio publicado é fato consumado, não palpite.
+    if (listingContext) return;
     if (!mlOptions || mlOptions.length === 0) return;
 
     const applyKey = `${product.id}|${mlOptions.length}`;
@@ -1741,6 +1882,7 @@ export function EditProductDialog({
     }
   }, [
     open,
+    listingContext,
     mlOptions,
     product.id,
     product.brand,
@@ -2010,6 +2152,17 @@ export function EditProductDialog({
   }, [watchCategory, watchMlCategory, mlOptionsById, setValue, watch, trigger]);
 
   const onSubmit = async (data: ProductEditFormData) => {
+    // Salvar antes de o GET /listings/:id responder mandaria o form ainda
+    // cheio de valores do PRODUTO como se fossem deste anúncio: apagava
+    // `attributesOverride` e gravava `compatibilitiesOverride: []` — que não
+    // é "herdar", é "zero veículos neste anúncio".
+    if (listingContext && !listingHydrated) {
+      onToast(
+        "Ainda carregando os dados deste anúncio. Tente de novo em um instante.",
+        "warning",
+      );
+      return;
+    }
     setIsSubmitting(true);
     try {
       if (createMlListing && selectedMlAccounts.length === 0) {
@@ -2233,6 +2386,14 @@ export function EditProductDialog({
             manufacturingTime: mlManufacturingTime,
           },
           settingsSnapshot: mlSettingsSnapshotRef.current,
+          // Campo exibido em modo LEITURA não entra no corpo. Chave ausente
+          // no PUT significa "não mexer" — sem isso, hidratar a categoria a
+          // partir de `requestedCategoryId` gravaria um override que o
+          // anúncio nunca teve, só por alguém abrir e salvar o modal.
+          omitKeys: [
+            ...(isMlListingMode ? ["mlCategoryOverride"] : []),
+            ...(isShopeeListingMode ? ["shopeeCategoryOverride"] : []),
+          ],
         });
 
         try {
@@ -3158,6 +3319,26 @@ export function EditProductDialog({
               </p>
             </div>
 
+            {!isListingMode && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Anúncios deste produto</p>
+                <ProductListingsList
+                  product={product}
+                  platform={null}
+                  listings={produtoListings}
+                  loading={produtoListingsLoading}
+                  error={produtoListingsError}
+                  onEditListing={onEditListing}
+                  emptyMessage="Este produto ainda não tem anúncios publicados."
+                  emptyHint={
+                    <span className="text-xs">
+                      Para publicar, use o <strong>Anunciar em massa</strong>.
+                    </span>
+                  }
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               {!listingContext && (
                 <div className="flex flex-wrap items-center gap-2">
@@ -3261,9 +3442,37 @@ export function EditProductDialog({
                     </div>
                   )}
 
-                  {/* Categoria ML (movida pra dentro do switch para só aparecer
-                      quando o usuário decide criar anúncio ML — padrão Shopee). */}
+                </>
+              )}
+
+              {/* Categoria ML + ficha técnica.
+                  Já viveram dentro do toggle "Criar anúncio no Mercado Livre" —
+                  eram a ÚNICA UI desses campos no modal inteiro, então some o
+                  toggle, sumiam eles. Aqui a guarda passa a ser o MODO:
+                  no cadastro do produto sempre; no modo anúncio, só quando o
+                  anúncio é do ML. */}
+              {showMlCategoryFields && (
                   <div className="mt-2 space-y-2">
+                    {isMlListingMode ? (
+                      <div
+                        className="space-y-1"
+                        data-testid="ml-listing-category-readonly"
+                      >
+                        <Label>Categoria no Mercado Livre</Label>
+                        <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                          {listingCategory?.label ?? "—"}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {listingCategory
+                            ? `Categoria ${listingFieldOriginLabel(listingCategory.origin)}.`
+                            : "Carregando a categoria deste anúncio…"}{" "}
+                          O Mercado Livre não aceita trocar a categoria de um
+                          anúncio publicado por aqui — para mudar de categoria,
+                          publique um anúncio novo pelo Anunciar em massa.
+                        </p>
+                      </div>
+                    ) : (
+                    <>
                     <div>
                       <Label htmlFor="edit-category">
                         Categoria ML (top-level)
@@ -3452,6 +3661,8 @@ export function EditProductDialog({
                         {mlCategoryWarning}
                       </p>
                     )}
+                    </>
+                    )}
 
                     <Controller
                       name="attributes"
@@ -3462,11 +3673,13 @@ export function EditProductDialog({
                           value={(field.value as any) || {}}
                           onChange={(next) => field.onChange(next as any)}
                           email={session?.user?.email || undefined}
+                          readOnlyAttrIds={
+                            isMlListingMode ? ML_IMMUTABLE_ATTR_IDS : undefined
+                          }
                         />
                       )}
                     />
                   </div>
-                </>
               )}
 
               {/* Configurações do Anúncio ML */}
@@ -3656,7 +3869,6 @@ export function EditProductDialog({
                   </Label>
                 </div>
                 {createShopeeListing && (
-                  <>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {shopeeAccounts.length === 0 ? (
                         <p className="text-xs text-muted-foreground">
@@ -3683,6 +3895,33 @@ export function EditProductDialog({
                         ))
                       )}
                     </div>
+                )}
+              </div>
+            )}
+
+            {/* Categoria Shopee: mesma história da categoria do ML — a única UI
+                do campo vivia sob o toggle de criação. Guarda passa a ser o
+                modo. */}
+            {showShopeeCategoryField && (
+              <div className="space-y-2">
+                {isShopeeListingMode ? (
+                  <div
+                    className="mt-2 space-y-1"
+                    data-testid="shopee-listing-category-readonly"
+                  >
+                    <Label>Categoria no Shopee</Label>
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {listingCategory?.label ?? "—"}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {listingCategory
+                        ? `Categoria ${listingFieldOriginLabel(listingCategory.origin)}.`
+                        : "Carregando a categoria deste anúncio…"}{" "}
+                      A Shopee não aceita trocar a categoria de um anúncio já
+                      publicado por aqui.
+                    </p>
+                  </div>
+                ) : (
                     <div className="mt-2">
                       <Label>Categoria no Shopee</Label>
                       <Controller
@@ -3805,7 +4044,6 @@ export function EditProductDialog({
                         no produto.
                       </p>
                     </div>
-                  </>
                 )}
               </div>
             )}
@@ -4292,12 +4530,22 @@ export function EditProductDialog({
             >
               Cancelar
             </Button>
-            <Button type="submit" disabled={isSubmitting}>
+            <Button
+              type="submit"
+              disabled={isSubmitting || (isListingMode && !listingHydrated)}
+            >
               {isSubmitting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
                   Atualizando...
                 </>
+              ) : isListingMode && !listingHydrated ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Carregando anúncio...
+                </>
+              ) : isListingMode ? (
+                "Atualizar anúncio"
               ) : (
                 "Atualizar Produto"
               )}

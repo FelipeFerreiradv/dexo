@@ -2087,6 +2087,7 @@ export function ProductsList() {
           }}
           onToast={showToast}
           listingContext={editingListingContext}
+          onEditListing={(ctx) => setEditingListingContext(ctx)}
         />
       )}
 
