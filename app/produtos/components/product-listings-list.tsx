@@ -60,8 +60,29 @@ export interface ListingEditContext {
  * early-return quando o `externalListingId` começa com `PENDING_` — oferecer
  * "Editar anúncio" nessas linhas é oferecer um botão que não faz nada.
  */
-function isPending(listing: ApiListing): boolean {
+export function isPending(listing: ApiListing): boolean {
   return !!listing.externalListingId?.startsWith("PENDING_");
+}
+
+/**
+ * Quantos anúncios de um produto já estão NO AR, por canal.
+ *
+ * Mora aqui junto de `isPending` de propósito: a regra do que conta como
+ * publicado é uma só. Ela decide o botão "Editar anúncio" desta lista E a
+ * trava da categoria no cadastro do produto — se as duas divergirem, uma
+ * das telas mente.
+ */
+export function contarPublicadosPorCanal(
+  listings: ApiListing[],
+): Record<string, number> {
+  const contagem: Record<string, number> = {};
+  for (const l of listings) {
+    if (!l.externalListingId || isPending(l)) continue;
+    const canal = typeof l.platform === "string" ? l.platform : null;
+    if (!canal) continue;
+    contagem[canal] = (contagem[canal] ?? 0) + 1;
+  }
+  return contagem;
 }
 
 /**
