@@ -18,6 +18,7 @@ import { MLCatalogSuggestionUseCase } from "../marketplaces/usecases/ml-catalog-
 import { InternalSuggestionUseCase } from "../marketplaces/usecases/internal-suggestion.usecase";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { nextShopeeAccountName } from "../marketplaces/lib/shopee-account-label";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import { OlxOAuthService } from "../marketplaces/services/olx-oauth.service";
@@ -1453,7 +1454,43 @@ small{color:#666}</style></head><body>
               const region = payload?.region || undefined;
               const merchantName =
                 payload?.merchant_name || payload?.merchantName || undefined;
-              return { ...acc, shopName, region, merchantName };
+
+              // AUTO-CURA do rotulo (20/08/2026). A Shopee era a unica
+              // plataforma que gravava um IDENTIFICADOR onde as outras gravam
+              // um NOME: 35 de 35 contas em producao estavam como
+              // "Shopee Shop <id>". Como ~20 telas leem `accountName` — e so
+              // esta aqui enriquece com `shopName` —, o operador via o numero
+              // em todo lugar menos nesta pagina.
+              //
+              // A gravacao pega carona no `get_shop_info` que ja acontecia
+              // aqui: nenhuma requisicao nova. So escreve por cima do rotulo
+              // GENERICO, entao um nome escolhido a mao nunca e sobrescrito, e
+              // e best-effort — falhar em renomear nao pode derrubar a
+              // listagem de contas.
+              const rotulo = nextShopeeAccountName(
+                acc.accountName,
+                shopName,
+                acc.shopId,
+              );
+              let accountName = acc.accountName;
+              if (rotulo) {
+                try {
+                  const mudou =
+                    await MarketplaceRepository.renameShopeeAccountIfUnchanged(
+                      acc.id,
+                      acc.accountName,
+                      rotulo,
+                    );
+                  if (mudou > 0) accountName = rotulo;
+                } catch (err) {
+                  request.log?.warn?.(
+                    { err, accountId: acc.id },
+                    "shopee: falha ao gravar o nome da loja; segue com o rotulo atual",
+                  );
+                }
+              }
+
+              return { ...acc, accountName, shopName, region, merchantName };
             } catch (err) {
               request.log?.warn?.(
                 { err, accountId: acc.id },

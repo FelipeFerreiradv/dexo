@@ -271,6 +271,31 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Renomeia a conta Shopee SOMENTE se o rotulo ainda for o que se leu.
+   *
+   * Compare-and-swap de proposito: a auto-cura roda dentro de um GET que
+   * varios usuarios do mesmo tenant podem disparar ao mesmo tempo, e o
+   * `updateMany` com o valor esperado no WHERE faz a segunda escrita virar
+   * no-op em vez de sobrescrever a primeira. Devolve quantas linhas mudaram
+   * (0 = alguem chegou antes, ou o nome ja nao era o que se esperava).
+   */
+  static async renameShopeeAccountIfUnchanged(
+    id: string,
+    accountNameEsperado: string,
+    accountName: string,
+  ): Promise<number> {
+    const r = await prisma.marketplaceAccount.updateMany({
+      where: {
+        id,
+        platform: Platform.SHOPEE,
+        accountName: accountNameEsperado,
+      },
+      data: { accountName },
+    });
+    return r.count;
+  }
+
+  /**
    * Atualiza apenas o shopId da conta
    */
   static async updateShopId(id: string, shopId: number) {
