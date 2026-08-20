@@ -25,6 +25,7 @@ import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 import { invalidateListingsStatusCache } from "./marketplace-listings-dialog";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import {
+  buildListingOverridesPayload,
   isProductVehicular,
   isCategoryUnderVehicleRoot,
   sanityCheckInitialMlCategory,
@@ -2192,144 +2193,47 @@ export function EditProductDialog({
         // `attributes` etc. para o ML em anúncios que não permitem alterar
         // esses campos via PUT (autopeças/catálogo) — caso clássico de
         // BODY_INVALID_FIELDS.
-        const diffStr = (
-          newVal: string | null | undefined,
-          productVal: string | null | undefined,
-        ): string | null => {
-          const a = newVal == null || newVal === "" ? null : String(newVal);
-          const b =
-            productVal == null || productVal === "" ? null : String(productVal);
-          return a === b ? null : a;
-        };
-        const diffNum = (
-          newVal: number | null | undefined,
-          productVal: number | null | undefined,
-        ): number | null => {
-          const a = newVal == null ? null : Number(newVal);
-          const b = productVal == null ? null : Number(productVal);
-          return a === b ? null : a;
-        };
-        // Preço do anúncio zerado significa "herdar o preço do produto", nunca
-        // "publicar por R$ 0" (o ML rejeita price=0). Um override <= 0 nunca é
-        // persistido: vira null = herda.
-        const diffPrice = (
-          newVal: number | null | undefined,
-          productVal: number | null | undefined,
-        ): number | null => {
-          const diff = diffNum(newVal, productVal);
-          return diff !== null && diff > 0 ? diff : null;
-        };
-        const diffJson = (newVal: unknown, productVal: unknown): unknown => {
-          try {
-            return JSON.stringify(newVal ?? null) ===
-              JSON.stringify(productVal ?? null)
-              ? null
-              : (newVal ?? null);
-          } catch {
-            return newVal ?? null;
-          }
-        };
-
-        const productImages: string[] = Array.isArray(product.imageUrls)
-          ? product.imageUrls
-          : product.imageUrl
-            ? [product.imageUrl]
-            : [];
-        const formImages: string[] = Array.isArray(data.imageUrls)
-          ? data.imageUrls
-          : [];
-
-        const productCompatList = cleanData.compatibilities ?? [];
-
-        // Settings ML: só vão no payload quando o usuário REALMENTE alterou.
-        // Sem isso, o backend recebe shipping/warranty/sale_terms inalterados
-        // e o ML rejeita com `field_not_modifiable` em anúncios com vendas.
-        // Snapshot null no campo = listing não tinha baseline => não envia
-        // (defesa: ML pode rejeitar setting "novo" em anúncio com vendas).
-        const settingsSnap = mlSettingsSnapshotRef.current;
-        const mlSettingsDiff: Record<string, unknown> = {};
-        if (settingsSnap) {
-          if (
-            settingsSnap.listingType !== null &&
-            mlListingType !== settingsSnap.listingType
-          )
-            mlSettingsDiff.listingType = mlListingType;
-          if (
-            settingsSnap.itemCondition !== null &&
-            mlItemCondition !== settingsSnap.itemCondition
-          )
-            mlSettingsDiff.itemCondition = mlItemCondition;
-          if (
-            settingsSnap.hasWarranty !== null &&
-            mlHasWarranty !== settingsSnap.hasWarranty
-          )
-            mlSettingsDiff.hasWarranty = mlHasWarranty;
-          if (
-            settingsSnap.warrantyUnit !== null &&
-            mlWarrantyUnit !== settingsSnap.warrantyUnit
-          )
-            mlSettingsDiff.warrantyUnit = mlWarrantyUnit;
-          if (
-            settingsSnap.warrantyDuration !== null &&
-            mlWarrantyDuration !== settingsSnap.warrantyDuration
-          )
-            mlSettingsDiff.warrantyDuration = mlWarrantyDuration;
-          if (
-            settingsSnap.shippingMode !== null &&
-            mlShippingMode !== settingsSnap.shippingMode
-          )
-            mlSettingsDiff.shippingMode = mlShippingMode;
-          if (
-            settingsSnap.freeShipping !== null &&
-            mlFreeShipping !== settingsSnap.freeShipping
-          )
-            mlSettingsDiff.freeShipping = mlFreeShipping;
-          if (
-            settingsSnap.localPickup !== null &&
-            mlLocalPickup !== settingsSnap.localPickup
-          )
-            mlSettingsDiff.localPickup = mlLocalPickup;
-          if (
-            settingsSnap.manufacturingTime !== null &&
-            mlManufacturingTime !== settingsSnap.manufacturingTime
-          )
-            mlSettingsDiff.manufacturingTime = mlManufacturingTime;
-        }
-
-        const overridesPayload: Record<string, unknown> = {
-          // Campos do produto que viram overrides — apenas quando diferentes
-          titleOverride: diffStr(data.name, product.name),
-          descriptionOverride: diffStr(data.description, product.description),
-          priceOverride: diffPrice(data.price, product.price),
-          brandOverride: diffStr(cleanData.brand, product.brand),
-          modelOverride: diffStr(cleanData.model, product.model),
-          yearOverride: diffStr(cleanData.year, product.year),
-          versionOverride: diffStr(cleanData.version, product.version),
-          categoryOverride: diffStr(cleanData.category, product.category),
-          mlCategoryOverride: diffStr(
-            cleanData.mlCategory,
-            product.mlCategory ?? product.mlCategoryId,
-          ),
-          shopeeCategoryOverride: diffStr(
-            data.shopeeCategory,
-            product.shopeeCategoryId,
-          ),
-          partNumberOverride: diffStr(cleanData.partNumber, product.partNumber),
-          qualityOverride: diffStr(cleanData.quality, product.quality),
-          heightCmOverride: diffNum(data.heightCm, product.heightCm),
-          widthCmOverride: diffNum(data.widthCm, product.widthCm),
-          lengthCmOverride: diffNum(data.lengthCm, product.lengthCm),
-          weightKgOverride: diffNum(data.weightKg, product.weightKg),
-          imageUrlsOverride: diffJson(formImages, productImages),
-          attributesOverride: diffJson(data.attributes, product.attributes),
-          compatibilitiesOverride: productCompatList,
-          sourceVehicleOverride: diffStr(
-            cleanData.sourceVehicle,
-            product.sourceVehicle,
-          ),
-          // Settings ML: apenas os que mudaram desde a abertura do modal.
-          ...mlSettingsDiff,
-        };
+        //
+        // A montagem vive em `edit-product-dialog.helpers` — função pura, para
+        // que o comportamento do save seja testável sem renderizar este
+        // componente de 4.300 linhas.
+        const overridesPayload = buildListingOverridesPayload({
+          form: {
+            name: data.name,
+            description: data.description,
+            price: data.price,
+            brand: cleanData.brand,
+            model: cleanData.model,
+            year: cleanData.year,
+            version: cleanData.version,
+            category: cleanData.category,
+            mlCategory: cleanData.mlCategory,
+            shopeeCategory: data.shopeeCategory,
+            partNumber: cleanData.partNumber,
+            quality: cleanData.quality,
+            heightCm: data.heightCm,
+            widthCm: data.widthCm,
+            lengthCm: data.lengthCm,
+            weightKg: data.weightKg,
+            imageUrls: data.imageUrls,
+            attributes: data.attributes,
+            sourceVehicle: cleanData.sourceVehicle,
+          },
+          product,
+          compatibilities: cleanData.compatibilities ?? [],
+          mlSettings: {
+            listingType: mlListingType,
+            itemCondition: mlItemCondition,
+            hasWarranty: mlHasWarranty,
+            warrantyUnit: mlWarrantyUnit,
+            warrantyDuration: mlWarrantyDuration,
+            shippingMode: mlShippingMode,
+            freeShipping: mlFreeShipping,
+            localPickup: mlLocalPickup,
+            manufacturingTime: mlManufacturingTime,
+          },
+          settingsSnapshot: mlSettingsSnapshotRef.current,
+        });
 
         try {
           const respListing = await fetch(
