@@ -18,6 +18,8 @@ import { MLCatalogSuggestionUseCase } from "../marketplaces/usecases/ml-catalog-
 import { InternalSuggestionUseCase } from "../marketplaces/usecases/internal-suggestion.usecase";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { nextShopeeAccountName } from "../marketplaces/lib/shopee-account-label";
+import { contaMarketplaceVisivel } from "../marketplaces/lib/marketplace-account-public";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import { OlxOAuthService } from "../marketplaces/services/olx-oauth.service";
@@ -982,11 +984,18 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.MERCADO_LIVRE,
-        );
-        return reply.send({ accounts });
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.MERCADO_LIVRE,
+          );
+        // Só id/accountName/status saem: é o que as cinco telas que consultam
+        // esta rota desenham. A linha do banco traz os tokens junto.
+        return reply.send({
+          accounts: accounts.map((a) => contaMarketplaceVisivel(a)),
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas",
@@ -1423,6 +1432,90 @@ small{color:#666}</style></head><body>
     },
   );
 
+  // Cache do get_shop_info por conta.
+  //
+  // MEDIDO em produção (20/08/2026), não estimado: esta rota recebeu 393 GETs
+  // em 24h — ela é consumida por CINCO telas (conexão, anúncios, sincronização,
+  // criação de produto e publicação em massa), e as quatro últimas só desenham
+  // `id` e `accountName`. Com 1,39 conta ativa por tenant (18 tenants, 25
+  // contas), isso dava ~546 chamadas/dia à API da Shopee para preencher
+  // seletores.
+  //
+  // O TTL saiu da distribuição real dos intervalos entre chamadas do mesmo
+  // cliente, não de um número redondo:
+  //
+  //     60s => 21% evitadas | 300s => 64% | 600s => 80% | 900s => 86%
+  //
+  // 600s é onde o retorno começa a cair (900s compra só +6pp em troca de 50%
+  // mais defasagem). Nome de loja muda raramente, e depois da auto-cura abaixo
+  // o nome já vive em `accountName` — o cache atrasa no máximo a REVISÃO dele.
+  //
+  // Só sucesso é cacheado: uma falha (token morto, 403 de IP) volta a tentar na
+  // requisição seguinte, sem ficar presa a um erro por 10 minutos.
+  const shopInfoCache = new Map<string, { payload: any; expiresAt: number }>();
+  const SHOP_INFO_TTL_MS = 600_000;
+
+  /**
+   * O que esta rota DEVOLVE. Lista explicita — nunca `...acc`.
+   *
+   * A linha de `MarketplaceAccount` carrega `accessToken`, `refreshToken` e
+   * `appClientSecret`. Espalhar a linha inteira mandava as CREDENCIAIS da loja
+   * para o navegador a cada abertura desta rota — que cinco telas consultam —,
+   * e nenhuma delas usa esses campos. Credencial em resposta de API fica em
+   * cache de navegador, DevTools e extensao; nao ha uso legitimo que justifique.
+   *
+   * Tambem alinha a rota a regra 1 de egress do projeto: nada de entregar campo
+   * que a tela nao desenha, em caminho recorrente.
+   *
+   * LISTA DE PERMISSAO, e nao de proibicao — ver
+   * `marketplace-account-public.ts`, que as CINCO rotas de contas usam desde a
+   * auditoria de 20/08/2026.
+   *
+   * Os campos abaixo sao a UNIAO do que os cinco consumidores leem:
+   *   id, accountName            todas as telas
+   *   status                     conexao, criacao de produto, publicacao em massa
+   *   shopId                     conexao, criacao de produto, anuncios
+   *   externalUserId             conexao (linha @merchant)
+   *   shopName/region/merchantName   conexao
+   *
+   * `extras` ausente = o caminho em que nao se consultou a Shopee (conta sem
+   * token, ou falha no `get_shop_info`). Os tres campos saem `undefined` e o
+   * JSON simplesmente nao os traz — exatamente como o `return acc` fazia antes.
+   */
+  type ContaShopeeLinha = {
+    id: string;
+    accountName: string;
+    status: string;
+    shopId: number | null;
+    externalUserId: string | null;
+  };
+  function contaShopeeVisivel(
+    acc: ContaShopeeLinha,
+    extras?: {
+      accountName?: string;
+      shopName?: string;
+      region?: string;
+      merchantName?: string;
+    },
+  ) {
+    return contaMarketplaceVisivel(
+      {
+        id: acc.id,
+        // O rotulo recem-descoberto tem precedencia sobre o do banco: quando a
+        // auto-cura acabou de gravar, a linha em memoria ainda tem o antigo.
+        accountName: extras?.accountName ?? acc.accountName,
+        status: acc.status,
+      },
+      {
+        shopId: acc.shopId,
+        externalUserId: acc.externalUserId,
+        shopName: extras?.shopName,
+        region: extras?.region,
+        merchantName: extras?.merchantName,
+      },
+    );
+  }
+
   /**
    * POST /marketplace/shopee/import
    * Importa todos os itens do Shopee e tenta vincular por SKU
@@ -1441,25 +1534,80 @@ small{color:#666}</style></head><body>
 
         const enriched = await Promise.all(
           accounts.map(async (acc) => {
-            if (!acc.shopId || !acc.accessToken) return acc;
+            // Sem token nao ha o que perguntar a Shopee — mas a conta ainda
+            // aparece na lista, so que sem os campos que dependem dela.
+            if (!acc.shopId || !acc.accessToken) {
+              return contaShopeeVisivel(acc);
+            }
             try {
-              const info: any = await ShopeeApiService.getShopInfo(
-                acc.accessToken,
-                acc.shopId,
-              );
-              const payload = info?.response ?? info;
+              const emCache = shopInfoCache.get(acc.id);
+              let payload: any;
+              if (emCache && emCache.expiresAt > Date.now()) {
+                payload = emCache.payload;
+              } else {
+                const info: any = await ShopeeApiService.getShopInfo(
+                  acc.accessToken,
+                  acc.shopId,
+                );
+                payload = info?.response ?? info;
+                shopInfoCache.set(acc.id, {
+                  payload,
+                  expiresAt: Date.now() + SHOP_INFO_TTL_MS,
+                });
+              }
               const shopName =
                 payload?.shop_name || payload?.shopName || undefined;
               const region = payload?.region || undefined;
               const merchantName =
                 payload?.merchant_name || payload?.merchantName || undefined;
-              return { ...acc, shopName, region, merchantName };
+
+              // AUTO-CURA do rotulo (20/08/2026). A Shopee era a unica
+              // plataforma que gravava um IDENTIFICADOR onde as outras gravam
+              // um NOME: 35 de 35 contas em producao estavam como
+              // "Shopee Shop <id>". Como ~20 telas leem `accountName` — e so
+              // esta aqui enriquece com `shopName` —, o operador via o numero
+              // em todo lugar menos nesta pagina.
+              //
+              // A gravacao pega carona no `get_shop_info` que ja acontecia
+              // aqui: nenhuma requisicao nova. So escreve por cima do rotulo
+              // GENERICO, entao um nome escolhido a mao nunca e sobrescrito, e
+              // e best-effort — falhar em renomear nao pode derrubar a
+              // listagem de contas.
+              const rotulo = nextShopeeAccountName(
+                acc.accountName,
+                shopName,
+                acc.shopId,
+              );
+              let accountName = acc.accountName;
+              if (rotulo) {
+                try {
+                  const mudou =
+                    await MarketplaceRepository.renameShopeeAccountIfUnchanged(
+                      acc.id,
+                      acc.accountName,
+                      rotulo,
+                    );
+                  if (mudou > 0) accountName = rotulo;
+                } catch (err) {
+                  request.log?.warn?.(
+                    { err, accountId: acc.id },
+                    "shopee: falha ao gravar o nome da loja; segue com o rotulo atual",
+                  );
+                }
+              }
+
+              return contaShopeeVisivel(acc, {
+                accountName,
+                shopName,
+                region,
+                merchantName,
+              });
             } catch (err) {
               request.log?.warn?.(
                 { err, accountId: acc.id },
                 "shopee get_shop_info falhou, usando fallback",
               );
-              return acc;
+              return contaShopeeVisivel(acc);
             }
           }),
         );
@@ -2753,11 +2901,17 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.MAGALU,
-        );
-        return reply.send({ accounts });
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.MAGALU,
+          );
+        // Mesma regra do ML: as telas desenham id, nome e status.
+        return reply.send({
+          accounts: accounts.map((a) => contaMarketplaceVisivel(a)),
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas",
@@ -3254,14 +3408,23 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.OLX,
-        );
-        // Não devolve accessToken/refreshToken crus ao browser (na OLX o token
-        // não expira → vazamento é permanente). A UI só precisa dos metadados.
-        const safe = accounts.map(
-          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.OLX,
+          );
+        // Não devolve credenciais ao browser (na OLX o token não expira → o
+        // vazamento seria permanente). Era uma lista de PROIBIÇÃO, que tirava
+        // accessToken/refreshToken e deixava passar `appClientSecret`; agora é
+        // lista de PERMISSÃO. Os dois campos de vendedor ficam porque a tela de
+        // conexão os edita.
+        const safe = accounts.map((a) =>
+          contaMarketplaceVisivel(a, {
+            olxSellerPhone: a.olxSellerPhone,
+            olxSellerZipcode: a.olxSellerZipcode,
+          }),
         );
         return reply.send({ accounts: safe });
       } catch (error) {
@@ -3737,13 +3900,21 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.FACEBOOK,
-        );
-        // Não devolve accessToken/refreshToken crus ao browser.
-        const safe = accounts.map(
-          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.FACEBOOK,
+          );
+        // Não devolve credenciais ao browser. Era lista de PROIBIÇÃO (deixava
+        // passar `appClientSecret`); agora é de PERMISSÃO. As configs de
+        // catálogo ficam porque a tela de conexão as edita.
+        const safe = accounts.map((a) =>
+          contaMarketplaceVisivel(a, {
+            fbCatalogId: a.fbCatalogId,
+            fbProductUrlBase: a.fbProductUrlBase,
+          }),
         );
         return reply.send({ accounts: safe });
       } catch (error) {

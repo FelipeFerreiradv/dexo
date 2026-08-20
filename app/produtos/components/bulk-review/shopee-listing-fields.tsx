@@ -115,11 +115,6 @@ export function ShopeeListingFields({
                   <span className="font-medium">
                     {acc.accountName || "Conta Shopee"}
                   </span>
-                  {acc.shopId && (
-                    <span className="text-xs text-muted-foreground">
-                      (Shop {acc.shopId})
-                    </span>
-                  )}
                 </label>
               ))}
             </div>

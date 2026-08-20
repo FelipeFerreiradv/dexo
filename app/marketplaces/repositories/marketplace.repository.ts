@@ -271,6 +271,71 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Contas ativas do tenant SEM as credenciais.
+   *
+   * Irmao ADITIVO de `findAllByUserIdAndPlatform`, que segue intocado porque
+   * nove arquivos dependem dele para obter o token (listing, sync, order,
+   * messages, reparo de posse).
+   *
+   * Existe porque as rotas `GET /marketplace/<plataforma>/accounts` nao usam o
+   * token: elas so desenham a lista. Sem `select`, o Postgres devolvia
+   * `accessToken`, `refreshToken` e `appClientSecret` de cada conta para serem
+   * descartados logo em seguida — no Magalu isso da 1,7 KB por conta, por
+   * requisicao. Medido em 20/08/2026: 2.166 leituras dessas rotas em 24h.
+   *
+   * Espelha a regra 1 de egress do projeto: em caminho recorrente, ler so o
+   * que se vai usar.
+   */
+  static async findAllPublicByUserIdAndPlatform(
+    userId: string,
+    platform: Platform,
+  ) {
+    try {
+      return await prisma.marketplaceAccount.findMany({
+        where: { userId, platform, status: AccountStatus.ACTIVE },
+        select: {
+          id: true,
+          accountName: true,
+          status: true,
+          // Campos que as telas de conexao da OLX e do Facebook EDITAM. Custam
+          // NULL nas outras plataformas, o que e mais barato que dois metodos.
+          olxSellerPhone: true,
+          olxSellerZipcode: true,
+          fbCatalogId: true,
+          fbProductUrlBase: true,
+        },
+        orderBy: { createdAt: "asc" },
+      });
+    } catch (error) {
+      throw new Error(`Erro ao listar contas de ${platform}: ${error}`);
+    }
+  }
+  /**
+   * Renomeia a conta Shopee SOMENTE se o rotulo ainda for o que se leu.
+   *
+   * Compare-and-swap de proposito: a auto-cura roda dentro de um GET que
+   * varios usuarios do mesmo tenant podem disparar ao mesmo tempo, e o
+   * `updateMany` com o valor esperado no WHERE faz a segunda escrita virar
+   * no-op em vez de sobrescrever a primeira. Devolve quantas linhas mudaram
+   * (0 = alguem chegou antes, ou o nome ja nao era o que se esperava).
+   */
+  static async renameShopeeAccountIfUnchanged(
+    id: string,
+    accountNameEsperado: string,
+    accountName: string,
+  ): Promise<number> {
+    const r = await prisma.marketplaceAccount.updateMany({
+      where: {
+        id,
+        platform: Platform.SHOPEE,
+        accountName: accountNameEsperado,
+      },
+      data: { accountName },
+    });
+    return r.count;
+  }
+
+  /**
    * Atualiza apenas o shopId da conta
    */
   static async updateShopId(id: string, shopId: number) {
