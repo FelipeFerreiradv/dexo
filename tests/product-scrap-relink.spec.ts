@@ -17,8 +17,12 @@ import { describe, it, expect } from "vitest";
 import {
   NO_SCRAP,
   describeRelinkImpact,
+  describeScrapLinkView,
+  isAbortError,
   isScrapRelinkEnabled,
+  scrapLinkErrorMessage,
   scrapSelectValueToId,
+  type ScrapLinkStatus,
 } from "../app/produtos/lib/scrap-relink";
 
 describe("Flag de backend — kill-switch da troca", () => {
@@ -120,5 +124,101 @@ describe("describeRelinkImpact — o aviso tem de bater com o que acontece", () 
         pinnedCounterSales: -1,
       }),
     ).toEqual([]);
+  });
+});
+
+// ── O bug de 20/08/2026: a seção AFIRMAVA "Sem sucata" sobre uma peça que
+// estava vinculada. Provado em três camadas: `Product.scrapId` gravado, quatro
+// `GET /scrap-link → 200` no log de produção, e o corpo
+// `{"scrapId":"cmrpmx…","scrapLabel":"FORD FUSION 2009"}` no DevTools ao lado
+// da tela dizendo o contrário.
+//
+// A causa não foi a rede: era não existir estado para "ainda não sei". Estes
+// casos travam a regra que faltava.
+describe("describeScrapLinkView — a tela só afirma o que o backend disse", () => {
+  const VINCULADA = "cmrpmx6f0039y18i6s5c9f6gy"; // a FORD FUSION do caso real
+
+  it("REGRESSÃO: vínculo lido ⇒ o seletor aponta a sucata, não 'Sem sucata'", () => {
+    const v = describeScrapLinkView("pronto", VINCULADA);
+    expect(v.value).toBe(VINCULADA);
+    expect(v.value).not.toBe(NO_SCRAP);
+    expect(v.disabled).toBe(false);
+  });
+
+  it("backend AFIRMOU que não há vínculo ⇒ aí sim 'Sem sucata'", () => {
+    const v = describeScrapLinkView("pronto", null);
+    expect(v.value).toBe(NO_SCRAP);
+    expect(v.disabled).toBe(false);
+  });
+
+  it("carregando ⇒ não afirma nada e não deixa alterar", () => {
+    const v = describeScrapLinkView("carregando", null);
+    expect(v.value).toBe("");
+    expect(v.placeholder).toContain("Carregando");
+    expect(v.disabled).toBe(true);
+  });
+
+  it("erro ⇒ admite que não sabe; NUNCA vira 'Sem sucata'", () => {
+    const v = describeScrapLinkView("erro", null);
+    expect(v.value).toBe("");
+    expect(v.placeholder).not.toBe("Sem sucata");
+    expect(v.disabled).toBe(true);
+  });
+
+  // O invariante do bug, varrido em vez de exemplificado: se a leitura não
+  // terminou, "Sem sucata" não pode sair — nem com vínculo, nem sem.
+  it("INVARIANTE: só o estado 'pronto' pode produzir NO_SCRAP", () => {
+    const estados: ScrapLinkStatus[] = ["carregando", "pronto", "erro"];
+    const vinculos = [null, undefined, "", VINCULADA];
+    for (const estado of estados) {
+      for (const vinculo of vinculos) {
+        const v = describeScrapLinkView(estado, vinculo);
+        if (v.value === NO_SCRAP) expect(estado).toBe("pronto");
+        // Enquanto não se sabe, alterar tem de estar travado — senão o
+        // primeiro clique apagaria por omissão um vínculo não lido.
+        if (estado !== "pronto") {
+          expect(v.value).toBe("");
+          expect(v.disabled).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("valor do seletor volta a virar id/null pelo mesmo conversor do PATCH", () => {
+    const comVinculo = describeScrapLinkView("pronto", VINCULADA);
+    const semVinculo = describeScrapLinkView("pronto", null);
+    expect(scrapSelectValueToId(comVinculo.value)).toBe(VINCULADA);
+    expect(scrapSelectValueToId(semVinculo.value)).toBeNull();
+  });
+});
+
+describe("isAbortError — abort não é falha, mas o resto é", () => {
+  it("reconhece o AbortError que o AbortController produz", () => {
+    const e = Object.assign(new Error("aborted"), { name: "AbortError" });
+    expect(isAbortError(e)).toBe(true);
+  });
+
+  it("erro de rede NÃO é abort — tem de virar estado de erro visível", () => {
+    expect(isAbortError(new TypeError("Failed to fetch"))).toBe(false);
+    expect(isAbortError(new Error("boom"))).toBe(false);
+    expect(isAbortError(null)).toBe(false);
+    expect(isAbortError(undefined)).toBe(false);
+    expect(isAbortError("AbortError")).toBe(false);
+  });
+});
+
+describe("scrapLinkErrorMessage — diz de quem é o problema", () => {
+  it("401/403 apontam a sessão; 404 aponta a peça; 5xx aponta o servidor", () => {
+    expect(scrapLinkErrorMessage(401)).toMatch(/sess/i);
+    expect(scrapLinkErrorMessage(403)).toMatch(/sess/i);
+    expect(scrapLinkErrorMessage(404)).toMatch(/não encontrada/i);
+    expect(scrapLinkErrorMessage(500)).toMatch(/servidor/i);
+    expect(scrapLinkErrorMessage(503)).toMatch(/servidor/i);
+  });
+
+  it("nenhuma mensagem de erro pode dizer que a peça está sem sucata", () => {
+    for (const s of [400, 401, 403, 404, 418, 500, 502, 503]) {
+      expect(scrapLinkErrorMessage(s)).not.toMatch(/sem sucata/i);
+    }
   });
 });

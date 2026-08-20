@@ -101,3 +101,107 @@ export const NO_SCRAP = "__none__";
 export function scrapSelectValueToId(value: string): string | null {
   return value === NO_SCRAP || !value ? null : value;
 }
+
+// ── Leitura do vínculo: o que a tela pode AFIRMAR ────────────────────────────
+//
+// O bug de 20/08/2026: o backend respondia 200 com o vínculo certo, a resposta
+// chegava ao navegador, e a seção mostrava "Sem sucata". Provado em três
+// camadas — `Product.scrapId` gravado, quatro `GET /scrap-link → 200` no log de
+// produção, e o corpo `{"scrapId":"cmrpmx…","scrapLabel":"FORD FUSION 2009"}`
+// no DevTools ao lado da tela dizendo o contrário.
+//
+// A causa não foi a rede: foi a seção NÃO TER um estado para "ainda não sei".
+// `valor` nascia em `NO_SCRAP`, e `NO_SCRAP` é desenhado como "Sem sucata" —
+// então qualquer resposta perdida (abort tardio, `setState` em instância morta)
+// deixava na tela uma AFIRMAÇÃO sobre um lote que ninguém tinha consultado.
+//
+// Daí a regra que este módulo existe para travar:
+//
+//   "Sem sucata" só pode aparecer quando o backend AFIRMOU `scrapId: null`.
+//
+// Enquanto se carrega, ou quando a leitura falhou, o seletor não afirma nada e
+// não deixa alterar — desabilitar é o que impede o pior desfecho: trocar às
+// cegas um vínculo que não se sabe qual é, apagando-o por omissão.
+
+/** Em que pé está a leitura de `GET /products/:id/scrap-link`. */
+export type ScrapLinkStatus = "carregando" | "pronto" | "erro";
+
+export interface ScrapLinkView {
+  /**
+   * Valor do `<Select>`. String VAZIA = "não sei" — o Radix então mostra o
+   * `placeholder`, em vez de destacar um item que seria lido como resposta.
+   */
+  value: string;
+  /** Texto do `SelectValue` quando `value` é vazio. */
+  placeholder: string;
+  /** Seletor e botão "Alterar" travados? (carregando ou erro) */
+  disabled: boolean;
+}
+
+/**
+ * Traduz (status da leitura + vínculo lido) no que o seletor pode mostrar.
+ *
+ * PURA de propósito: é o invariante do bug, e um invariante que só existe
+ * dentro de um componente com `fetch` e `useEffect` não dá para provar sem
+ * simular o mundo inteiro. Aqui ele é uma tabela verdade.
+ */
+export function describeScrapLinkView(
+  status: ScrapLinkStatus,
+  scrapId: string | null | undefined,
+): ScrapLinkView {
+  if (status === "carregando") {
+    return {
+      value: "",
+      placeholder: "Carregando vínculo...",
+      disabled: true,
+    };
+  }
+  if (status === "erro") {
+    return {
+      value: "",
+      placeholder: "Vínculo não carregado",
+      disabled: true,
+    };
+  }
+  // "pronto": e SÓ aqui a tela tem o direito de dizer "Sem sucata".
+  return {
+    value: scrapId || NO_SCRAP,
+    placeholder: "Sem sucata",
+    disabled: false,
+  };
+}
+
+/**
+ * `AbortError` não é falha: é a requisição anterior sendo substituída, ou o
+ * modal fechando. Marcá-la como erro encheria a tela de alarme falso a cada
+ * troca de produto — mas ENGOLI-LA junto com os erros de verdade foi metade
+ * deste bug. Por isso ela é reconhecida, e não simplesmente ignorada.
+ */
+export function isAbortError(erro: unknown): boolean {
+  if (typeof DOMException !== "undefined" && erro instanceof DOMException) {
+    return erro.name === "AbortError";
+  }
+  return (
+    typeof erro === "object" &&
+    erro !== null &&
+    (erro as { name?: unknown }).name === "AbortError"
+  );
+}
+
+/**
+ * Mensagem por status HTTP. O operador não precisa do número, precisa saber se
+ * o problema é dele (sessão caiu) ou nosso (servidor) — e se adianta tentar de
+ * novo.
+ */
+export function scrapLinkErrorMessage(status: number): string {
+  if (status === 401 || status === 403) {
+    return "Sua sessão expirou. Recarregue a página para ver o lote.";
+  }
+  if (status === 404) {
+    return "Peça não encontrada. Feche e abra o cadastro de novo.";
+  }
+  if (status >= 500) {
+    return "O servidor não respondeu. Tente de novo em instantes.";
+  }
+  return "Não foi possível carregar o lote desta peça.";
+}

@@ -1,8 +1,13 @@
 "use client";
 
+// `import * as React` porque a suíte compila JSX no transform CLÁSSICO
+// (`React.createElement`), e sem isto o componente não pode ser MONTADO num
+// teste — só lido. Mesmo padrão de `components/ui/*`. Em produção o Next usa o
+// transform automático e este import é inerte.
+import * as React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import { Loader2, Recycle } from "lucide-react";
+import { AlertTriangle, Loader2, Recycle, RotateCw } from "lucide-react";
 
 import {
   AlertDialog,
@@ -27,8 +32,12 @@ import { getApiBaseUrl } from "@/lib/api";
 import {
   NO_SCRAP,
   describeRelinkImpact,
+  describeScrapLinkView,
+  isAbortError,
+  scrapLinkErrorMessage,
   scrapSelectValueToId,
   type ScrapLinkImpact,
+  type ScrapLinkStatus,
 } from "../lib/scrap-relink";
 
 // BLOCO J — trocar (ou remover) a sucata de uma peça já cadastrada.
@@ -44,6 +53,16 @@ import {
 // cadastro em branco. Aqui seria sobrescrever campos que alguém já revisou e
 // salvou, por causa de um clique num seletor de vínculo. Trocar o lote troca o
 // LOTE, e nada mais.
+//
+// ⚠️ A SEÇÃO NÃO PODE AFIRMAR O QUE NÃO SABE (bug de 20/08/2026). Ela mostrava
+// "Sem sucata" para uma peça VINCULADA — provado em três camadas: `scrapId`
+// gravado no banco, quatro `GET /scrap-link → 200` no log de produção, e o
+// corpo `{"scrapId":"cmrpmx…","scrapLabel":"FORD FUSION 2009"}` no DevTools ao
+// lado da tela dizendo o contrário. A causa não foi a rede: era não existir um
+// estado para "ainda não sei". `valor` nascia em `NO_SCRAP`, e `NO_SCRAP` é
+// desenhado como "Sem sucata" — então uma resposta perdida virava uma
+// AFIRMAÇÃO sobre o lote. A regra agora mora em `describeScrapLinkView`, e é
+// testada lá: "Sem sucata" só quando o backend AFIRMOU `scrapId: null`.
 
 interface ScrapOption {
   id: string;
@@ -76,37 +95,72 @@ function scrapLabel(s: ScrapOption): string {
 export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
   const { data: session } = useSession();
   const [info, setInfo] = useState<LinkInfo | null>(null);
+  const [status, setStatus] = useState<ScrapLinkStatus>("carregando");
+  const [erroMsg, setErroMsg] = useState<string | null>(null);
   const [scraps, setScraps] = useState<ScrapOption[]>([]);
   const [scrapsLoaded, setScrapsLoaded] = useState(false);
-  const [valor, setValor] = useState<string>(NO_SCRAP);
+  // Nasce VAZIO, não em `NO_SCRAP`: string vazia é "não sei", e o seletor
+  // mostra o placeholder em vez de destacar um item que seria lido como
+  // resposta. Era exatamente aqui que a tela começava a mentir.
+  const [valor, setValor] = useState<string>("");
   const [confirmando, setConfirmando] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // "A última busca vence". Antes o desempate era só o `abort`, e um abort que
+  // chegava DEPOIS da resposta caía num `catch {}` mudo: o vínculo tinha sido
+  // lido e era jogado fora, sem estado de erro e sem ninguém para tentar de
+  // novo. Foi essa a causa do bug.
+  const seqRef = useRef(0);
 
   // Vínculo atual + números do impacto: 1 GET, ao abrir. É o que permite o
   // seletor já mostrar a sucata certa em vez de "sem sucata" por omissão.
-  useEffect(() => {
+  const carregarVinculo = useCallback(async () => {
     const email = session?.user?.email;
+    // Sessão ainda não hidratada: NÃO mexe no que já foi lido e NÃO marca erro.
+    // Quando o e-mail chegar, esta função muda de identidade e o efeito abaixo
+    // roda de novo — é o que torna a leitura auto-recuperável. Antes, um ciclo
+    // que caísse aqui deixava `info` em `null` PARA SEMPRE.
     if (!email || !productId) return;
+    const seq = ++seqRef.current;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    void (async () => {
-      try {
-        const res = await fetch(
-          `${getApiBaseUrl()}/products/${productId}/scrap-link`,
-          { headers: { email }, signal: ctrl.signal },
-        );
-        if (!res.ok) return;
-        const data = (await res.json()) as LinkInfo;
-        setInfo(data);
-        setValor(data.scrapId ?? NO_SCRAP);
-      } catch {
-        // Silencioso: a seção é acessória e não pode derrubar a edição.
+    setStatus("carregando");
+    setErroMsg(null);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/products/${productId}/scrap-link`,
+        { headers: { email }, signal: ctrl.signal },
+      );
+      if (seq !== seqRef.current) return;
+      if (!res.ok) {
+        setStatus("erro");
+        setErroMsg(scrapLinkErrorMessage(res.status));
+        return;
       }
-    })();
-    return () => ctrl.abort();
+      const data = (await res.json()) as LinkInfo;
+      if (seq !== seqRef.current) return;
+      setInfo(data);
+      setValor(data.scrapId ?? NO_SCRAP);
+      setStatus("pronto");
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      // Abort é substituição/desmontagem, não falha. Mas os OUTROS erros
+      // precisam aparecer — e era isso que o `catch {}` antigo comia junto.
+      if (isAbortError(e)) return;
+      setStatus("erro");
+      setErroMsg("Não foi possível falar com o servidor.");
+    }
   }, [productId, session?.user?.email]);
+
+  useEffect(() => {
+    void carregarVinculo();
+  }, [carregarVinculo]);
+
+  // O abort acontece só quando a seção SAI DE CENA. Abortar no cleanup de todo
+  // reexecutar do efeito era o que matava a resposta boa — e, sem retry, nada
+  // refazia a busca depois.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // Lista de sucatas SOB DEMANDA — só quando o operador abre o seletor. Abrir
   // o modal de edição não pode custar uma listagem de 100 lotes que quase
@@ -130,7 +184,11 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
   }, [session?.user?.email, scrapsLoaded, onToast]);
 
   const alvo = scrapSelectValueToId(valor);
-  const mudou = alvo !== (info?.scrapId ?? null);
+  const vista = describeScrapLinkView(status, alvo);
+  // Só há "mudança a salvar" depois de saber qual era o vínculo. Em carregando
+  // ou erro o seletor já está travado por `vista.disabled`; este é o segundo
+  // cadeado, para o botão nunca oferecer uma troca às cegas.
+  const mudou = status === "pronto" && alvo !== (info?.scrapId ?? null);
 
   const trocar = useCallback(async () => {
     const email = session?.user?.email;
@@ -193,13 +251,13 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
       </Label>
       <div className="flex gap-2">
         <Select
-          value={valor}
+          value={vista.value}
           onValueChange={setValor}
           onOpenChange={(aberto) => aberto && void carregarScraps()}
-          disabled={salvando}
+          disabled={salvando || vista.disabled}
         >
           <SelectTrigger id="edit-scrap-link" className="flex-1">
-            <SelectValue placeholder="Sem sucata" />
+            <SelectValue placeholder={vista.placeholder} />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={NO_SCRAP}>Sem sucata</SelectItem>
@@ -220,10 +278,32 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
           Alterar
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">
-        Muda apenas o lote a que esta peça pertence — nenhum outro campo do
-        cadastro é alterado. A troca é aplicada na hora, fora do “Salvar”.
-      </p>
+      {status === "erro" ? (
+        // A tela ADMITE que não sabe, em vez de dizer "Sem sucata" — e oferece
+        // o caminho de volta. O seletor fica travado de propósito: alterar às
+        // cegas apagaria por omissão um vínculo que ninguém conseguiu ler.
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span className="flex-1">
+            {erroMsg ?? "Não foi possível carregar o lote desta peça."}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7"
+            onClick={() => void carregarVinculo()}
+          >
+            <RotateCw className="size-3.5" />
+            Tentar de novo
+          </Button>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Muda apenas o lote a que esta peça pertence — nenhum outro campo do
+          cadastro é alterado. A troca é aplicada na hora, fora do “Salvar”.
+        </p>
+      )}
 
       <AlertDialog open={confirmando} onOpenChange={setConfirmando}>
         <AlertDialogContent>
