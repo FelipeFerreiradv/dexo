@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 import { invalidateListingsStatusCache } from "../lib/listings-status-cache";
 import {
+  contarPublicadosPorCanal,
   ProductListingsList,
   useProductListings,
   type ListingEditContext,
@@ -40,6 +41,7 @@ import {
   type ListingFieldOrigin,
 } from "../lib/listing-field-origin";
 import { ChannelCategoryPicker } from "./channel-category-picker";
+import { LockedCategoryField } from "./locked-category-field";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
@@ -455,6 +457,17 @@ export function EditProductDialog({
     platform: null,
     live: false,
   });
+
+  // Quantos anúncios DESTE produto já estão no ar, por canal. É o que decide
+  // se a categoria do produto entra travada: num produto ainda não anunciado
+  // não há o que confundir, e o campo segue livre. A regra do que conta como
+  // publicado mora em `product-listings-list`, junto da que desabilita o
+  // botão "Editar anúncio" — uma só, para as duas telas não divergirem.
+  const publicadosPorCanal = useMemo(
+    () => contarPublicadosPorCanal(produtoListings),
+    [produtoListings],
+  );
+
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [defaultDescription, setDefaultDescription] = useState("");
@@ -622,6 +635,32 @@ export function EditProductDialog({
     () => new Map(mlOptions.map((c) => [c.id, c])),
     [mlOptions],
   );
+
+  // Rótulo legível da categoria atual, para a tela mostrar algo enquanto o
+  // campo está travado.
+  const rotuloCategoriaMl = useMemo(() => {
+    const id = watchMlCategory || "";
+    if (!id) return null;
+    return (
+      mlOptionsById.get(id)?.value ??
+      mlSuggestedOptions.find((o) => o.id === id)?.value ??
+      id
+    );
+  }, [watchMlCategory, mlOptionsById, mlSuggestedOptions]);
+
+  const watchShopeeCategory = watch("shopeeCategory");
+  const rotuloCategoriaShopee = useMemo(() => {
+    const id = watchShopeeCategory || "";
+    if (!id) return null;
+    const nome = [...shopeeSuggestedOptions, ...shopeeOptions].find(
+      (o) => o.id === id,
+    )?.value;
+    // As categorias da Shopee só são buscadas quando o operador abre o
+    // seletor — de propósito, para não custar 2 requisições em toda abertura
+    // do modal. Enquanto isso o campo travado teria só o número cru, que
+    // parece defeito. Rotular resolve sem gastar rede.
+    return nome ?? `Categoria nº ${id}`;
+  }, [watchShopeeCategory, shopeeSuggestedOptions, shopeeOptions]);
 
   // Lazy-load ML categories: chamado apenas quando o usuário abre o seletor ou
   // ativa publicação ML. Mesmo padrão do `fetchShopeeCategories`: busca em
@@ -2849,6 +2888,17 @@ export function EditProductDialog({
                       </div>
                     ) : (
                     <>
+                    <LockedCategoryField
+                      // Remonta ao trocar de produto: a liberação vale para
+                      // o produto que o operador confirmou, não para o
+                      // próximo que ele abrir.
+                      key={`ml-${product.id}`}
+                      canal="Mercado Livre"
+                      rotulo="Categoria no Mercado Livre"
+                      anunciosPublicados={publicadosPorCanal.MERCADO_LIVRE ?? 0}
+                      carregando={produtoListingsLoading}
+                      valorAtual={rotuloCategoriaMl}
+                    >
                     <div>
                       <Label>Categoria no Mercado Livre</Label>
                       <Controller
@@ -2998,6 +3048,7 @@ export function EditProductDialog({
                         o Mercado Livre não aceita a troca depois de publicado.
                       </p>
                     </div>
+                    </LockedCategoryField>
 
                     {mlCategoryWarning && (
                       <p
@@ -3241,6 +3292,14 @@ export function EditProductDialog({
                     </p>
                   </div>
                 ) : (
+                    <LockedCategoryField
+                      key={`shopee-${product.id}`}
+                      canal="Shopee"
+                      rotulo="Categoria no Shopee"
+                      anunciosPublicados={publicadosPorCanal.SHOPEE ?? 0}
+                      carregando={produtoListingsLoading}
+                      valorAtual={rotuloCategoriaShopee}
+                    >
                     <div className="mt-2">
                       <Label>Categoria no Shopee</Label>
                       <Controller
@@ -3363,6 +3422,7 @@ export function EditProductDialog({
                         no produto.
                       </p>
                     </div>
+                    </LockedCategoryField>
                 )}
               </div>
             )}
