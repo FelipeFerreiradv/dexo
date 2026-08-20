@@ -404,7 +404,40 @@ export async function listingRoutes(app: FastifyInstance) {
           prisma.productListing.findUnique({
             where: { id },
             include: {
-              product: true,
+              // EGRESS: projeção explícita. `product: true` trazia as ~68
+              // colunas da linha para emitir 22 — inclusive as que este
+              // endpoint nunca devolve (custo/markup/estoque, normalizações
+              // de busca, carimbos de origem de categoria, posições de
+              // compatibilidade). A resposta abaixo é idêntica; só o que
+              // trafega do banco mudou.
+              product: {
+                select: {
+                  // ownership (não vai na resposta, decide o 403)
+                  userId: true,
+                  id: true,
+                  name: true,
+                  sku: true,
+                  description: true,
+                  price: true,
+                  brand: true,
+                  model: true,
+                  year: true,
+                  version: true,
+                  category: true,
+                  mlCategoryId: true,
+                  shopeeCategoryId: true,
+                  partNumber: true,
+                  quality: true,
+                  heightCm: true,
+                  widthCm: true,
+                  lengthCm: true,
+                  weightKg: true,
+                  imageUrl: true,
+                  imageUrls: true,
+                  attributes: true,
+                  sourceVehicle: true,
+                },
+              },
               marketplaceAccount: {
                 select: { id: true, accountName: true, platform: true },
               },
@@ -429,6 +462,35 @@ export async function listingRoutes(app: FastifyInstance) {
 
         const productCompatibilities = productCompatibilitiesPreload;
 
+        // Categoria REAL com que o anúncio foi criado. `requestedCategoryId` já
+        // existia na tabela (gravado no create a partir de `payload.category_id`)
+        // mas nunca era devolvido por endpoint algum — sem ele o modal exibia a
+        // categoria do PRODUTO ao editar um anúncio publicado em outra, e o
+        // operador editava achando que estava vendo o anúncio.
+        //
+        // O nome sai da tabela local `MarketplaceCategory` (mesmo caminho de
+        // `ProductRepository.findPublishedCategories`): zero chamada externa,
+        // zero token de marketplace. Essa tabela é o catálogo do ML, então para
+        // os outros canais devolvemos o id sem rótulo (`null`).
+        const requestedCategoryId = listing.requestedCategoryId ?? null;
+        let requestedCategoryPath: string | null = null;
+        if (
+          requestedCategoryId &&
+          listing.marketplaceAccount?.platform === "MERCADO_LIVRE"
+        ) {
+          try {
+            const cat = await prisma.marketplaceCategory.findUnique({
+              where: { externalId: requestedCategoryId },
+              select: { fullPath: true, name: true },
+            });
+            requestedCategoryPath = cat?.fullPath || cat?.name || null;
+          } catch {
+            // Categoria ausente do catálogo local não é erro: o anúncio continua
+            // editável, só fica sem o rótulo legível.
+            requestedCategoryPath = null;
+          }
+        }
+
         return reply.status(200).send({
           listing: {
             id: listing.id,
@@ -436,6 +498,9 @@ export async function listingRoutes(app: FastifyInstance) {
             externalSku: listing.externalSku,
             permalink: listing.permalink,
             status: listing.status,
+            // ADITIVOS: categoria real da criação + rótulo legível (ML).
+            requestedCategoryId,
+            requestedCategoryPath,
             listingType: listing.listingType,
             itemCondition: listing.itemCondition,
             hasWarranty: listing.hasWarranty,
@@ -483,14 +548,11 @@ export async function listingRoutes(app: FastifyInstance) {
               year: listing.product.year ?? null,
               version: listing.product.version ?? null,
               category: listing.product.category ?? null,
-              mlCategory:
-                (listing.product as { mlCategory?: string | null })
-                  .mlCategory ??
-                listing.product.mlCategoryId ??
-                null,
-              shopeeCategoryId:
-                (listing.product as { shopeeCategoryId?: string | null })
-                  .shopeeCategoryId ?? null,
+              // `Product.mlCategory` é RELAÇÃO (MarketplaceCategory via
+              // `mlCategoryId`), não coluna — nunca era carregada aqui, então
+              // o valor emitido sempre foi o `mlCategoryId`. Mesmo valor.
+              mlCategory: listing.product.mlCategoryId ?? null,
+              shopeeCategoryId: listing.product.shopeeCategoryId ?? null,
               partNumber: listing.product.partNumber ?? null,
               quality: listing.product.quality ?? null,
               heightCm: listing.product.heightCm ?? null,

@@ -47,6 +47,16 @@ interface MLDynamicAttributesSectionProps {
   disabled?: boolean;
   /** Override do email para o middleware. Se ausente, mantém o cookie de sessão. */
   email?: string;
+  /**
+   * Atributos que a tela mostra mas o operador não pode mexer. Existe por causa
+   * do modo "editar anúncio": depois de publicado, o Mercado Livre recusa
+   * alterar BRAND/MODEL/YEAR/PART_NUMBER/MPN/OEM/SELLER_SKU (o backend os
+   * descarta em `IMMUTABLE_ATTRS`). Deixar o campo editável seria convidar o
+   * operador a digitar um valor que morre em silêncio.
+   *
+   * Ausente = nenhum campo travado, renderização idêntica à de antes.
+   */
+  readOnlyAttrIds?: readonly string[];
 }
 
 /**
@@ -68,6 +78,7 @@ export function MLDynamicAttributesSection({
   onChange,
   disabled,
   email,
+  readOnlyAttrIds,
 }: MLDynamicAttributesSectionProps) {
   const [attrs, setAttrs] = useState<MLDynamicAttribute[]>([]);
   // Categoria DONA dos attrs carregados: durante a troca de categoria, `attrs`
@@ -160,7 +171,13 @@ export function MLDynamicAttributesSection({
   }
   if (!shouldRenderSection(visible.length, OEM_FIELD_ENABLED)) return null;
 
+  const readOnlyIds = new Set(readOnlyAttrIds ?? []);
+  const isReadOnly = (id: string) => readOnlyIds.has(id);
+
   const updateAttr = (id: string, next: MLAttributeValue | null) => {
+    // Defesa em profundidade: o input já vai `disabled`, mas um caller novo
+    // não pode conseguir gravar num atributo travado por engano.
+    if (isReadOnly(id)) return;
     const copy = { ...value };
     if (!next || (!next.value_id && !next.value_name)) {
       delete copy[id];
@@ -224,12 +241,13 @@ export function MLDynamicAttributesSection({
                 updateAttr(OEM_FIELD_ATTR_ID, { value_name: text });
               }}
               maxLength={OEM_MAX_LENGTH}
-              disabled={disabled}
+              disabled={disabled || isReadOnly(OEM_FIELD_ATTR_ID)}
               placeholder="Opcional"
             />
             <p className="text-xs text-muted-foreground">
-              Código original do fabricante da peça. Enviado ao Mercado Livre na
-              publicação, quando a categoria aceitar o atributo.
+              {isReadOnly(OEM_FIELD_ATTR_ID)
+                ? "Definido na criação do anúncio. O Mercado Livre não aceita alterar o código OEM depois de publicado."
+                : "Código original do fabricante da peça. Enviado ao Mercado Livre na publicação, quando a categoria aceitar o atributo."}
             </p>
           </div>
         )}
@@ -260,7 +278,7 @@ export function MLDynamicAttributesSection({
                         value_name: opt?.name,
                       });
                     }}
-                    disabled={disabled}
+                    disabled={disabled || isReadOnly(attr.id)}
                   >
                     <SelectTrigger id={`ml-attr-${attr.id}`}>
                       <SelectValue
@@ -304,7 +322,7 @@ export function MLDynamicAttributesSection({
                     updateAttr(attr.id, { value_name: text });
                   }}
                   maxLength={attr.valueMaxLength}
-                  disabled={disabled}
+                  disabled={disabled || isReadOnly(attr.id)}
                   placeholder={attr.required ? "Obrigatório" : "Opcional"}
                 />
               </div>
