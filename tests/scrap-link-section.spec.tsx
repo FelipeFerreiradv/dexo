@@ -262,3 +262,82 @@ describe("ScrapLinkSection — o seletor não pode mentir sobre o lote", () => {
     expect(select().getAttribute("data-value")).toBe(SUCATA);
   });
 });
+
+// ── EGRESS ──────────────────────────────────────────────────────────────────
+// A correção trocou um `useEffect` de dependências primitivas por um efeito que
+// depende de `carregarVinculo` (useCallback). Se essa função mudasse de
+// identidade a cada render, o efeito re-rodaria a cada render e a seção viraria
+// uma metralhadora de requisições — a pior regressão possível numa base que
+// paga egress por chamada.
+//
+// O mock de `useSession` devolve um OBJETO NOVO a cada chamada de propósito:
+// é o pior caso, e é o que acontece de verdade com o next-auth.
+describe("ScrapLinkSection — uma abertura, uma requisição", () => {
+  it("re-renderizar NÃO dispara requisição nova", async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      void url;
+      return { ok: true, status: 200, json: async () => CORPO_VINCULADO };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await montar();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Cinco re-renders do mesmo componente, como aconteceria a cada digitação
+    // em qualquer campo do modal de edição.
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        root.render(
+          <ScrapLinkSection productId={PRODUTO} onToast={() => {}} />,
+        );
+      });
+    }
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // E o vínculo continua na tela depois de tudo isso.
+    expect(select().getAttribute("data-value")).toBe(SUCATA);
+  });
+
+  it("a lista de sucatas NÃO é carregada ao abrir o modal (só ao abrir o seletor)", async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      void url;
+      return { ok: true, status: 200, json: async () => CORPO_VINCULADO };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await montar();
+
+    // Uma requisição só, e é a do vínculo. `GET /scraps?limit=100` continua
+    // sob demanda — abrir a edição não pode custar uma listagem de 100 lotes.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/scrap-link");
+    expect(url).not.toContain("/scraps?");
+  });
+
+  it("trocar de produto dispara exatamente UMA requisição nova", async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      void url;
+      return { ok: true, status: 200, json: async () => CORPO_VINCULADO };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await montar();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(
+        <ScrapLinkSection productId="outro-produto" onToast={() => {}} />,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain("outro-produto");
+  });
+});

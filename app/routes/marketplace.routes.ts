@@ -1424,6 +1424,29 @@ small{color:#666}</style></head><body>
     },
   );
 
+  // Cache do get_shop_info por conta.
+  //
+  // MEDIDO em produção (20/08/2026), não estimado: esta rota recebeu 393 GETs
+  // em 24h — ela é consumida por CINCO telas (conexão, anúncios, sincronização,
+  // criação de produto e publicação em massa), e as quatro últimas só desenham
+  // `id` e `accountName`. Com 1,39 conta ativa por tenant (18 tenants, 25
+  // contas), isso dava ~546 chamadas/dia à API da Shopee para preencher
+  // seletores.
+  //
+  // O TTL saiu da distribuição real dos intervalos entre chamadas do mesmo
+  // cliente, não de um número redondo:
+  //
+  //     60s => 21% evitadas | 300s => 64% | 600s => 80% | 900s => 86%
+  //
+  // 600s é onde o retorno começa a cair (900s compra só +6pp em troca de 50%
+  // mais defasagem). Nome de loja muda raramente, e depois da auto-cura abaixo
+  // o nome já vive em `accountName` — o cache atrasa no máximo a REVISÃO dele.
+  //
+  // Só sucesso é cacheado: uma falha (token morto, 403 de IP) volta a tentar na
+  // requisição seguinte, sem ficar presa a um erro por 10 minutos.
+  const shopInfoCache = new Map<string, { payload: any; expiresAt: number }>();
+  const SHOP_INFO_TTL_MS = 600_000;
+
   /**
    * POST /marketplace/shopee/import
    * Importa todos os itens do Shopee e tenta vincular por SKU
@@ -1444,11 +1467,21 @@ small{color:#666}</style></head><body>
           accounts.map(async (acc) => {
             if (!acc.shopId || !acc.accessToken) return acc;
             try {
-              const info: any = await ShopeeApiService.getShopInfo(
-                acc.accessToken,
-                acc.shopId,
-              );
-              const payload = info?.response ?? info;
+              const emCache = shopInfoCache.get(acc.id);
+              let payload: any;
+              if (emCache && emCache.expiresAt > Date.now()) {
+                payload = emCache.payload;
+              } else {
+                const info: any = await ShopeeApiService.getShopInfo(
+                  acc.accessToken,
+                  acc.shopId,
+                );
+                payload = info?.response ?? info;
+                shopInfoCache.set(acc.id, {
+                  payload,
+                  expiresAt: Date.now() + SHOP_INFO_TTL_MS,
+                });
+              }
               const shopName =
                 payload?.shop_name || payload?.shopName || undefined;
               const region = payload?.region || undefined;
