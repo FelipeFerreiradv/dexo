@@ -880,7 +880,11 @@ export function EditProductDialog({
         fetch(`${getApiBaseUrl()}/users/me`, {
           headers: { email: session.user.email },
         }),
-        product.id
+        // EGRESS: o detalhe do produto (linha inteira + `detailedListings`) só
+        // serve para hidratar os 9 settings ML — e eles só são renderizados e
+        // enviados no modo "editar anúncio". No cadastro do produto era uma
+        // resposta pesada buscada em toda abertura do modal e jogada fora.
+        product.id && listingContextRef.current
           ? fetch(`${getApiBaseUrl()}/products/${product.id}`, {
               headers: { email: session.user.email },
             })
@@ -1169,6 +1173,13 @@ export function EditProductDialog({
 
     let cancelled = false;
     const controller = new AbortController();
+
+    // Rearma a cada anúncio. Trocar de anúncio com o modal ABERTO (o seletor
+    // da seção "Anúncios deste produto") não passa pelo fechamento, então sem
+    // isto a trava continuaria liberada e o snapshot de settings continuaria
+    // sendo o do anúncio anterior — baseline errado no diff do save.
+    setListingHydrated(false);
+    mlSettingsSnapshotRef.current = null;
 
     (async () => {
       try {
@@ -1819,7 +1830,10 @@ export function EditProductDialog({
     // cheio de valores do PRODUTO como se fossem deste anúncio: apagava
     // `attributesOverride` e gravava `compatibilitiesOverride: []` — que não
     // é "herdar", é "zero veículos neste anúncio".
-    if (listingContext && !listingHydrated) {
+    // `compatibilitiesLoading` entra na trava porque o corpo do PUT manda a
+    // lista de compatibilidades SEM diff: salvar antes de ela carregar
+    // gravaria `[]`, que não é "herdar", é "zero veículos neste anúncio".
+    if (listingContext && (!listingHydrated || compatibilitiesLoading)) {
       onToast(
         "Ainda carregando os dados deste anúncio. Tente de novo em um instante.",
         "warning",
@@ -3411,14 +3425,17 @@ export function EditProductDialog({
             </Button>
             <Button
               type="submit"
-              disabled={isSubmitting || (isListingMode && !listingHydrated)}
+              disabled={
+                isSubmitting ||
+                (isListingMode && (!listingHydrated || compatibilitiesLoading))
+              }
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
                   Atualizando...
                 </>
-              ) : isListingMode && !listingHydrated ? (
+              ) : isListingMode && (!listingHydrated || compatibilitiesLoading) ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
                   Carregando anúncio...

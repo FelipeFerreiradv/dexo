@@ -404,7 +404,40 @@ export async function listingRoutes(app: FastifyInstance) {
           prisma.productListing.findUnique({
             where: { id },
             include: {
-              product: true,
+              // EGRESS: projeção explícita. `product: true` trazia as ~68
+              // colunas da linha para emitir 22 — inclusive as que este
+              // endpoint nunca devolve (custo/markup/estoque, normalizações
+              // de busca, carimbos de origem de categoria, posições de
+              // compatibilidade). A resposta abaixo é idêntica; só o que
+              // trafega do banco mudou.
+              product: {
+                select: {
+                  // ownership (não vai na resposta, decide o 403)
+                  userId: true,
+                  id: true,
+                  name: true,
+                  sku: true,
+                  description: true,
+                  price: true,
+                  brand: true,
+                  model: true,
+                  year: true,
+                  version: true,
+                  category: true,
+                  mlCategoryId: true,
+                  shopeeCategoryId: true,
+                  partNumber: true,
+                  quality: true,
+                  heightCm: true,
+                  widthCm: true,
+                  lengthCm: true,
+                  weightKg: true,
+                  imageUrl: true,
+                  imageUrls: true,
+                  attributes: true,
+                  sourceVehicle: true,
+                },
+              },
               marketplaceAccount: {
                 select: { id: true, accountName: true, platform: true },
               },
@@ -515,14 +548,11 @@ export async function listingRoutes(app: FastifyInstance) {
               year: listing.product.year ?? null,
               version: listing.product.version ?? null,
               category: listing.product.category ?? null,
-              mlCategory:
-                (listing.product as { mlCategory?: string | null })
-                  .mlCategory ??
-                listing.product.mlCategoryId ??
-                null,
-              shopeeCategoryId:
-                (listing.product as { shopeeCategoryId?: string | null })
-                  .shopeeCategoryId ?? null,
+              // `Product.mlCategory` é RELAÇÃO (MarketplaceCategory via
+              // `mlCategoryId`), não coluna — nunca era carregada aqui, então
+              // o valor emitido sempre foi o `mlCategoryId`. Mesmo valor.
+              mlCategory: listing.product.mlCategoryId ?? null,
+              shopeeCategoryId: listing.product.shopeeCategoryId ?? null,
               partNumber: listing.product.partNumber ?? null,
               quality: listing.product.quality ?? null,
               heightCm: listing.product.heightCm ?? null,
