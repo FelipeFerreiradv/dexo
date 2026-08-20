@@ -19,6 +19,7 @@ import { InternalSuggestionUseCase } from "../marketplaces/usecases/internal-sug
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { nextShopeeAccountName } from "../marketplaces/lib/shopee-account-label";
+import { contaMarketplaceVisivel } from "../marketplaces/lib/marketplace-account-public";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import { OlxOAuthService } from "../marketplaces/services/olx-oauth.service";
@@ -987,7 +988,11 @@ small{color:#666}</style></head><body>
           userId,
           Platform.MERCADO_LIVRE,
         );
-        return reply.send({ accounts });
+        // Só id/accountName/status saem: é o que as cinco telas que consultam
+        // esta rota desenham. A linha do banco traz os tokens junto.
+        return reply.send({
+          accounts: accounts.map((a) => contaMarketplaceVisivel(a)),
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas",
@@ -1459,12 +1464,9 @@ small{color:#666}</style></head><body>
    * Tambem alinha a rota a regra 1 de egress do projeto: nada de entregar campo
    * que a tela nao desenha, em caminho recorrente.
    *
-   * LISTA DE PERMISSAO, e nao de proibicao. `/olx/accounts` e `/facebook/accounts`
-   * ja resolvem isto com `({ accessToken: _a, refreshToken: _r, ...rest }) => rest`,
-   * que remove DOIS campos e deixa passar tudo o mais — inclusive
-   * `appClientSecret`, e inclusive qualquer coluna que venha a ser adicionada ao
-   * modelo depois. Aqui a direcao e a inversa: so sai o que esta escrito abaixo,
-   * entao uma coluna nova nasce privada em vez de nascer exposta.
+   * LISTA DE PERMISSAO, e nao de proibicao — ver
+   * `marketplace-account-public.ts`, que as CINCO rotas de contas usam desde a
+   * auditoria de 20/08/2026.
    *
    * Os campos abaixo sao a UNIAO do que os cinco consumidores leem:
    *   id, accountName            todas as telas
@@ -1493,16 +1495,22 @@ small{color:#666}</style></head><body>
       merchantName?: string;
     },
   ) {
-    return {
-      id: acc.id,
-      accountName: extras?.accountName ?? acc.accountName,
-      status: acc.status,
-      shopId: acc.shopId,
-      externalUserId: acc.externalUserId,
-      shopName: extras?.shopName,
-      region: extras?.region,
-      merchantName: extras?.merchantName,
-    };
+    return contaMarketplaceVisivel(
+      {
+        id: acc.id,
+        // O rotulo recem-descoberto tem precedencia sobre o do banco: quando a
+        // auto-cura acabou de gravar, a linha em memoria ainda tem o antigo.
+        accountName: extras?.accountName ?? acc.accountName,
+        status: acc.status,
+      },
+      {
+        shopId: acc.shopId,
+        externalUserId: acc.externalUserId,
+        shopName: extras?.shopName,
+        region: extras?.region,
+        merchantName: extras?.merchantName,
+      },
+    );
   }
 
   /**
@@ -2894,7 +2902,10 @@ small{color:#666}</style></head><body>
           userId,
           Platform.MAGALU,
         );
-        return reply.send({ accounts });
+        // Mesma regra do ML: as telas desenham id, nome e status.
+        return reply.send({
+          accounts: accounts.map((a) => contaMarketplaceVisivel(a)),
+        });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas",
@@ -3395,10 +3406,16 @@ small{color:#666}</style></head><body>
           userId,
           Platform.OLX,
         );
-        // Não devolve accessToken/refreshToken crus ao browser (na OLX o token
-        // não expira → vazamento é permanente). A UI só precisa dos metadados.
-        const safe = accounts.map(
-          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        // Não devolve credenciais ao browser (na OLX o token não expira → o
+        // vazamento seria permanente). Era uma lista de PROIBIÇÃO, que tirava
+        // accessToken/refreshToken e deixava passar `appClientSecret`; agora é
+        // lista de PERMISSÃO. Os dois campos de vendedor ficam porque a tela de
+        // conexão os edita.
+        const safe = accounts.map((a) =>
+          contaMarketplaceVisivel(a, {
+            olxSellerPhone: a.olxSellerPhone,
+            olxSellerZipcode: a.olxSellerZipcode,
+          }),
         );
         return reply.send({ accounts: safe });
       } catch (error) {
@@ -3878,9 +3895,14 @@ small{color:#666}</style></head><body>
           userId,
           Platform.FACEBOOK,
         );
-        // Não devolve accessToken/refreshToken crus ao browser.
-        const safe = accounts.map(
-          ({ accessToken: _a, refreshToken: _r, ...rest }) => rest,
+        // Não devolve credenciais ao browser. Era lista de PROIBIÇÃO (deixava
+        // passar `appClientSecret`); agora é de PERMISSÃO. As configs de
+        // catálogo ficam porque a tela de conexão as edita.
+        const safe = accounts.map((a) =>
+          contaMarketplaceVisivel(a, {
+            fbCatalogId: a.fbCatalogId,
+            fbProductUrlBase: a.fbProductUrlBase,
+          }),
         );
         return reply.send({ accounts: safe });
       } catch (error) {
