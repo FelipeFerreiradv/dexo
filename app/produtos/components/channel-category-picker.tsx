@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,13 +27,41 @@ const CONFIG: Record<
   },
 };
 
+export type ChannelCategoryOption = { id: string; value: string };
+
 /** "Veículos / Peças / Rodas" → "Veículos > Peças > Rodas". */
-function formatarCaminho(v: string): string {
+export function formatarCaminho(v: string): string {
   return v
     .split("/")
     .map((s) => s.trim())
     .filter(Boolean)
     .join(" > ");
+}
+
+/**
+ * 1 letra é ruído — não vale uma ida ao servidor. Termo vazio VALE: é ele que
+ * carrega a lista inteira (as duas são pequenas) e resolve o rótulo legível de
+ * um valor já salvo.
+ */
+export function deveBuscar(termo: string): boolean {
+  return termo.trim().length !== 1;
+}
+
+/**
+ * Cache de módulo por (canal, termo), mesmo padrão de `mlSuggestCache` e
+ * `shopeeSuggestCache` no modal de edição. Sem ele, cada seleção disparava uma
+ * busca nova só porque o campo de texto voltava a ficar vazio.
+ */
+const CACHE = new Map<string, ChannelCategoryOption[]>();
+/** Teto defensivo: a sessão é longa e o cache não precisa crescer sem fim. */
+const CACHE_MAX = 100;
+
+function lerCache(chave: string) {
+  return CACHE.get(chave) ?? null;
+}
+function gravarCache(chave: string, opcoes: ChannelCategoryOption[]) {
+  if (CACHE.size >= CACHE_MAX) CACHE.clear();
+  CACHE.set(chave, opcoes);
 }
 
 interface ChannelCategoryPickerProps {
@@ -55,13 +83,9 @@ interface ChannelCategoryPickerProps {
  * criação, sempre teve busca com sugestões. Aqui as duas telas passam a usar o
  * MESMO componente.
  *
- * Detalhes que vieram do fluxo de criação e valem manter:
- *  - As listas são pequenas (a OLX tem poucas categorias; o Facebook algumas
- *    dezenas), e o endpoint responde com `Cache-Control` de 10 minutos. Por isso
- *    a busca com termo VAZIO carrega tudo: é barata e é o que resolve o rótulo
- *    de um valor já salvo — sem ela, reabrir um anúncio mostrava o id cru.
- *  - 1 letra é ruído e não dispara busca; a partir de 2 sim, com 400 ms de
- *    debounce.
+ * Egress: as listas dos dois canais são pequenas e o endpoint responde com
+ * `Cache-Control: private, max-age=600`. Somando o cache de módulo por termo, a
+ * edição inteira de um anúncio custa tipicamente UMA requisição.
  */
 export function ChannelCategoryPicker({
   channel,
@@ -73,14 +97,33 @@ export function ChannelCategoryPicker({
   const cfg = CONFIG[channel];
 
   const [busca, setBusca] = useState("");
-  const [opcoes, setOpcoes] = useState<Array<{ id: string; value: string }>>([]);
+  const [opcoes, setOpcoes] = useState<ChannelCategoryOption[]>(
+    () => lerCache(`${channel}|`) ?? [],
+  );
   const [aberto, setAberto] = useState(false);
   const [carregando, setCarregando] = useState(false);
-  const [rotuloEscolhido, setRotuloEscolhido] = useState("");
+  /** Rótulo do que o usuário escolheu, amarrado ao id — se o `value` mudar por
+   *  fora (trocar de anúncio no modal), o rótulo antigo não vaza. */
+  const [escolhido, setEscolhido] = useState<ChannelCategoryOption | null>(null);
+
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (blurTimer.current) clearTimeout(blurTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const termo = busca.trim();
-    if (termo.length === 1) return;
+    if (!deveBuscar(termo)) return;
+
+    const chave = `${channel}|${termo}`;
+    const cacheado = lerCache(chave);
+    if (cacheado) {
+      setOpcoes(cacheado);
+      return;
+    }
 
     let cancelado = false;
     const handle = setTimeout(async () => {
@@ -94,9 +137,11 @@ export function ChannelCategoryPicker({
         );
         if (resp.ok) {
           const data = await resp.json();
-          if (!cancelado) {
-            setOpcoes(Array.isArray(data?.categories) ? data.categories : []);
-          }
+          const lista: ChannelCategoryOption[] = Array.isArray(data?.categories)
+            ? data.categories
+            : [];
+          gravarCache(chave, lista);
+          if (!cancelado) setOpcoes(lista);
         }
       } catch (err) {
         console.error(`Erro ao buscar categorias ${channel}:`, err);
@@ -113,20 +158,28 @@ export function ChannelCategoryPicker({
 
   const rotulo = useMemo(() => {
     const cru =
-      rotuloEscolhido || opcoes.find((o) => o.id === value)?.value || "";
+      (escolhido && escolhido.id === value ? escolhido.value : null) ??
+      opcoes.find((o) => o.id === value)?.value ??
+      // Enquanto a lista não chega, mostra o valor cru: o campo nunca aparece
+      // VAZIO segurando um valor salvo — foi assim que a versão anterior
+      // enganava quem reabria um anúncio já categorizado.
+      value ??
+      "";
     return cru ? formatarCaminho(cru) : "";
-  }, [rotuloEscolhido, opcoes, value]);
+  }, [escolhido, opcoes, value]);
 
   const termo = busca.trim();
   const mostrarLista = (aberto || termo.length > 0) && opcoes.length > 0;
+  const idInput = `channel-category-${cfg.rota}`;
 
   return (
     <div className="space-y-1">
-      <Label htmlFor={`channel-category-${cfg.rota}`}>{cfg.rotulo}</Label>
+      <Label htmlFor={idInput}>{cfg.rotulo}</Label>
 
       <div className="relative">
         {rotulo && !aberto && (
           <button
+            id={idInput}
             type="button"
             disabled={disabled}
             className="flex w-full cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
@@ -143,7 +196,7 @@ export function ChannelCategoryPicker({
         {(aberto || !rotulo) && (
           <>
             <Input
-              id={`channel-category-${cfg.rota}`}
+              id={rotulo && !aberto ? undefined : idInput}
               placeholder={cfg.placeholder}
               value={busca}
               disabled={disabled}
@@ -152,7 +205,8 @@ export function ChannelCategoryPicker({
               onBlur={() => {
                 // O clique numa opção usa onMouseDown, que corre antes do blur;
                 // o atraso evita fechar a lista antes de o clique registrar.
-                setTimeout(() => setAberto(false), 200);
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                blurTimer.current = setTimeout(() => setAberto(false), 200);
               }}
               autoFocus={aberto && !!rotulo}
             />
@@ -169,7 +223,7 @@ export function ChannelCategoryPicker({
                     onMouseDown={(e) => {
                       e.preventDefault();
                       onChange(o.id);
-                      setRotuloEscolhido(o.value);
+                      setEscolhido(o);
                       setBusca("");
                       setAberto(false);
                     }}
@@ -202,7 +256,7 @@ export function ChannelCategoryPicker({
           className="text-xs text-muted-foreground underline underline-offset-2 disabled:opacity-60"
           onClick={() => {
             onChange("");
-            setRotuloEscolhido("");
+            setEscolhido(null);
             setBusca("");
           }}
         >

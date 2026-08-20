@@ -3215,11 +3215,6 @@ export function EditProductDialog({
                   }
                   email={session?.user?.email || undefined}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Diferente do Mercado Livre e da Shopee, aqui a troca chega
-                  no anúncio: os dois canais reconstroem o anúncio inteiro na
-                  edição.
-                </p>
               </div>
             )}
 
