@@ -161,10 +161,7 @@ export function LockedMarketplaceField({
               O novo valor vale para os <strong>próximos anúncios</strong> deste
               produto.
             </li>
-            <li>
-              {txt.personalizacao} — o produto passa a ser a fonte da verdade
-              desse campo.
-            </li>
+            <li>{txt.personalizacao}</li>
           </ul>
           <div className="flex flex-wrap gap-2 pt-1">
             <Button type="button" size="sm" variant="outline" onClick={liberar}>

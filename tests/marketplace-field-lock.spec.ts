@@ -178,6 +178,26 @@ describe("textos por campo", () => {
     }
   });
 
+  it("a frase da personalização é uma sentença inteira, com ponto final", () => {
+    // Diferente das outras duas: esta é renderizada sozinha num <li>, sem
+    // fecho emendado pelo componente. Foi assim que ela pôde passar a citar a
+    // ficha técnica só no código de peça, sem estragar a frase da categoria.
+    for (const campo of campos) {
+      const frase = TEXTO_CAMPO[campo].personalizacao;
+      expect(frase.endsWith(".")).toBe(true);
+      expect(frase).toContain("fonte da verdade");
+    }
+  });
+
+  it("só o código de peça avisa sobre a ficha técnica", () => {
+    // Editar qualquer atributo do produto limpa o `attributesOverride`
+    // INTEIRO do anúncio, não só o código — e é esta trava que abre o campo
+    // da ficha. A da categoria não mexe em atributo nenhum e não deve
+    // assustar com um efeito que não provoca.
+    expect(TEXTO_CAMPO.codigo.personalizacao).toContain("ficha técnica");
+    expect(TEXTO_CAMPO.categoria.personalizacao).not.toContain("ficha");
+  });
+
   it("o texto do código fala de código, e o da categoria fala de categoria", () => {
     expect(TEXTO_CAMPO.codigo.naoAceita).toContain("código");
     expect(TEXTO_CAMPO.categoria.naoAceita).toContain("categoria");

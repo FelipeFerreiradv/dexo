@@ -33,7 +33,11 @@ export interface TextoCampoTravado {
   naoAceita: string;
   /** Complemento de "os N anúncios ___". */
   continuam: string;
-  /** O que acontece com o override por anúncio quando o produto é editado. */
+  /**
+   * O que acontece com o override por anúncio quando o produto é editado.
+   * Frase inteira, com o fecho: a do código precisa citar a ficha técnica e a
+   * da categoria não, e emendar um fecho comum deixaria uma das duas errada.
+   */
   personalizacao: string;
 }
 
@@ -46,13 +50,16 @@ export const TEXTO_CAMPO: Record<CampoTravado, TextoCampoTravado> = {
     naoAceita: "trocar a categoria de um anúncio que já está no ar",
     continuam: "continuam na categoria atual",
     personalizacao:
-      "Se algum anúncio tiver categoria personalizada, ela é desfeita",
+      "Se algum anúncio tiver categoria personalizada, ela é desfeita — o produto passa a ser a fonte da verdade desse campo.",
   },
   codigo: {
     naoAceita: "alterar o código de peça de um anúncio que já está no ar",
     continuam: "continuam com o código atual",
+    // Cita a ficha técnica porque editar QUALQUER atributo do produto limpa
+    // o `attributesOverride` inteiro do anúncio, não só o código — e é a
+    // liberação desta trava que abre o campo da ficha para edição.
     personalizacao:
-      "Se algum anúncio tiver código personalizado, ele é desfeito",
+      "Se algum anúncio tiver código ou ficha técnica personalizados, eles são desfeitos — o produto passa a ser a fonte da verdade desses campos.",
   },
 };
 
