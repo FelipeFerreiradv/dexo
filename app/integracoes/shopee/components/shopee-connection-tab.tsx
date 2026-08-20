@@ -12,6 +12,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
+import { shopeeAccountLabel } from "@/app/marketplaces/lib/shopee-account-label";
 import {
   Card,
   CardContent,
@@ -344,7 +345,13 @@ export function ShopeeConnectionTab() {
                       <div className="flex items-center gap-2">
                         <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                         <span className="truncate font-semibold [font-family:var(--font-bricolage)]">
-                          {acc.shopName || acc.accountName || "Conta Shopee"}
+                          {/* Mesmo rotulo das demais telas: a marca sempre na
+                              frente. Antes esta aba mostrava o `shopName` cru e
+                              o resto do sistema o `accountName` — dois nomes
+                              para a mesma conta. */}
+                          {acc.shopName
+                            ? shopeeAccountLabel(acc.shopName, acc.shopId ?? "")
+                            : acc.accountName || "Conta Shopee"}
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
