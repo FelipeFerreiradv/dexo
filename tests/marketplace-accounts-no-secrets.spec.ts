@@ -24,6 +24,7 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
 vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
     findAllByUserIdAndPlatform: vi.fn(),
+    findAllPublicByUserIdAndPlatform: vi.fn(),
     renameShopeeAccountIfUnchanged: vi.fn(),
   },
 }));
@@ -77,9 +78,12 @@ async function subirApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(MarketplaceRepository.findAllByUserIdAndPlatform).mockResolvedValue(
-    [{ ...LINHA }] as any,
-  );
+  // De proposito: o mock entrega a linha CRUA, com credenciais. O que se mede
+  // aqui e o filtro da ROTA — se ele sumir, o teste cai, mesmo que o
+  // repositorio tenha `select`.
+  vi.mocked(
+    MarketplaceRepository.findAllPublicByUserIdAndPlatform,
+  ).mockResolvedValue([{ ...LINHA }] as any);
 });
 
 // As quatro rotas que ainda entregavam a linha crua (a Shopee tem spec próprio,

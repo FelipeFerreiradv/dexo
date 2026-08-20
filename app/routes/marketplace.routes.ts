@@ -984,10 +984,13 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.MERCADO_LIVRE,
-        );
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.MERCADO_LIVRE,
+          );
         // Só id/accountName/status saem: é o que as cinco telas que consultam
         // esta rota desenham. A linha do banco traz os tokens junto.
         return reply.send({
@@ -2898,10 +2901,13 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.MAGALU,
-        );
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.MAGALU,
+          );
         // Mesma regra do ML: as telas desenham id, nome e status.
         return reply.send({
           accounts: accounts.map((a) => contaMarketplaceVisivel(a)),
@@ -3402,10 +3408,13 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.OLX,
-        );
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.OLX,
+          );
         // Não devolve credenciais ao browser (na OLX o token não expira → o
         // vazamento seria permanente). Era uma lista de PROIBIÇÃO, que tirava
         // accessToken/refreshToken e deixava passar `appClientSecret`; agora é
@@ -3891,10 +3900,13 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.FACEBOOK,
-        );
+        // Sem credenciais: esta rota so desenha a lista, e ler o token para
+        // descarta-lo custa egress do banco a cada abertura.
+        const accounts =
+          await MarketplaceRepository.findAllPublicByUserIdAndPlatform(
+            userId,
+            Platform.FACEBOOK,
+          );
         // Não devolve credenciais ao browser. Era lista de PROIBIÇÃO (deixava
         // passar `appClientSecret`); agora é de PERMISSÃO. As configs de
         // catálogo ficam porque a tela de conexão as edita.
