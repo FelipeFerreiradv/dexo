@@ -429,6 +429,35 @@ export async function listingRoutes(app: FastifyInstance) {
 
         const productCompatibilities = productCompatibilitiesPreload;
 
+        // Categoria REAL com que o anúncio foi criado. `requestedCategoryId` já
+        // existia na tabela (gravado no create a partir de `payload.category_id`)
+        // mas nunca era devolvido por endpoint algum — sem ele o modal exibia a
+        // categoria do PRODUTO ao editar um anúncio publicado em outra, e o
+        // operador editava achando que estava vendo o anúncio.
+        //
+        // O nome sai da tabela local `MarketplaceCategory` (mesmo caminho de
+        // `ProductRepository.findPublishedCategories`): zero chamada externa,
+        // zero token de marketplace. Essa tabela é o catálogo do ML, então para
+        // os outros canais devolvemos o id sem rótulo (`null`).
+        const requestedCategoryId = listing.requestedCategoryId ?? null;
+        let requestedCategoryPath: string | null = null;
+        if (
+          requestedCategoryId &&
+          listing.marketplaceAccount?.platform === "MERCADO_LIVRE"
+        ) {
+          try {
+            const cat = await prisma.marketplaceCategory.findUnique({
+              where: { externalId: requestedCategoryId },
+              select: { fullPath: true, name: true },
+            });
+            requestedCategoryPath = cat?.fullPath || cat?.name || null;
+          } catch {
+            // Categoria ausente do catálogo local não é erro: o anúncio continua
+            // editável, só fica sem o rótulo legível.
+            requestedCategoryPath = null;
+          }
+        }
+
         return reply.status(200).send({
           listing: {
             id: listing.id,
@@ -436,6 +465,9 @@ export async function listingRoutes(app: FastifyInstance) {
             externalSku: listing.externalSku,
             permalink: listing.permalink,
             status: listing.status,
+            // ADITIVOS: categoria real da criação + rótulo legível (ML).
+            requestedCategoryId,
+            requestedCategoryPath,
             listingType: listing.listingType,
             itemCondition: listing.itemCondition,
             hasWarranty: listing.hasWarranty,
