@@ -125,7 +125,7 @@ export type PerguntaComparavel = {
  * Por que existe: a varredura de catálogo revê os MESMOS anúncios/comentários a
  * cada ciclo e o upsert reescrevia a linha inteira mesmo quando nada tinha
  * mudado. Em produção o `INSERT … ON CONFLICT` da pergunta acumulou **185.088
- * execuções em 37 dias** para 9.556 perguntas — e uma varredura da Shopee
+ * execuções em 28,6 dias** para 9.556 perguntas — e uma varredura da Shopee
  * sozinha responde por ~3.553 delas.
  *
  * As quatro colunas comparadas raramente mudam depois que a linha nasce: o
@@ -186,7 +186,9 @@ type RespostaGravavel = { text: string; status: string; dateCreated: Date };
  * ciclo. Sem esta guarda, toda pergunta já respondida refaz a transação de dois
  * statements do `attachAnswer` — BEGIN + upsert da resposta + update da pergunta
  * + COMMIT, quatro idas ao banco e duas versões de tupla — sem nada ter mudado.
- * Em produção foram 28.709 execuções em 37 dias para 5.988 respostas distintas.
+ * Em produção foram 28.709 execuções em 28,6 dias para 5.988 respostas distintas.
+ * (⚠️ `pg_stat_statements` e `pg_stat_user_tables` têm resets DIFERENTES: as
+ * contagens de `calls` são da janela de 28,6 dias, as de tuplas são de 37.)
  *
  * Conservadora por construção: só devolve `true` quando os três campos que o
  * `attachAnswer` escreveria são idênticos aos gravados E a pergunta já vai ficar
@@ -245,8 +247,13 @@ export class QuestionRepository {
   }
 
   /**
-   * Chave de item de um comentário da Shopee — a MESMA expressão que o
-   * `upsertFromShopeeComment` usa para montar `externalItemId`.
+   * Chave de item de um comentário da Shopee.
+   *
+   * ⚠️ Não é literalmente a mesma expressão do `upsertFromShopeeComment` — lá o
+   * `externalItemId` é `String(comment.item_id)` direto, porque aquele lado
+   * precisa de uma string SEMPRE (inclusive `"undefined"`). O que se garante é
+   * que os dois PRODUZEM o mesmo valor para todo item presente, e isso está
+   * travado por teste nas DUAS pontas (`messages-shopee-listing-preload`).
    *
    * Existe para que a pré-carga em lote e a gravação não possam divergir na
    * normalização: qualquer `trim`, `Number()` ou `toString()` a mais faria o

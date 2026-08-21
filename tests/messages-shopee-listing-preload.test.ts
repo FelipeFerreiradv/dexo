@@ -23,7 +23,8 @@ import prisma from "@/app/lib/prisma";
  *      como `productListingId` está em CAMPOS_REESCRITOS_NA_PERGUNTA, a guarda
  *      de novidade forçaria o update em até 100 linhas por página;
  *   3. falha do lote cai no caminho por item, e a função continua sem rejeitar;
- *   4. a chave do Map e a chave que o upsert grava saem da MESMA expressão.
+ *   4. a chave do Map e o `externalItemId` que o repositório grava produzem o
+ *      MESMO valor — travado nas duas pontas, não só na do usecase.
  */
 
 const FUTURE = new Date(Date.now() + 60 * 60 * 1000);
@@ -422,6 +423,38 @@ describe("syncShopeeCommentsForAccount — pré-carga em lote", () => {
 
     expect(porItem).not.toHaveBeenCalled();
     expect((upsert.mock.calls[0][0] as any).create.productListingId).toBeNull();
+  });
+
+  it("a chave do lote casa com o externalItemId que o REPOSITÓRIO grava", async () => {
+    // A outra ponta. O usecase resolve o anúncio pela chave do helper; o
+    // repositório grava `externalItemId` por conta própria. Se as duas
+    // divergirem, o lote resolve anúncio para uma chave que a gravação não usa
+    // — e nada mais neste arquivo perceberia.
+    vi.spyOn(prisma.marketplaceQuestion, "findUnique").mockResolvedValue(
+      null as any,
+    );
+    vi.spyOn(prisma.marketplaceAnswer, "findFirst").mockResolvedValue(
+      null as any,
+    );
+    vi.spyOn(QuestionRepository, "resolveListingId").mockResolvedValue(null);
+    const upsert = vi
+      .spyOn(prisma.marketplaceQuestion, "upsert")
+      .mockResolvedValue({ id: "q1" } as any);
+
+    for (const itemId of [9002, "9002", 0, " 9002 ", 999999999999999]) {
+      upsert.mockClear();
+      await QuestionRepository.upsertFromShopeeComment("acc-1", {
+        comment_id: 1,
+        comment: "oi",
+        buyer_username: "ana",
+        item_id: itemId as never,
+        create_time: 1_750_000_000,
+        comment_reply: null,
+      });
+
+      const gravado = (upsert.mock.calls[0][0] as any).create.externalItemId;
+      expect(gravado).toBe(QuestionRepository.chaveDeItemShopee(itemId));
+    }
   });
 
   it("falha do lote é POR PÁGINA: a página seguinte continua e ainda usa o lote", async () => {

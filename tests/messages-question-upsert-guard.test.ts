@@ -11,7 +11,7 @@ import type { MLQuestion } from "@/app/marketplaces/types/ml-questions.types";
 /**
  * Guarda de novidade do upsert de PERGUNTA (ML e Shopee).
  *
- * O problema medido em produção (pg_stat_statements, 37 dias): o
+ * O problema medido em produção (pg_stat_statements, 28,6 dias): o
  * `INSERT … ON CONFLICT` da pergunta acumulou 185.088 execuções para 9.556
  * perguntas. A varredura de catálogo revê os mesmos anúncios/comentários a cada
  * ciclo — uma passada da Shopee sozinha responde por ~3.553 — e reescrevia a

@@ -10,7 +10,7 @@ import type { MLQuestion } from "@/app/marketplaces/types/ml-questions.types";
 /**
  * Guarda de novidade do `attachAnswer`.
  *
- * O problema medido em produção (37 dias, pg_stat_statements): 28.709 execuções
+ * O problema medido em produção (28,6 dias, pg_stat_statements): 28.709 execuções
  * do `attachAnswer` para 5.988 respostas distintas. A varredura shop-wide da
  * Shopee revê os MESMOS comentários a cada ciclo — 1.330 de 3.553 já
  * respondidos — e cada um refazia BEGIN + upsert da resposta + update da
