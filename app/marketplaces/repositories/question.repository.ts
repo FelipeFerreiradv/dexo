@@ -1,4 +1,5 @@
 import prisma from "@/app/lib/prisma";
+import { findManyInChunks } from "@/app/lib/prisma-chunked";
 import type { Prisma, Platform } from "@prisma/client";
 import { MLQuestion } from "../types/ml-questions.types";
 
@@ -124,7 +125,7 @@ export type PerguntaComparavel = {
  * Por que existe: a varredura de catálogo revê os MESMOS anúncios/comentários a
  * cada ciclo e o upsert reescrevia a linha inteira mesmo quando nada tinha
  * mudado. Em produção o `INSERT … ON CONFLICT` da pergunta acumulou **185.088
- * execuções em 37 dias** para 9.556 perguntas — e uma varredura da Shopee
+ * execuções em 28,6 dias** para 9.556 perguntas — e uma varredura da Shopee
  * sozinha responde por ~3.553 delas.
  *
  * As quatro colunas comparadas raramente mudam depois que a linha nasce: o
@@ -185,7 +186,9 @@ type RespostaGravavel = { text: string; status: string; dateCreated: Date };
  * ciclo. Sem esta guarda, toda pergunta já respondida refaz a transação de dois
  * statements do `attachAnswer` — BEGIN + upsert da resposta + update da pergunta
  * + COMMIT, quatro idas ao banco e duas versões de tupla — sem nada ter mudado.
- * Em produção foram 28.709 execuções em 37 dias para 5.988 respostas distintas.
+ * Em produção foram 28.709 execuções em 28,6 dias para 5.988 respostas distintas.
+ * (⚠️ `pg_stat_statements` e `pg_stat_user_tables` têm resets DIFERENTES: as
+ * contagens de `calls` são da janela de 28,6 dias, as de tuplas são de 37.)
  *
  * Conservadora por construção: só devolve `true` quando os três campos que o
  * `attachAnswer` escreveria são idênticos aos gravados E a pergunta já vai ficar
@@ -241,6 +244,73 @@ export class QuestionRepository {
       select: { id: true },
     });
     return listing?.id ?? null;
+  }
+
+  /**
+   * Chave de item de um comentário da Shopee.
+   *
+   * ⚠️ Não é literalmente a mesma expressão do `upsertFromShopeeComment` — lá o
+   * `externalItemId` é `String(comment.item_id)` direto, porque aquele lado
+   * precisa de uma string SEMPRE (inclusive `"undefined"`). O que se garante é
+   * que os dois PRODUZEM o mesmo valor para todo item presente, e isso está
+   * travado por teste nas DUAS pontas (`messages-shopee-listing-preload`).
+   *
+   * Existe para que a pré-carga em lote e a gravação não possam divergir na
+   * normalização: qualquer `trim`, `Number()` ou `toString()` a mais faria o
+   * lote casar anúncios que a gravação não casa (mudança de comportamento) ou
+   * lançar quando o campo falta.
+   *
+   * Devolve `null` quando não há item algum. O caller então NÃO pré-carrega
+   * aquele comentário, e o caminho por item roda como sempre rodou.
+   */
+  static chaveDeItemShopee(
+    itemId: number | string | null | undefined,
+  ): string | null {
+    if (itemId === null || itemId === undefined || itemId === "") return null;
+    return String(itemId);
+  }
+
+  /**
+   * Versão em LOTE do `resolveListingId`, para varreduras que veem centenas de
+   * itens por página. Aditiva: o singular continua existindo e em uso.
+   *
+   * ⚠️ O Map traz entrada para TODO id consultado, com `null` no miss. É isso
+   * que deixa o caller distinguir:
+   *   - `null`      ⇒ consultei e não achei (grave null, igual ao singular);
+   *   - `undefined` ⇒ NÃO consultei (caia no lookup por item).
+   * Sem essa distinção, um lote que falhasse gravaria `null` por cima de
+   * vínculos bons — e como `productListingId` está em
+   * CAMPOS_REESCRITOS_NA_PERGUNTA, a guarda de novidade veria divergência e
+   * forçaria o update em até 100 linhas por página, desvinculando conversas em
+   * silêncio.
+   *
+   * `marketplaceAccountId` é posicional e obrigatório de propósito: no
+   * `findUnique` do singular o isolamento é ESTRUTURAL (a chave composta não
+   * compila sem as duas metades); num `findMany` ele viraria campo opcional do
+   * `where`, e há colisão real de `externalItemId` entre contas neste banco.
+   *
+   * `findManyInChunks` entrega dedupe, guarda de lista vazia (não toca o banco)
+   * e o teto de bind variables — mesmo helper dos 10 pontos de `sync.usercase`.
+   */
+  static async resolveListingIds(
+    marketplaceAccountId: string,
+    externalItemIds: readonly string[],
+  ): Promise<Map<string, string | null>> {
+    const porItem = new Map<string, string | null>();
+    const consultados = [...new Set(externalItemIds)];
+    if (consultados.length === 0) return porItem;
+
+    for (const id of consultados) porItem.set(id, null);
+
+    const rows = await findManyInChunks(consultados, (ids) =>
+      prisma.productListing.findMany({
+        where: { marketplaceAccountId, externalListingId: { in: ids } },
+        select: { id: true, externalListingId: true },
+      }),
+    );
+    for (const row of rows) porItem.set(row.externalListingId, row.id);
+
+    return porItem;
   }
 
   /**

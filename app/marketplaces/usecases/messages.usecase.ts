@@ -289,6 +289,19 @@ async function claimWebhookEvent(
   }
 }
 
+/**
+ * Kill-switch da pré-carga em LOTE dos anúncios na varredura shop-wide da
+ * Shopee. Ligado (`MESSAGES_SHOPEE_LISTING_BATCH_LEGACY=1`), cada comentário
+ * volta a resolver o anúncio sozinho, byte-idêntico ao comportamento anterior.
+ * Reverter é `.env` + restart, sem deploy.
+ *
+ * Lido por chamada de propósito, igual a `escopoLegado` e `upsertPerguntaLegado`
+ * em question.repository.ts — assim o teste alterna o modo sem reimportar.
+ */
+function loteDeAnunciosLegado(): boolean {
+  return process.env.MESSAGES_SHOPEE_LISTING_BATCH_LEGACY === "1";
+}
+
 export class MessagesUseCase {
   /**
    * Marca a conversa como lida DEPOIS de uma resposta enviada com sucesso.
@@ -872,6 +885,48 @@ export class MessagesUseCase {
         break;
       }
 
+      // Pré-carga dos anúncios da PÁGINA em uma consulta só. Sem ela, cada
+      // comentário resolvia o próprio anúncio dentro do upsert — ~3.553
+      // consultas por ciclo somando as contas, medido em produção.
+      //
+      // O try/catch é obrigatório: este trecho fica FORA do try do getComments
+      // (acima) e do try por-comentário (abaixo), e esta função nunca rejeita.
+      // Uma falha aqui abortaria a conta inteira, perderia as páginas seguintes
+      // e sumiria com a linha de log do cron. No erro, `porItem` fica nulo e
+      // TODOS os comentários caem no caminho por item — o de hoje.
+      //
+      // ⚠️ A leitura do Map NUNCA pode levar `?? null`. Como se lê com `.get()`,
+      // chave ausente já devolve `undefined` — que significa "não consultei" e
+      // devolve o comentário ao lookup por item. `null` é outra coisa:
+      // "consultei e não achei", e GRAVA null.
+      //
+      // Por isso um Map vazio é o caso SEGURO (perde-se o ganho, o N+1 volta
+      // calado). O caso grave é o inverso: um `?? null` aqui, ou semear o Map
+      // fora do `resolveListingIds`, faria id NÃO consultado virar null — e
+      // como `productListingId` está em CAMPOS_REESCRITOS_NA_PERGUNTA, a guarda
+      // de novidade veria divergência e forçaria o update em até 100 linhas por
+      // página, desvinculando conversas em silêncio.
+      let porItem: Map<string, string | null> | null = null;
+      if (!loteDeAnunciosLegado()) {
+        const chaves = comments
+          .map((c) => QuestionRepository.chaveDeItemShopee(c?.item_id))
+          .filter((k): k is string => k !== null);
+        if (chaves.length > 0) {
+          try {
+            porItem = await QuestionRepository.resolveListingIds(
+              account.id,
+              chaves,
+            );
+          } catch (err) {
+            porItem = null;
+            console.warn(
+              `[Messages] Falha ao pré-carregar anúncios da página (conta ${account.id}); caindo no lookup por comentário:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+      }
+
       // Upserts em paralelo por chunk; cada um isolado em try/catch para
       // preservar a contagem por-comentário (uma falha não derruba o chunk).
       const UPSERT_CONCURRENCY = 8;
@@ -880,7 +935,14 @@ export class MessagesUseCase {
         await Promise.all(
           chunk.map(async (c) => {
             try {
-              await QuestionRepository.upsertFromShopeeComment(account.id, c);
+              // Chave derivada da MESMA expressão que o upsert usa. Fora do
+              // Map (ou sem pré-carga) ⇒ undefined ⇒ caminho por item.
+              const chave = QuestionRepository.chaveDeItemShopee(c?.item_id);
+              const preResolvido =
+                porItem && chave !== null ? porItem.get(chave) : undefined;
+              await QuestionRepository.upsertFromShopeeComment(account.id, c, {
+                productListingId: preResolvido,
+              });
               processed += 1;
             } catch (err) {
               errors += 1;

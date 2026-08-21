@@ -271,18 +271,27 @@ describe("MessagesUseCase.syncShopeeCommentsForAccount", () => {
   });
 
   it("pagina por cursor e faz upsert de cada comentário", async () => {
+    // Os comentários levam item_id de propósito: sem ele a pré-carga em lote
+    // nem é chamada e este teste ficaria verde provando nada sobre a resolução
+    // do anúncio (era o caso antes de 21/08/2026).
     const getComments = vi
       .spyOn(ShopeeApiService, "getComments")
       .mockResolvedValueOnce({
-        comments: [{ comment_id: 1 }, { comment_id: 2 }] as any,
+        comments: [
+          { comment_id: 1, item_id: 9001 },
+          { comment_id: 2, item_id: 9002 },
+        ] as any,
         more: true,
         nextCursor: "cur2",
       })
       .mockResolvedValueOnce({
-        comments: [{ comment_id: 3 }] as any,
+        comments: [{ comment_id: 3, item_id: 9001 }] as any,
         more: false,
         nextCursor: "",
       });
+    const lote = vi
+      .spyOn(QuestionRepository, "resolveListingIds")
+      .mockResolvedValue(new Map([["9001", "listing-1"], ["9002", null]]));
     const upsert = vi
       .spyOn(QuestionRepository, "upsertFromShopeeComment")
       .mockResolvedValue({ id: "x", isNew: true });
@@ -299,6 +308,10 @@ describe("MessagesUseCase.syncShopeeCommentsForAccount", () => {
     expect(upsert).toHaveBeenCalledTimes(3);
     // 2ª página usou o cursor da 1ª
     expect((getComments.mock.calls[1][2] as any).cursor).toBe("cur2");
+    // Uma pré-carga por página, e o anúncio chega pré-resolvido no upsert.
+    expect(lote).toHaveBeenCalledTimes(2);
+    expect(upsert.mock.calls[0][2]).toEqual({ productListingId: "listing-1" });
+    expect(upsert.mock.calls[1][2]).toEqual({ productListingId: null });
   });
 
   it("token/shopId ausente ⇒ não chama API e reporta erro", async () => {
