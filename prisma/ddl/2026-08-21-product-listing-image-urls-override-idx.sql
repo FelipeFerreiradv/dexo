@@ -1,0 +1,257 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Índice PARCIAL para a substituição de imagem de produto (recorte de fundo)
+--  Gerado em 21/08/2026 · Dexo / ghd-plataform
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- COMO USAR: cole no SQL editor do Supabase e execute. É uma transação só.
+--
+-- ⚠️ NÃO HÁ DEPENDÊNCIA DE ORDEM COM O DEPLOY.
+-- Diferente de todos os outros arquivos desta pasta, este NÃO adiciona coluna
+-- nenhuma. Nenhum código precisa conhecê-lo, nenhum código quebra sem ele. Pode
+-- rodar antes do deploy, depois do deploy, ou sem deploy nenhum — o efeito é o
+-- mesmo. A aplicação hoje já funciona; só funciona devagar.
+--
+-- É 100% ADITIVO: nenhuma coluna é tocada, nenhuma linha é reescrita, nenhum
+-- dado é migrado, nenhum default é aplicado. O rollback é um DROP e pronto.
+--
+--
+-- ── O PROBLEMA (medido em produção em 21/08/2026) ─────────────────────────
+--
+-- Quando o worker termina de recortar o fundo de uma foto, o arquivo novo
+-- ganha outra URL. O produto pode JÁ ter sido salvo com a URL antiga (salvar
+-- nunca espera o recorte), então `swapImageUrlReferences` troca a URL velha
+-- pela nova em todo lugar que guarda foto — inclusive no override por anúncio
+-- (`ProductListing.imageUrlsOverride`).
+--
+-- A consulta que procura esses overrides é esta (gerada pelo Prisma a partir
+-- de `app/marketplaces/services/image-bg-swap.ts`):
+--
+--   SELECT "ProductListing"."id", "ProductListing"."imageUrlsOverride"
+--     FROM "ProductListing"
+--     LEFT JOIN "Product" AS "j1" ON "j1"."id" = "ProductListing"."productId"
+--    WHERE "j1"."userId" = $1 AND "j1"."id" IS NOT NULL
+--      AND "ProductListing"."imageUrlsOverride" IS NOT NULL
+--
+-- Não existe índice que atenda `imageUrlsOverride IS NOT NULL`, então o
+-- Postgres varre a tabela INTEIRA a cada chamada:
+--
+--   Gather
+--     -> Nested Loop
+--          -> Parallel Seq Scan on "ProductListing"
+--               Filter: ("imageUrlsOverride" IS NOT NULL)
+--               Rows Removed by Filter: 190.155  (por worker)
+--          -> Index Scan using "Product_pkey" on "Product"
+--   Buffers: shared hit=17.831
+--
+-- O tamanho do problema, do `pg_stat_statements` (janela de 28,69 dias):
+--
+--   · 68.211 chamadas
+--   · 6.507,9 segundos de tempo de banco  (1h48min)
+--   · 95,4 ms de média por chamada
+--   · 16.576 páginas lidas por chamada — 1,13 BILHÃO no total
+--
+-- E a varredura é desperdício quase puro: de 381.308 anúncios, só 919 passam
+-- pelo filtro (0,24%). As outras 380.389 são lidas e descartadas, toda vez.
+-- A mesma consulta na tabela `Scrap` (1.046 linhas) custa 0,052 ms — mesma
+-- forma, mesma lógica. A diferença é só o tamanho da tabela.
+--
+-- ⚠️ E o desperdício é ainda MAIOR do que esses 0,24% sugerem. Das 919 linhas
+-- que passam pelo filtro, apenas UMA tem de fato um array de imagens. As
+-- outras 918 guardam o valor JSON `null` — que em SQL NÃO é nulo, e por isso
+-- casa com `IS NOT NULL`. Vem de "limpar o override": o caminho de edição
+-- grava `null` do JavaScript numa coluna Json, e isso chega ao banco como o
+-- literal JSON `null` em vez de `NULL` do SQL. A mesma marca aparece em
+-- `attributesOverride` (626 JSON null contra 3 valores reais) e está crescendo
+-- (664 linhas em agosto, 187 em julho). Na leitura é inofensivo — o Prisma
+-- devolve `null` do JavaScript nos dois casos, e o código faz `Array.isArray`
+-- antes de usar. É desperdício, não bug de comportamento.
+--
+-- Isso NÃO muda o índice, e é importante entender por quê (ver a armadilha
+-- logo abaixo do CREATE INDEX).
+--
+--
+-- ── O QUE ESTE ÍNDICE MUDA (medido, não estimado) ─────────────────────────
+--
+-- Construído numa transação e desfeito com ROLLBACK, contra o banco de
+-- produção, mediana de 7 execuções por tenant, com controle de deriva:
+--
+--   tenant (linhas no filtro)      antes        depois     fator
+--   ────────────────────────────  ───────────  ─────────  ─────
+--   192 linhas                    152,88 ms    7,93 ms    19,3x
+--   62 linhas / 59.496 produtos   160,06 ms    7,65 ms    20,9x
+--   0 linhas / 37.314 produtos    160,40 ms    7,53 ms    21,3x
+--   1 linha / 213 produtos        154,12 ms    7,43 ms    20,7x
+--   163 linhas                    166,64 ms    7,83 ms    21,3x
+--
+-- Páginas lidas por chamada: 17.831 -> 4.512 (-74,7%). Essa é a métrica que
+-- não depende de quão ocupada a máquina está na hora.
+--
+-- O plano novo dispensa paralelismo (some o nó Gather), o que devolve um slot
+-- de worker paralelo para o resto do banco:
+--
+--   Nested Loop
+--     -> Index Scan using "ProductListing_productId_imageUrlsOverride_idx"
+--     -> Index Scan using "Product_pkey" on "Product"
+--
+--
+-- ── O CUSTO (também medido) ───────────────────────────────────────────────
+--
+-- TAMANHO: 48 kB, 6 páginas, 918 entradas. A tabela já carrega 125 MB de
+-- índices — este acrescenta 0,04%.
+--
+-- ESCRITA: um índice parcial só recebe entrada de linha que satisfaz o
+-- predicado. Medido, dentro de transação desfeita:
+--
+--   tamanho do índice logo após o build ............... 49.152 bytes
+--   depois de 1.000 UPDATEs FORA do predicado ..... 49.152 bytes (idêntico)
+--   depois de 1.838 UPDATEs DENTRO do predicado ... 81.920 bytes
+--
+-- Ou seja: as 380.389 linhas fora do predicado (99,76% da tabela) escrevem no
+-- índice ZERO bytes. O custo por escrita nelas é um teste de nulidade.
+--
+-- HOT: adicionar índice pode tirar updates do caminho HOT. Aqui não tira nada,
+-- porque HOT já é impossível nesta tabela: todo update do Prisma escreve
+-- `updatedAt`, e `updatedAt` já está indexado em
+-- "ProductListing_retryEnabled_updatedAt_idx". Confirmado pelo contador:
+-- 121 HOT updates em 634.778 (0,019%).
+--
+--
+-- ── POR QUE NAO USAR `CONCURRENTLY` (decisão contra-intuitiva) ───────────
+--
+-- A regra de bolso manda usar CONCURRENTLY em tabela grande, e esta tem
+-- 236 MB. Aqui a regra de bolso está errada, por dois motivos medidos:
+--
+--   1. O build leva 190 ms. Foi cronometrado três vezes (190 / 190 / 234 ms)
+--      contra a tabela de produção. ⚠️ Nas três, a tabela estava em cache —
+--      é o estado normal dela (`shared_blks_read` de 610 contra 1,13 bilhão de
+--      hits). Num banco recém-reiniciado o build precisaria ler os 111 MB do
+--      heap do disco antes de terminar; ainda assim é uma ordem de grandeza de
+--      segundos, não de minutos.
+--      O SHARE lock bloqueia ESCRITA — não leitura. A tabela recebe ~0,32
+--      escritas por segundo em média (1.032.964 escritas em 37,23 dias):
+--      estatisticamente, 0,06 escrita espera. O `lock_timeout` abaixo garante
+--      que, se houver um escritor longo no ar, o comando desiste em vez de
+--      enfileirar a aplicação atrás dele.
+--
+--   2. CONCURRENTLY espera TODAS as transações concorrentes terminarem antes
+--      de concluir. Este banco tem sessões em `idle in transaction` (uma foi
+--      observada durante a medição). CONCURRENTLY ficaria pendurado nela por
+--      tempo indefinido — e, se interrompido, deixa um índice INVÁLIDO que
+--      precisa ser removido à mão e que o planner ignora silenciosamente.
+--
+-- Trocar 0,2 s de bloqueio de escrita por um modo de falha que exige limpeza
+-- manual seria piorar a confiabilidade em nome de uma regra genérica.
+--
+--
+-- ── POR QUE ELE NÃO PODE ESTRAGAR OUTRA CONSULTA ──────────────────────────
+--
+-- O Postgres só usa índice parcial quando consegue PROVAR que o predicado do
+-- índice é implicado pelo WHERE da consulta. Isso é garantia do planner, não
+-- heurística. Uma consulta que filtra por `productId` sem exigir
+-- `imageUrlsOverride IS NOT NULL` não pode escolher este índice nem por
+-- acidente — continua no "ProductListing_productId_idx", que fica.
+--
+-- Só existe UM lugar no código inteiro que produz o predicado casado:
+-- `app/marketplaces/services/image-bg-swap.ts`, na linha
+-- `imageUrlsOverride: { not: Prisma.DbNull }`.
+--
+-- Verificado também que o UPDATE do laço (CAS por `id`) continua no
+-- "ProductListing_pkey", com 3 páginas lidas — plano inalterado.
+--
+-- Idempotente (IF NOT EXISTS): pode rodar duas vezes sem medo.
+
+BEGIN;
+
+-- Se algum escritor longo estiver segurando a tabela, desiste em 5s em vez de
+-- enfileirar as escritas da aplicação atrás deste comando.
+--
+-- Se der `ERROR: canceling statement due to lock timeout`, NÃO é problema:
+-- a transação inteira é desfeita, nada fica pela metade, e basta rodar o
+-- arquivo de novo daqui a um minuto. `SET LOCAL` volta ao normal sozinho no
+-- fim da transação.
+SET LOCAL lock_timeout = '5s';
+
+-- Chave = "productId" porque é por ele que a consulta junta com "Product"
+-- (o escopo de tenant, `userId`, mora do outro lado do JOIN).
+--
+-- ⚠️ SEM `INCLUDE ("imageUrlsOverride")`, de propósito. Um INCLUDE faria a
+-- leitura ser index-only e pouparia mais um punhado de páginas, MAS o valor é
+-- um JSON de tamanho livre: no dia em que um vendedor salvasse um override com
+-- fotos demais, a entrada passaria do limite de ~2.700 bytes do btree e o
+-- INSERT/UPDATE daquele anúncio passaria a FALHAR. Trocar um ganho marginal de
+-- leitura por um modo de falha de escrita não vale.
+CREATE INDEX IF NOT EXISTS "ProductListing_productId_imageUrlsOverride_idx"
+  ON "ProductListing" ("productId")
+  WHERE "imageUrlsOverride" IS NOT NULL;
+
+COMMIT;
+
+-- ⚠️⚠️ ARMADILHA: NÃO "MELHORE" O PREDICADO.
+--
+-- Sabendo que 918 das 919 linhas são JSON `null`, a tentação óbvia é apertar o
+-- predicado para deixar de fora o lixo:
+--
+--   WHERE "imageUrlsOverride" IS NOT NULL
+--     AND "imageUrlsOverride" <> 'null'::jsonb        -- ❌ NÃO FAÇA
+--
+-- Isso INUTILIZA o índice. O Postgres só usa índice parcial quando consegue
+-- PROVAR que o predicado do índice é implicado pelo WHERE da consulta — e a
+-- consulta só diz `IS NOT NULL`. Um predicado mais estreito não é implicado
+-- por um mais largo, então o planner volta ao Seq Scan e o ganho inteiro
+-- evapora, em silêncio, sem erro nenhum.
+--
+-- O predicado do índice tem de casar EXATAMENTE com o que a consulta pede.
+-- Guardado por tests/image-bg-swap-partial-index.spec.ts.
+--
+-- O caminho certo para eliminar as 918 linhas é do outro lado: fazer a escrita
+-- gravar `Prisma.DbNull` em vez de `null`, e converter o passivo com
+-- `UPDATE ... SET "imageUrlsOverride" = NULL WHERE "imageUrlsOverride" = 'null'::jsonb`.
+-- É mudança de dados e de comportamento de escrita, precisa de entrega própria,
+-- e NÃO é pré-requisito deste índice: sem o índice, tirar as 918 linhas não
+-- resolveria nada — a varredura das 381 mil continuaria igual, porque o custo
+-- é encontrar as linhas, não devolvê-las.
+
+-- ── Verificação (rodar depois do COMMIT) ──────────────────────────────────
+--
+-- 1) O índice existe, é válido e tem o tamanho esperado (~48 kB):
+--
+-- SELECT i.indexrelname, x.indisvalid,
+--        pg_size_pretty(pg_relation_size(i.indexrelid)) AS tamanho,
+--        pg_get_indexdef(i.indexrelid) AS definicao
+--   FROM pg_stat_user_indexes i
+--   JOIN pg_index x ON x.indexrelid = i.indexrelid
+--  WHERE i.indexrelname = 'ProductListing_productId_imageUrlsOverride_idx';
+--
+--    → indisvalid DEVE ser `t`. Se vier `f`, o índice está INVÁLIDO e o
+--      planner o ignora: rode o DROP do rollback e refaça.
+--
+-- 2) O planner realmente escolheu o índice (troque o userId por um tenant
+--    real, p.ex. o que tem mais overrides):
+--
+-- EXPLAIN (ANALYZE, BUFFERS)
+-- SELECT l."id", l."imageUrlsOverride"
+--   FROM "ProductListing" l
+--   LEFT JOIN "Product" AS j1 ON j1."id" = l."productId"
+--  WHERE j1."userId" = 'cmordubzu0000vst0cpn3kc41' AND j1."id" IS NOT NULL
+--    AND l."imageUrlsOverride" IS NOT NULL;
+--
+--    → DEVE aparecer `Index Scan using "ProductListing_productId_imageUrlsOverride_idx"`.
+--    → NÃO pode aparecer `Seq Scan on "ProductListing"`.
+--    → Buffers ~4.500 (era ~17.800). Execution Time ~8 ms (era ~155 ms).
+--
+-- 3) Depois de algumas horas de uso, o contador confirma que ele está sendo
+--    usado de verdade:
+--
+-- SELECT idx_scan FROM pg_stat_user_indexes
+--  WHERE indexrelname = 'ProductListing_productId_imageUrlsOverride_idx';
+--
+--    → tem de estar subindo. Zero depois de um dia = o predicado do código
+--      deixou de casar com o do índice (ver o teste
+--      tests/image-bg-swap-partial-index.spec.ts).
+
+-- ── ROLLBACK ──────────────────────────────────────────────────────────────
+--
+-- Sem ordem nenhuma a respeitar, sem deploy antes, sem flag para desligar:
+-- nenhum código conhece este índice. Derrubar só devolve a lentidão de hoje.
+--
+-- DROP INDEX IF EXISTS "ProductListing_productId_imageUrlsOverride_idx";

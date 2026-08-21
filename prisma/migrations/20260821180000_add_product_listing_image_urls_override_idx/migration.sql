@@ -1,0 +1,39 @@
+-- Índice PARCIAL para a busca de overrides de imagem por anúncio.
+--
+-- Motivo: `swapImageUrlReferences` (recorte de fundo) procura os anúncios cujo
+-- `imageUrlsOverride` está preenchido para trocar a URL antiga pela nova. Sem
+-- índice que atenda `IS NOT NULL`, o Postgres varre a tabela inteira a cada
+-- chamada — em produção, 381.308 linhas lidas para achar as 919 que passam pelo
+-- filtro (0,24%), 68.211 vezes em 28,7 dias. E dessas 919, só UMA tem de fato
+-- um array de imagens: as outras 918 guardam o literal JSON `null`, que em SQL
+-- não é nulo (ver o arquivo de ddl/ para a origem disso).
+--
+-- ⚠️ O predicado tem de ser exatamente `IS NOT NULL`, igual ao que a consulta
+-- pede. Apertá-lo para excluir o JSON `null` faria o planner deixar de usar o
+-- índice — ele só usa índice parcial quando PROVA que o predicado é implicado
+-- pelo WHERE.
+--
+-- Medido em produção (mediana de 7 execuções, transação desfeita com ROLLBACK):
+-- ~155 ms -> ~7,6 ms por chamada, e 17.831 -> 4.512 páginas lidas (-74,7%).
+-- O índice tem 48 kB e não recebe entrada nenhuma nas escritas das 99,76% de
+-- linhas sem override.
+--
+-- Prisma não expressa índice PARCIAL no schema, então ele vive apenas aqui
+-- (documentado também em prisma/schema.prisma, no model ProductListing, e em
+-- app/marketplaces/services/image-bg-swap.ts, o único consumidor).
+--
+-- SEM `CONCURRENTLY`, por dois motivos: (1) `migrate` roda a migration dentro
+-- de uma transação, e CONCURRENTLY não pode rodar em transação; (2) o build foi
+-- cronometrado em 190 ms na tabela de produção — o bloqueio de escrita é menor
+-- que o risco de CONCURRENTLY ficar pendurado numa sessão `idle in transaction`
+-- e deixar um índice inválido. O arquivo de produção
+-- (prisma/ddl/2026-08-21-product-listing-image-urls-override-idx.sql) explica
+-- a decisão em detalhe.
+--
+-- Não há dependência de ordem com deploy: o código funciona sem ele, só devagar.
+--
+-- Idempotente: pode rodar duas vezes, e vira no-op num banco onde o DDL manual
+-- já foi aplicado.
+CREATE INDEX IF NOT EXISTS "ProductListing_productId_imageUrlsOverride_idx"
+  ON "ProductListing" ("productId")
+  WHERE "imageUrlsOverride" IS NOT NULL;
