@@ -140,8 +140,8 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
       }
       const data = (await res.json()) as LinkInfo;
       if (seq !== seqRef.current) return;
+      // NÃO setar `valor` aqui: ver o efeito de sincronização mais abaixo.
       setInfo(data);
-      setValor(data.scrapId ?? NO_SCRAP);
       setStatus("pronto");
     } catch (e) {
       if (seq !== seqRef.current) return;
@@ -156,6 +156,25 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
   useEffect(() => {
     void carregarVinculo();
   }, [carregarVinculo]);
+
+  // O valor do seletor segue `info` num commit SEPARADO, e isso é a correção
+  // do bug que o cliente viu — não um detalhe de estilo.
+  //
+  // Dentro de um <form> (o modal de edição é um), o Radix mantém um <select>
+  // NATIVO espelhando o seletor, para o formulário enxergar o campo. Se o
+  // `value` muda no MESMO commit em que a <option> daquela sucata aparece, o
+  // <select> nativo ainda não conhece a opção: o browser recusa o valor, cai na
+  // PRIMEIRA <option> — que é "Sem sucata" — e devolve isso num evento
+  // `change`, que o Radix repassa ao `onValueChange`. Ou seja, o próprio
+  // seletor apagava o vínculo milissegundos depois de lê-lo.
+  //
+  // Separando em dois commits, a <option> já está registrada quando o valor
+  // muda, e o <select> nativo aceita. Fora de formulário o Radix nem cria esse
+  // <select> — por isso o defeito não aparecia em teste de componente isolado.
+  useEffect(() => {
+    if (status !== "pronto" || !info) return;
+    setValor(info.scrapId ?? NO_SCRAP);
+  }, [status, info]);
 
   // O abort acontece só quando a seção SAI DE CENA. Abortar no cleanup de todo
   // reexecutar do efeito era o que matava a resposta boa — e, sem retry, nada
