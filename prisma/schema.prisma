@@ -500,6 +500,8 @@ model ProductListing {
   widthCmOverride         Int?
   lengthCmOverride        Int?
   weightKgOverride        Float?
+  // ⚠️ Tem um índice PARCIAL sobre esta coluna que NÃO aparece aqui — Prisma
+  // não expressa `WHERE`. Ver a nota no bloco de @@index, no fim do model.
   imageUrlsOverride       Json?
   attributesOverride      Json?
   compatibilitiesOverride Json?
@@ -520,6 +522,28 @@ model ProductListing {
   // WHERE retryEnabled=true ORDER BY updatedAt. DDL aplicado manualmente em
   // produção (CREATE INDEX CONCURRENTLY); este @@index é o espelho.
   @@index([retryEnabled, updatedAt])
+  // ⚠️ EXISTE UM ÍNDICE A MAIS NO BANCO QUE NÃO PODE SER DECLARADO AQUI:
+  //
+  //   CREATE INDEX "ProductListing_productId_imageUrlsOverride_idx"
+  //     ON "ProductListing" ("productId")
+  //     WHERE "imageUrlsOverride" IS NOT NULL;
+  //
+  // Prisma não expressa índice PARCIAL (cláusula WHERE), então ele vive em
+  // prisma/ddl/2026-08-21-product-listing-image-urls-override-idx.sql e na
+  // migration 20260821180000_add_product_listing_image_urls_override_idx.
+  //
+  // Serve `swapImageUrlReferences` (troca de URL depois do recorte de fundo):
+  // só 919 dos 381.308 anúncios passam pelo filtro, e sem ele a busca varria a
+  // tabela inteira — 155 ms e 17.831 páginas por chamada, 68 mil chamadas em
+  // 28,7 dias. Com ele: ~7,6 ms e 4.512 páginas.
+  //
+  // ⚠️ O predicado é exatamente `IS NOT NULL` porque é isso que a consulta
+  // pede. Apertá-lo (p.ex. excluindo o literal JSON `null`, que hoje ocupa 918
+  // das 919 linhas) faz o planner ABANDONAR o índice em silêncio.
+  //
+  // ⚠️ Se `prisma db push` for usado algum dia contra um banco que tenha este
+  // índice, ele SOME (o push derruba o que não está no schema). Recriar com o
+  // arquivo de ddl/.
 }
 
 model MarketplaceCategory {
