@@ -78,6 +78,75 @@ function escopoLegado(): boolean {
 }
 
 /**
+ * Kill-switch da guarda de novidade do upsert de PERGUNTA (ML e Shopee).
+ *
+ * Ligado (`MESSAGES_QUESTION_UPSERT_LEGACY=1`), o upsert volta a rodar em toda
+ * varredura, mudando algo ou não — inclusive recarimbando `lastSyncedAt`.
+ * Reverter é `.env` + restart, sem deploy.
+ *
+ * Lido por chamada de propósito, igual ao `escopoLegado`.
+ */
+function upsertPerguntaLegado(): boolean {
+  return process.env.MESSAGES_QUESTION_UPSERT_LEGACY === "1";
+}
+
+/**
+ * Campos que o ramo `update` dos upserts de pergunta do ML e da Shopee
+ * reescreve — TODOS eles, fora `lastSyncedAt`, que é carimbo de passagem e não
+ * conteúdo.
+ *
+ * ⚠️ Esta lista e o objeto `update` dos dois upserts têm de andar juntos: um
+ * campo que entre no `update` e não entre aqui faria a guarda pular uma escrita
+ * necessária, em silêncio. Há teste estrutural travando as duas pontas
+ * (`messages-question-upsert-guard.test.ts`).
+ *
+ * A Magalu fica de fora: o `update` dela tem outra lista (`authorType`, sem
+ * `status` nem `productListingId`) e é seguido de uma reescrita do status da
+ * conversa inteira.
+ */
+export const CAMPOS_REESCRITOS_NA_PERGUNTA = [
+  "status",
+  "text",
+  "productListingId",
+  "buyerNickname",
+] as const;
+
+export type PerguntaComparavel = {
+  status: string;
+  text: string;
+  productListingId: string | null;
+  buyerNickname: string | null;
+};
+
+/**
+ * A pergunta que o marketplace acabou de devolver já está gravada igual?
+ *
+ * Por que existe: a varredura de catálogo revê os MESMOS anúncios/comentários a
+ * cada ciclo e o upsert reescrevia a linha inteira mesmo quando nada tinha
+ * mudado. Em produção o `INSERT … ON CONFLICT` da pergunta acumulou **185.088
+ * execuções em 37 dias** para 9.556 perguntas — e uma varredura da Shopee
+ * sozinha responde por ~3.553 delas.
+ *
+ * As quatro colunas comparadas raramente mudam depois que a linha nasce: o
+ * texto da pergunta não é editável pela UI dos marketplaces, o `status` transita
+ * no máximo uma vez (UNANSWERED → ANSWERED), o apelido do comprador é estável e
+ * o `productListingId` só muda quando o anúncio local aparece ou some.
+ *
+ * Nada disso é premissa de correção, só de ganho: se qualquer um dos quatro
+ * mudar, a comparação acusa e o upsert roda inteiro, como sempre rodou.
+ *
+ * Conservadora por construção: sem linha gravada devolve `false` (é `create`), e
+ * basta um campo divergir para o upsert rodar inteiro, como sempre rodou.
+ */
+export function perguntaJaGravada(
+  gravada: PerguntaComparavel | null | undefined,
+  aGravar: PerguntaComparavel,
+): boolean {
+  if (!gravada) return false;
+  return CAMPOS_REESCRITOS_NA_PERGUNTA.every((c) => gravada[c] === aGravar[c]);
+}
+
+/**
  * `readAt` inicial de uma pergunta no instante em que o Dexo a conhece pela
  * PRIMEIRA vez. Usado só no ramo `create` dos upserts — re-sync nunca chama
  * isto, preservando o que o usuário já leu.
@@ -200,6 +269,10 @@ export class QuestionRepository {
    * Otimizações:
    *   - `productListingId` opcional: se o caller já resolveu, evita 1 SELECT.
    *   - findUnique (isNew) + resolveListingId rodam em PARALELO quando precisa.
+   *   - guarda de novidade: nem o upsert da pergunta nem a transação da resposta
+   *     rodam quando o conteúdo já está gravado igual (ver `perguntaJaGravada` e
+   *     `respostaJaGravada`). As leituras que sustentam as duas cabem no mesmo
+   *     `Promise.all`, então a guarda não custa ida a mais ao banco.
    */
   static async upsertFromMl(
     marketplaceAccountId: string,
@@ -218,7 +291,17 @@ export class QuestionRepository {
             externalQuestionId,
           },
         },
-        select: { id: true },
+        // As 4 colunas de conteúdo vêm junto com o `id` que esta consulta já
+        // buscava: MESMO statement, +72 bytes por linha (medido em produção), e
+        // é o que permite não reescrever a linha quando nada mudou. Antes daqui
+        // só o `id` era selecionado.
+        select: {
+          id: true,
+          status: true,
+          text: true,
+          productListingId: true,
+          buyerNickname: true,
+        },
       }),
       needsListingLookup
         ? this.resolveListingId(marketplaceAccountId, mlQuestion.item_id)
@@ -248,31 +331,39 @@ export class QuestionRepository {
       ? new Date(mlQuestion.answer!.date_created)
       : null;
 
-    const upserted = await prisma.marketplaceQuestion.upsert({
-      where: {
-        marketplaceAccountId_externalQuestionId: {
-          marketplaceAccountId,
-          externalQuestionId,
-        },
-      },
-      create: {
-        ...baseData,
-        lastSyncedAt: new Date(),
-        readAt: initialReadAt({
-          status: baseData.status,
-          dateCreated: baseData.dateCreated,
-          answeredAt: mlAnsweredAt,
-        }),
-      },
-      update: {
-        status: baseData.status,
-        text: baseData.text,
-        productListingId: baseData.productListingId,
-        buyerNickname: baseData.buyerNickname,
-        lastSyncedAt: new Date(),
-      },
-      select: { id: true },
-    });
+    // Linha já gravada com este mesmo conteúdo: o upsert só reescreveria os
+    // mesmos valores e recarimbaria `lastSyncedAt`. Sai fora.
+    const podePular =
+      !upsertPerguntaLegado() && perguntaJaGravada(existing, baseData);
+
+    const upserted =
+      existing && podePular
+        ? { id: existing.id }
+        : await prisma.marketplaceQuestion.upsert({
+            where: {
+              marketplaceAccountId_externalQuestionId: {
+                marketplaceAccountId,
+                externalQuestionId,
+              },
+            },
+            create: {
+              ...baseData,
+              lastSyncedAt: new Date(),
+              readAt: initialReadAt({
+                status: baseData.status,
+                dateCreated: baseData.dateCreated,
+                answeredAt: mlAnsweredAt,
+              }),
+            },
+            update: {
+              status: baseData.status,
+              text: baseData.text,
+              productListingId: baseData.productListingId,
+              buyerNickname: baseData.buyerNickname,
+              lastSyncedAt: new Date(),
+            },
+            select: { id: true },
+          });
 
     if (temResposta) {
       const aGravar = {
@@ -340,7 +431,17 @@ export class QuestionRepository {
             externalQuestionId,
           },
         },
-        select: { id: true },
+        // As 4 colunas de conteúdo vêm junto com o `id` que esta consulta já
+        // buscava: MESMO statement, +72 bytes por linha (medido em produção), e
+        // é o que permite não reescrever a linha quando nada mudou. Antes daqui
+        // só o `id` era selecionado.
+        select: {
+          id: true,
+          status: true,
+          text: true,
+          productListingId: true,
+          buyerNickname: true,
+        },
       }),
       needsListingLookup
         ? this.resolveListingId(marketplaceAccountId, externalItemId)
@@ -375,31 +476,40 @@ export class QuestionRepository {
         )
       : null;
 
-    const upserted = await prisma.marketplaceQuestion.upsert({
-      where: {
-        marketplaceAccountId_externalQuestionId: {
-          marketplaceAccountId,
-          externalQuestionId,
-        },
-      },
-      create: {
-        ...baseData,
-        lastSyncedAt: new Date(),
-        readAt: initialReadAt({
-          status: baseData.status,
-          dateCreated: baseData.dateCreated,
-          answeredAt: shopeeAnsweredAt,
-        }),
-      },
-      update: {
-        status: baseData.status,
-        text: baseData.text,
-        productListingId: baseData.productListingId,
-        buyerNickname: baseData.buyerNickname,
-        lastSyncedAt: new Date(),
-      },
-      select: { id: true },
-    });
+    // Linha já gravada com este mesmo conteúdo: o upsert só reescreveria os
+    // mesmos valores e recarimbaria `lastSyncedAt`. Sai fora. É o caso
+    // dominante — a varredura shop-wide revê os mesmos comentários a cada ciclo.
+    const podePular =
+      !upsertPerguntaLegado() && perguntaJaGravada(existing, baseData);
+
+    const upserted =
+      existing && podePular
+        ? { id: existing.id }
+        : await prisma.marketplaceQuestion.upsert({
+            where: {
+              marketplaceAccountId_externalQuestionId: {
+                marketplaceAccountId,
+                externalQuestionId,
+              },
+            },
+            create: {
+              ...baseData,
+              lastSyncedAt: new Date(),
+              readAt: initialReadAt({
+                status: baseData.status,
+                dateCreated: baseData.dateCreated,
+                answeredAt: shopeeAnsweredAt,
+              }),
+            },
+            update: {
+              status: baseData.status,
+              text: baseData.text,
+              productListingId: baseData.productListingId,
+              buyerNickname: baseData.buyerNickname,
+              lastSyncedAt: new Date(),
+            },
+            select: { id: true },
+          });
 
     if (hasReply) {
       const aGravar = {

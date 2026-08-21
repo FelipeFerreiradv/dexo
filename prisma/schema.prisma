@@ -1873,6 +1873,10 @@ model MarketplaceQuestion {
   // renderiza por authorType (SELLER à direita / CUSTOMER à esquerda).
   authorType           String?
   dateCreated          DateTime
+  // "Última vez que o Dexo GRAVOU esta linha" — NÃO "última vez que a viu". Desde
+  // a guarda de novidade dos upserts (ML/Shopee), uma varredura que reencontra a
+  // pergunta sem nenhuma mudança não reescreve a linha e não recarimba isto.
+  // Coluna sem nenhum leitor no código: não entra em where, orderBy nem UI.
   lastSyncedAt         DateTime  @default(now())
   readAt               DateTime?
 
