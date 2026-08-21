@@ -20,9 +20,15 @@
 --
 --    Previsão do laboratório era 7,6 ms e 4.512 páginas. Bateu.
 --
---    Uma leitura anterior, de 3,2 minutos e 25 chamadas, deu 7,28 ms e 4.451
---    páginas — mesma ordem, amostra menor. Os números acima são os da amostra
---    maior, que é a que vale.
+--    Três leituras, de amostras crescentes, para mostrar que o número converge
+--    em vez de oscilar:
+--
+--      25 chamadas  (3,2 min) →  7,28 ms  ·  4.451 páginas
+--     102 chamadas (10,6 min) →  7,63 ms  ·  4.313 páginas
+--     138 chamadas (14,0 min) →  7,83 ms  ·  4.367 páginas
+--
+--    Qualquer ponto dessa faixa é uma ordem de grandeza abaixo dos 95,4 ms.
+--    O relatório de entrega ao Suporte usa a leitura de 138 chamadas.
 --
 -- COMO USAR: cole no SQL editor do Supabase e execute. É uma transação só.
 --
