@@ -18,6 +18,13 @@ import {
 
 import { ConversationList } from "./conversation-list";
 import { ChatPane } from "./chat-pane";
+import { notifyUnreadChanged } from "../lib/unread-events";
+import {
+  aplicarLeiturasConfirmadas,
+  mesclarPagina0,
+  podarLeiturasAntigas,
+  resolverConversaAberta,
+} from "../lib/conversation-merge";
 
 export interface AccountSummary {
   id: string;
@@ -56,6 +63,15 @@ interface MessagesShellProps {
 }
 
 const POLL_MS = 30_000;
+
+/** Tamanho da página. O backend limita `limit` a 100. */
+const PAGE_SIZE = 50;
+
+/**
+ * "reset" = primeira carga/troca de filtro · "poll" = ciclo de 30 s ·
+ * "mais" = botão Carregar mais (única que usa offset).
+ */
+type ModoCarga = "reset" | "mais" | "poll";
 
 // Magalu (3º marketplace) só entra no filtro com a flag ligada — off ⇒ o
 // seletor fica idêntico (só Mercado Livre/Shopee).
@@ -102,6 +118,23 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   >(null);
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
   const [convError, setConvError] = React.useState<string | null>(null);
+  // Total de conversas no servidor (o backend já devolvia; a UI ignorava). Sem
+  // isto não havia como alcançar nada além da 50ª — no maior tenant eram 1.297
+  // conversas com não lidas contra 50 exibidas.
+  const [total, setTotal] = React.useState(0);
+  const [carregandoMais, setCarregandoMais] = React.useState(false);
+  const [paginasCarregadas, setPaginasCarregadas] = React.useState(1);
+  // Contexto = o recorte que a lista representa. Serve para saber se a lista na
+  // tela já é do filtro atual antes de decidir que a conversa aberta "sumiu".
+  const contextoAtual = `${accountId}|${platform}|${filter}`;
+  const [contextoDaLista, setContextoDaLista] = React.useState<string | null>(
+    null,
+  );
+  // Uma conferência de seleção por troca de contexto (não a cada poll).
+  const conferirSelecaoRef = React.useRef(true);
+  // Última versão conhecida da conversa aberta — mantém o painel de pé quando a
+  // lista filtrada deixa de trazê-la.
+  const ultimaConversaRef = React.useRef<ConversationSummary | null>(null);
   // Canal WhatsApp é por PLANO (gate por usuário no backend): a opção do filtro
   // só aparece quando GET /messages/accounts confirmar o entitlement do tenant.
   // Flag global desligada ⇒ o campo nem vem na resposta ⇒ false ⇒ UI idêntica.
@@ -141,16 +174,40 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     return () => controller.abort();
   }, [apiBase, headers, isAuthenticated]);
 
+  // Guarda de corrida: só a resposta da requisição MAIS RECENTE pode escrever no
+  // estado. Havia três disparadores de refetch (efeito, poll de 30 s e
+  // pós-resposta) e dois deles rodavam sem AbortController, então uma resposta
+  // antiga podia chegar depois de uma leitura confirmada e ressuscitar o número.
+  const seqRef = React.useRef(0);
+  // Leituras JÁ CONFIRMADAS pelo servidor: itemId -> instante da confirmação.
+  // Uma resposta cuja requisição começou ANTES da confirmação está proibida de
+  // sobrescrever o zero; uma que começou depois já reflete o pós-leitura.
+  const readAckRef = React.useRef<Map<string, number>>(new Map());
+
   const loadConversations = React.useCallback(
-    async (signal?: AbortSignal) => {
+    async (
+      signal?: AbortSignal,
+      modo: ModoCarga = "reset",
+      offset = 0,
+    ) => {
       if (!isAuthenticated || !accountId) return;
+      const seq = ++seqRef.current;
+      const iniciadoEm = Date.now();
+      // O recorte que ESTA requisição representa (vem do closure, não do render
+      // atual) — é o que marca a lista como já pertencente ao contexto novo.
+      const contextoDoRequest = `${accountId}|${platform}|${filter}`;
+      if (modo === "mais") setCarregandoMais(true);
       try {
         const params = new URLSearchParams({
           accountId,
           status: filter,
           ...(platform !== "all" ? { platform } : {}),
           ...(debouncedSearch ? { search: debouncedSearch } : {}),
-          limit: "50",
+          limit: String(PAGE_SIZE),
+          // "reset" e "poll" sempre pedem a PRIMEIRA página: a ordenação é por
+          // data da última mensagem, então novidade cai sempre ali. Recarregar
+          // todas as páginas abertas a cada 30 s multiplicaria o egress sem ganho.
+          ...(modo === "mais" && offset > 0 ? { offset: String(offset) } : {}),
         });
         const res = await fetch(
           `${apiBase}/messages/conversations?${params.toString()}`,
@@ -161,22 +218,71 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
           items: ConversationSummary[];
           total: number;
         };
-        setConversations(data.items);
+        if (seq !== seqRef.current) return; // resposta obsoleta: descarta
+        podarLeiturasAntigas(readAckRef.current);
+        const recebidas = aplicarLeiturasConfirmadas(
+          data.items,
+          readAckRef.current,
+          iniciadoEm,
+        );
+        setTotal(data.total);
+        setContextoDaLista(contextoDoRequest);
+        setConversations((prev) => {
+          if (modo === "mais") return [...(prev ?? []), ...recebidas];
+          // "reset" SEMPRE substitui: troca de filtro, de conta ou de busca não
+          // pode mesclar a lista nova com a antiga.
+          if (modo === "reset") return recebidas;
+          // "poll": sem páginas extras abertas, substitui a lista inteira —
+          // byte-idêntico ao comportamento anterior à paginação, que é o caso de
+          // quem nunca clicou em "Carregar mais".
+          if (!prev || prev.length <= PAGE_SIZE) return recebidas;
+          return mesclarPagina0(prev, recebidas);
+        });
+        // O contador de páginas tem de acompanhar o que está NA LISTA, senão o
+        // próximo "Carregar mais" pede um offset que pula registros.
+        if (modo === "mais") setPaginasCarregadas((p) => p + 1);
+        else if (modo === "reset") setPaginasCarregadas(1);
         setConvError(null);
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") return;
+        // Falha obsoleta também não pode apagar a lista que já está na tela.
+        if (seq !== seqRef.current) return;
         console.error("messages: failed to load conversations", err);
+        // Falhar ao buscar a PRÓXIMA página não pode derrubar o que já está na
+        // tela: só a carga inicial esvazia a lista.
+        if (modo === "mais") return;
         setConvError("Não foi possível carregar as conversas. Tente novamente.");
         setConversations([]);
+      } finally {
+        if (modo === "mais") setCarregandoMais(false);
       }
     },
     [accountId, platform, apiBase, filter, headers, debouncedSearch, isAuthenticated],
   );
 
+  // O offset vem do número de PÁGINAS já pedidas, não de `conversations.length`:
+  // o merge do poll pode deixar na lista conversas que saíram da página 0, e usar
+  // o comprimento como offset faria a próxima página pular registros.
+  const carregarMais = React.useCallback(() => {
+    void loadConversations(undefined, "mais", paginasCarregadas * PAGE_SIZE);
+  }, [loadConversations, paginasCarregadas]);
+
   // Skeleton (null) só em mudança "dura" — evita flicker em re-fetch por busca/poll.
   React.useEffect(() => {
     setConversations(null);
+    setContextoDaLista(null);
+    setTotal(0);
+    setPaginasCarregadas(1);
+    // Trocou o recorte: a seleção volta a ser conferida uma vez, contra a lista
+    // nova (e só ela — ver o efeito de fechamento do painel).
+    conferirSelecaoRef.current = true;
   }, [accountId, platform, filter]);
+
+  // A busca não zera a lista (evita flicker ao digitar), mas volta a paginação
+  // ao início: o resultado filtrado é outro conjunto, com outro offset.
+  React.useEffect(() => {
+    setPaginasCarregadas(1);
+  }, [debouncedSearch]);
 
   // Carrega conversas + cancela request anterior se inputs mudarem em sequência rápida.
   React.useEffect(() => {
@@ -189,25 +295,50 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     if (!accountId) return;
     const id = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        void loadConversations();
+        void loadConversations(undefined, "poll");
       }
     }, POLL_MS);
     return () => clearInterval(id);
   }, [accountId, loadConversations]);
 
-  // Quando muda accountId/filter, limpa seleção se não estiver mais na lista
+  // Fecha o painel quando a conversa aberta sai do ESCOPO — e só então.
+  //
+  // Antes, este efeito dependia de `conversations` e rodava a cada atualização
+  // da lista, inclusive no poll de 30 s. Na aba "Não lidas" isso fechava o
+  // painel na cara de quem estava lendo: marcar a conversa como lida a remove
+  // do resultado filtrado, e a ausência era lida como "saiu do escopo". Em
+  // "Sem resposta", responder produzia o mesmo efeito.
+  //
+  // Agora a conferência acontece UMA vez por troca de contexto, e só contra uma
+  // lista que já é daquele contexto (`contextoDaLista`) — enquanto a lista ainda
+  // é do contexto anterior, ou está carregando, a ausência não significa nada.
   React.useEffect(() => {
-    if (!conversations) return;
-    if (selectedItemId && !conversations.some((c) => c.externalItemId === selectedItemId)) {
+    if (!conversations || contextoDaLista !== contextoAtual) return;
+    if (!conferirSelecaoRef.current) return;
+    conferirSelecaoRef.current = false;
+    if (
+      selectedItemId &&
+      !conversations.some((c) => c.externalItemId === selectedItemId)
+    ) {
       setSelectedItemId(null);
     }
-  }, [conversations, selectedItemId]);
+  }, [conversations, contextoDaLista, contextoAtual, selectedItemId]);
 
   const selectedConversation = React.useMemo(
     () =>
-      conversations?.find((c) => c.externalItemId === selectedItemId) ?? null,
+      resolverConversaAberta(
+        selectedItemId,
+        conversations,
+        ultimaConversaRef.current,
+      ),
     [conversations, selectedItemId],
   );
+
+  // Guarda a versão fresca sempre que a lista ainda traz a conversa aberta. Em
+  // efeito (não no render) para o useMemo continuar puro.
+  React.useEffect(() => {
+    if (selectedConversation) ultimaConversaRef.current = selectedConversation;
+  }, [selectedConversation]);
 
   // Conta e plataforma combinam (AND); para nunca cair em lista vazia por
   // conflito, escolher um zera o outro (conta específica ⇒ plataforma "todas",
@@ -221,8 +352,13 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     if (p !== "all") setAccountId("all");
   }, []);
 
+  // Chamado pelo ChatPane APÓS o servidor confirmar a leitura (2xx) — nunca de
+  // forma otimista.
   const onConversationRead = React.useCallback(
     (itemId: string) => {
+      // Carimba a confirmação: é isto que autoriza o zero a sobreviver a um
+      // refetch que já estava em voo quando a leitura aconteceu.
+      readAckRef.current.set(itemId, Date.now());
       setConversations((prev) =>
         prev
           ? prev.map((c) =>
@@ -230,9 +366,22 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
             )
           : prev,
       );
+      // O badge da sidebar tem poll próprio de 60 s: avisa para revalidar já,
+      // em vez de deixar o número velho até um minuto na tela.
+      notifyUnreadChanged();
     },
     [],
   );
+
+  // Responder já marca a conversa como lida no SERVIDOR (MessagesUseCase), então
+  // aqui só carimbamos a confirmação e revalidamos as duas contagens.
+  const handleAfterAnswer = React.useCallback(() => {
+    if (selectedItemId) readAckRef.current.set(selectedItemId, Date.now());
+    notifyUnreadChanged();
+    // "poll", não "reset": responder é uma atualização da visão atual, não uma
+    // troca de recorte — não pode colapsar as páginas que o usuário já abriu.
+    void loadConversations(undefined, "poll");
+  }, [loadConversations, selectedItemId]);
 
   // Opções de plataforma: as estáticas + WhatsApp quando o tenant tem o plano.
   const platformOptions = React.useMemo(
@@ -323,6 +472,9 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
           search={search}
           onSearchChange={setSearch}
           error={convError}
+          hasMore={Boolean(conversations && total > conversations.length)}
+          loadingMore={carregandoMais}
+          onLoadMore={carregarMais}
           className={cn(selectedItemId && "hidden md:flex")}
         />
         <ChatPane
@@ -332,7 +484,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
           conversation={selectedConversation}
           onBack={() => setSelectedItemId(null)}
           onAfterRead={onConversationRead}
-          onAfterAnswer={() => void loadConversations()}
+          onAfterAnswer={handleAfterAnswer}
           className={cn(!selectedItemId && "hidden md:flex")}
         />
       </div>

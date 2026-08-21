@@ -360,7 +360,15 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
         return reply.status(404).send({ error: "Conta não encontrada" });
       }
 
-      const updated = await QuestionRepository.markConversationRead(accountId, itemId);
+      // `userId` alinha a MARCAÇÃO ao escopo da AGREGAÇÃO de listConversations
+      // (que agrupa por externalItemId dentro do usuário e soma o unreadCount
+      // de todas as contas dele). Ownership de `accountId` já foi validado
+      // acima; o filtro por userId preserva o isolamento entre tenants.
+      const updated = await QuestionRepository.markConversationRead(
+        accountId,
+        itemId,
+        userId,
+      );
       return reply.send({ updated });
     },
   );

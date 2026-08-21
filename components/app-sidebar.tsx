@@ -36,6 +36,7 @@ import {
 
 import { getApiBaseUrl } from "@/lib/api";
 import { hasPageAccess } from "@/app/lib/page-access";
+import { subscribeUnreadChanged } from "@/app/mensagens/lib/unread-events";
 
 import {
   Sidebar,
@@ -371,6 +372,12 @@ export function AppSidebar({ session }: AppSidebarProps) {
     };
 
     loadUnread();
+    // Revalida assim que a aba de Mensagens confirma uma leitura, em vez de
+    // deixar o número velho na tela até o próximo ciclo de 60 s. O evento só é
+    // emitido depois do 2xx do servidor (ver app/mensagens/lib/unread-events).
+    const unsubscribe = subscribeUnreadChanged(() => {
+      loadUnread();
+    });
     const id = setInterval(() => {
       if (
         typeof document === "undefined" ||
@@ -381,6 +388,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
     }, 60_000);
     return () => {
       cancelled = true;
+      unsubscribe();
       clearInterval(id);
     };
   }, [session?.user?.email]);

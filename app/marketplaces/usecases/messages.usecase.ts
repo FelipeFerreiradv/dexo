@@ -291,6 +291,38 @@ async function claimWebhookEvent(
 
 export class MessagesUseCase {
   /**
+   * Marca a conversa como lida DEPOIS de uma resposta enviada com sucesso.
+   *
+   * É impossível responder sem ter lido. Fazer isto no SERVIDOR fecha o buraco
+   * de a leitura depender do painel ter sido aberto E do POST /read ter dado
+   * certo — em produção havia 73 perguntas não lidas com resposta anexada,
+   * justamente conversas que o vendedor sabia ter respondido.
+   *
+   * Best-effort de propósito: a resposta JÁ saiu para o marketplace. Deixar uma
+   * falha aqui derrubar o request faria a UI mostrar erro num envio que deu
+   * certo — e o vendedor reenviaria, duplicando a resposta no anúncio. O poll da
+   * lista e o mark-read ao abrir cobrem o caso raro em que isto falha.
+   */
+  private static async marcarConversaLidaAposResposta(
+    marketplaceAccountId: string,
+    externalItemId: string,
+    userId?: string,
+  ): Promise<void> {
+    try {
+      await QuestionRepository.markConversationRead(
+        marketplaceAccountId,
+        externalItemId,
+        userId,
+      );
+    } catch (err) {
+      console.warn(
+        `[Messages] Falha ao marcar a conversa ${externalItemId} como lida após responder (ignorado):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * Processa um webhook ML topic=questions.
    * - Idempotência por (resource, user_id, sent).
    * - Busca a pergunta no ML, faz upsert local.
@@ -615,6 +647,11 @@ export class MessagesUseCase {
         status: "ACTIVE",
         date_created: new Date().toISOString(),
       });
+      await this.marcarConversaLidaAposResposta(
+        accountId,
+        question.externalItemId,
+        userId,
+      );
       return QuestionRepository.findById(questionId);
     }
 
@@ -626,6 +663,11 @@ export class MessagesUseCase {
     );
 
     await QuestionRepository.upsertFromMl(accountId, updated);
+    await this.marcarConversaLidaAposResposta(
+      accountId,
+      question.externalItemId,
+      userId,
+    );
     const reloaded = await QuestionRepository.findById(questionId);
     return reloaded;
   }
@@ -686,6 +728,13 @@ export class MessagesUseCase {
 
     // Re-sincroniza p/ trazer a mensagem recém-enviada e atualizar o status.
     await this.pullMagaluConversation(account, accessToken, conversationId);
+    // Depois do re-sync: a mensagem recém-enviada já existe como linha (SELLER,
+    // que nasce lida), e as do cliente que ainda estavam não lidas fecham aqui.
+    await this.marcarConversaLidaAposResposta(
+      account.id,
+      conversationId,
+      userId,
+    );
     return { success: true };
   }
 

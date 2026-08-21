@@ -6,6 +6,7 @@ import { MessageCircle, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { platformBadgeClassName } from "@/app/pedidos/lib/order-badges";
@@ -19,6 +20,11 @@ interface ConversationListProps {
   search: string;
   onSearchChange: (v: string) => void;
   error: string | null;
+  // Paginação (ADITIVA e opcional): sem estes props o componente renderiza
+  // exatamente como antes.
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
   className?: string;
 }
 
@@ -29,6 +35,9 @@ export function ConversationList({
   search,
   onSearchChange,
   error,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   className,
 }: ConversationListProps) {
   return (
@@ -65,16 +74,32 @@ export function ConversationList({
         ) : conversations.length === 0 ? (
           <EmptyConversations />
         ) : (
-          <ul className="divide-y divide-border/60">
-            {conversations.map((c) => (
-              <ConversationRow
-                key={c.externalItemId}
-                conversation={c}
-                active={c.externalItemId === selectedItemId}
-                onClick={() => onSelect(c.externalItemId)}
-              />
-            ))}
-          </ul>
+          <>
+            <ul className="divide-y divide-border/60">
+              {conversations.map((c) => (
+                <ConversationRow
+                  key={c.externalItemId}
+                  conversation={c}
+                  active={c.externalItemId === selectedItemId}
+                  onClick={() => onSelect(c.externalItemId)}
+                />
+              ))}
+            </ul>
+            {hasMore && onLoadMore && (
+              <div className="border-t border-border/60 p-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={onLoadMore}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? "Carregando..." : "Carregar mais"}
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -114,6 +139,25 @@ function conversationBadgeClasses(
     platformBadgeClassName(accountPlatform ?? undefined) ||
     accountBadgeClasses(accountId)
   );
+}
+
+/**
+ * Texto do `title` do badge de não lidas.
+ *
+ * No ML e na Shopee a conversa é por ANÚNCIO, não por comprador: uma pergunta
+ * nova de outro comprador no mesmo anúncio reacende o número legitimamente. O
+ * vendedor lia isso como o contador "voltando sozinho" numa conversa que ele já
+ * tinha respondido. Chat (Magalu/WhatsApp) é por contato, então o texto muda.
+ */
+function rotuloNaoLidas(
+  quantidade: number,
+  accountPlatform: string | null,
+): string {
+  const ehChat = accountPlatform === "MAGALU" || accountPlatform === "WHATSAPP";
+  const onde = ehChat ? "nesta conversa" : "neste anúncio";
+  return quantidade === 1
+    ? `1 mensagem nova ${onde}`
+    : `${quantidade} mensagens novas ${onde}`;
 }
 
 function ConversationRow({
@@ -206,7 +250,13 @@ function ConversationRow({
                 </Badge>
               )}
               {conversation.unreadCount > 0 && (
-                <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+                <span
+                  className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground"
+                  title={rotuloNaoLidas(
+                    conversation.unreadCount,
+                    conversation.accountPlatform,
+                  )}
+                >
                   {conversation.unreadCount}
                 </span>
               )}
