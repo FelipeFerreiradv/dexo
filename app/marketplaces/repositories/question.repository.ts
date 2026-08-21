@@ -1,4 +1,5 @@
 import prisma from "@/app/lib/prisma";
+import { findManyInChunks } from "@/app/lib/prisma-chunked";
 import type { Prisma, Platform } from "@prisma/client";
 import { MLQuestion } from "../types/ml-questions.types";
 
@@ -241,6 +242,68 @@ export class QuestionRepository {
       select: { id: true },
     });
     return listing?.id ?? null;
+  }
+
+  /**
+   * Chave de item de um comentário da Shopee — a MESMA expressão que o
+   * `upsertFromShopeeComment` usa para montar `externalItemId`.
+   *
+   * Existe para que a pré-carga em lote e a gravação não possam divergir na
+   * normalização: qualquer `trim`, `Number()` ou `toString()` a mais faria o
+   * lote casar anúncios que a gravação não casa (mudança de comportamento) ou
+   * lançar quando o campo falta.
+   *
+   * Devolve `null` quando não há item algum. O caller então NÃO pré-carrega
+   * aquele comentário, e o caminho por item roda como sempre rodou.
+   */
+  static chaveDeItemShopee(
+    itemId: number | string | null | undefined,
+  ): string | null {
+    if (itemId === null || itemId === undefined || itemId === "") return null;
+    return String(itemId);
+  }
+
+  /**
+   * Versão em LOTE do `resolveListingId`, para varreduras que veem centenas de
+   * itens por página. Aditiva: o singular continua existindo e em uso.
+   *
+   * ⚠️ O Map traz entrada para TODO id consultado, com `null` no miss. É isso
+   * que deixa o caller distinguir:
+   *   - `null`      ⇒ consultei e não achei (grave null, igual ao singular);
+   *   - `undefined` ⇒ NÃO consultei (caia no lookup por item).
+   * Sem essa distinção, um lote que falhasse gravaria `null` por cima de
+   * vínculos bons — e como `productListingId` está em
+   * CAMPOS_REESCRITOS_NA_PERGUNTA, a guarda de novidade veria divergência e
+   * forçaria o update em até 100 linhas por página, desvinculando conversas em
+   * silêncio.
+   *
+   * `marketplaceAccountId` é posicional e obrigatório de propósito: no
+   * `findUnique` do singular o isolamento é ESTRUTURAL (a chave composta não
+   * compila sem as duas metades); num `findMany` ele viraria campo opcional do
+   * `where`, e há colisão real de `externalItemId` entre contas neste banco.
+   *
+   * `findManyInChunks` entrega dedupe, guarda de lista vazia (não toca o banco)
+   * e o teto de bind variables — mesmo helper dos 10 pontos de `sync.usercase`.
+   */
+  static async resolveListingIds(
+    marketplaceAccountId: string,
+    externalItemIds: readonly string[],
+  ): Promise<Map<string, string | null>> {
+    const porItem = new Map<string, string | null>();
+    const consultados = [...new Set(externalItemIds)];
+    if (consultados.length === 0) return porItem;
+
+    for (const id of consultados) porItem.set(id, null);
+
+    const rows = await findManyInChunks(consultados, (ids) =>
+      prisma.productListing.findMany({
+        where: { marketplaceAccountId, externalListingId: { in: ids } },
+        select: { id: true, externalListingId: true },
+      }),
+    );
+    for (const row of rows) porItem.set(row.externalListingId, row.id);
+
+    return porItem;
   }
 
   /**
