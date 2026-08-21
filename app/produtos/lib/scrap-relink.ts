@@ -145,6 +145,29 @@ export interface ScrapLinkView {
  * dentro de um componente com `fetch` e `useEffect` não dá para provar sem
  * simular o mundo inteiro. Aqui ele é uma tabela verdade.
  */
+/**
+ * A leitura terminou, mas o seletor ainda não recebeu o valor?
+ *
+ * Existe por causa da correção do `<select>` nativo do Radix: o valor tem de
+ * ser aplicado no commit SEGUINTE ao que registrou a `<option>`, senão o
+ * browser recusa o valor e devolve a primeira opção — "Sem sucata" — pelo
+ * `onValueChange`, apagando o vínculo. A separação é obrigatória; o efeito
+ * colateral dela é este intervalo.
+ *
+ * Enquanto ele durar, a tela NÃO pode afirmar "Sem sucata" nem oferecer o
+ * botão "Alterar": `alvo` ainda vale `null` e um clique confirmado ali
+ * desvincularia a peça. É a mesma mentira do bug original, só que curta.
+ *
+ * `valor` só é "" antes da primeira sincronização — o seletor sempre entrega
+ * `__none__` ou um id.
+ */
+export function isScrapLinkSincronizando(
+  status: ScrapLinkStatus,
+  valor: string,
+): boolean {
+  return status === "pronto" && valor === "";
+}
+
 export function describeScrapLinkView(
   status: ScrapLinkStatus,
   scrapId: string | null | undefined,

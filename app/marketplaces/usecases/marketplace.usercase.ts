@@ -1,48 +1,15 @@
 ﻿import { MLOAuthService } from "../services/ml-oauth.service";
 import { MLApiService } from "../services/ml-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
-import { ShopeeApiService } from "../services/shopee-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { OlxOAuthService } from "../services/olx-oauth.service";
 import { FacebookOAuthService } from "../services/facebook-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
-import { shopeeAccountLabel } from "../lib/shopee-account-label";
+import { shopeeFallbackAccountName } from "../lib/shopee-account-label";
 import { SystemLogService } from "../../services/system-log.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
 import { OrderUseCase } from "./order.usercase";
 import { Platform, AccountStatus } from "@prisma/client";
-
-/**
- * Nome da loja Shopee para exibir na Dexo.
- *
- * Alinha a Shopee ao que o Mercado Livre sempre fez (grava o NOME da conta,
- * nao um identificador). Como ~20 telas leem `accountName`, corrigir aqui na
- * origem cura todas elas sem que nenhuma mude uma linha.
- *
- * `get_shop_info` e uma CORTESIA, nao um requisito: se ela falhar — token
- * recem-emitido que a Shopee ainda nao propagou, rede, IP fora da whitelist —,
- * a conexao NAO pode cair. Perder o nome e aceitavel e recuperavel (a listagem
- * de contas cura depois); perder a conta que o usuario acabou de autorizar,
- * nao. Por isso o try/catch engole o erro e devolve o rotulo historico.
- */
-async function resolverNomeDaLojaShopee(
-  accessToken: string,
-  shopId: number,
-): Promise<string> {
-  try {
-    const info: any = await ShopeeApiService.getShopInfo(accessToken, shopId);
-    // Mesma desembrulhada da listagem de contas: a Shopee ora devolve o
-    // payload cru, ora dentro de `response`.
-    const payload = info?.response ?? info;
-    return shopeeAccountLabel(payload?.shop_name ?? payload?.shopName, shopId);
-  } catch (error) {
-    console.warn(
-      `[handleShopeeOAuthCallback] get_shop_info falhou para shopId=${shopId}; usando o rotulo generico`,
-      error instanceof Error ? error.message : error,
-    );
-    return shopeeAccountLabel(null, shopId);
-  }
-}
 
 /**
  * Casos de uso para gerenciar contas de marketplace
@@ -585,10 +552,20 @@ export class MarketplaceUseCase {
         account = await MarketplaceRepository.createAccount({
           userId: userId,
           platform: Platform.SHOPEE,
-          accountName: await resolverNomeDaLojaShopee(
-            tokenData.access_token,
-            data.shopId,
-          ),
+          // Rotulo GENERICO de proposito: nada de rede no meio do callback.
+          //
+          // Perguntar o nome da loja aqui punha uma chamada externa de ate
+          // 30s ENTRE queimar o `code` (uso unico) e gravar a conta — no
+          // trecho mais fragil do fluxo, e sem necessidade: o callback
+          // redireciona para a aba de Integracoes, que ao receber
+          // `SHOPEE_OAUTH_SUCCESS` chama `GET /shopee/accounts`, e e LA que
+          // a auto-cura do rotulo mora. O nome chega segundos depois, na
+          // mesma tela que o operador ja esta olhando.
+          //
+          // Tem de ser `shopeeFallbackAccountName`, e nao um template solto:
+          // `isGenericShopeeAccountName` so reconhece ESTE formato, e se os
+          // dois divergirem a auto-cura para de funcionar em silencio.
+          accountName: shopeeFallbackAccountName(data.shopId),
           externalUserId: shopeeExternalUserId,
           accessToken: tokenData.access_token,
           refreshToken: tokenData.refresh_token,

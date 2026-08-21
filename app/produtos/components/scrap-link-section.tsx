@@ -34,6 +34,7 @@ import {
   describeRelinkImpact,
   describeScrapLinkView,
   isAbortError,
+  isScrapLinkSincronizando,
   scrapLinkErrorMessage,
   scrapSelectValueToId,
   type ScrapLinkImpact,
@@ -140,8 +141,8 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
       }
       const data = (await res.json()) as LinkInfo;
       if (seq !== seqRef.current) return;
+      // NÃO setar `valor` aqui: ver o efeito de sincronização mais abaixo.
       setInfo(data);
-      setValor(data.scrapId ?? NO_SCRAP);
       setStatus("pronto");
     } catch (e) {
       if (seq !== seqRef.current) return;
@@ -156,6 +157,25 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
   useEffect(() => {
     void carregarVinculo();
   }, [carregarVinculo]);
+
+  // O valor do seletor segue `info` num commit SEPARADO, e isso é a correção
+  // do bug que o cliente viu — não um detalhe de estilo.
+  //
+  // Dentro de um <form> (o modal de edição é um), o Radix mantém um <select>
+  // NATIVO espelhando o seletor, para o formulário enxergar o campo. Se o
+  // `value` muda no MESMO commit em que a <option> daquela sucata aparece, o
+  // <select> nativo ainda não conhece a opção: o browser recusa o valor, cai na
+  // PRIMEIRA <option> — que é "Sem sucata" — e devolve isso num evento
+  // `change`, que o Radix repassa ao `onValueChange`. Ou seja, o próprio
+  // seletor apagava o vínculo milissegundos depois de lê-lo.
+  //
+  // Separando em dois commits, a <option> já está registrada quando o valor
+  // muda, e o <select> nativo aceita. Fora de formulário o Radix nem cria esse
+  // <select> — por isso o defeito não aparecia em teste de componente isolado.
+  useEffect(() => {
+    if (status !== "pronto" || !info) return;
+    setValor(info.scrapId ?? NO_SCRAP);
+  }, [status, info]);
 
   // O abort acontece só quando a seção SAI DE CENA. Abortar no cleanup de todo
   // reexecutar do efeito era o que matava a resposta boa — e, sem retry, nada
@@ -184,11 +204,30 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
   }, [session?.user?.email, scrapsLoaded, onToast]);
 
   const alvo = scrapSelectValueToId(valor);
-  const vista = describeScrapLinkView(status, alvo);
+  // A JANELA ENTRE OS DOIS COMMITS.
+  //
+  // A correção do bug do Radix exige que `valor` só receba o vínculo no commit
+  // SEGUINTE ao que trouxe `info` (ver o efeito de sincronização acima). Isso
+  // deixa um intervalo — um frame, e mais que isso num modal pesado — em que
+  // `status` já é "pronto" e `valor` ainda é "". Sem esta guarda é exatamente
+  // aí que `alvo` vale `null` e a tela volta a exibir "Sem sucata", com o
+  // "Alterar" HABILITADO: clicar naquele instante abriria o diálogo de
+  // desvincular, e confirmar APAGARIA o vínculo. A janela é curta, mas o
+  // desfecho é o mesmo que esta entrega inteira existe para impedir.
+  //
+  // `valor` só vale "" antes da primeira sincronização: o `onValueChange` do
+  // seletor sempre entrega `__none__` ou um id, nunca string vazia. E nada
+  // aqui muda QUANDO `valor` é escrito — só o que a tela pode afirmar
+  // enquanto ele ainda não foi.
+  const sincronizando = isScrapLinkSincronizando(status, valor);
+  const vista = sincronizando
+    ? describeScrapLinkView("carregando", null)
+    : describeScrapLinkView(status, alvo);
   // Só há "mudança a salvar" depois de saber qual era o vínculo. Em carregando
   // ou erro o seletor já está travado por `vista.disabled`; este é o segundo
   // cadeado, para o botão nunca oferecer uma troca às cegas.
-  const mudou = status === "pronto" && alvo !== (info?.scrapId ?? null);
+  const mudou =
+    status === "pronto" && !sincronizando && alvo !== (info?.scrapId ?? null);
 
   const trocar = useCallback(async () => {
     const email = session?.user?.email;

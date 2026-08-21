@@ -1,19 +1,25 @@
-// Conexão de conta Shopee: o rótulo gravado é o NOME da loja.
+// Conexão de conta Shopee: o callback NÃO fala com a Shopee para batizar a conta.
 //
-// Antes, a Shopee era a única plataforma que gravava um identificador onde as
-// outras gravam um nome (`Shopee Shop 1547916297`). Como ~20 telas leem
-// `MarketplaceAccount.accountName`, o operador via o número em toda a
-// aplicação.
+// A conta nasce com o rótulo genérico `Shopee Shop <id>`, e quem o troca pelo
+// nome real da loja é a auto-cura dentro de `GET /marketplace/shopee/accounts`.
 //
-// O que este spec trava, e que é a parte perigosa da mudança:
+// POR QUE O NOME NÃO É RESOLVIDO AQUI:
 //
-//   DESCOBRIR O NOME É CORTESIA; CONECTAR É O REQUISITO.
+// Perguntar `get_shop_info` durante o callback punha uma chamada externa de até
+// 30 segundos ENTRE queimar o `code` (que é de uso único) e gravar a conta —
+// no trecho mais frágil do fluxo inteiro. E sem ganho: o callback redireciona
+// para a aba de Integrações, que ao receber `SHOPEE_OAUTH_SUCCESS` chama
+// `GET /shopee/accounts`, e é lá que a auto-cura mora. O nome aparece segundos
+// depois, na mesma tela que o operador já está olhando.
 //
-// `get_shop_info` pode falhar — token recém-emitido que a Shopee ainda não
-// propagou, rede, IP fora da whitelist (a Shopee exige whitelist, e o servidor
-// de produção é o único endereço liberado). Se essa falha derrubasse o
-// callback, a mudança teria trocado um rótulo feio por uma conexão que não
-// completa. Por isso o caso de falha vale mais que o caso feliz.
+// O ELO FRÁGIL QUE ESTE SPEC PROTEGE:
+//
+// a auto-cura só age sobre o rótulo que `isGenericShopeeAccountName` reconhece.
+// Se este caminho gravar qualquer outro formato — um template literal escrito à
+// mão que ganhe um hífen, um espaço a mais —, a conta nasce com um nome que a
+// auto-cura considera "personalizado" e NUNCA mais troca. Silenciosamente.
+// Por isso o caso decisivo abaixo não compara com uma string: ele pergunta à
+// própria função de reconhecimento.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -41,6 +47,10 @@ import { MarketplaceUseCase } from "../app/marketplaces/usecases/marketplace.use
 import { MarketplaceRepository } from "../app/marketplaces/repositories/marketplace.repository";
 import { ShopeeOAuthService } from "../app/marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../app/marketplaces/services/shopee-api.service";
+import {
+  isGenericShopeeAccountName,
+  nextShopeeAccountName,
+} from "../app/marketplaces/lib/shopee-account-label";
 
 const SHOP_ID = 1547916297; // uma das contas reais de produção
 
@@ -72,82 +82,73 @@ function nomeGravado(): string {
   return (chamada[0] as any).accountName;
 }
 
+function conectar() {
+  return MarketplaceUseCase.handleShopeeOAuthCallback({
+    code: "c",
+    shopId: SHOP_ID,
+    userId: "user-1",
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   prepararConexaoNova();
 });
 
-describe("handleShopeeOAuthCallback — nome da loja no lugar do Shopee ID", () => {
-  it("grava o nome da loja com a marca na frente", async () => {
-    vi.spyOn(ShopeeApiService, "getShopInfo").mockResolvedValue({
-      shop_name: "JOTABE AUTOPECAS",
-    } as any);
+describe("handleShopeeOAuthCallback — conectar não depende da API da Shopee", () => {
+  it("CRÍTICO: nenhuma chamada a get_shop_info durante o callback", async () => {
+    // A invariante da mudança. Se alguém reintroduzir a consulta aqui, o
+    // callback volta a poder esperar até 30s com o `code` já queimado.
+    const espiao = vi.spyOn(ShopeeApiService, "getShopInfo");
 
-    await MarketplaceUseCase.handleShopeeOAuthCallback({
-      code: "c",
-      shopId: SHOP_ID,
-      userId: "user-1",
-    });
+    await conectar();
 
-    expect(nomeGravado()).toBe("SHOPEE JOTABE AUTOPECAS");
-    expect(nomeGravado()).not.toContain(String(SHOP_ID));
+    expect(espiao).not.toHaveBeenCalled();
+    expect(MarketplaceRepository.createAccount).toHaveBeenCalledTimes(1);
   });
 
-  it("desembrulha o payload quando a Shopee responde dentro de `response`", async () => {
-    vi.spyOn(ShopeeApiService, "getShopInfo").mockResolvedValue({
-      response: { shop_name: "Xaxim Pecas" },
-    } as any);
-
-    await MarketplaceUseCase.handleShopeeOAuthCallback({
-      code: "c",
-      shopId: SHOP_ID,
-      userId: "user-1",
-    });
-
-    expect(nomeGravado()).toBe("SHOPEE Xaxim Pecas");
-  });
-
-  it("CRÍTICO: get_shop_info falha ⇒ a conta É criada, com o rótulo histórico", async () => {
-    // O caso que importa: perder o nome é recuperável (a listagem de contas
-    // cura depois); perder a conta que o usuário acabou de autorizar, não.
+  it("a Shopee pode estar FORA DO AR — a conta é criada do mesmo jeito", async () => {
+    // Controle: mesmo que a API estivesse quebrada, nada muda, porque este
+    // caminho não a consulta.
     vi.spyOn(ShopeeApiService, "getShopInfo").mockRejectedValue(
       new Error("IP not in whitelist"),
     );
 
-    await expect(
-      MarketplaceUseCase.handleShopeeOAuthCallback({
-        code: "c",
-        shopId: SHOP_ID,
-        userId: "user-1",
-      }),
-    ).resolves.toBeTruthy();
-
-    expect(MarketplaceRepository.createAccount).toHaveBeenCalledTimes(1);
+    await expect(conectar()).resolves.toBeTruthy();
     expect(nomeGravado()).toBe(`Shopee Shop ${SHOP_ID}`);
   });
 
-  it("get_shop_info sem nome ⇒ mesmo fallback, conexão conclui", async () => {
-    vi.spyOn(ShopeeApiService, "getShopInfo").mockResolvedValue({} as any);
+  it("DECISIVO: o rótulo gravado é o que a auto-cura reconhece como genérico", async () => {
+    // Não compara com uma string à mão de propósito: pergunta à própria função
+    // que a auto-cura usa. É este acoplamento que mantém o rename funcionando —
+    // e é ele que quebraria em silêncio se os formatos divergissem.
+    await conectar();
 
-    await MarketplaceUseCase.handleShopeeOAuthCallback({
-      code: "c",
-      shopId: SHOP_ID,
-      userId: "user-1",
-    });
-
-    expect(nomeGravado()).toBe(`Shopee Shop ${SHOP_ID}`);
+    expect(isGenericShopeeAccountName(nomeGravado())).toBe(true);
   });
 
-  it("o resto do payload da conta continua igual (nada além do rótulo mudou)", async () => {
-    vi.spyOn(ShopeeApiService, "getShopInfo").mockResolvedValue({
-      shop_name: "Loja X",
-    } as any);
+  it("DECISIVO: a auto-cura aceitaria trocar este rótulo pelo nome real", async () => {
+    // Fecha o ciclo: o rótulo recém-gravado, submetido à regra do rename com um
+    // `shop_name` de verdade, produz a troca. Se este caso cair, a conta nasce
+    // com um nome que nunca mais muda.
+    await conectar();
 
-    await MarketplaceUseCase.handleShopeeOAuthCallback({
-      code: "c",
-      shopId: SHOP_ID,
-      userId: "user-1",
-    });
+    expect(
+      nextShopeeAccountName(nomeGravado(), "JOTABE AUTOPECAS", SHOP_ID),
+    ).toBe("SHOPEE JOTABE AUTOPECAS");
+  });
+
+  it("e a auto-cura NÃO troca à toa quando a Shopee não devolve nome", async () => {
+    // O outro lado: sem nome, o rótulo calculado é o mesmo que já está lá, e o
+    // rename devolve `null` — nada de um UPDATE por ciclo para gravar o que já
+    // estava gravado.
+    await conectar();
+
+    expect(nextShopeeAccountName(nomeGravado(), undefined, SHOP_ID)).toBeNull();
+  });
+
+  it("o resto do payload da conta continua igual (só o rótulo mudou de origem)", async () => {
+    await conectar();
 
     const payload = vi.mocked(MarketplaceRepository.createAccount).mock
       .calls[0][0] as any;

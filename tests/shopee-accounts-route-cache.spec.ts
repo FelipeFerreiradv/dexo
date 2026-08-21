@@ -148,6 +148,42 @@ describe("GET /shopee/accounts — egress", () => {
     await app.close();
   });
 
+  it("ERRO DE NEGÓCIO da Shopee (HTTP 200 + {error}) também não é cacheado", async () => {
+    // O caso acima cobre a falha que o axios REJEITA. Esta é a outra, e é a
+    // que a Shopee usa para token morto: HTTP 200 com `error` no corpo, que
+    // `getShopInfo` devolve como se fosse uma resposta boa (ao contrário dos
+    // irmãos dele no serviço, que fazem `if (data.error) throw`).
+    //
+    // Sem a guarda no ponto da gravação, o corpo de erro entrava no cache e
+    // a conta ficava 10 minutos sem se recuperar — inclusive depois de o
+    // ciclo de sync já ter renovado o token. Antes do cache existir, a
+    // abertura seguinte da tela já curava; então era perda de comportamento.
+    vi.mocked(ShopeeApiService.getShopInfo).mockReset();
+    vi.mocked(ShopeeApiService.getShopInfo)
+      .mockResolvedValueOnce({
+        error: "error_auth",
+        message: "Invalid access_token",
+      } as any)
+      .mockResolvedValueOnce({ shop_name: "JOTABE AUTOPECAS" } as any);
+
+    const app = await subirApp();
+
+    const r1 = await get(app);
+    expect(r1.statusCode).toBe(200); // a listagem não cai por causa disso
+    expect(r1.json().accounts[0].shopName).toBeUndefined();
+
+    // A segunda leitura TEM de perguntar de novo — é isso que o cache não
+    // pode impedir.
+    const r2 = await get(app);
+    expect(ShopeeApiService.getShopInfo).toHaveBeenCalledTimes(2);
+    expect(r2.json().accounts[0].shopName).toBe("JOTABE AUTOPECAS");
+
+    // E o corpo de erro nunca chega ao navegador.
+    expect(JSON.stringify(r1.json())).not.toContain("error_auth");
+    expect(JSON.stringify(r1.json())).not.toContain("Invalid access_token");
+
+    await app.close();
+  });
   it("auto-cura grava UMA vez; a segunda leitura não escreve de novo", async () => {
     const app = await subirApp();
 

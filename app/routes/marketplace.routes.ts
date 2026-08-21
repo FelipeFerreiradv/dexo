@@ -1450,8 +1450,15 @@ small{color:#666}</style></head><body>
   // mais defasagem). Nome de loja muda raramente, e depois da auto-cura abaixo
   // o nome já vive em `accountName` — o cache atrasa no máximo a REVISÃO dele.
   //
-  // Só sucesso é cacheado: uma falha (token morto, 403 de IP) volta a tentar na
-  // requisição seguinte, sem ficar presa a um erro por 10 minutos.
+  // Só sucesso é cacheado, e a Shopee tem DUAS formas de falhar:
+  //
+  //   403 de IP fora da whitelist  → HTTP de erro, o axios lança, cai no catch
+  //   token morto (`error_auth`)   → HTTP 200 com `error` no CORPO
+  //
+  // O segundo caso não passa pelo catch, então a guarda que decide o cache é
+  // no ponto da gravação (`if shop_name`), não aqui. Sem ela, o corpo de erro
+  // ficava 10 minutos no cache e a conta não se recuperava sozinha — perda de
+  // comportamento em relação a antes do cache existir.
   const shopInfoCache = new Map<string, { payload: any; expiresAt: number }>();
   const SHOP_INFO_TTL_MS = 600_000;
 
@@ -1550,10 +1557,25 @@ small{color:#666}</style></head><body>
                   acc.shopId,
                 );
                 payload = info?.response ?? info;
-                shopInfoCache.set(acc.id, {
-                  payload,
-                  expiresAt: Date.now() + SHOP_INFO_TTL_MS,
-                });
+                // SÓ CACHEIA SE VEIO NOME.
+                //
+                // A Shopee sinaliza erro de NEGÓCIO com HTTP 200 e `error`
+                // no corpo — `token morto` chega assim. O axios não lança,
+                // então o `catch` abaixo nunca vê esse caso e, sem esta
+                // guarda, o corpo de erro era gravado como se fosse
+                // sucesso: a conta ficava presa ao erro por 10 minutos,
+                // exatamente o que o comentário do TTL promete evitar. E
+                // antes do cache existir, a abertura seguinte da tela já
+                // recuperava — ou seja, era perda de comportamento.
+                //
+                // Cachear MENOS nunca piora: o pior caso é repetir a
+                // chamada que já se fazia a cada requisição antes daqui.
+                if (payload?.shop_name || payload?.shopName) {
+                  shopInfoCache.set(acc.id, {
+                    payload,
+                    expiresAt: Date.now() + SHOP_INFO_TTL_MS,
+                  });
+                }
               }
               const shopName =
                 payload?.shop_name || payload?.shopName || undefined;
