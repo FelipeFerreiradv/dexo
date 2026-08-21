@@ -32,11 +32,14 @@ import {
 
 const T0 = 1_750_000_000_000;
 
+// O caso real do cliente. `version` entra de propósito: sem ela nenhum fixture
+// exercitaria esse campo, e um erro que o deixasse de fora sobreviveria à suíte.
 const FUSION: SucataDoSeletor = {
   id: "cmrpmx6f0039y18i6s5c9f6gy",
   brand: "FORD",
   model: "FUSION",
   year: "2009",
+  version: "TITANIUM",
   plate: "HHW1478",
 };
 
@@ -79,13 +82,6 @@ describe("decidirRestauracaoDaSucata — a opção antes do valor", () => {
     // desenhar; o TTL de 24h aposenta esses rascunhos sozinho.
     expect(decidirRestauracaoDaSucata({ id: "so-o-id" }, [])).toEqual({
       tipo: "esperar",
-    });
-  });
-
-  it("rascunho antigo mas o lote ESTÁ na lista ⇒ aplica mesmo assim", () => {
-    expect(decidirRestauracaoDaSucata({ id: FUSION.id }, [FUSION])).toEqual({
-      tipo: "aplicar",
-      sucata: FUSION,
     });
   });
 

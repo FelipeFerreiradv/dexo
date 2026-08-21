@@ -3468,6 +3468,36 @@ export function CreateProductDialog({
     if (acao.tipo === "aplicar") {
       // COMMIT 2: a opção já está registrada, o valor pode entrar.
       setSelectedScrap(acao.sucata);
+      // FIXA a opção mesmo quando ela veio da lista.
+      //
+      // `availableScraps` NUNCA é zerado, e este componente fica montado
+      // entre aberturas (o import de NF-e reaproveita a mesma instância de
+      // propósito). Entao a lista da abertura ANTERIOR pode conter o lote,
+      // o ramo `aplicar` ser escolhido por causa dela, e a resposta do
+      // `/scraps` desta abertura chegar depois SEM o lote — porque ele foi
+      // esgotado nesse meio-tempo. Sem fixar, a `<option>` sumiria debaixo
+      // de um valor já selecionado, e o eco apagaria os cinco campos.
+      //
+      // Fixar é inerte quando o lote está na lista: a derivação deduplica.
+      setSucataRestaurada(acao.sucata);
+      // Repõe o registro do que a sucata autopreencheu.
+      //
+      // Sem isto, o formulário restaurado ficava diferente de um em que o
+      // operador acabou de escolher o lote: ao desvincular, o ramo
+      // "Nenhuma sucata" não teria o que limpar e marca, modelo, ano,
+      // versão e veículo de origem ficariam preenchidos com dados do lote
+      // que já não está vinculado.
+      //
+      // O ramo de limpeza só apaga campo que AINDA casa com o que a sucata
+      // pôs, então valor que o operador editou continua protegido.
+      const s = acao.sucata;
+      scrapAutofilledRef.current = {
+        brand: s.brand,
+        model: s.model,
+        year: s.year,
+        version: s.version,
+        sourceVehicle: `${s.brand} ${s.model}${s.year ? ` ${s.year}` : ""}${s.plate ? ` (${s.plate})` : ""}`,
+      };
       setSucataPendente(null);
       return;
     }
