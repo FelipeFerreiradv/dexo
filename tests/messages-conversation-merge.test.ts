@@ -5,6 +5,7 @@ import {
   aplicarLeiturasConfirmadas,
   mesclarPagina0,
   podarLeiturasAntigas,
+  resolverConversaAberta,
 } from "@/app/mensagens/lib/conversation-merge";
 
 /**
@@ -121,5 +122,50 @@ describe("mesclarPagina0", () => {
     // "NOVA" chegou e empurrou "A" para fora da página 0.
     const r = mesclarPagina0(anteriores, [item("NOVA", 1), item("B", 0)]);
     expect(r.map((c) => c.externalItemId)).toEqual(["NOVA", "B", "A"]);
+  });
+});
+
+/**
+ * H11 do diagnóstico: o painel lia a conversa DIRETO da lista, e a lista é
+ * filtrada. Na aba "Não lidas", marcar a conversa como lida a remove do
+ * resultado do poll seguinte — e o painel se fechava sozinho na cara de quem
+ * estava lendo. Em "Sem resposta", responder produzia o mesmo efeito.
+ */
+describe("resolverConversaAberta", () => {
+  const A = { externalItemId: "A", unreadCount: 0, titulo: "fresca" };
+  const A_VELHA = { externalItemId: "A", unreadCount: 3, titulo: "guardada" };
+  const B = { externalItemId: "B", unreadCount: 1, titulo: "outra" };
+
+  it("a lista vence quando ainda traz a conversa (dados frescos)", () => {
+    expect(resolverConversaAberta("A", [A, B], A_VELHA)).toBe(A);
+  });
+
+  it("conversa saiu da lista filtrada: cai na última versão conhecida", () => {
+    // É o caso da aba "Não lidas" logo após a leitura ser confirmada.
+    expect(resolverConversaAberta("A", [B], A_VELHA)).toBe(A_VELHA);
+  });
+
+  it("lista ainda carregando (null): mantém o painel com o que já tinha", () => {
+    expect(resolverConversaAberta("A", null, A_VELHA)).toBe(A_VELHA);
+  });
+
+  it("NUNCA exibe a thread errada: guardada de outra conversa é descartada", () => {
+    expect(resolverConversaAberta("A", [B], B)).toBeNull();
+  });
+
+  it("sem seleção: não há painel", () => {
+    expect(resolverConversaAberta(null, [A, B], A_VELHA)).toBeNull();
+  });
+
+  it("sem seleção e sem nada guardado: null", () => {
+    expect(resolverConversaAberta(null, null, null)).toBeNull();
+  });
+
+  it("selecionada nunca vista e ausente da lista: null (não inventa conversa)", () => {
+    expect(resolverConversaAberta("Z", [A, B], A_VELHA)).toBeNull();
+  });
+
+  it("troca de conversa: a nova vem da lista, não do guardado", () => {
+    expect(resolverConversaAberta("B", [A, B], A_VELHA)).toBe(B);
   });
 });

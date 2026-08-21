@@ -55,6 +55,32 @@ export function aplicarLeiturasConfirmadas<T extends ItemConversa>(
 }
 
 /**
+ * Qual conversa o painel deve renderizar.
+ *
+ * O painel lia a conversa DIRETO da lista, e a lista é filtrada — então ela
+ * deixava de trazer a conversa aberta justamente por causa do que o usuário
+ * acabara de fazer: na aba "Não lidas", marcar como lida remove a conversa do
+ * poll seguinte; em "Sem resposta", responder faz o mesmo. Resultado: o painel
+ * se fechava sozinho na cara de quem estava lendo.
+ *
+ * A lista sempre vence quando ainda traz a conversa (dados frescos). Quando não
+ * traz, cai na última versão conhecida — e só se ela for da MESMA conversa, para
+ * nunca exibir a thread errada.
+ */
+export function resolverConversaAberta<T extends { externalItemId: string }>(
+  selectedItemId: string | null,
+  lista: T[] | null,
+  ultimaConhecida: T | null,
+): T | null {
+  if (!selectedItemId) return null;
+  const naLista = lista?.find((c) => c.externalItemId === selectedItemId);
+  if (naLista) return naLista;
+  return ultimaConhecida?.externalItemId === selectedItemId
+    ? ultimaConhecida
+    : null;
+}
+
+/**
  * Aplica a página 0 recém-buscada sobre a lista acumulada, preservando as
  * páginas profundas que o usuário já abriu com "Carregar mais".
  *

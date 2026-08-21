@@ -23,6 +23,7 @@ import {
   aplicarLeiturasConfirmadas,
   mesclarPagina0,
   podarLeiturasAntigas,
+  resolverConversaAberta,
 } from "../lib/conversation-merge";
 
 export interface AccountSummary {
@@ -123,6 +124,17 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   const [total, setTotal] = React.useState(0);
   const [carregandoMais, setCarregandoMais] = React.useState(false);
   const [paginasCarregadas, setPaginasCarregadas] = React.useState(1);
+  // Contexto = o recorte que a lista representa. Serve para saber se a lista na
+  // tela já é do filtro atual antes de decidir que a conversa aberta "sumiu".
+  const contextoAtual = `${accountId}|${platform}|${filter}`;
+  const [contextoDaLista, setContextoDaLista] = React.useState<string | null>(
+    null,
+  );
+  // Uma conferência de seleção por troca de contexto (não a cada poll).
+  const conferirSelecaoRef = React.useRef(true);
+  // Última versão conhecida da conversa aberta — mantém o painel de pé quando a
+  // lista filtrada deixa de trazê-la.
+  const ultimaConversaRef = React.useRef<ConversationSummary | null>(null);
   // Canal WhatsApp é por PLANO (gate por usuário no backend): a opção do filtro
   // só aparece quando GET /messages/accounts confirmar o entitlement do tenant.
   // Flag global desligada ⇒ o campo nem vem na resposta ⇒ false ⇒ UI idêntica.
@@ -181,6 +193,9 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
       if (!isAuthenticated || !accountId) return;
       const seq = ++seqRef.current;
       const iniciadoEm = Date.now();
+      // O recorte que ESTA requisição representa (vem do closure, não do render
+      // atual) — é o que marca a lista como já pertencente ao contexto novo.
+      const contextoDoRequest = `${accountId}|${platform}|${filter}`;
       if (modo === "mais") setCarregandoMais(true);
       try {
         const params = new URLSearchParams({
@@ -211,6 +226,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
           iniciadoEm,
         );
         setTotal(data.total);
+        setContextoDaLista(contextoDoRequest);
         setConversations((prev) => {
           if (modo === "mais") return [...(prev ?? []), ...recebidas];
           // "reset" SEMPRE substitui: troca de filtro, de conta ou de busca não
@@ -222,7 +238,10 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
           if (!prev || prev.length <= PAGE_SIZE) return recebidas;
           return mesclarPagina0(prev, recebidas);
         });
+        // O contador de páginas tem de acompanhar o que está NA LISTA, senão o
+        // próximo "Carregar mais" pede um offset que pula registros.
         if (modo === "mais") setPaginasCarregadas((p) => p + 1);
+        else if (modo === "reset") setPaginasCarregadas(1);
         setConvError(null);
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") return;
@@ -251,8 +270,12 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   // Skeleton (null) só em mudança "dura" — evita flicker em re-fetch por busca/poll.
   React.useEffect(() => {
     setConversations(null);
+    setContextoDaLista(null);
     setTotal(0);
     setPaginasCarregadas(1);
+    // Trocou o recorte: a seleção volta a ser conferida uma vez, contra a lista
+    // nova (e só ela — ver o efeito de fechamento do painel).
+    conferirSelecaoRef.current = true;
   }, [accountId, platform, filter]);
 
   // A busca não zera a lista (evita flicker ao digitar), mas volta a paginação
@@ -278,19 +301,44 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     return () => clearInterval(id);
   }, [accountId, loadConversations]);
 
-  // Quando muda accountId/filter, limpa seleção se não estiver mais na lista
+  // Fecha o painel quando a conversa aberta sai do ESCOPO — e só então.
+  //
+  // Antes, este efeito dependia de `conversations` e rodava a cada atualização
+  // da lista, inclusive no poll de 30 s. Na aba "Não lidas" isso fechava o
+  // painel na cara de quem estava lendo: marcar a conversa como lida a remove
+  // do resultado filtrado, e a ausência era lida como "saiu do escopo". Em
+  // "Sem resposta", responder produzia o mesmo efeito.
+  //
+  // Agora a conferência acontece UMA vez por troca de contexto, e só contra uma
+  // lista que já é daquele contexto (`contextoDaLista`) — enquanto a lista ainda
+  // é do contexto anterior, ou está carregando, a ausência não significa nada.
   React.useEffect(() => {
-    if (!conversations) return;
-    if (selectedItemId && !conversations.some((c) => c.externalItemId === selectedItemId)) {
+    if (!conversations || contextoDaLista !== contextoAtual) return;
+    if (!conferirSelecaoRef.current) return;
+    conferirSelecaoRef.current = false;
+    if (
+      selectedItemId &&
+      !conversations.some((c) => c.externalItemId === selectedItemId)
+    ) {
       setSelectedItemId(null);
     }
-  }, [conversations, selectedItemId]);
+  }, [conversations, contextoDaLista, contextoAtual, selectedItemId]);
 
   const selectedConversation = React.useMemo(
     () =>
-      conversations?.find((c) => c.externalItemId === selectedItemId) ?? null,
+      resolverConversaAberta(
+        selectedItemId,
+        conversations,
+        ultimaConversaRef.current,
+      ),
     [conversations, selectedItemId],
   );
+
+  // Guarda a versão fresca sempre que a lista ainda traz a conversa aberta. Em
+  // efeito (não no render) para o useMemo continuar puro.
+  React.useEffect(() => {
+    if (selectedConversation) ultimaConversaRef.current = selectedConversation;
+  }, [selectedConversation]);
 
   // Conta e plataforma combinam (AND); para nunca cair em lista vazia por
   // conflito, escolher um zera o outro (conta específica ⇒ plataforma "todas",
@@ -330,7 +378,9 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   const handleAfterAnswer = React.useCallback(() => {
     if (selectedItemId) readAckRef.current.set(selectedItemId, Date.now());
     notifyUnreadChanged();
-    void loadConversations();
+    // "poll", não "reset": responder é uma atualização da visão atual, não uma
+    // troca de recorte — não pode colapsar as páginas que o usuário já abriu.
+    void loadConversations(undefined, "poll");
   }, [loadConversations, selectedItemId]);
 
   // Opções de plataforma: as estáticas + WhatsApp quando o tenant tem o plano.
