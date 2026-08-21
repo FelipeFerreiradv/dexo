@@ -261,6 +261,20 @@ describe("o rascunho sobrevive à ida ao localStorage", () => {
     expect(idaEVolta(rascunho())?.defaultStock).toBe(1);
   });
 
+  it("`defaultStock` que não é número vira null, e não entra na conta", () => {
+    // O valor vem do localStorage, então é entrada de fora. Sem o saneamento,
+    // um `"1"` (string) ou um `NaN` chegaria a `hasMeaningfulContent`, onde é
+    // comparado com `stock` por `!==` — e `1 !== "1"` é verdadeiro, o que
+    // ressuscitaria exatamente o falso "continuar de onde parou?" que o campo
+    // existe para evitar.
+    for (const lixo of ["1", NaN, Infinity, null, {}, "abc"]) {
+      const s = { ...rascunho(), defaultStock: lixo };
+      expect(idaEVolta(s)?.defaultStock).toBeNull();
+    }
+    // Zero é valor legítimo e não pode ser confundido com ausência.
+    expect(idaEVolta({ ...rascunho(), defaultStock: 0 })?.defaultStock).toBe(0);
+  });
+
   it("REGRESSÃO: a MESMA pergunta tinha DUAS respostas", () => {
     // `hasMeaningfulContent` compara o estoque com o padrão do tenant para não
     // oferecer "continuar de onde parou?" sobre um formulário intocado — num
