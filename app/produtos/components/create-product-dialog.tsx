@@ -88,6 +88,7 @@ import type {
 } from "../lib/product-form-snapshot";
 import {
   decidirRestauracaoDaSucata,
+  opcoesComSucataRestaurada,
   type SucataDoSeletor,
 } from "../lib/scrap-draft-restore";
 import { scopeKeyFor, type DraftScope } from "../lib/product-form-storage";
@@ -728,6 +729,17 @@ export function CreateProductDialog({
   const [sucataPendente, setSucataPendente] = useState<ScrapSnapshot | null>(
     null,
   );
+  /**
+   * A sucata vinda do rascunho que precisa APARECER como opção, mesmo que o
+   * servidor não a devolva (lote esgotado, ou tenant com mais de 100).
+   *
+   * Separada de `selectedScrap` de propósito: é ela que garante a `<option>`,
+   * e o valor só entra no commit seguinte. E é estado próprio, e não uma
+   * entrada empurrada em `availableScraps`, porque o fetch de `/scraps`
+   * SUBSTITUI aquela lista — o que varreria a opção junto.
+   */
+  const [sucataRestaurada, setSucataRestaurada] =
+    useState<SucataDoSeletor | null>(null);
   const [availableScraps, setAvailableScraps] = useState<SucataDoSeletor[]>([]);
   const hasFetchedOnOpenRef = useRef(false);
   const scrapAutofilledRef = useRef<{
@@ -3445,7 +3457,7 @@ export function CreateProductDialog({
   useEffect(() => {
     const acao = decidirRestauracaoDaSucata(
       sucataPendente,
-      availableScraps,
+      opcoesComSucataRestaurada(availableScraps, sucataRestaurada),
       Boolean(lockedScrap),
     );
     if (acao.tipo === "esperar") return;
@@ -3456,10 +3468,16 @@ export function CreateProductDialog({
       return;
     }
     // COMMIT 1: registra a opção e volta aqui no commit seguinte.
-    setAvailableScraps((prev) =>
-      prev.some((s) => s.id === acao.opcao.id) ? prev : [acao.opcao, ...prev],
-    );
-  }, [sucataPendente, availableScraps, lockedScrap]);
+    setSucataRestaurada(acao.opcao);
+  }, [sucataPendente, availableScraps, sucataRestaurada, lockedScrap]);
+
+  // O que o seletor desenha. Derivado, nunca gravado: o fetch de `/scraps`
+  // substitui `availableScraps` inteiro, e uma opção guardada lá dentro seria
+  // varrida junto — deixando o valor selecionado sem `<option>`.
+  const opcoesDeSucata = opcoesComSucataRestaurada(
+    availableScraps,
+    sucataRestaurada,
+  );
 
   const handleRestoreDraft = useCallback(() => {
     const snapshot = draft.restore();
@@ -3558,6 +3576,7 @@ export function CreateProductDialog({
     setCompatibilityPositions([]);
     setSelectedScrap(null);
     setSucataPendente(null);
+    setSucataRestaurada(null);
     scrapAutofilledRef.current = {};
     // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
     hasFetchedOnOpenRef.current = false;
@@ -4130,7 +4149,7 @@ export function CreateProductDialog({
                 </div>
               ) : (
                 /* Seleção de Sucata (opcional) */
-                availableScraps.length > 0 && (
+                opcoesDeSucata.length > 0 && (
                   <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
                     <Label>Vincular a uma sucata (opcional)</Label>
                     <Select
@@ -4161,7 +4180,7 @@ export function CreateProductDialog({
                           setSelectedScrap(null);
                           scrapAutofilledRef.current = {};
                         } else {
-                          const scrap = availableScraps.find((s) => s.id === v);
+                          const scrap = opcoesDeSucata.find((s) => s.id === v);
                           if (scrap) {
                             setSelectedScrap(scrap);
                             // Herdar dados do veículo
@@ -4188,7 +4207,7 @@ export function CreateProductDialog({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="NONE">Nenhuma sucata</SelectItem>
-                        {availableScraps.map((s) => (
+                        {opcoesDeSucata.map((s) => (
                           <SelectItem key={s.id} value={s.id}>
                             {s.brand} {s.model}
                             {s.year ? ` ${s.year}` : ""}

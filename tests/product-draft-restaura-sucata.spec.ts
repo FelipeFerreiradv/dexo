@@ -20,6 +20,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   decidirRestauracaoDaSucata,
+  opcoesComSucataRestaurada,
   type SucataDoSeletor,
 } from "../app/produtos/lib/scrap-draft-restore";
 import {
@@ -112,6 +113,57 @@ describe("decidirRestauracaoDaSucata — a opção antes do valor", () => {
     });
     expect(decidirRestauracaoDaSucata({ id: "" }, [FUSION])).toEqual({
       tipo: "esperar",
+    });
+  });
+});
+
+describe("opcoesComSucataRestaurada — a opção não pode ser varrida", () => {
+  const OUTRA: SucataDoSeletor = { id: "b", brand: "GM", model: "ONIX" };
+
+  it("REGRESSÃO: trocar a lista inteira NÃO remove a sucata restaurada", () => {
+    // O defeito que quase passou. A primeira versão desta correção EMPURRAVA a
+    // opção para dentro de `availableScraps`. Só que o fetch de `/scraps` faz
+    // `setAvailableScraps(lista || [])` — substitui o estado inteiro. E a
+    // ordem real favorece o desastre: a pergunta "restaurar?" nasce da leitura
+    // do localStorage, imediata, e costuma aparecer ANTES de a requisição
+    // voltar. A resposta chegava, varria a opção injetada, o valor ficava sem
+    // `<option>`, o `<select>` nativo caía em "Nenhuma sucata" e o eco apagava
+    // marca, modelo, ano, versão e veículo.
+    //
+    // Derivando a cada render, a opção sobrevive a qualquer substituição.
+    const antesDoFetch = opcoesComSucataRestaurada([], FUSION);
+    expect(antesDoFetch.map((s) => s.id)).toEqual([FUSION.id]);
+
+    // O fetch responde com OUTRA lista, sem o lote restaurado.
+    const depoisDoFetch = opcoesComSucataRestaurada([OUTRA], FUSION);
+    expect(depoisDoFetch.map((s) => s.id)).toEqual([FUSION.id, OUTRA.id]);
+  });
+
+  it("não duplica quando o servidor devolve o mesmo lote", () => {
+    const r = opcoesComSucataRestaurada([OUTRA, FUSION], FUSION);
+    expect(r).toEqual([OUTRA, FUSION]);
+    expect(r.filter((s) => s.id === FUSION.id)).toHaveLength(1);
+  });
+
+  it("sem sucata restaurada, devolve a lista intocada", () => {
+    const lista = [OUTRA];
+    expect(opcoesComSucataRestaurada(lista, null)).toBe(lista);
+    expect(opcoesComSucataRestaurada(lista, undefined)).toBe(lista);
+  });
+
+  it("o seletor aparece mesmo com o servidor devolvendo vazio", () => {
+    // O bloco só é desenhado quando há opções. Sem esta derivação, um tenant
+    // sem lotes `AVAILABLE` restauraria o rascunho e não veria seletor nenhum
+    // — nem o vínculo que acabou de voltar.
+    expect(opcoesComSucataRestaurada([], FUSION)).toHaveLength(1);
+    expect(opcoesComSucataRestaurada([], null)).toHaveLength(0);
+  });
+
+  it("e a decisão enxerga a opção derivada, fechando o ciclo", () => {
+    const derivadas = opcoesComSucataRestaurada([], FUSION);
+    expect(decidirRestauracaoDaSucata(FUSION, derivadas)).toEqual({
+      tipo: "aplicar",
+      sucata: FUSION,
     });
   });
 });

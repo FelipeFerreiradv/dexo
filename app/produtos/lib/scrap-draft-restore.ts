@@ -61,6 +61,30 @@ export type AcaoDeRestauracao =
  *    inventar um rótulo seria pior do que não restaurar. O TTL de 24 horas do
  *    rascunho aposenta esses casos sozinho.
  */
+/**
+ * As opções do seletor, com a sucata restaurada garantida.
+ *
+ * DERIVADA A CADA RENDER, e não gravada na lista — a diferença é o defeito.
+ * O `fetch` de `/scraps` faz `setAvailableScraps(lista || [])`, ou seja
+ * SUBSTITUI o estado inteiro. Uma opção injetada no estado seria varrida
+ * quando a resposta chegasse, e a sequência real é justamente essa: a
+ * pergunta "restaurar?" nasce da leitura do localStorage (imediata) e
+ * costuma aparecer ANTES de a requisição voltar. O valor ficaria sem
+ * `<option>`, o `<select>` nativo cairia em "Nenhuma sucata" e o eco
+ * apagaria marca, modelo, ano, versão e veículo.
+ *
+ * Derivando, a opção existe enquanto `restaurada` existir, não importa
+ * quantas vezes a lista seja trocada nem por quem.
+ */
+export function opcoesComSucataRestaurada(
+  lista: SucataDoSeletor[],
+  restaurada: SucataDoSeletor | null | undefined,
+): SucataDoSeletor[] {
+  if (!restaurada) return lista;
+  if (lista.some((s) => s.id === restaurada.id)) return lista;
+  return [restaurada, ...lista];
+}
+
 export function decidirRestauracaoDaSucata(
   pendente: SucataDoRascunho | null | undefined,
   lista: readonly SucataDoSeletor[],
