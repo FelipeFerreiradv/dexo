@@ -11,7 +11,11 @@ import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { SyncUseCase } from "../marketplaces/usecases/sync.usercase";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { SystemLogService } from "../services/system-log.service";
-import { Platform } from "@prisma/client";
+import { Platform, Prisma } from "@prisma/client";
+import {
+  COLUNAS_JSON_DE_PRODUCT_LISTING,
+  comNulosDeJsonSeguros,
+} from "../lib/prisma-json-null";
 import {
   UserRepository,
   UserRepositoryPrisma,
@@ -1086,7 +1090,20 @@ export class ProductUseCase {
     try {
       const result = await prisma.productListing.updateMany({
         where: { productId },
-        data: clearOverrides as Record<string, null>,
+        // ⚠️ `clearOverrides` acumula `campo = null` para 20 campos, e DOIS
+        // deles são colunas `Json?` (`imageUrlsOverride`, `attributesOverride`).
+        // Escrever `null` do JavaScript numa coluna Json grava o literal JSON
+        // `null` — que em SQL NÃO é nulo e casa com `IS NOT NULL`. Nos 18
+        // escalares o `null` já grava NULL do SQL e nada muda.
+        //
+        // A tradução é feita AQUI, pela lista de colunas Json do model, e não
+        // nas atribuições lá em cima, de propósito: assim um `*Override` do
+        // tipo Json acrescentado à lista no futuro já nasce correto, em vez de
+        // reintroduzir o defeito em silêncio. Ver app/lib/prisma-json-null.ts.
+        data: comNulosDeJsonSeguros(
+          clearOverrides,
+          COLUNAS_JSON_DE_PRODUCT_LISTING,
+        ) as Prisma.ProductListingUpdateManyMutationInput,
       });
       if (result.count > 0) {
         console.log(

@@ -1,0 +1,170 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Converte o literal JSON `null` em NULL do SQL nos overrides de ProductListing
+--  Gerado em 21/08/2026 · Dexo / ghd-plataform
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- COMO USAR: cole no SQL editor do Supabase e execute. É uma transação só.
+--
+-- ⚠️ RODAR **DEPOIS** DO DEPLOY DO CÓDIGO — e a ordem importa pouco, mas é
+-- melhor assim. O código novo é que para de criar resíduo; se este DDL rodar
+-- antes, o passivo volta a crescer até o deploy. Rodar depois converte o que
+-- existe e nada repõe. Nenhuma das duas ordens quebra coisa alguma.
+--
+-- É idempotente: rodar de novo não faz nada (não haverá mais o que converter).
+--
+--
+-- ── O QUE ESTE DDL CORRIGE ────────────────────────────────────────────────
+--
+-- Escrever `null` do JavaScript numa coluna `Json?` do Prisma NÃO grava NULL
+-- do SQL: grava o literal JSON `null`, que é um VALOR. A coluna deixa de ser
+-- nula para o banco e passa a casar com `IS NOT NULL`.
+--
+-- Medido em produção em 21/08/2026, escrevendo numa linha real e lendo de
+-- volta com `jsonb_typeof`, dentro de transação desfeita:
+--
+--   data: { imageUrlsOverride: null }            -> jsonb_typeof = 'null'  ❌
+--   data: { imageUrlsOverride: Prisma.JsonNull } -> jsonb_typeof = 'null'  ❌
+--   data: { imageUrlsOverride: Prisma.DbNull }   -> IS NULL de verdade     ✅
+--
+-- O Prisma aceita `null` sem lançar nada, e o log de query dele serializa os
+-- dois casos como `null` — não há erro, não há log, não há teste vermelho.
+--
+-- Origem: dois caminhos, ambos corrigidos no código desta mesma entrega.
+--   1. `clearOverridesForEditedFields` (product.usercase): editar a peça
+--      "limpa" os overrides dos anúncios; 2 dos 20 campos são Json.
+--   2. `ListingRepository.updateListing`: o modal de edição envia
+--      `imageUrlsOverride: null` quando as fotos do anúncio voltam a ser as
+--      da peça (`diffJson` devolve null quando são iguais).
+--
+-- Prova cruzada: `compatibilitiesOverride` é Json, está no repositório, mas
+-- NÃO está na lista do `clearOverrides` e NÃO passa por `diffJson` no modal —
+-- e é justamente a coluna com ZERO resíduo (0 contra 53 valores reais).
+--
+--
+-- ── POR QUE VALE A PENA (medido) ──────────────────────────────────────────
+--
+-- Não é bug de comportamento: na leitura, JSON `null` e SQL NULL chegam ao
+-- JavaScript idênticos (`null`), e todo consumidor faz `Array.isArray` /
+-- `typeof` / `!= null` antes de usar. O que muda é custo.
+--
+-- Existe um índice PARCIAL `WHERE "imageUrlsOverride" IS NOT NULL`
+-- (ProductListing_productId_imageUrlsOverride_idx, entrega de 21/08) que serve
+-- `swapImageUrlReferences`. O resíduo mora DENTRO desse índice:
+--
+--   linhas que passam pelo filtro hoje ......... 920
+--   dessas, com array de imagens de verdade ....   1
+--   resíduo (literal JSON `null`) .............. 919
+--
+-- ℹ️ NÃO ESPERE ENCONTRAR EXATAMENTE ESTES NÚMEROS. Eles crescem enquanto o
+--    código antigo estiver no ar: durante a própria elaboração desta entrega,
+--    numa janela de ~15 minutos, o contador de `imageUrlsOverride` andou de
+--    918 para 919 e o de `attributesOverride` de 627 para 628. É por isso que
+--    o deploy vem antes: ele estanca a origem, e só então este DDL limpa o que
+--    ficou.
+--
+--    (O 918 acima não é engano: uma linha foi convertida em 21/08 na
+--    verificação de ponta a ponta da correção — o código corrigido rodou
+--    contra produção sobre uma linha de resíduo e `jsonb_typeof` confirmou
+--    NULL do SQL. Aquela linha já está no estado que este DDL produz.)
+--
+-- Medido com a conversão aplicada dentro de transação desfeita, no tenant com
+-- mais linhas no filtro:
+--
+--   antes da conversão ....  9,03 ms   4.522 páginas lidas
+--   depois da conversão ...  1,06 ms     846 páginas lidas
+--
+-- Outro fator ~8,5x em cima do que o índice já tinha dado. E as 846 páginas
+-- são pessimistas: dentro da transação as entradas antigas do índice ainda
+-- estão lá, mortas. Depois do autovacuum sobram ~4 entradas vivas.
+--
+--
+-- ── POR QUE É SEGURO ──────────────────────────────────────────────────────
+--
+-- Verificado antes de escrever este arquivo:
+--
+--   · Nenhum SQL cru toca estas colunas em todo o repositório.
+--   · Nenhum filtro do código distingue os dois nulos. O único que chega perto
+--     é `{ not: Prisma.DbNull }` em image-bg-swap.ts, que gera
+--     `IS NOT NULL` — exatamente quem se beneficia.
+--   · Os dois consumidores são imunes:
+--       `isStringArray(listing.imageUrlsOverride)`      -> falso nos dois casos
+--       `listing.attributesOverride && typeof === "object"` -> o `&&`
+--          curto-circuita em null ANTES do typeof (que diria "object")
+--       `listing.imageUrlsOverride != null`             -> falso nos dois casos
+--   · A rota devolve `listing.imageUrlsOverride ?? null` — o contrato da API
+--     não muda: continua saindo `null` nos dois casos.
+--
+-- ⚠️ ESCOPO DELIBERADAMENTE ESTREITO. A mesma marca existe em outras 7 colunas
+-- do banco, e elas NÃO são tocadas aqui porque os caminhos de escrita e os
+-- consumidores delas não foram rastreados:
+--
+--   SystemLog.details ................. 38.170   (contra 8.845.059 com valor)
+--   CatalogStat.compatibilities ....... 10.549   (contra 7.575)
+--   CatalogStat.attributes .............. 7.162   (contra 10.962)
+--   Product.attributes .................. 6.423   (contra 223.755)
+--   BulkListingJob.overrideTemplate ....... 353   (contra 63)
+--   NfeItem.tributosJson ................... 64   (contra 350)
+--   NfeEmitida.emitenteJson ................ 16   (contra 6.578)
+--   AiMessage.toolCalls ..................... 4   (contra 13)
+--   User.pagePermissions .................... 1   (contra 18)
+--
+-- Nenhuma delas tem índice parcial por cima, então o custo é bem menor. Ficam
+-- registradas para entrega própria, com medição própria.
+
+BEGIN;
+
+SET LOCAL lock_timeout = '5s';
+
+-- Só as linhas que guardam o literal JSON `null`. Linhas com array/objeto de
+-- verdade e linhas já nulas não são tocadas.
+UPDATE "ProductListing"
+   SET "imageUrlsOverride" = NULL
+ WHERE "imageUrlsOverride" = 'null'::jsonb;
+
+UPDATE "ProductListing"
+   SET "attributesOverride" = NULL
+ WHERE "attributesOverride" = 'null'::jsonb;
+
+COMMIT;
+
+-- ── Verificação (rodar depois do COMMIT) ──────────────────────────────────
+--
+-- 1) O resíduo acabou e os valores de verdade continuam lá:
+--
+-- SELECT count(*) FILTER (WHERE "imageUrlsOverride" = 'null'::jsonb)          AS image_residuo,
+--        count(*) FILTER (WHERE jsonb_typeof("imageUrlsOverride") = 'array')  AS image_arrays,
+--        count(*) FILTER (WHERE "attributesOverride" = 'null'::jsonb)         AS attrs_residuo,
+--        count(*) FILTER (WHERE "attributesOverride" IS NOT NULL
+--                           AND "attributesOverride" <> 'null'::jsonb)        AS attrs_valores
+--   FROM "ProductListing";
+--
+--    → image_residuo = 0, attrs_residuo = 0
+--    → image_arrays  = 1  (era 1 antes; NÃO pode ter mudado)
+--    → attrs_valores = 3  (era 3 antes; NÃO pode ter mudado)
+--
+-- 2) O índice parcial encolheu:
+--
+-- SELECT pg_size_pretty(pg_relation_size(indexrelid)) AS tamanho, idx_scan
+--   FROM pg_stat_user_indexes
+--  WHERE indexrelname = 'ProductListing_productId_imageUrlsOverride_idx';
+--
+--    → o tamanho só cai de fato depois do autovacuum passar na tabela.
+--
+-- 3) A consulta que motivou tudo ficou mais rápida (trocar por um tenant real):
+--
+-- EXPLAIN (ANALYZE, BUFFERS)
+-- SELECT l."id", l."imageUrlsOverride"
+--   FROM "ProductListing" l
+--   LEFT JOIN "Product" AS j1 ON j1."id" = l."productId"
+--  WHERE j1."userId" = 'cmordubzu0000vst0cpn3kc41' AND j1."id" IS NOT NULL
+--    AND l."imageUrlsOverride" IS NOT NULL;
+--
+--    → Buffers de ~4.500 para algumas centenas (e ~10 depois do autovacuum).
+
+-- ── ROLLBACK ──────────────────────────────────────────────────────────────
+--
+-- Não há o que reverter: nada no sistema lê a diferença entre os dois nulos.
+-- Recriar o resíduo seria possível (`SET coluna = 'null'::jsonb WHERE coluna
+-- IS NULL`), mas atingiria também as 380 mil linhas que SEMPRE foram nulas —
+-- seria estragar, não reverter. Se algo der errado, o caminho é investigar,
+-- não desfazer.
