@@ -16,6 +16,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { ConversationSummary } from "./messages-shell";
 import { MessageBubble } from "./message-bubble";
 import { ReplyComposer } from "./reply-composer";
+import { marcarConversaLida } from "../lib/mark-read";
 
 interface ChatPaneProps {
   apiBase: string;
@@ -51,6 +52,9 @@ interface QuestionDto {
   mediaMimeType?: string | null;
   mediaUrl?: string | null; // rota autenticada relativa (/whatsapp/media/:id)
 }
+
+/** Espera antes da única retentativa de marcar-como-lida (falha transitória). */
+const RETRY_READ_MS = 1_500;
 
 interface ListingDto {
   id: string;
@@ -100,6 +104,12 @@ export function ChatPane({
   const effectiveAccountId =
     conversation?.marketplaceAccountId || accountId;
 
+  // Não lidas como PRIMITIVO. O objeto `conversation` é recriado a cada poll de
+  // 30 s da lista; depender dele fazia o efeito de leitura re-executar sem que
+  // nada tivesse mudado — e, com AbortController, isso cancelaria o request em
+  // voo a cada ciclo. Com o número, o efeito só roda quando ele muda de fato.
+  const unreadCount = conversation?.unreadCount ?? 0;
+
   const loadConversation = React.useCallback(
     async (signal?: AbortSignal) => {
       if (!effectiveAccountId || !itemId) return;
@@ -143,22 +153,51 @@ export function ChatPane({
     return () => controller.abort();
   }, [itemId, loadConversation]);
 
-  // marca como lida automaticamente ao abrir
+  // Marca como lida ao abrir.
+  //
+  // NUNCA otimista: `onAfterRead` (que zera o badge na lista e avisa a sidebar)
+  // só é chamado depois de uma resposta 2xx. Antes, o request era
+  // fire-and-forget — 401/404/5xx caíam no caminho de sucesso, o número sumia da
+  // tela e voltava no poll seguinte. Era exatamente o "some e volta" relatado.
+  // Falhando, o badge continua mostrando a verdade do servidor em vez de mentir.
   React.useEffect(() => {
-    if (!itemId || !effectiveAccountId) return;
-    if (!conversation || conversation.unreadCount === 0) return;
-    (async () => {
-      try {
-        await fetch(
-          `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}/read?accountId=${effectiveAccountId}`,
-          { method: "POST", headers },
-        );
+    if (!itemId || !effectiveAccountId || unreadCount === 0) return;
+
+    const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const tentar = async (tentativa: number): Promise<void> => {
+      const r = await marcarConversaLida({
+        apiBase,
+        accountId: effectiveAccountId,
+        itemId,
+        headers,
+        signal: controller.signal,
+      });
+      if (r.confirmada) {
         onAfterRead(itemId);
-      } catch (err) {
-        console.warn("chat: mark-read failed", err);
+        return;
       }
-    })();
-  }, [effectiveAccountId, apiBase, conversation, headers, itemId, onAfterRead]);
+      if (r.motivo === "abortada") return;
+      // Uma tentativa extra cobre a falha transitória (blip de rede, token
+      // renovando). Depois disso desiste: badge verdadeiro > badge zerado.
+      if (tentativa === 0) {
+        retryTimer = setTimeout(() => void tentar(1), RETRY_READ_MS);
+        return;
+      }
+      console.warn(
+        `chat: mark-read falhou (${r.motivo}); badge mantém o valor do servidor`,
+        r.detalhe,
+      );
+    };
+
+    void tentar(0);
+
+    return () => {
+      controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [effectiveAccountId, apiBase, headers, itemId, unreadCount, onAfterRead]);
 
   React.useEffect(() => {
     if (data && scrollRef.current) {
