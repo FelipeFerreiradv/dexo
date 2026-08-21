@@ -41,6 +41,72 @@ export interface ConversationListParams {
 }
 
 /**
+ * Estados de pergunta (ML/Shopee) sem ação pendente do vendedor e IRREVERSÍVEIS.
+ *
+ * `UNDER_REVIEW` fica de fora de propósito: o ML pode devolvê-la para
+ * `UNANSWERED`, e como o ramo `update` dos upserts nunca reabre `readAt`,
+ * marcá-la como lida no nascimento engoliria a pergunta em silêncio.
+ */
+const ESTADOS_SEM_ACAO_PENDENTE = new Set([
+  "ANSWERED",
+  "CLOSED_UNANSWERED",
+  "BANNED",
+  "DELETED",
+]);
+
+/**
+ * Estados terminais: a pergunta NUNCA poderá ser respondida. Ficam fora das
+ * contagens de não lidas — em produção eram 121 linhas impossíveis de zerar
+ * pela via normal (o filtro "Sem resposta" usa `status = UNANSWERED` e nem as
+ * mostrava; só sumiam abrindo conversa por conversa).
+ */
+const STATUS_TERMINAIS = ["CLOSED_UNANSWERED", "BANNED", "DELETED"];
+
+/**
+ * Kill-switch da mudança de ESCOPO do contador.
+ *
+ * Ligado (`MESSAGES_UNREAD_SCOPE_LEGACY=1`) devolve a semântica anterior: conta
+ * todas as contas do usuário — inclusive as em ERROR/INACTIVE, que ele não
+ * consegue abrir — e inclui os estados terminais. Reverter é `.env` + restart
+ * da API, sem deploy.
+ *
+ * Lido por chamada de propósito: assim o teste alterna o modo sem reimportar o
+ * módulo.
+ */
+function escopoLegado(): boolean {
+  return process.env.MESSAGES_UNREAD_SCOPE_LEGACY === "1";
+}
+
+/**
+ * `readAt` inicial de uma pergunta no instante em que o Dexo a conhece pela
+ * PRIMEIRA vez. Usado só no ramo `create` dos upserts — re-sync nunca chama
+ * isto, preservando o que o usuário já leu.
+ *
+ * Por que existe: antes disto TODA pergunta nascia com `readAt` NULL, inclusive
+ * as que chegavam já respondidas (histórico puxado pelo botão "atualizar",
+ * comentário respondido pelo app da Shopee, webhook do ML de pergunta já
+ * respondida). Em produção isso somava 4.173 de 7.551 não lidas (55%) com
+ * resposta anexada — e fazia o contador voltar a subir em conversas que o
+ * vendedor sabia ter respondido.
+ *
+ * Espelha a decisão já tomada e documentada para o chat da Magalu, onde a
+ * mensagem do SELLER nasce lida (ver `upsertMagaluMessage`).
+ */
+export function initialReadAt(input: {
+  status: string;
+  dateCreated: Date;
+  answeredAt?: Date | null;
+}): Date | null {
+  // A resposta é a prova de que foi tratada, qualquer que seja o status.
+  // Data inválida cai no ramo seguinte em vez de gravar Invalid Date.
+  if (input.answeredAt && !Number.isNaN(input.answeredAt.getTime())) {
+    return input.answeredAt;
+  }
+  if (ESTADOS_SEM_ACAO_PENDENTE.has(input.status)) return input.dateCreated;
+  return null;
+}
+
+/**
  * Camada de acesso a perguntas/respostas dos marketplaces.
  *
  * Princípios:
@@ -112,6 +178,13 @@ export class QuestionRepository {
       productListingId: resolvedListingId,
     };
 
+    // Pergunta que chega ao Dexo JÁ respondida (ou em estado terminal) não pode
+    // inflar o contador de não lidas — nasce lida. Só no `create`.
+    const mlAnsweredAt =
+      mlQuestion.answer && mlQuestion.answer.text
+        ? new Date(mlQuestion.answer.date_created)
+        : null;
+
     const upserted = await prisma.marketplaceQuestion.upsert({
       where: {
         marketplaceAccountId_externalQuestionId: {
@@ -119,7 +192,15 @@ export class QuestionRepository {
           externalQuestionId,
         },
       },
-      create: { ...baseData, lastSyncedAt: new Date() },
+      create: {
+        ...baseData,
+        lastSyncedAt: new Date(),
+        readAt: initialReadAt({
+          status: baseData.status,
+          dateCreated: baseData.dateCreated,
+          answeredAt: mlAnsweredAt,
+        }),
+      },
       update: {
         status: baseData.status,
         text: baseData.text,
@@ -208,6 +289,15 @@ export class QuestionRepository {
       productListingId: resolvedListingId,
     };
 
+    // Comentário que já chega com a resposta do seller nasce lido — mesma regra
+    // do ML e do Magalu. `create_time` da resposta pode faltar: cai no do
+    // comentário (é o que o attachAnswer abaixo já fazia).
+    const shopeeAnsweredAt = hasReply
+      ? new Date(
+          (comment.comment_reply!.create_time ?? comment.create_time) * 1000,
+        )
+      : null;
+
     const upserted = await prisma.marketplaceQuestion.upsert({
       where: {
         marketplaceAccountId_externalQuestionId: {
@@ -215,7 +305,15 @@ export class QuestionRepository {
           externalQuestionId,
         },
       },
-      create: { ...baseData, lastSyncedAt: new Date() },
+      create: {
+        ...baseData,
+        lastSyncedAt: new Date(),
+        readAt: initialReadAt({
+          status: baseData.status,
+          dateCreated: baseData.dateCreated,
+          answeredAt: shopeeAnsweredAt,
+        }),
+      },
       update: {
         status: baseData.status,
         text: baseData.text,
@@ -227,11 +325,10 @@ export class QuestionRepository {
     });
 
     if (hasReply) {
-      const replyAt = comment.comment_reply!.create_time ?? comment.create_time;
       await this.attachAnswer(upserted.id, {
         text: comment.comment_reply!.reply!,
         status: "ACTIVE",
-        date_created: new Date(replyAt * 1000).toISOString(),
+        date_created: shopeeAnsweredAt!.toISOString(),
       });
     }
 
@@ -425,9 +522,17 @@ export class QuestionRepository {
     // (mesmo padrão de countUnreadForUser). Reusado em ambas as fases da query.
     // O filtro de plataforma (opcional) entra na relação e combina (AND) com
     // o escopo — em "todas as contas" mantém o isolamento por userId.
+    const legado = escopoLegado();
     const accountRelation: Prisma.MarketplaceAccountWhereInput = {};
     if (!params.marketplaceAccountId) accountRelation.userId = params.userId;
     if (params.platform) accountRelation.platform = params.platform;
+    // Em "todas as contas", o agregado mostra só o que o usuário consegue
+    // abrir — mesmo escopo do badge da sidebar. Com uma conta escolhida a dedo
+    // o comportamento legado fica intacto, inclusive para contas em ERROR, que
+    // precisam continuar diagnosticáveis.
+    if (!params.marketplaceAccountId && !legado) {
+      accountRelation.status = "ACTIVE";
+    }
     const accountScope: Prisma.MarketplaceQuestionWhereInput = {
       ...(params.marketplaceAccountId
         ? { marketplaceAccountId: params.marketplaceAccountId }
@@ -441,7 +546,12 @@ export class QuestionRepository {
 
     if (status === "unanswered") where.status = "UNANSWERED";
     if (status === "answered") where.status = "ANSWERED";
-    if (status === "unread") where.readAt = null;
+    if (status === "unread") {
+      where.readAt = null;
+      // Terminal não pede ação e não entra no badge: se aparecesse aqui, o
+      // filtro "Não lidas" mostraria conversas que o contador não conta.
+      if (!legado) where.status = { notIn: STATUS_TERMINAIS };
+    }
 
     if (search) {
       where.OR = [
@@ -509,7 +619,13 @@ export class QuestionRepository {
       }),
       prisma.marketplaceQuestion.groupBy({
         by: ["externalItemId"],
-        where: { ...inSelected, readAt: null },
+        // Mesmo recorte do badge da sidebar: o número da LINHA e o da SIDEBAR
+        // precisam contar o mesmo conjunto, senão um zera e o outro não.
+        where: {
+          ...inSelected,
+          readAt: null,
+          ...(legado ? {} : { status: { notIn: STATUS_TERMINAIS } }),
+        },
         _count: { _all: true },
       }),
       prisma.marketplaceQuestion.groupBy({
@@ -583,12 +699,31 @@ export class QuestionRepository {
     return { questions, listing };
   }
 
+  /**
+   * Marca como lidas as perguntas ainda não lidas de uma conversa.
+   *
+   * `userId` (aditivo, opcional) alinha o escopo da MARCAÇÃO ao da AGREGAÇÃO:
+   * `listConversations` agrupa por `externalItemId` dentro do usuário e soma o
+   * `unreadCount` de TODAS as contas dele, enquanto a marcação cobria só uma.
+   * Com o mesmo `externalItemId` em duas contas do usuário (8 pares em
+   * produção), o clique zerava uma e a outra reaparecia no poll seguinte.
+   *
+   * O isolamento entre tenants segue garantido pelo filtro
+   * `marketplaceAccount: { userId }` — existe 1 `externalItemId` compartilhado
+   * entre usuários DIFERENTES, e ele nunca pode ser marcado junto.
+   *
+   * Sem `userId`, o comportamento é byte-idêntico ao legado.
+   */
   static async markConversationRead(
     marketplaceAccountId: string,
     externalItemId: string,
+    userId?: string,
   ): Promise<number> {
+    const where: Prisma.MarketplaceQuestionWhereInput = userId
+      ? { externalItemId, readAt: null, marketplaceAccount: { userId } }
+      : { marketplaceAccountId, externalItemId, readAt: null };
     const result = await prisma.marketplaceQuestion.updateMany({
-      where: { marketplaceAccountId, externalItemId, readAt: null },
+      where,
       data: { readAt: new Date() },
     });
     return result.count;
@@ -617,14 +752,30 @@ export class QuestionRepository {
   }
 
   /**
-   * Total de perguntas não-lidas (para o badge da sidebar).
-   * Considera todas as contas do usuário.
+   * Total de perguntas não-lidas (badge da sidebar).
+   *
+   * Conta só o que o usuário CONSEGUE zerar clicando: contas ativas e perguntas
+   * que ainda admitem resposta. Antes, o badge somava contas em ERROR/INACTIVE
+   * (792 linhas em produção) e estados terminais (121) — números que nenhuma
+   * sequência de cliques derrubava, e que a cliente lia como "volta sozinho".
+   *
+   * Mesmo escopo do filtro "Não lidas" em modo "todas as contas", para que lista
+   * e badge contem exatamente o mesmo conjunto.
    */
   static async countUnreadForUser(userId: string): Promise<number> {
+    if (escopoLegado()) {
+      return prisma.marketplaceQuestion.count({
+        where: {
+          readAt: null,
+          marketplaceAccount: { userId },
+        },
+      });
+    }
     return prisma.marketplaceQuestion.count({
       where: {
         readAt: null,
-        marketplaceAccount: { userId },
+        status: { notIn: STATUS_TERMINAIS },
+        marketplaceAccount: { userId, status: "ACTIVE" },
       },
     });
   }

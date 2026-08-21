@@ -11,10 +11,18 @@ import prisma from "@/app/lib/prisma";
  * Estratégia: mockar o primeiro groupBy retornando [] faz a função
  * retornar cedo ({ items: [], total: 0 }) — suficiente para inspecionar
  * o `where` que foi passado, sem tocar no banco.
+ *
+ * ATUALIZADO em 21/08/2026 (Bloco C do diagnóstico do badge de não lidas): em
+ * modo "todas as contas" o escopo passou a excluir contas não-ACTIVE, para que
+ * o agregado mostre só o que o usuário consegue abrir — em produção havia 792
+ * não lidas em contas ERROR/INACTIVE, impossíveis de zerar. Com uma conta
+ * escolhida a dedo, NADA muda. O contrato antigo continua provado abaixo, sob
+ * o kill-switch MESSAGES_UNREAD_SCOPE_LEGACY=1.
  */
 describe("QuestionRepository.listConversations — escopo de conta", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.MESSAGES_UNREAD_SCOPE_LEGACY;
   });
 
   it("conta específica: filtra por marketplaceAccountId (comportamento legado)", async () => {
@@ -34,7 +42,7 @@ describe("QuestionRepository.listConversations — escopo de conta", () => {
     expect(firstCallWhere.marketplaceAccount).toBeUndefined();
   });
 
-  it("todas as contas: filtra por marketplaceAccount.userId (sem accountId)", async () => {
+  it("todas as contas: filtra por marketplaceAccount.userId + conta ATIVA", async () => {
     const spy = vi
       .spyOn(prisma.marketplaceQuestion, "groupBy")
       .mockResolvedValue([] as any);
@@ -47,9 +55,30 @@ describe("QuestionRepository.listConversations — escopo de conta", () => {
 
     const firstCallWhere = (spy.mock.calls[0][0] as any).where;
     expect(firstCallWhere).toEqual({
-      marketplaceAccount: { userId: "user-1" },
+      marketplaceAccount: { userId: "user-1", status: "ACTIVE" },
     });
     expect(firstCallWhere.marketplaceAccountId).toBeUndefined();
+  });
+
+  it("kill-switch ligado: volta ao escopo legado, byte-idêntico", async () => {
+    process.env.MESSAGES_UNREAD_SCOPE_LEGACY = "1";
+    // `any` explícito: as sobrecargas do groupBy do Prisma fazem o TS inferir
+    // `never` para o método espionado. Os 4 casos acima carregam esse erro no
+    // baseline do tsc; este caso é novo e não deve aumentá-lo.
+    const spy: any = vi.spyOn(prisma.marketplaceQuestion, "groupBy");
+    spy.mockResolvedValue([]);
+
+    await QuestionRepository.listConversations({
+      userId: "user-1",
+      marketplaceAccountId: undefined,
+      status: "all",
+    });
+
+    // Este é o contrato que valia antes de 21/08/2026 — reverter é `.env` +
+    // restart da API, sem deploy.
+    expect((spy.mock.calls[0][0] as any).where).toEqual({
+      marketplaceAccount: { userId: "user-1" },
+    });
   });
 
   it("preserva filtro de status junto do escopo (todas)", async () => {
@@ -63,7 +92,10 @@ describe("QuestionRepository.listConversations — escopo de conta", () => {
     });
 
     const firstCallWhere = (spy.mock.calls[0][0] as any).where;
-    expect(firstCallWhere.marketplaceAccount).toEqual({ userId: "user-1" });
+    expect(firstCallWhere.marketplaceAccount).toEqual({
+      userId: "user-1",
+      status: "ACTIVE",
+    });
     expect(firstCallWhere.status).toBe("UNANSWERED");
   });
 

@@ -14,9 +14,10 @@ import prisma from "@/app/lib/prisma";
 describe("QuestionRepository.listConversations — filtro de plataforma", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.MESSAGES_UNREAD_SCOPE_LEGACY;
   });
 
-  it("todas as contas + plataforma: relação tem userId + platform", async () => {
+  it("todas as contas + plataforma: relação tem userId + platform + conta ATIVA", async () => {
     const spy: any = vi.spyOn(prisma.marketplaceQuestion, "groupBy");
     spy.mockResolvedValue([]);
 
@@ -27,9 +28,13 @@ describe("QuestionRepository.listConversations — filtro de plataforma", () => 
     });
 
     const where = (spy.mock.calls[0][0] as any).where;
+    // `status: ACTIVE` entrou em 21/08/2026 (Bloco C): em "todas as contas" o
+    // agregado mostra só o que o usuário consegue abrir. O filtro de plataforma
+    // continua combinando (AND) exatamente como antes.
     expect(where.marketplaceAccount).toEqual({
       userId: "user-1",
       platform: "SHOPEE",
+      status: "ACTIVE",
     });
     expect(where.marketplaceAccountId).toBeUndefined();
   });
@@ -51,7 +56,24 @@ describe("QuestionRepository.listConversations — filtro de plataforma", () => 
     expect(where.marketplaceAccount).toEqual({ platform: "MAGALU" });
   });
 
-  it("sem plataforma: relação só com userId (comportamento legado)", async () => {
+  it("sem plataforma: relação com userId + conta ATIVA", async () => {
+    const spy: any = vi.spyOn(prisma.marketplaceQuestion, "groupBy");
+    spy.mockResolvedValue([]);
+
+    await QuestionRepository.listConversations({
+      userId: "user-1",
+      status: "all",
+    });
+
+    const where = (spy.mock.calls[0][0] as any).where;
+    expect(where.marketplaceAccount).toEqual({
+      userId: "user-1",
+      status: "ACTIVE",
+    });
+  });
+
+  it("kill-switch ligado: relação só com userId (comportamento legado)", async () => {
+    process.env.MESSAGES_UNREAD_SCOPE_LEGACY = "1";
     const spy: any = vi.spyOn(prisma.marketplaceQuestion, "groupBy");
     spy.mockResolvedValue([]);
 
