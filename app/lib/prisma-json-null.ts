@@ -41,6 +41,23 @@
  *
  * Precedente da casa, anterior a este arquivo: `product.repository.ts` já
  * fazia `data.attributes ?? Prisma.DbNull` para `Product.attributes`.
+ *
+ * ── O PASSIVO HISTÓRICO ───────────────────────────────────────────────────
+ *
+ * Este arquivo estanca a origem, mas não limpa o que já foi gravado errado. A
+ * conversão das linhas antigas está em
+ * `prisma/ddl/2026-08-21-product-listing-json-null-para-sql-null.sql`, para
+ * rodar em produção DEPOIS do deploy deste código.
+ *
+ * Como saber, a qualquer momento, se ele já rodou:
+ *
+ *   SELECT count(*) FILTER (WHERE "imageUrlsOverride"  = 'null'::jsonb) AS fotos,
+ *          count(*) FILTER (WHERE "attributesOverride" = 'null'::jsonb) AS ficha
+ *     FROM "ProductListing";
+ *
+ * Zero nas duas = já foi convertido. Números altos com este código no ar = o
+ * DDL ainda está pendente (o código novo não repõe resíduo, então eles param de
+ * crescer, mas não caem sozinhos).
  */
 
 import { Prisma } from "@prisma/client";

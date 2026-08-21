@@ -31,7 +31,7 @@
 --
 -- Origem: dois caminhos, ambos corrigidos no código desta mesma entrega.
 --   1. `clearOverridesForEditedFields` (product.usercase): editar a peça
---      "limpa" os overrides dos anúncios; 2 dos 20 campos são Json.
+--      "limpa" os overrides dos anúncios; 2 dos 19 campos são Json.
 --   2. `ListingRepository.updateListing`: o modal de edição envia
 --      `imageUrlsOverride: null` quando as fotos do anúncio voltam a ser as
 --      da peça (`diffJson` devolve null quando são iguais).
@@ -115,6 +115,26 @@ BEGIN;
 
 SET LOCAL lock_timeout = '5s';
 
+-- ── LINHA DE BASE, TIRADA AGORA (não de uma constante de 21/08) ───────────
+--
+-- ⚠️ NÃO confira o resultado contra os números deste arquivo. `image_arrays` e
+-- `attrs_valores` contam override de foto e de ficha que os VENDEDORES criam no
+-- dia a dia: entre a autoria deste DDL e a hora em que você o roda, eles sobem
+-- por uso legítimo. Um operador que visse "eram 1" e encontrasse 2 leria uma
+-- regressão onde há só um cliente novo usando o recurso.
+--
+-- O que tem de ser verdade é a INVARIANTE, não a constante:
+--   · o resíduo vai a zero;
+--   · os valores de verdade ficam EXATAMENTE como estão nesta leitura.
+--
+-- Anote as duas colunas da direita antes de seguir.
+SELECT count(*) FILTER (WHERE "imageUrlsOverride" = 'null'::jsonb)          AS image_residuo_antes,
+       count(*) FILTER (WHERE "attributesOverride" = 'null'::jsonb)         AS attrs_residuo_antes,
+       count(*) FILTER (WHERE jsonb_typeof("imageUrlsOverride") = 'array')  AS image_arrays_ANOTE,
+       count(*) FILTER (WHERE "attributesOverride" IS NOT NULL
+                          AND "attributesOverride" <> 'null'::jsonb)        AS attrs_valores_ANOTE
+  FROM "ProductListing";
+
 -- Só as linhas que guardam o literal JSON `null`. Linhas com array/objeto de
 -- verdade e linhas já nulas não são tocadas.
 UPDATE "ProductListing"
@@ -129,7 +149,7 @@ COMMIT;
 
 -- ── Verificação (rodar depois do COMMIT) ──────────────────────────────────
 --
--- 1) O resíduo acabou e os valores de verdade continuam lá:
+-- 1) O resíduo acabou e os valores de verdade continuam OS MESMOS:
 --
 -- SELECT count(*) FILTER (WHERE "imageUrlsOverride" = 'null'::jsonb)          AS image_residuo,
 --        count(*) FILTER (WHERE jsonb_typeof("imageUrlsOverride") = 'array')  AS image_arrays,
@@ -138,9 +158,14 @@ COMMIT;
 --                           AND "attributesOverride" <> 'null'::jsonb)        AS attrs_valores
 --   FROM "ProductListing";
 --
---    → image_residuo = 0, attrs_residuo = 0
---    → image_arrays  = 1  (era 1 antes; NÃO pode ter mudado)
---    → attrs_valores = 3  (era 3 antes; NÃO pode ter mudado)
+--    → image_residuo = 0  e  attrs_residuo = 0     (invariante, sempre)
+--    → image_arrays  == o `image_arrays_ANOTE` da leitura de cima
+--    → attrs_valores == o `attrs_valores_ANOTE` da leitura de cima
+--
+--    Qualquer um dos dois MENOR que o anotado significa que o UPDATE alcançou
+--    dado de verdade — o que não deveria ser possível, porque o `WHERE` casa só
+--    o literal `'null'::jsonb`. Se acontecer, PARE e investigue.
+--    MAIOR que o anotado é normal: alguém criou um override entre as leituras.
 --
 -- 2) O índice parcial encolheu:
 --

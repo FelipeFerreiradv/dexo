@@ -240,46 +240,122 @@ describe("clearOverridesForEditedFields — editar a peça limpa o override", ()
     expect(arg?.data.attributesOverride).toBe(Prisma.DbNull);
   });
 
-  it("⚠️ os 18 overrides ESCALARES continuam sendo limpos com `null`", async () => {
+  it("⚠️ TODOS os 17 overrides escalares continuam sendo limpos com `null`", async () => {
     // Esta é a contraprova que impede a correção de virar um estrago maior:
-    // `Prisma.DbNull` num campo `String?` é erro de validação, não um nulo.
+    // `Prisma.DbNull` num campo `String?` é erro de validação do Prisma, não um
+    // nulo. Se `comNulosDeJsonSeguros` um dia virar heurística ("todo campo que
+    // termina em Override") em vez de lista explícita, é aqui que quebra.
+    //
+    // ⚠️ Dispara os 19 gatilhos DE UMA VEZ, de propósito. Uma versão anterior
+    // deste teste mexia em 3 campos e ainda assim se anunciava como a
+    // contraprova dos escalares — cobria 3 de 17 e o nome prometia 17.
     const arg = await limpar(
-      { name: "Cubo", imageUrls: ["a.jpg"], price: 10, brand: "VW" },
-      { name: "Cubo novo", price: 20, brand: "Ford" },
+      {
+        name: "Cubo", description: "desc", price: 10, brand: "VW", model: "Gol",
+        year: "2010", version: "1.0", category: "Suspensão",
+        mlCategoryId: "MLB1", shopeeCategoryId: "SH1", partNumber: "PN1",
+        quality: "USADO", heightCm: 1, widthCm: 1, lengthCm: 1, weightKg: 1,
+        imageUrls: ["a.jpg"], attributes: { OEM: { value_name: "1" } },
+        sourceVehicle: "Gol 2010",
+      },
+      {
+        name: "Cubo novo", description: "outra", price: 20, brand: "Ford",
+        model: "Ka", year: "2011", version: "1.6", category: "Freio",
+        mlCategoryId: "MLB2", shopeeCategoryId: "SH2", partNumber: "PN2",
+        quality: "NOVO", heightCm: 2, widthCm: 2, lengthCm: 2, weightKg: 2,
+        imageUrls: ["b.jpg"], attributes: { OEM: { value_name: "2" } },
+        sourceVehicle: "Ka 2011",
+      },
     );
-    expect(arg?.data.titleOverride).toBeNull();
-    expect(arg?.data.priceOverride).toBeNull();
-    expect(arg?.data.brandOverride).toBeNull();
-    // e nenhum escalar virou DbNull
-    for (const [chave, valor] of Object.entries(arg?.data ?? {})) {
-      if ((COLUNAS_JSON_DE_PRODUCT_LISTING as readonly string[]).includes(chave))
-        continue;
-      expect(valor, `escalar ${chave}`).not.toBe(Prisma.DbNull);
+
+    const campos = Object.entries(arg?.data ?? {});
+    const json = campos.filter(([k]) =>
+      (COLUNAS_JSON_DE_PRODUCT_LISTING as readonly string[]).includes(k),
+    );
+    const escalares = campos.filter(
+      ([k]) => !(COLUNAS_JSON_DE_PRODUCT_LISTING as readonly string[]).includes(k),
+    );
+
+    // A contagem é parte da asserção: se um `*Override` novo entrar na lista do
+    // usecase, este número muda e o comentário de lá precisa ser revisto junto.
+    expect(campos.length, "campos limpos de uma vez").toBe(19);
+    expect(json.length, "colunas Json").toBe(2);
+    expect(escalares.length, "colunas escalares").toBe(17);
+
+    for (const [chave, valor] of json) {
+      expect(valor, `Json ${chave}`).toBe(Prisma.DbNull);
+    }
+    for (const [chave, valor] of escalares) {
+      expect(valor, `escalar ${chave}`).toBeNull();
     }
   });
 });
 
+/**
+ * Extrai do `schema.prisma` os campos do model que são `Json?` — NULÁVEIS.
+ *
+ * ⚠️ O `?` é OBRIGATÓRIO na regex, e isso é uma decisão, não descuido. O tipo
+ * de input do Prisma é diferente para cada caso (conferido no client gerado):
+ *
+ *   coluna `Json?`  →  NullableJsonNullValueInput = { DbNull, JsonNull }
+ *   coluna `Json`   →  JsonNullValueInput         = {         JsonNull }
+ *
+ * Ou seja: `Prisma.DbNull` **não é aceito** numa coluna Json obrigatória. Se a
+ * regex casasse `Json` sem `?`, a asserção de igualdade abaixo OBRIGARIA o
+ * mantenedor a pôr essa coluna na lista — e a tradução passaria a gravar um
+ * valor inválido, com erro de validação em runtime. A guarda estaria empurrando
+ * para a resposta errada.
+ *
+ * `Json[]` (lista escalar) também fica de fora, e também de propósito: lista
+ * escalar do Prisma não aceita `null`, então não há resíduo possível nela.
+ */
+function extrairJsonNulaveis(corpoDoModel: string): string[] {
+  return corpoDoModel
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("//"))
+    .map((l) => l.match(/^\s*(\w+)\s+Json\?(\s|$)/))
+    .filter((m): m is RegExpMatchArray => m !== null)
+    .map((m) => m[1])
+    .sort();
+}
+
+function camposJsonNulaveisDoSchema(model: string): string[] {
+  const schema = fs.readFileSync(
+    path.resolve(__dirname, "..", "prisma", "schema.prisma"),
+    "utf8",
+  );
+  const bloco = schema.match(new RegExp(`model ${model} \\{([\\s\\S]*?)\\n\\}`));
+  if (!bloco) throw new Error(`model ${model} não encontrado no schema`);
+  return extrairJsonNulaveis(bloco[1]);
+}
+
 describe("guarda de deriva: a lista de colunas Json x o schema", () => {
-  it("cobre exatamente os campos Json do model ProductListing", () => {
+  it("cobre exatamente os campos `Json?` do model ProductListing", () => {
     // O modo de falha que isto previne: alguém acrescenta uma coluna `Json?`
     // ao model, o código passa a limpá-la com `null`, e o literal JSON `null`
     // volta a entrar no banco — sem erro, sem log, sem teste vermelho.
-    const schema = fs.readFileSync(
-      path.resolve(__dirname, "..", "prisma", "schema.prisma"),
-      "utf8",
-    );
-    const bloco = schema.match(/model ProductListing \{([\s\S]*?)\n\}/);
-    expect(bloco, "model ProductListing não encontrado no schema").toBeTruthy();
-
-    const doSchema = (bloco as RegExpMatchArray)[1]
-      .split("\n")
-      .filter((l) => !l.trimStart().startsWith("//"))
-      .map((l) => l.match(/^\s*(\w+)\s+Json\??(\s|$)/))
-      .filter((m): m is RegExpMatchArray => m !== null)
-      .map((m) => m[1])
-      .sort();
-
+    const doSchema = camposJsonNulaveisDoSchema("ProductListing");
     expect(doSchema.length).toBeGreaterThan(0);
     expect([...COLUNAS_JSON_DE_PRODUCT_LISTING].sort()).toEqual(doSchema);
+  });
+
+  it("a extração ignora `Json` obrigatório e `Json[]` — e sabe por quê", () => {
+    // ⚠️ GUARDA DA PRÓPRIA GUARDA, e usa a MESMA função da asserção acima —
+    // não uma cópia da regex. Uma versão anterior deste teste duplicava a
+    // expressão aqui dentro: a regex de verdade podia ser "simplificada" de
+    // volta para `Json\??` sem nada ficar vermelho, porque este teste estava
+    // exercitando a cópia, não o original.
+    expect(extrairJsonNulaveis("  campoNulavel   Json?")).toEqual(["campoNulavel"]);
+    expect(extrairJsonNulaveis('  campoNulavel   Json?   @map("x")')).toEqual([
+      "campoNulavel",
+    ]);
+    // obrigatório: `Prisma.DbNull` não é aceito lá (o input type é
+    // JsonNullValueInput, só com JsonNull), então NÃO pode entrar na lista
+    expect(extrairJsonNulaveis("  campoObrigat   Json")).toEqual([]);
+    expect(extrairJsonNulaveis('  campoObrigat   Json    @default("{}")')).toEqual([]);
+    // lista escalar: não aceita null, não há resíduo possível
+    expect(extrairJsonNulaveis("  campoLista     Json[]")).toEqual([]);
+    // comentário citando Json? não pode virar campo
+    expect(extrairJsonNulaveis("  // campoFalso  Json?")).toEqual([]);
   });
 });

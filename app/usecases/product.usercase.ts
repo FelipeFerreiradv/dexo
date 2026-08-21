@@ -1090,11 +1090,16 @@ export class ProductUseCase {
     try {
       const result = await prisma.productListing.updateMany({
         where: { productId },
-        // ⚠️ `clearOverrides` acumula `campo = null` para 20 campos, e DOIS
+        // ⚠️ `clearOverrides` acumula `campo = null` para 19 campos, e DOIS
         // deles são colunas `Json?` (`imageUrlsOverride`, `attributesOverride`).
         // Escrever `null` do JavaScript numa coluna Json grava o literal JSON
-        // `null` — que em SQL NÃO é nulo e casa com `IS NOT NULL`. Nos 18
+        // `null` — que em SQL NÃO é nulo e casa com `IS NOT NULL`. Nos 17
         // escalares o `null` já grava NULL do SQL e nada muda.
+        //
+        // (19 e não 20: o model tem mais campos `*Override`, mas nem todos são
+        // limpos por aqui — `olxCategoryOverride` e `fbCategoryOverride`, por
+        // exemplo, não têm gatilho neste método. Conferir com
+        // `grep -c "clearOverrides\.[a-zA-Z]* = null" neste arquivo`.)
         //
         // A tradução é feita AQUI, pela lista de colunas Json do model, e não
         // nas atribuições lá em cima, de propósito: assim um `*Override` do
