@@ -88,6 +88,7 @@ import type {
 } from "../lib/product-form-snapshot";
 import {
   decidirRestauracaoDaSucata,
+  interpretarVerificacaoDoLote,
   opcoesComSucataRestaurada,
   sucataParaRascunho,
   type SucataDoRascunho,
@@ -743,6 +744,9 @@ export function CreateProductDialog({
   const [sucataRestaurada, setSucataRestaurada] =
     useState<SucataDoSeletor | null>(null);
   const [availableScraps, setAvailableScraps] = useState<SucataDoSeletor[]>([]);
+  // Espelho para LER a lista sem que ela vire dependência de callback.
+  const availableScrapsRef = useRef<SucataDoSeletor[]>([]);
+  availableScrapsRef.current = availableScraps;
   const hasFetchedOnOpenRef = useRef(false);
   const scrapAutofilledRef = useRef<{
     brand?: string;
@@ -3429,21 +3433,25 @@ export function CreateProductDialog({
           ...(snapshot.compatibilityPositions as string[]),
         ]);
       }
-      // O vínculo com a sucata NÃO é aplicado aqui — só enfileirado.
+      // O VÍNCULO COM A SUCATA NÃO ENTRA AQUI.
       //
-      // Era esta a linha que faltava: o rascunho gravava a sucata (há até um
-      // efeito dedicado só para isso) e a restauração nunca a lia. Voltavam
-      // marca, modelo, ano, versão e o texto do veículo — todos campos do
-      // formulário —, e ficava de fora justamente o vínculo, que é o único
-      // que não alimenta nenhum outro campo visível. A tela parecia completa
-      // e a peça nascia sem lote.
+      // Era esta a leitura que faltava: o rascunho gravava a sucata (há até
+      // um efeito dedicado só para isso) e a restauração nunca a lia.
+      // Voltavam marca, modelo, ano, versão e o texto do veículo — todos
+      // campos do formulário —, e ficava de fora justamente o vínculo, que é
+      // o único que não alimenta nenhum outro campo visível. A tela parecia
+      // completa e a peça nascia sem lote.
       //
-      // Aplicar aqui, porém, seria trocar um defeito por um pior: este modal
-      // é um <form>, e o Radix mantém um <select> nativo espelho. Um valor
-      // sem <option> correspondente é recusado, o browser cai na PRIMEIRA
-      // opção — "Nenhuma sucata" — e o eco pelo `onValueChange` roda o ramo
-      // que APAGA marca, modelo, ano, versão e veículo de origem.
-      if (snapshot.scrap) setSucataPendente(snapshot.scrap);
+      // Mas aplicá-lo aqui seria trocar um defeito por um pior, e por dois
+      // motivos: este modal é um <form>, onde o Radix mantém um <select>
+      // nativo espelho que RECUSA valor sem `<option>` e devolve a primeira
+      // opção — "Nenhuma sucata" — cujo ramo APAGA os cinco campos acima; e o
+      // lote pode ter sido excluído nas 24h de vida do rascunho, o que faria
+      // o cadastro falhar com 400 no servidor.
+      //
+      // Por isso quem cuida disso é `enfileirarSucataDoRascunho`, no caminho
+      // do clique: confere a existência e enfileira; o efeito então aplica em
+      // dois commits, com a `<option>` antes do valor.
       if (snapshot.magaluCategoryLabel) {
         setMagaluSelectedLabel(snapshot.magaluCategoryLabel);
         const id = snapshot.values.magaluCategory;
@@ -3513,14 +3521,68 @@ export function CreateProductDialog({
     sucataRestaurada,
   );
 
+  /**
+   * Enfileira a sucata do rascunho — só depois de confirmar que ela existe.
+   *
+   * `DELETE /scraps/:id` é exclusão FÍSICA, e o rascunho vive 24 horas. Sem
+   * esta conferência, um lote apagado nesse meio-tempo voltaria selecionado,
+   * o `POST /products` bateria na trava de tenant e devolveria 400 — com o
+   * produto NÃO criado, e repetindo a cada restauração do mesmo rascunho.
+   *
+   * Mora AQUI, no caminho do clique, e não no efeito que aplica o vínculo:
+   * roda uma vez por decisão do operador, sem corrida com a lista nem
+   * dependência nova naquele efeito.
+   *
+   * Uma requisição, e só quando há sucata no rascunho E ela não está na
+   * lista que o servidor já mandou — estar na lista JÁ é prova de que existe.
+   */
+  const enfileirarSucataDoRascunho = useCallback(
+    async (doRascunho: ScrapSnapshot | null) => {
+      if (!doRascunho?.id) return;
+      // Lote travado manda; nem vale perguntar ao servidor.
+      if (lockedScrapRef.current) return;
+      if (availableScrapsRef.current.some((x) => x.id === doRascunho.id)) {
+        setSucataPendente(doRascunho);
+        return;
+      }
+      const email = session?.user?.email;
+      if (!email) return;
+      let existencia: ReturnType<typeof interpretarVerificacaoDoLote>;
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/scraps/${encodeURIComponent(doRascunho.id)}`,
+          { headers: { email } },
+        );
+        existencia = interpretarVerificacaoDoLote(res.status);
+      } catch {
+        existencia = "indeterminado";
+      }
+      if (existencia === "existe") {
+        setSucataPendente(doRascunho);
+        return;
+      }
+      if (existencia === "sumiu") {
+        onToast(
+          "A sucata deste cadastro foi excluída. Escolha outra antes de salvar.",
+          "warning",
+        );
+      }
+      // `indeterminado` segue em silêncio: não afirma o vínculo (que poderia
+      // travar o cadastro) nem que ele morreu. É voltar ao comportamento
+      // anterior à correção, que era não restaurar.
+    },
+    [session?.user?.email, onToast],
+  );
+
   const handleRestoreDraft = useCallback(() => {
     const snapshot = draft.restore();
     setAskRestoreDraft(false);
     draftDecisionPendingRef.current = false;
     if (!snapshot) return;
     restoreSnapshotIntoForm(snapshot);
+    void enfileirarSucataDoRascunho(snapshot.scrap);
     onToast("Cadastro em andamento restaurado.", "success");
-  }, [draft, restoreSnapshotIntoForm, onToast]);
+  }, [draft, restoreSnapshotIntoForm, enfileirarSucataDoRascunho, onToast]);
 
   const handleDiscardDraft = useCallback(() => {
     draft.discard();

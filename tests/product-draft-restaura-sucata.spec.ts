@@ -20,6 +20,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   decidirRestauracaoDaSucata,
+  interpretarVerificacaoDoLote,
   opcoesComSucataRestaurada,
   sucataParaRascunho,
   type SucataDoSeletor,
@@ -111,6 +112,40 @@ describe("decidirRestauracaoDaSucata — a opção antes do valor", () => {
     expect(decidirRestauracaoDaSucata({ id: "" }, [FUSION])).toEqual({
       tipo: "esperar",
     });
+  });
+});
+
+describe("interpretarVerificacaoDoLote — só o 404 é prova de ausência", () => {
+  // `DELETE /scraps/:id` é exclusão FÍSICA e o rascunho vive 24 horas. Sem
+  // conferir, um lote apagado nesse meio-tempo voltaria selecionado, o
+  // `POST /products` bateria na trava de tenant e devolveria 400 — com o
+  // produto NÃO criado, repetindo a cada restauração do mesmo rascunho.
+
+  it("404 é o único que autoriza dizer que o lote sumiu", () => {
+    expect(interpretarVerificacaoDoLote(404)).toBe("sumiu");
+  });
+
+  it("2xx confirma que o lote existe", () => {
+    for (const s of [200, 201, 204]) {
+      expect(interpretarVerificacaoDoLote(s)).toBe("existe");
+    }
+  });
+
+  it("REGRESSÃO: 401, 403, 5xx e afins NÃO são ausência", () => {
+    // A régua é estreita pelo mesmo motivo do `TERMINAL_AUTH_ERRORS` da Shopee:
+    // tratar condição passageira como veredicto descartaria em silêncio um
+    // vínculo legítimo por causa de uma oscilação de rede ou de sessão.
+    for (const s of [400, 401, 403, 408, 429, 500, 502, 503, 0]) {
+      expect(interpretarVerificacaoDoLote(s)).toBe("indeterminado");
+    }
+  });
+
+  it("`indeterminado` não é `sumiu` — a distinção é o ponto", () => {
+    // Se os dois colapsassem, o operador levaria um aviso falso de exclusão a
+    // cada instabilidade. E se `indeterminado` virasse `existe`, o cadastro
+    // voltaria a poder travar com 400.
+    expect(interpretarVerificacaoDoLote(500)).not.toBe("sumiu");
+    expect(interpretarVerificacaoDoLote(500)).not.toBe("existe");
   });
 });
 

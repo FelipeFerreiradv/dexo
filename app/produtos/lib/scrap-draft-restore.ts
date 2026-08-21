@@ -42,6 +42,33 @@ export interface SucataDoRascunho {
   plate?: string;
 }
 
+/** O que a verificação do lote no servidor permite AFIRMAR. */
+export type ExistenciaDoLote = "existe" | "sumiu" | "indeterminado";
+
+/**
+ * Lê a resposta de `GET /scraps/:id` — e só o 404 é prova de ausência.
+ *
+ * POR QUE ISTO EXISTE. `DELETE /scraps/:id` é exclusão FÍSICA. Um lote pode
+ * sumir enquanto o rascunho dorme (o TTL é de 24 horas), e aí restaurar o
+ * vínculo faria o `POST /products` bater na trava de tenant
+ * (`product.repository.ts`) e devolver 400 — com o produto NÃO criado. O
+ * operador ficaria preso: toda restauração do mesmo rascunho repetiria o erro.
+ *
+ * A régua é estreita de propósito, do mesmo jeito que `TERMINAL_AUTH_ERRORS`
+ * na Shopee: 401, 403, 500 e falha de rede são condições PASSAGEIRAS, e tratar
+ * qualquer uma delas como “o lote sumiu” descartaria em silêncio um vínculo
+ * legítimo por causa de uma oscilação.
+ *
+ * `indeterminado` é conservador por escolha: não afirma o vínculo (que pode
+ * travar o cadastro) e também não afirma que ele morreu — apenas volta ao
+ * comportamento anterior à correção, que é não restaurar.
+ */
+export function interpretarVerificacaoDoLote(status: number): ExistenciaDoLote {
+  if (status === 404) return "sumiu";
+  if (status >= 200 && status < 300) return "existe";
+  return "indeterminado";
+}
+
 /**
  * O que do lote pode ir para o rascunho — LISTA DE PERMISSÃO.
  *
