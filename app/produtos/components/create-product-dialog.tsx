@@ -89,6 +89,8 @@ import type {
 import {
   decidirRestauracaoDaSucata,
   opcoesComSucataRestaurada,
+  sucataParaRascunho,
+  type SucataDoRascunho,
   type SucataDoSeletor,
 } from "../lib/scrap-draft-restore";
 import { scopeKeyFor, type DraftScope } from "../lib/product-form-storage";
@@ -670,7 +672,7 @@ export function CreateProductDialog({
   const draftExtrasRef = useRef<{
     compatibilities: CompatibilityEntry[];
     compatibilityPositions: string[];
-    scrap: SucataDoSeletor | null;
+    scrap: SucataDoRascunho | null;
     magaluLabel: string | null;
     step: number;
   }>({
@@ -3324,7 +3326,9 @@ export function CreateProductDialog({
   draftExtrasRef.current = {
     compatibilities,
     compatibilityPositions,
-    scrap: selectedScrap,
+    // Reconstruído campo a campo: `selectedScrap` carrega a linha que a API
+    // mandou, e ela traz custo do lote e documentos do veículo.
+    scrap: sucataParaRascunho(selectedScrap),
     magaluLabel: magaluSelectedLabel,
     step: currentStep,
   };

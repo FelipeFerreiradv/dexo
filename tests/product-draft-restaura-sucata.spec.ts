@@ -21,6 +21,7 @@ import { describe, it, expect } from "vitest";
 import {
   decidirRestauracaoDaSucata,
   opcoesComSucataRestaurada,
+  sucataParaRascunho,
   type SucataDoSeletor,
 } from "../app/produtos/lib/scrap-draft-restore";
 import {
@@ -114,6 +115,78 @@ describe("decidirRestauracaoDaSucata — a opção antes do valor", () => {
     expect(decidirRestauracaoDaSucata({ id: "" }, [FUSION])).toEqual({
       tipo: "esperar",
     });
+  });
+});
+
+describe("sucataParaRascunho — o que NÃO pode ir para o localStorage", () => {
+  /** O que `GET /scraps` realmente devolve, além dos seis campos do tipo. */
+  const DA_API = {
+    ...FUSION,
+    cost: 18500,
+    extraCosts: 300,
+    paymentMethod: "PIX",
+    chassis: "9BWZZZ377VT004251",
+    renavam: "00123456789",
+    engineNumber: "CHT-1234",
+    supplierCnpj: "12345678000199",
+    nfeNumber: "000123456",
+    icmsValue: 1234.56,
+  } as unknown as SucataDoSeletor;
+
+  it("REGRESSÃO: custo do lote e documentos do veículo ficam de fora", () => {
+    // O modelo `Scrap` tem 44 colunas e a rota de listagem só `omit`-a algumas.
+    // O tipo `SucataDoSeletor` descreve seis campos, mas TIPO NÃO FILTRA EM
+    // TEMPO DE EXECUÇÃO — o objeto que circula é o que a API mandou. Guardar
+    // `selectedScrap` direto no rascunho colocaria o custo de aquisição e os
+    // documentos do veículo no navegador, por 24 horas.
+    const guardado = sucataParaRascunho(DA_API);
+
+    expect(Object.keys(guardado!).sort()).toEqual([
+      "brand",
+      "id",
+      "model",
+      "plate",
+      "version",
+      "year",
+    ]);
+
+    const bruto = JSON.stringify(guardado);
+    for (const segredo of [
+      "18500",
+      "9BWZZZ377VT004251",
+      "00123456789",
+      "12345678000199",
+      "1234.56",
+    ]) {
+      expect(bruto).not.toContain(segredo);
+    }
+  });
+
+  it("uma COLUNA NOVA do modelo nasce fora do rascunho", () => {
+    // O ponto da lista de permissão: acrescentar `custoOculto` ao `Scrap`
+    // amanhã não pode empurrá-lo para o localStorage sozinho.
+    const comColunaNova = {
+      ...FUSION,
+      custoOculto: "AINDA-NAO-EXISTE-MAS-VAI",
+    } as unknown as SucataDoSeletor;
+    const guardado = sucataParaRascunho(comColunaNova);
+    expect(guardado).not.toHaveProperty("custoOculto");
+    expect(JSON.stringify(guardado)).not.toContain("AINDA-NAO-EXISTE");
+  });
+
+  it("o que sobra ainda é suficiente para desenhar a opção", () => {
+    // Controle: cortar demais quebraria a restauração tão em silêncio quanto o
+    // vazamento — sem marca e modelo, `decidirRestauracaoDaSucata` desiste.
+    const guardado = sucataParaRascunho(DA_API);
+    expect(decidirRestauracaoDaSucata(guardado, []).tipo).toBe(
+      "registrar-opcao",
+    );
+  });
+
+  it("sem sucata selecionada, nada é guardado", () => {
+    expect(sucataParaRascunho(null)).toBeNull();
+    expect(sucataParaRascunho(undefined)).toBeNull();
+    expect(sucataParaRascunho({ id: "" } as SucataDoSeletor)).toBeNull();
   });
 });
 

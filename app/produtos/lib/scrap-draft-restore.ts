@@ -42,6 +42,36 @@ export interface SucataDoRascunho {
   plate?: string;
 }
 
+/**
+ * O que do lote pode ir para o rascunho — LISTA DE PERMISSÃO.
+ *
+ * `GET /scraps` devolve quase a linha inteira de `Scrap` (44 colunas; a
+ * rota só `omit`-a fotos, notas e alguns campos fiscais). O que sobra
+ * inclui `cost`, `extraCosts`, `paymentMethod`, `chassis`, `renavam`,
+ * `engineNumber`, `supplierCnpj`, `nfeNumber` e `icmsValue`.
+ *
+ * O tipo `SucataDoSeletor` descreve seis campos, mas TIPO NÃO FILTRA EM
+ * TEMPO DE EXECUÇÃO: o objeto que circula é o que a API mandou. Guardar
+ * `selectedScrap` direto no rascunho colocaria o custo de aquisição do lote
+ * e os documentos do veículo no localStorage do navegador, por 24 horas.
+ *
+ * Aqui o objeto é RECONSTRUÍDO campo a campo. Coluna nova no `Scrap` nasce
+ * fora do rascunho, em vez de nascer dentro.
+ */
+export function sucataParaRascunho(
+  s: SucataDoSeletor | null | undefined,
+): SucataDoRascunho | null {
+  if (!s?.id) return null;
+  return {
+    id: s.id,
+    brand: s.brand,
+    model: s.model,
+    year: s.year,
+    version: s.version,
+    plate: s.plate,
+  };
+}
+
 export type AcaoDeRestauracao =
   /** A opção já existe: pode escrever o valor. */
   | { tipo: "aplicar"; sucata: SucataDoSeletor }
