@@ -61,6 +61,17 @@ export interface CompatibilitySnapshot {
   version?: string | null;
 }
 
+/** A sucata como o rascunho a guarda. Só `id` é garantido. */
+export interface ScrapSnapshot {
+  id: string;
+  label?: string;
+  brand?: string;
+  model?: string;
+  year?: string;
+  version?: string;
+  plate?: string;
+}
+
 export interface ProductFormSnapshot {
   /** Versão do payload. */
   v: number;
@@ -80,8 +91,21 @@ export interface ProductFormSnapshot {
    * rascunho aberto no navegador de quem está trabalhando na hora do deploy.
    */
   compatibilityPositions?: string[];
-  /** Sucata vinculada (vira `scrapId`). */
-  scrap: { id: string; label?: string } | null;
+  /**
+   * Sucata vinculada (vira `scrapId`).
+   *
+   * Guarda o VEICULO inteiro, nao so o id, porque quem restaura precisa
+   * desenhar a opcao do seletor — e o lote pode nao estar mais na lista de
+   * `AVAILABLE` quando o rascunho voltar (foi esgotado, ou o tenant tem mais
+   * de 100 lotes). Com so o id, restaurar significaria seleciona um valor
+   * sem `<option>` correspondente, e dentro de um <form> o Radix devolve a
+   * PRIMEIRA opcao pelo `onValueChange` — que aqui e "Nenhuma sucata", e
+   * apaga marca/modelo/ano/versao/veiculo. Ver `scrap-link-section.tsx`.
+   *
+   * Campos do veiculo sao opcionais: rascunho gravado antes de 21/08/2026
+   * so tem `id`, e o TTL de 24h faz esses sumirem sozinhos.
+   */
+  scrap: ScrapSnapshot | null;
   /** Rótulo exibido da categoria Magalu (o id está em `values.magaluCategory`). */
   magaluCategoryLabel: string | null;
   /** Seção em que o usuário estava (índice do scroll). */
@@ -107,7 +131,7 @@ export interface SerializeInput {
   values: Record<string, unknown>;
   compatibilities: CompatibilitySnapshot[];
   compatibilityPositions?: string[];
-  scrap?: { id: string; label?: string } | null;
+  scrap?: ScrapSnapshot | null;
   magaluCategoryLabel?: string | null;
   currentStep?: number | null;
   /** Ver `ProductFormSnapshot.defaultStock`. */
@@ -162,6 +186,32 @@ export function serializeProductForm(
  * desconhecida, campos com o tipo errado. Descarte SILENCIOSO: o usuário não
  * precisa saber que havia um rascunho ilegível.
  */
+/**
+ * A sucata vinda do localStorage, saneada.
+ *
+ * Isto aqui é entrada NÃO CONFIÁVEL: o valor pode ter sido editado à mão, ou
+ * ter sido gravado por uma versão anterior do app. E o resultado agora vira
+ * uma `<option>` do seletor, então um `brand` que não seja string chegaria a
+ * ser renderizado. Sem `id` utilizável não há o que restaurar.
+ */
+function parseScrap(v: unknown): ScrapSnapshot | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id.trim() : "";
+  if (!id) return null;
+  const texto = (x: unknown): string | undefined =>
+    typeof x === "string" && x.trim() ? x : undefined;
+  return {
+    id,
+    label: texto(o.label),
+    brand: texto(o.brand),
+    model: texto(o.model),
+    year: texto(o.year),
+    version: texto(o.version),
+    plate: texto(o.plate),
+  };
+}
+
 export function parseSnapshot(raw: unknown): ProductFormSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const s = raw as Partial<ProductFormSnapshot>;
@@ -180,7 +230,19 @@ export function parseSnapshot(raw: unknown): ProductFormSnapshot | null {
           (p): p is string => typeof p === "string",
         )
       : [],
-    scrap: s.scrap ?? null,
+    scrap: parseScrap(s.scrap),
+    // `defaultStock` FICAVA PARA TRÁS AQUI.
+    //
+    // `hasMeaningfulContent` compara o `stock` com este padrão para não
+    // perguntar "continuar de onde parou?" sobre um formulário intocado num
+    // tenant cujo padrão é 1 (o caso do desmanche). Como o campo sumia na
+    // volta do localStorage, a MESMA função respondia coisas diferentes para
+    // o mesmo rascunho, conforme ele viesse da memória ou do disco: no disco
+    // o padrão virava 0 e a comparação perdia o sentido.
+    defaultStock:
+      typeof s.defaultStock === "number" && Number.isFinite(s.defaultStock)
+        ? s.defaultStock
+        : null,
     magaluCategoryLabel: s.magaluCategoryLabel ?? null,
     currentStep: typeof s.currentStep === "number" ? s.currentStep : null,
     label: {
