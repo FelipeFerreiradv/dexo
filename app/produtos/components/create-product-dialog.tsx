@@ -82,7 +82,14 @@ import { ProductHistoryPicker } from "./product-history-picker";
 import { useProductDraft } from "../hooks/use-product-draft";
 import { useProductHistory } from "../hooks/use-product-history";
 import { applyProductHistory } from "../lib/apply-product-history";
-import type { ProductFormSnapshot } from "../lib/product-form-snapshot";
+import type {
+  ProductFormSnapshot,
+  ScrapSnapshot,
+} from "../lib/product-form-snapshot";
+import {
+  decidirRestauracaoDaSucata,
+  type SucataDoSeletor,
+} from "../lib/scrap-draft-restore";
 import { scopeKeyFor, type DraftScope } from "../lib/product-form-storage";
 import {
   AlertDialog,
@@ -662,13 +669,13 @@ export function CreateProductDialog({
   const draftExtrasRef = useRef<{
     compatibilities: CompatibilityEntry[];
     compatibilityPositions: string[];
-    scrapId: string | null;
+    scrap: SucataDoSeletor | null;
     magaluLabel: string | null;
     step: number;
   }>({
     compatibilities: [],
     compatibilityPositions: [],
-    scrapId: null,
+    scrap: null,
     magaluLabel: null,
     step: 1,
   });
@@ -708,24 +715,20 @@ export function CreateProductDialog({
   >([]);
 
   // Sucata selecionada para herdar dados do veículo
-  const [selectedScrap, setSelectedScrap] = useState<{
-    id: string;
-    brand: string;
-    model: string;
-    year?: string;
-    version?: string;
-    plate?: string;
-  } | null>(null);
-  const [availableScraps, setAvailableScraps] = useState<
-    Array<{
-      id: string;
-      brand: string;
-      model: string;
-      year?: string;
-      version?: string;
-      plate?: string;
-    }>
-  >([]);
+  const [selectedScrap, setSelectedScrap] = useState<SucataDoSeletor | null>(
+    null,
+  );
+  /**
+   * A sucata que veio de um rascunho restaurado e ainda NÃO foi aplicada.
+   *
+   * Existe para separar em dois commits o registro da `<option>` e a escrita
+   * do valor — ver o efeito que a consome. Estado, e não ref, porque é a
+   * mudança dele que precisa reexecutar o efeito.
+   */
+  const [sucataPendente, setSucataPendente] = useState<ScrapSnapshot | null>(
+    null,
+  );
+  const [availableScraps, setAvailableScraps] = useState<SucataDoSeletor[]>([]);
   const hasFetchedOnOpenRef = useRef(false);
   const scrapAutofilledRef = useRef<{
     brand?: string;
@@ -3285,7 +3288,7 @@ export function CreateProductDialog({
           version: c.version ?? null,
         })),
         compatibilityPositions: extras.compatibilityPositions,
-        scrap: extras.scrapId ? { id: extras.scrapId } : null,
+        scrap: extras.scrap,
         magaluCategoryLabel: extras.magaluLabel,
         currentStep: null,
         defaultStock: defaultStockRef.current,
@@ -3309,7 +3312,7 @@ export function CreateProductDialog({
   draftExtrasRef.current = {
     compatibilities,
     compatibilityPositions,
-    scrapId: selectedScrap?.id ?? null,
+    scrap: selectedScrap,
     magaluLabel: magaluSelectedLabel,
     step: currentStep,
   };
@@ -3339,7 +3342,9 @@ export function CreateProductDialog({
         version: c.version ?? null,
       })),
       compatibilityPositions: extras.compatibilityPositions,
-      scrap: extras.scrapId ? { id: extras.scrapId } : null,
+      // A sucata INTEIRA, não só o id: quem restaura precisa do veículo para
+      // desenhar a opção do seletor sem depender da lista de `AVAILABLE`.
+      scrap: extras.scrap,
       magaluCategoryLabel: extras.magaluLabel,
       currentStep: extras.step,
       defaultStock: defaultStockRef.current,
@@ -3408,6 +3413,21 @@ export function CreateProductDialog({
           ...(snapshot.compatibilityPositions as string[]),
         ]);
       }
+      // O vínculo com a sucata NÃO é aplicado aqui — só enfileirado.
+      //
+      // Era esta a linha que faltava: o rascunho gravava a sucata (há até um
+      // efeito dedicado só para isso) e a restauração nunca a lia. Voltavam
+      // marca, modelo, ano, versão e o texto do veículo — todos campos do
+      // formulário —, e ficava de fora justamente o vínculo, que é o único
+      // que não alimenta nenhum outro campo visível. A tela parecia completa
+      // e a peça nascia sem lote.
+      //
+      // Aplicar aqui, porém, seria trocar um defeito por um pior: este modal
+      // é um <form>, e o Radix mantém um <select> nativo espelho. Um valor
+      // sem <option> correspondente é recusado, o browser cai na PRIMEIRA
+      // opção — "Nenhuma sucata" — e o eco pelo `onValueChange` roda o ramo
+      // que APAGA marca, modelo, ano, versão e veículo de origem.
+      if (snapshot.scrap) setSucataPendente(snapshot.scrap);
       if (snapshot.magaluCategoryLabel) {
         setMagaluSelectedLabel(snapshot.magaluCategoryLabel);
         const id = snapshot.values.magaluCategory;
@@ -3418,6 +3438,28 @@ export function CreateProductDialog({
     },
     [setValue],
   );
+
+  // Aplica a sucata enfileirada — a `<option>` num commit, o valor no
+  // seguinte. É a mesma cura do seletor do modal de EDIÇÃO: dentro de um
+  // <form>, o valor só pode chegar depois de a opção existir.
+  useEffect(() => {
+    const acao = decidirRestauracaoDaSucata(
+      sucataPendente,
+      availableScraps,
+      Boolean(lockedScrap),
+    );
+    if (acao.tipo === "esperar") return;
+    if (acao.tipo === "aplicar") {
+      // COMMIT 2: a opção já está registrada, o valor pode entrar.
+      setSelectedScrap(acao.sucata);
+      setSucataPendente(null);
+      return;
+    }
+    // COMMIT 1: registra a opção e volta aqui no commit seguinte.
+    setAvailableScraps((prev) =>
+      prev.some((s) => s.id === acao.opcao.id) ? prev : [acao.opcao, ...prev],
+    );
+  }, [sucataPendente, availableScraps, lockedScrap]);
 
   const handleRestoreDraft = useCallback(() => {
     const snapshot = draft.restore();
@@ -3515,6 +3557,7 @@ export function CreateProductDialog({
     setCompatibilities([]);
     setCompatibilityPositions([]);
     setSelectedScrap(null);
+    setSucataPendente(null);
     scrapAutofilledRef.current = {};
     // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
     hasFetchedOnOpenRef.current = false;
@@ -4093,6 +4136,9 @@ export function CreateProductDialog({
                     <Select
                       value={selectedScrap?.id ?? "NONE"}
                       onValueChange={(v) => {
+                        // Toque do operador manda: descarta o que a restauração
+                        // tinha enfileirado.
+                        setSucataPendente(null);
                         if (v === "NONE") {
                           // Desvincular: limpar campos preenchidos pela sucata
                           const prev = scrapAutofilledRef.current;
