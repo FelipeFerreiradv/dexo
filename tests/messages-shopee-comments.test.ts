@@ -51,6 +51,10 @@ describe("QuestionRepository.upsertFromShopeeComment", () => {
     vi.spyOn(prisma.marketplaceQuestion, "upsert").mockResolvedValue({
       id: "q2",
     } as any);
+    // Nada gravado ainda: a guarda de novidade deixa passar.
+    vi.spyOn(prisma.marketplaceAnswer, "findFirst").mockResolvedValue(
+      null as any,
+    );
     const attach = vi
       .spyOn(QuestionRepository, "attachAnswer")
       .mockResolvedValue(undefined as any);
@@ -85,12 +89,27 @@ describe("QuestionRepository.upsertFromShopeeComment — readAt inicial", () => 
     vi.restoreAllMocks();
   });
 
-  /** Mocka o trio que o upsert toca e devolve o spy. */
-  function mockarUpsert(existente: { id: string } | null = null) {
+  /**
+   * Mocka o que o upsert toca e devolve o spy.
+   *
+   * `respostaGravada` é o que a guarda de novidade lê: `null` = ainda não há
+   * resposta no banco, então o attachAnswer roda (comportamento legado).
+   */
+  function mockarUpsert(
+    existente: { id: string } | null = null,
+    respostaGravada: {
+      text: string;
+      status: string;
+      dateCreated: Date;
+    } | null = null,
+  ) {
     vi.spyOn(prisma.marketplaceQuestion, "findUnique").mockResolvedValue(
       existente as any,
     );
     vi.spyOn(QuestionRepository, "resolveListingId").mockResolvedValue(null);
+    vi.spyOn(prisma.marketplaceAnswer, "findFirst").mockResolvedValue(
+      respostaGravada as any,
+    );
     vi.spyOn(QuestionRepository, "attachAnswer").mockResolvedValue(
       undefined as any,
     );

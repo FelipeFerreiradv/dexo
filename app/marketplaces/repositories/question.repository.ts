@@ -106,6 +106,44 @@ export function initialReadAt(input: {
   return null;
 }
 
+/** Os campos de resposta que o `attachAnswer` escreve. */
+type RespostaGravavel = { text: string; status: string; dateCreated: Date };
+
+/**
+ * A resposta que o marketplace acabou de devolver já está gravada, byte a byte?
+ *
+ * Por que existe: a varredura de catálogo passa pelos MESMOS comentários a cada
+ * ciclo. Sem esta guarda, toda pergunta já respondida refaz a transação de dois
+ * statements do `attachAnswer` — BEGIN + upsert da resposta + update da pergunta
+ * + COMMIT, quatro idas ao banco e duas versões de tupla — sem nada ter mudado.
+ * Em produção foram 28.709 execuções em 37 dias para 5.988 respostas distintas.
+ *
+ * Conservadora por construção: só devolve `true` quando os três campos que o
+ * `attachAnswer` escreveria são idênticos aos gravados E a pergunta já vai ficar
+ * em `ANSWERED` depois do upsert (que é quem escreve o status). Qualquer
+ * divergência — inclusive data inválida, cujo `getTime()` é `NaN` e nunca é
+ * igual a si mesmo — devolve `false` e o caminho legado roda inteiro.
+ *
+ * @param statusAposUpsert status que a pergunta terá após o upsert que acabou de
+ *   rodar. É `baseData.status` nos dois callers: o upsert grava esse valor tanto
+ *   no `create` quanto no `update`, então não há leitura extra para descobri-lo.
+ */
+export function respostaJaGravada(
+  gravada: RespostaGravavel | null | undefined,
+  aGravar: RespostaGravavel,
+  statusAposUpsert: string,
+): boolean {
+  // O `attachAnswer` também carimba status ANSWERED na pergunta. Se o upsert não
+  // deixou a pergunta nesse estado, essa escrita ainda é necessária.
+  if (statusAposUpsert !== "ANSWERED") return false;
+  if (!gravada) return false;
+  return (
+    gravada.text === aGravar.text &&
+    gravada.status === aGravar.status &&
+    gravada.dateCreated.getTime() === aGravar.dateCreated.getTime()
+  );
+}
+
 /**
  * Camada de acesso a perguntas/respostas dos marketplaces.
  *
@@ -137,6 +175,26 @@ export class QuestionRepository {
   }
 
   /**
+   * Resposta já gravada para uma pergunta, pela chave EXTERNA.
+   *
+   * Pela chave externa de propósito: assim a leitura roda em paralelo com o
+   * `findUnique` da pergunta, sem depender do `id` interno que só sai dele.
+   * Filtro por relação vira LEFT JOIN no MESMO statement (verificado com
+   * `log: query` no client 6.2.1: 1 statement). Plano em produção: Nested Loop
+   * sobre dois índices únicos (`..._marketplaceAccountId_externalQuestionId_key`
+   * e `MarketplaceAnswer_questionId_key`), 6 buffers, 0,084 ms.
+   */
+  private static findRespostaGravada(
+    marketplaceAccountId: string,
+    externalQuestionId: string,
+  ): Promise<RespostaGravavel | null> {
+    return prisma.marketplaceAnswer.findFirst({
+      where: { question: { marketplaceAccountId, externalQuestionId } },
+      select: { text: true, status: true, dateCreated: true },
+    });
+  }
+
+  /**
    * Upsert idempotente de pergunta + (opcional) resposta vinda do ML.
    *
    * Otimizações:
@@ -150,8 +208,9 @@ export class QuestionRepository {
   ): Promise<{ id: string; isNew: boolean }> {
     const externalQuestionId = String(mlQuestion.id);
     const needsListingLookup = options.productListingId === undefined;
+    const temResposta = !!(mlQuestion.answer && mlQuestion.answer.text);
 
-    const [existing, resolvedListingId] = await Promise.all([
+    const [existing, resolvedListingId, respostaGravada] = await Promise.all([
       prisma.marketplaceQuestion.findUnique({
         where: {
           marketplaceAccountId_externalQuestionId: {
@@ -164,6 +223,11 @@ export class QuestionRepository {
       needsListingLookup
         ? this.resolveListingId(marketplaceAccountId, mlQuestion.item_id)
         : Promise.resolve(options.productListingId ?? null),
+      // Em PARALELO com as duas acima: não custa ida extra ao banco e permite
+      // pular a transação inteira do attachAnswer quando nada mudou.
+      temResposta
+        ? this.findRespostaGravada(marketplaceAccountId, externalQuestionId)
+        : Promise.resolve(null),
     ]);
 
     const baseData = {
@@ -180,10 +244,9 @@ export class QuestionRepository {
 
     // Pergunta que chega ao Dexo JÁ respondida (ou em estado terminal) não pode
     // inflar o contador de não lidas — nasce lida. Só no `create`.
-    const mlAnsweredAt =
-      mlQuestion.answer && mlQuestion.answer.text
-        ? new Date(mlQuestion.answer.date_created)
-        : null;
+    const mlAnsweredAt = temResposta
+      ? new Date(mlQuestion.answer!.date_created)
+      : null;
 
     const upserted = await prisma.marketplaceQuestion.upsert({
       where: {
@@ -211,8 +274,15 @@ export class QuestionRepository {
       select: { id: true },
     });
 
-    if (mlQuestion.answer && mlQuestion.answer.text) {
-      await this.attachAnswer(upserted.id, mlQuestion.answer);
+    if (temResposta) {
+      const aGravar = {
+        text: mlQuestion.answer!.text,
+        status: mlQuestion.answer!.status,
+        dateCreated: mlAnsweredAt!,
+      };
+      if (!respostaJaGravada(respostaGravada, aGravar, baseData.status)) {
+        await this.attachAnswer(upserted.id, mlQuestion.answer!);
+      }
     }
 
     return { id: upserted.id, isNew: !existing };
@@ -260,8 +330,9 @@ export class QuestionRepository {
     const externalQuestionId = String(comment.comment_id);
     const externalItemId = String(comment.item_id);
     const needsListingLookup = options.productListingId === undefined;
+    const hasReply = !!(comment.comment_reply && comment.comment_reply.reply);
 
-    const [existing, resolvedListingId] = await Promise.all([
+    const [existing, resolvedListingId, respostaGravada] = await Promise.all([
       prisma.marketplaceQuestion.findUnique({
         where: {
           marketplaceAccountId_externalQuestionId: {
@@ -274,9 +345,15 @@ export class QuestionRepository {
       needsListingLookup
         ? this.resolveListingId(marketplaceAccountId, externalItemId)
         : Promise.resolve(options.productListingId ?? null),
+      // Em PARALELO com as duas acima: não custa ida extra ao banco e permite
+      // pular a transação inteira do attachAnswer quando nada mudou. É o caso
+      // dominante — a varredura shop-wide revê os mesmos comentários a cada
+      // ciclo (1.330 de 3.553 já respondidos, medido em produção).
+      hasReply
+        ? this.findRespostaGravada(marketplaceAccountId, externalQuestionId)
+        : Promise.resolve(null),
     ]);
 
-    const hasReply = !!(comment.comment_reply && comment.comment_reply.reply);
     const baseData = {
       marketplaceAccountId,
       externalQuestionId,
@@ -325,11 +402,18 @@ export class QuestionRepository {
     });
 
     if (hasReply) {
-      await this.attachAnswer(upserted.id, {
+      const aGravar = {
         text: comment.comment_reply!.reply!,
         status: "ACTIVE",
-        date_created: shopeeAnsweredAt!.toISOString(),
-      });
+        dateCreated: shopeeAnsweredAt!,
+      };
+      if (!respostaJaGravada(respostaGravada, aGravar, baseData.status)) {
+        await this.attachAnswer(upserted.id, {
+          text: aGravar.text,
+          status: aGravar.status,
+          date_created: shopeeAnsweredAt!.toISOString(),
+        });
+      }
     }
 
     return { id: upserted.id, isNew: !existing };

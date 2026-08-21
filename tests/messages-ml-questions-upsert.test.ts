@@ -27,12 +27,27 @@ const PERGUNTA_BASE: MLQuestion = {
   from: { id: 555, nickname: "COMPRADOR123" },
 };
 
-/** Mocka o trio que `upsertFromMl` toca e devolve o spy do upsert. */
-function mockarUpsert(existente: { id: string } | null = null) {
+/**
+ * Mocka o que `upsertFromMl` toca e devolve o spy do upsert.
+ *
+ * `respostaGravada` é o que a guarda de novidade lê: `null` = ainda não há
+ * resposta no banco, então o attachAnswer roda (comportamento legado).
+ */
+function mockarUpsert(
+  existente: { id: string } | null = null,
+  respostaGravada: {
+    text: string;
+    status: string;
+    dateCreated: Date;
+  } | null = null,
+) {
   vi.spyOn(prisma.marketplaceQuestion, "findUnique").mockResolvedValue(
     existente as any,
   );
   vi.spyOn(QuestionRepository, "resolveListingId").mockResolvedValue(null);
+  vi.spyOn(prisma.marketplaceAnswer, "findFirst").mockResolvedValue(
+    respostaGravada as any,
+  );
   vi.spyOn(QuestionRepository, "attachAnswer").mockResolvedValue(
     undefined as any,
   );
