@@ -34,6 +34,7 @@ import {
   describeRelinkImpact,
   describeScrapLinkView,
   isAbortError,
+  isScrapLinkSincronizando,
   scrapLinkErrorMessage,
   scrapSelectValueToId,
   type ScrapLinkImpact,
@@ -203,11 +204,30 @@ export function ScrapLinkSection({ productId, onToast, onChanged }: Props) {
   }, [session?.user?.email, scrapsLoaded, onToast]);
 
   const alvo = scrapSelectValueToId(valor);
-  const vista = describeScrapLinkView(status, alvo);
+  // A JANELA ENTRE OS DOIS COMMITS.
+  //
+  // A correção do bug do Radix exige que `valor` só receba o vínculo no commit
+  // SEGUINTE ao que trouxe `info` (ver o efeito de sincronização acima). Isso
+  // deixa um intervalo — um frame, e mais que isso num modal pesado — em que
+  // `status` já é "pronto" e `valor` ainda é "". Sem esta guarda é exatamente
+  // aí que `alvo` vale `null` e a tela volta a exibir "Sem sucata", com o
+  // "Alterar" HABILITADO: clicar naquele instante abriria o diálogo de
+  // desvincular, e confirmar APAGARIA o vínculo. A janela é curta, mas o
+  // desfecho é o mesmo que esta entrega inteira existe para impedir.
+  //
+  // `valor` só vale "" antes da primeira sincronização: o `onValueChange` do
+  // seletor sempre entrega `__none__` ou um id, nunca string vazia. E nada
+  // aqui muda QUANDO `valor` é escrito — só o que a tela pode afirmar
+  // enquanto ele ainda não foi.
+  const sincronizando = isScrapLinkSincronizando(status, valor);
+  const vista = sincronizando
+    ? describeScrapLinkView("carregando", null)
+    : describeScrapLinkView(status, alvo);
   // Só há "mudança a salvar" depois de saber qual era o vínculo. Em carregando
   // ou erro o seletor já está travado por `vista.disabled`; este é o segundo
   // cadeado, para o botão nunca oferecer uma troca às cegas.
-  const mudou = status === "pronto" && alvo !== (info?.scrapId ?? null);
+  const mudou =
+    status === "pronto" && !sincronizando && alvo !== (info?.scrapId ?? null);
 
   const trocar = useCallback(async () => {
     const email = session?.user?.email;

@@ -18,6 +18,7 @@ import {
   NO_SCRAP,
   describeRelinkImpact,
   describeScrapLinkView,
+  isScrapLinkSincronizando,
   isAbortError,
   isScrapRelinkEnabled,
   scrapLinkErrorMessage,
@@ -220,5 +221,48 @@ describe("scrapLinkErrorMessage — diz de quem é o problema", () => {
     for (const s of [400, 401, 403, 404, 418, 500, 502, 503]) {
       expect(scrapLinkErrorMessage(s)).not.toMatch(/sem sucata/i);
     }
+  });
+});
+
+describe("isScrapLinkSincronizando — a janela entre os dois commits", () => {
+  // POR QUE ESTA REGRA EXISTE:
+  //
+  // A cura do <select> nativo do Radix obriga o valor a chegar ao seletor num
+  // commit DEPOIS do que registrou a <option>. Entre os dois, `status` já é
+  // "pronto" e `valor` ainda é "" — e "" vira `null` em `scrapSelectValueToId`,
+  // que a tela desenharia como "Sem sucata" com o "Alterar" HABILITADO.
+  //
+  // Não é cosmético: naquele instante o "Alterar" abre o diálogo de
+  // DESVINCULAR, e confirmar mandaria `scrapId: null` ao servidor. Seria a
+  // peça perdendo a sucata por um clique — o desfecho exato que esta entrega
+  // existe para impedir, só que por outro caminho.
+
+  it("pronto com valor vazio ⇒ ainda sincronizando (a tela não pode afirmar nada)", () => {
+    expect(isScrapLinkSincronizando("pronto", "")).toBe(true);
+  });
+
+  it("assim que o valor chega, a janela fecha", () => {
+    expect(
+      isScrapLinkSincronizando("pronto", "cmrpmx6f0039y18i6s5c9f6gy"),
+    ).toBe(false);
+  });
+
+  it("sem vínculo TAMBÉM fecha a janela — `__none__` é uma resposta, não ausência", () => {
+    // O contrário engessaria a peça sem sucata em "carregando" para sempre.
+    expect(isScrapLinkSincronizando("pronto", NO_SCRAP)).toBe(false);
+  });
+
+  it("em carregando e em erro a janela não se aplica — quem trava é o próprio estado", () => {
+    expect(isScrapLinkSincronizando("carregando", "")).toBe(false);
+    expect(isScrapLinkSincronizando("erro", "")).toBe(false);
+  });
+
+  it('a view da janela é a de CARREGANDO: travada e sem afirmar "Sem sucata"', () => {
+    // É assim que a seção a desenha. Se alguém trocar por
+    // `describeScrapLinkView("pronto", null)`, este caso cai.
+    const vista = describeScrapLinkView("carregando", null);
+    expect(vista.disabled).toBe(true);
+    expect(vista.placeholder).not.toContain("Sem sucata");
+    expect(vista.value).toBe("");
   });
 });
