@@ -1,4 +1,5 @@
 import prisma from "../../lib/prisma";
+import { campoJson } from "../../lib/prisma-json-null";
 
 /**
  * Repositório para gerenciar ProductListings
@@ -861,28 +862,22 @@ export class ListingRepository {
           data.weightKgOverride === undefined
             ? undefined
             : data.weightKgOverride,
-        imageUrlsOverride:
-          data.imageUrlsOverride === undefined
-            ? undefined
-            : (data.imageUrlsOverride as never),
-        attributesOverride:
-          data.attributesOverride === undefined
-            ? undefined
-            : (data.attributesOverride as never),
-        compatibilitiesOverride:
-          data.compatibilitiesOverride === undefined
-            ? undefined
-            : (data.compatibilitiesOverride as never),
+        // ⚠️ COLUNAS `Json?` PASSAM POR `campoJson`, NÃO PELO TERNÁRIO ACIMA.
+        // Escrever `null` do JavaScript numa coluna Json grava o literal JSON
+        // `null` — que em SQL NÃO é nulo e casa com `IS NOT NULL`. O Prisma
+        // aceita sem reclamar e o log de query não mostra a diferença.
+        // `campoJson` preserva `undefined` ("não mandou") e traduz `null`
+        // ("mandou limpar") para `Prisma.DbNull`. Ver app/lib/prisma-json-null.ts.
+        imageUrlsOverride: campoJson(data.imageUrlsOverride),
+        attributesOverride: campoJson(data.attributesOverride),
+        compatibilitiesOverride: campoJson(data.compatibilitiesOverride),
         sourceVehicleOverride:
           data.sourceVehicleOverride === undefined
             ? undefined
             : data.sourceVehicleOverride,
         compatSyncedAt:
           data.compatSyncedAt === undefined ? undefined : data.compatSyncedAt,
-        compatDiagnostics:
-          data.compatDiagnostics === undefined
-            ? undefined
-            : (data.compatDiagnostics as never),
+        compatDiagnostics: campoJson(data.compatDiagnostics),
       },
     });
   }
@@ -963,7 +958,11 @@ export class ListingRepository {
       where: { id: listingId },
       data: {
         compatSyncedAt: syncedAt,
-        compatDiagnostics: diagnostics as never,
+        // Mesmo cuidado do `updateListing`: `null` numa coluna Json gravaria o
+        // literal JSON `null`. Hoje nenhum caller passa null aqui (produção tem
+        // ZERO resíduo nesta coluna), mas a armadilha é a mesma e é gratuito
+        // fechá-la. Ver app/lib/prisma-json-null.ts.
+        compatDiagnostics: campoJson(diagnostics),
       },
       select: { id: true },
     });
