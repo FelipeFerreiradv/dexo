@@ -3,6 +3,27 @@
 --  Gerado em 21/08/2026 · Dexo / ghd-plataform
 -- ═══════════════════════════════════════════════════════════════════════════
 --
+-- ✅ APLICADO EM PRODUÇÃO em 21/08/2026, ~19:15 UTC. O que a medição de campo
+--    mostrou, numa janela de 10,6 minutos com 102 chamadas REAIS da aplicação
+--    (não laboratório):
+--
+--      · 7,63 ms por chamada        (média acumulada anterior: 95,40 ms)
+--      · 4.313 páginas por chamada  (anterior: 16.576)
+--      · 102 chamadas → 103 varreduras do índice: praticamente 1 para 1, ou
+--        seja, toda chamada da aplicação passou pelo índice
+--      · indisvalid = t, 48 kB, zero índices inválidos na tabela
+--      · as outras 3 etapas do mesmo fluxo ficaram onde estavam
+--        (26,422 / 20,485 / 0,052 ms contra 26,208 / 20,345 / 0,052) —
+--        controle negativo: o índice não tocou em mais nada
+--      · zero sessões esperando lock; tamanho total dos índices da tabela
+--        inalterado em 125 MB (o índice novo tem 48 kB)
+--
+--    Previsão do laboratório era 7,6 ms e 4.512 páginas. Bateu.
+--
+--    Uma leitura anterior, de 3,2 minutos e 25 chamadas, deu 7,28 ms e 4.451
+--    páginas — mesma ordem, amostra menor. Os números acima são os da amostra
+--    maior, que é a que vale.
+--
 -- COMO USAR: cole no SQL editor do Supabase e execute. É uma transação só.
 --
 -- ⚠️ NÃO HÁ DEPENDÊNCIA DE ORDEM COM O DEPLOY.
