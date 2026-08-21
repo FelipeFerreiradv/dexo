@@ -73,6 +73,102 @@ describe("QuestionRepository.upsertFromShopeeComment", () => {
 });
 
 // ===========================================================================
+// QuestionRepository.upsertFromShopeeComment — readAt inicial
+//
+// O cron da Shopee varre os comentários shop-wide; um comentário que o vendedor
+// já respondeu pelo app da Shopee chega aqui pela PRIMEIRA vez já com
+// `comment_reply`. Antes desta regra ele nascia não lido e reacendia o número
+// numa conversa respondida (1.284 linhas nesse estado em produção).
+// ===========================================================================
+describe("QuestionRepository.upsertFromShopeeComment — readAt inicial", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Mocka o trio que o upsert toca e devolve o spy. */
+  function mockarUpsert(existente: { id: string } | null = null) {
+    vi.spyOn(prisma.marketplaceQuestion, "findUnique").mockResolvedValue(
+      existente as any,
+    );
+    vi.spyOn(QuestionRepository, "resolveListingId").mockResolvedValue(null);
+    vi.spyOn(QuestionRepository, "attachAnswer").mockResolvedValue(
+      undefined as any,
+    );
+    return vi
+      .spyOn(prisma.marketplaceQuestion, "upsert")
+      .mockResolvedValue({ id: existente?.id ?? "q1" } as any);
+  }
+
+  const COMENTARIO = {
+    comment_id: 777,
+    comment: "chega em quantos dias?",
+    buyer_username: "carla",
+    item_id: 9002,
+    create_time: 1_750_000_000,
+  };
+
+  it("sem reply: create.readAt null (nasce NÃO lido, como antes)", async () => {
+    const upsert = mockarUpsert();
+
+    await QuestionRepository.upsertFromShopeeComment("acc-1", {
+      ...COMENTARIO,
+      comment_reply: null,
+    });
+
+    const arg = upsert.mock.calls[0][0] as any;
+    expect(arg.create.readAt).toBeNull();
+    expect(arg.create.status).toBe("UNANSWERED");
+    expect(arg.update.readAt).toBeUndefined();
+  });
+
+  it("com reply: create.readAt = data da RESPOSTA", async () => {
+    const upsert = mockarUpsert();
+
+    await QuestionRepository.upsertFromShopeeComment("acc-1", {
+      ...COMENTARIO,
+      comment_reply: { reply: "3 dias úteis", create_time: 1_750_000_100 },
+    });
+
+    const arg = upsert.mock.calls[0][0] as any;
+    expect(arg.create.readAt).toEqual(new Date(1_750_000_100 * 1000));
+    expect(arg.create.status).toBe("ANSWERED");
+    expect(arg.update.readAt).toBeUndefined();
+  });
+
+  it("reply sem create_time: cai na data do COMENTÁRIO (nunca Invalid Date)", async () => {
+    const upsert = mockarUpsert();
+
+    await QuestionRepository.upsertFromShopeeComment("acc-1", {
+      ...COMENTARIO,
+      comment_reply: { reply: "3 dias úteis" },
+    });
+
+    const arg = upsert.mock.calls[0][0] as any;
+    expect(arg.create.readAt).toEqual(new Date(1_750_000_000 * 1000));
+    expect(Number.isNaN(arg.create.readAt.getTime())).toBe(false);
+  });
+
+  it("re-sync de linha existente: update segue com os MESMOS 5 campos", async () => {
+    const upsert = mockarUpsert({ id: "q-existente" });
+
+    const r = await QuestionRepository.upsertFromShopeeComment("acc-1", {
+      ...COMENTARIO,
+      comment_reply: { reply: "3 dias úteis", create_time: 1_750_000_100 },
+    });
+
+    expect(r).toEqual({ id: "q-existente", isNew: false });
+    const arg = upsert.mock.calls[0][0] as any;
+    expect(Object.keys(arg.update).sort()).toEqual([
+      "buyerNickname",
+      "lastSyncedAt",
+      "productListingId",
+      "status",
+      "text",
+    ]);
+  });
+});
+
+// ===========================================================================
 // ShopeeApiService.getComments / replyComment (contrato + normalização)
 // ===========================================================================
 describe("ShopeeApiService.getComments / replyComment", () => {
@@ -214,6 +310,7 @@ describe("MessagesUseCase.answerQuestion — Shopee", () => {
         id: "q1",
         marketplaceAccountId: "acc-1",
         externalQuestionId: "555",
+        externalItemId: "9001",
         status: "UNANSWERED",
         marketplaceAccount: { userId: "user-1", platform: "SHOPEE" },
       } as any)
@@ -233,6 +330,11 @@ describe("MessagesUseCase.answerQuestion — Shopee", () => {
     const attach = vi
       .spyOn(QuestionRepository, "attachAnswer")
       .mockResolvedValue(undefined as any);
+    // Responder marca a conversa como lida no servidor. Spy também mantém o
+    // teste hermético (sem o mock, o updateMany tenta o banco de verdade).
+    const marcarLida = vi
+      .spyOn(QuestionRepository, "markConversationRead")
+      .mockResolvedValue(1);
 
     await MessagesUseCase.answerQuestion("user-1", "acc-1", "q1", "Sim, temos!");
 
@@ -241,5 +343,6 @@ describe("MessagesUseCase.answerQuestion — Shopee", () => {
       "q1",
       expect.objectContaining({ text: "Sim, temos!", status: "ACTIVE" }),
     );
+    expect(marcarLida).toHaveBeenCalledWith("acc-1", "9001", "user-1");
   });
 });

@@ -268,6 +268,11 @@ describe("MessagesUseCase.sendMagaluMessage", () => {
       messages: [],
       total: 0,
     } as any);
+    // Enviar mensagem marca a conversa como lida no servidor (é impossível
+    // responder sem ter lido). Spy também mantém o teste sem tocar no banco.
+    const marcarLida = vi
+      .spyOn(QuestionRepository, "markConversationRead")
+      .mockResolvedValue(1);
 
     const r = await MessagesUseCase.sendMagaluMessage(
       "user-1",
@@ -282,6 +287,7 @@ describe("MessagesUseCase.sendMagaluMessage", () => {
     expect(convId).toBe("conv-1");
     expect(body.content).toBe("Bom dia!");
     expect(body.owner).toEqual({ external_id: "cust-1", name: "Maria" });
+    expect(marcarLida).toHaveBeenCalledWith("acc-1", "conv-1", "user-1");
   });
 
   it("cliente desconhecido ⇒ 409 e NÃO chama a API", async () => {
