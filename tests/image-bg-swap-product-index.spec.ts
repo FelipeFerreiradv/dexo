@@ -151,14 +151,42 @@ describe("índice composto de Product: o `where` e o índice casam", () => {
     expect(indices).not.toContain("@@index([imageUrl])");
   });
 
-  it("a extração dos índices do schema realmente lê o model Product", () => {
+  it("a extração dos índices do schema realmente lê SÓ o model Product", () => {
     // Guarda-da-guarda: se `indicesDoModelProduct` passasse a ler o arquivo
-    // inteiro (ou o model errado), o teste acima viraria decoração. Estes três
-    // índices são de OUTROS models e não podem aparecer aqui.
+    // inteiro (ou a vazar para os models vizinhos), o teste acima viraria
+    // decoração.
     const indices = indicesDoModelProduct();
+
+    // Um índice que é de Product mesmo.
     expect(indices).toContain("@@index([userId, skuNormalized])");
+
+    // Vazamento para BAIXO: `retryEnabled` é de ProductListing, que vem depois
+    // de Product no arquivo.
     expect(indices).not.toContain("@@index([retryEnabled, updatedAt])");
-    expect(indices.every((l) => !l.includes("imageUrlsOverride"))).toBe(true);
+
+    // Vazamento para CIMA: `parentUserId` é de User, o model imediatamente
+    // anterior a Product.
+    expect(indices).not.toContain("@@index([parentUserId])");
+
+    // E a prova de volume, que é a que pega o caso "leu o arquivo todo":
+    // o schema inteiro tem mais de cem linhas de índice, o model Product tem
+    // poucas dezenas. Os limites são folgados de propósito — acrescentar um
+    // índice legítimo a Product não pode deixar este teste vermelho.
+    //
+    // ⚠️ A versão anterior deste teste asseria
+    // `!l.includes("imageUrlsOverride")`, que NUNCA poderia falhar: aquele
+    // índice é PARCIAL (#298), e o Prisma não expressa `WHERE` em `@@index`,
+    // então a string jamais aparece numa linha de índice. Parecia guarda e
+    // não guardava nada.
+    const todasDoArquivo = fs
+      .readFileSync(SCHEMA, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("@@index(") || l.startsWith("@@unique("));
+
+    expect(todasDoArquivo.length).toBeGreaterThan(100);
+    expect(indices.length).toBeGreaterThan(3);
+    expect(indices.length).toBeLessThan(30);
   });
 
   it("o DDL de produção declara o MESMO índice", () => {
@@ -204,14 +232,28 @@ describe("índice composto de Product: o `where` e o índice casam", () => {
     expect(fonte).toContain("2026-08-24-product-userid-imageurl-idx.sql");
   });
 
-  it("a etapa 2 continua SEM índice e o código diz por quê", () => {
+  it("a etapa 2 continua SEM índice e com a consulta na forma antiga", () => {
     // A etapa 2 usa `= ANY(array)`, que não aproveita GIN — precisaria virar
-    // `@>`, ou seja mudança de código, com custo de escrita não medido. Se
-    // alguém adicionar um índice para ela sem medir, este teste avisa que a
-    // justificativa registrada ficou desatualizada.
-    const fonte = fs.readFileSync(SERVICO, "utf8");
-    expect(fonte).toContain('= ANY("imageUrls")');
-    expect(fonte).toContain("NÃO foi medido");
+    // `@>`, ou seja mudança de código, com custo de escrita não medido na
+    // tabela mais escrita do sistema. As duas pontas precisam andar juntas:
+    // trocar a forma da consulta SEM criar o índice não adianta nada, e criar
+    // o índice SEM medir é o que a entrega se recusou a fazer.
+    //
+    // ⚠️ A asserção é sobre a linha EXECUTÁVEL, não sobre a prosa do
+    // comentário. A primeira versão deste teste casava a frase "NÃO foi
+    // medido" do cabeçalho do serviço — e aí reescrever o comentário, ou até
+    // só requebrar a linha no meio da frase, deixava o teste vermelho sem que
+    // nada funcional mudasse. Comentário se reescreve; código não.
+    const executaveis = fs
+      .readFileSync(SERVICO, "utf8")
+      .split("\n")
+      .filter((l) => {
+        const t = l.trimStart();
+        return !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
+      });
+
+    expect(executaveis.some((l) => l.includes('= ANY("imageUrls")'))).toBe(true);
+    expect(executaveis.some((l) => l.includes("@> ARRAY"))).toBe(false);
 
     const indices = indicesDoModelProduct();
     expect(indices.every((l) => !l.includes("imageUrls"))).toBe(true);

@@ -15,6 +15,21 @@
 -- Mesmo nome, mesmas colunas, mesma ordem que o comando abaixo. Se algum dia
 -- esse nome divergir, `migrate` passa a querer criar um índice duplicado.
 --
+-- ⚠️ ISSO NÃO SIGNIFICA QUE `prisma db push` FICOU SEGURO. Este índice
+-- sobreviveria a um push justamente por estar no schema — mas o push derruba
+-- o que NÃO está, e há quatro índices manuais nessa condição:
+--
+--   · ProductListing_productId_imageUrlsOverride_idx  (parcial, #298)
+--   · Product_userId_skuNormalized_key   (ÚNICO PARCIAL — perder este não é
+--       lentidão, é reabrir duplicação de SKU; o schema declara
+--       @@index([userId, skuNormalized]), que o Prisma recriaria NÃO-único e
+--       SEM predicado)
+--   · Product_userId_reservedStock_idx   (parcial)
+--   · Receivable_userId_settledAt_idx    (parcial)
+--
+-- Continua valendo a regra da casa: aplicar por migration ou pelos arquivos
+-- de ddl/, nunca por `db push`.
+--
 -- ───────────────────────────────────────────────────────────────────────────
 -- O QUE ESTÁ LENTO
 --
@@ -36,7 +51,12 @@
 --   média .................... 21,91 ms
 --   tempo total .............. 1.653,5 s  (27,6 min; ~32 min/mês)
 --   páginas por chamada ...... 7.542
---   páginas acumuladas ....... 569.164.500  (~4,34 TB de leitura de buffer)
+--   páginas acumuladas ....... 569.164.500  (4.342 GiB = ~4,66 TB de buffer)
+--
+-- ⚠️ CUIDADO COM A UNIDADE. `pg_size_pretty` devolve "4342 GB", mas o "GB" do
+-- Postgres é GiB (base 1024). Subir de unidade tratando isso como GB decimal
+-- dá "4,34 TB", que está ERRADO — são 4,24 TiB ou 4,66 TB decimais. Foi
+-- exatamente esse o erro na primeira redação deste arquivo, pego na revisão.
 --   linhas de fato alteradas . 2.139 no total = 0,028 por chamada
 --
 -- ⚠️ ISSO QUER DIZER QUE 97,2% DAS CHAMADAS NÃO ALTERAM LINHA NENHUMA. O custo
@@ -98,10 +118,21 @@
 --
 --   (c) Tamanho: 44 MB sobre os 384 MB de índices que a tabela já carrega.
 --       Como referência de escala, `Product_mlCatalogProductId_idx` ocupa
---       4,8 MB e tem ZERO varreduras, e `Product_userId_skuNormalized_key`
---       ocupa 38 MB com 12 varreduras. Não estão sendo removidos aqui —
---       remover índice é mudança de comportamento e fica registrado como
---       sugestão, não como parte desta entrega.
+--       4,8 MB e `Product_userId_reservedStock_idx` 16 kB, ambos com ZERO
+--       varreduras. Não estão sendo removidos aqui — remover índice é mudança
+--       de comportamento e fica registrado como sugestão, não como parte
+--       desta entrega.
+--
+--       ⛔ NÃO usar `Product_userId_skuNormalized_key` (38 MB, 12 varreduras)
+--       como exemplo de "índice sem uso": ele é
+--
+--         CREATE UNIQUE INDEX ... ("userId","skuNormalized")
+--           WHERE "skuNormalized" IS NOT NULL AND "skuNormalized" <> ''
+--
+--       ou seja, uma GARANTIA DE UNICIDADE, não um índice de busca. Contador
+--       de varredura baixo é o esperado para uma constraint, e derrubá-lo
+--       reabre duplicação de SKU. (Esta observação corrige a primeira redação
+--       deste arquivo, que o citava como candidato a remoção.)
 --
 -- ───────────────────────────────────────────────────────────────────────────
 -- SEM `CONCURRENTLY` — decisão medida, não regra de bolso
