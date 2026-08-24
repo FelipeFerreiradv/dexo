@@ -217,6 +217,30 @@ model Product {
   @@index([locationId])
   @@index([scrapId])
   @@index([mlCatalogProductId])
+  // Serve a etapa 1 de `swapImageUrlReferences` (troca de URL depois do recorte
+  // de fundo, app/marketplaces/services/image-bg-swap.ts):
+  //
+  //   UPDATE "Product" SET "imageUrl" = $1, "updatedAt" = $2
+  //    WHERE "userId" = $3 AND "imageUrl" = $4
+  //
+  // Sem ele o Postgres lia TODOS os produtos do cliente e filtrava em memória —
+  // 59.602 linhas para achar zero, no maior tenant. Em produção eram 75.497
+  // chamadas em 25,6 dias a 21,91 ms e 7.542 páginas cada, e 97,2% delas não
+  // alteravam linha nenhuma: o custo era de BUSCA, não de escrita. Medido em
+  // transação desfeita: 50,09 ms / 25.541 páginas -> 0,101 ms / 4 páginas.
+  //
+  // ⚠️ A ORDEM DAS COLUNAS IMPORTA: `userId` precisa ser a primeira. Invertida,
+  // o índice deixa de servir a qualquer outra consulta escopada por tenant e
+  // passa a depender de a URL ser seletiva o bastante sozinha.
+  //
+  // ⚠️ NÃO transformar em índice parcial (`WHERE "imageUrl" IS NOT NULL`).
+  // Prisma não expressa cláusula WHERE em índice, então o schema passaria a
+  // divergir do banco para sempre. Economizaria ~3%.
+  //
+  // Análise completa (custo de escrita, por que não CONCURRENTLY, por que a
+  // etapa 2 ficou de fora) em
+  // prisma/ddl/2026-08-24-product-userid-imageurl-idx.sql.
+  @@index([userId, imageUrl])
 }
 
 model ProductCompatibility {
