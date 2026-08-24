@@ -1,0 +1,265 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ÍNDICE COMPOSTO PARA A ETAPA 1 DA TROCA DE FOTO (recorte de fundo)
+--
+-- Arquivo de APLICAÇÃO EM PRODUÇÃO. A mesma instrução está na migration
+-- 20260824190000_add_product_userid_imageurl_idx (para banco limpo) e o índice
+-- é declarado no schema como @@index([userId, imageUrl]) no model Product —
+-- este aqui é b-tree comum, então, ao contrário do índice parcial da #298, o
+-- Prisma CONSEGUE expressá-lo e não há divergência entre schema e banco.
+--
+-- CONFERIDO, não suposto. `prisma migrate diff --from-empty
+-- --to-schema-datamodel prisma/schema.prisma --script` emite exatamente:
+--
+--   CREATE INDEX "Product_userId_imageUrl_idx" ON "Product"("userId", "imageUrl");
+--
+-- Mesmo nome, mesmas colunas, mesma ordem que o comando abaixo. Se algum dia
+-- esse nome divergir, `migrate` passa a querer criar um índice duplicado.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- O QUE ESTÁ LENTO
+--
+-- `swapImageUrlReferences` (app/marketplaces/services/image-bg-swap.ts) roda
+-- quando o worker termina de recortar o fundo de uma foto e precisa trocar a
+-- URL antiga pela nova em todos os lugares. A etapa 1 é:
+--
+--   UPDATE "Product" SET "imageUrl" = $1, "updatedAt" = $2
+--    WHERE "userId" = $3 AND "imageUrl" = $4
+--
+-- Sem índice que cubra `imageUrl`, o Postgres escolhe o índice de `userId`
+-- disponível, carrega TODOS os produtos daquele cliente e filtra em memória.
+-- No maior cliente são 59.602 produtos lidos para achar zero.
+--
+-- MEDIDO EM PRODUÇÃO (pg_stat_statements, janela de 25,6 dias — de
+-- 2026-07-30 05:33 UTC a 2026-08-24 19:49 UTC):
+--
+--   chamadas ................. 75.497
+--   média .................... 21,91 ms
+--   tempo total .............. 1.653,5 s  (27,6 min; ~32 min/mês)
+--   páginas por chamada ...... 7.542
+--   páginas acumuladas ....... 569.164.500  (~4,34 TB de leitura de buffer)
+--   linhas de fato alteradas . 2.139 no total = 0,028 por chamada
+--
+-- ⚠️ ISSO QUER DIZER QUE 97,2% DAS CHAMADAS NÃO ALTERAM LINHA NENHUMA. O custo
+-- é inteiramente de BUSCA, não de escrita — que é exatamente o caso em que um
+-- índice paga.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- MEDIÇÃO DO GANHO (transação + ROLLBACK contra o banco de produção)
+--
+-- Técnica: BEGIN; CREATE INDEX; EXPLAIN (ANALYZE, BUFFERS); ROLLBACK. Dá plano
+-- e tempo REAIS sem deixar nada para trás. Tenant do teste:
+-- cmrpbpswr0e6i18ncc97fv4ec (59.602 produtos, o maior).
+--
+--   cenário                                    tempo        páginas
+--   ────────────────────────────────────────   ──────────   ────────
+--   sem índice, 1ª leitura (fria)               52,96 ms     25.541
+--   sem índice, 2ª leitura (aquecida)           50,09 ms     25.541
+--   COM índice, caso dominante (97,2%)           0,101 ms         4
+--   COM índice, caso que casa    (2,8%)          7,65 ms         14
+--
+-- No caso que casa, a BUSCA custa 0,053 ms — os 7,6 ms restantes são a escrita
+-- da linha e dos 17 índices, que existiriam com ou sem este índice.
+--
+-- Plano antes:  Index Scan em Product_userId_partNumberNormalized_idx
+--               + Filter: (imageUrl = $4), Rows Removed by Filter: 59.602
+-- Plano depois: Index Scan em Product_userId_imageUrl_idx
+--               + Index Cond: (userId = $3 AND imageUrl = $4)
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- CUSTO DE ESCRITA: ABAIXO DO PISO DE RUÍDO — e isso foi medido, não suposto
+--
+-- Tentativa 1 (A/B simples) deu resultado CONTRADITÓRIO entre as ordens:
+--
+--   ordem 1:  COM índice 245,92 ms   |   SEM índice 163,81 ms   (+50%)
+--   ordem 2:  SEM índice 129,94 ms   |   COM índice 125,72 ms   (-3%)
+--
+-- Tentativa 2 (pareada, 6 lotes disjuntos de 500 linhas, uma única construção
+-- de índice, primeira rodada descartada como aquecimento):
+--
+--   SEM índice:  361,47  304,64  270,71  242,31 ms   (rodou primeiro)
+--   COM índice:  111,15  122,43  120,27  136,08  140,69 ms   (rodou depois)
+--
+-- O cenário que roda em SEGUNDO ganha sempre, em qualquer ordem. Conclusão
+-- honesta: o custo do índice extra é MENOR QUE A VARIÂNCIA DA PRÓPRIA OPERAÇÃO
+-- neste ambiente. Não há número a reportar, e inventar um seria pior que
+-- admitir o limite da medição.
+--
+-- O QUE DÁ PARA AFIRMAR COM BASE ESTRUTURAL, e não em cronômetro:
+--
+--   (a) O índice novo NÃO muda a decisão HOT/não-HOT. `Product` já tem
+--       @@index([userId, updatedAt]), e todo update do Prisma escreve
+--       `updatedAt` — HOT já era impossível para praticamente toda escrita.
+--       Confirmado em produção: 12.124 HOT em 273.882 updates (4,4%).
+--
+--   (b) O acréscimo é de UMA entrada de índice entre as 17 estruturas que a
+--       tabela já mantém: +5,9% de trabalho de manutenção de índice por
+--       escrita não-HOT — e manutenção de índice é fração do custo total do
+--       UPDATE (tupla no heap, WAL, 4 triggers de chave estrangeira).
+--
+--   (c) Tamanho: 44 MB sobre os 384 MB de índices que a tabela já carrega.
+--       Como referência de escala, `Product_mlCatalogProductId_idx` ocupa
+--       4,8 MB e tem ZERO varreduras, e `Product_userId_skuNormalized_key`
+--       ocupa 38 MB com 12 varreduras. Não estão sendo removidos aqui —
+--       remover índice é mudança de comportamento e fica registrado como
+--       sugestão, não como parte desta entrega.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- SEM `CONCURRENTLY` — decisão medida, não regra de bolso
+--
+-- A construção foi cronometrada em 2.077 ms na tabela de produção. Nesse
+-- intervalo a `Product` fica com ACCESS EXCLUSIVE e as escritas enfileiram.
+-- A tabela recebe ~6 updates/minuto, então o lock enfileira ~0,2 escrita.
+--
+-- Contra isso, `CONCURRENTLY`: (1) não roda dentro de transação, e `migrate`
+-- roda a migration em transação; (2) espera TODAS as transações concorrentes
+-- terminarem; (3) se for interrompido, deixa um índice INVÁLIDO que o planner
+-- ignora EM SILÊNCIO — o pior modo de falha possível, porque tudo continua
+-- funcionando devagar sem nenhum sinal.
+--
+-- Conferido na hora da decisão: 23 sessões `idle`, 1 `active`, e ZERO
+-- `idle in transaction`. Ou seja, nem o argumento a favor do CONCURRENTLY
+-- (evitar o lock) nem o contra (ficar pendurado) pesam muito aqui — e na
+-- dúvida vale a forma verificável atomicamente.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- POR QUE B-TREE E NÃO GIN (e por que a etapa 2 NÃO está nesta entrega)
+--
+-- A etapa 1 é IGUALDADE PURA nas duas colunas, que é o caso canônico de
+-- b-tree composto. A etapa 2, do mesmo fluxo, é outra história:
+--
+--   UPDATE "Product" SET "imageUrls" = array_replace("imageUrls", $1, $2)
+--    WHERE "userId" = $3 AND $4 = ANY("imageUrls")
+--
+-- `= ANY(coluna_array)` NÃO usa índice GIN. Para usar, a consulta teria de
+-- virar `"imageUrls" @> ARRAY[$4]` — ou seja, mudança de ÍNDICE **e** mudança
+-- de CÓDIGO, e o custo de escrita de um GIN sobre 1.822.813 elementos de array
+-- na tabela mais escrita do sistema não foi medido. Fica documentado e não
+-- implementado. Ela custa 28,70 ms e 7.543 páginas por chamada.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- SEM PREDICADO PARCIAL E SEM `INCLUDE`
+--
+-- Seria tentador escrever `WHERE "imageUrl" IS NOT NULL` (11.376 dos 366.259
+-- produtos têm a coluna nula). Dois motivos para não fazer:
+--
+--   1. Economiza ~3% e adiciona risco. O Postgres só usa índice parcial quando
+--      PROVA que o predicado é implicado pelo WHERE da consulta — funcionaria
+--      aqui, mas qualquer reescrita futura da consulta pode quebrar a prova
+--      EM SILÊNCIO. Foi a armadilha documentada na #298.
+--   2. Prisma não expressa índice parcial. Um predicado aqui criaria
+--      divergência entre schema.prisma e o banco, e `prisma migrate diff`
+--      passaria a acusar deriva para sempre.
+--
+-- `INCLUDE` também não: a entrada do btree tem teto de ~2.700 bytes. Hoje o
+-- maior `imageUrl` tem 117 bytes e a chave composta 142, com folga enorme —
+-- mas carregar array de URLs no INCLUDE transformaria um INSERT grande em
+-- FALHA de escrita. Ganho de leitura não paga falha de escrita.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ORDEM DE DEPLOY: NÃO HÁ DEPENDÊNCIA
+--
+-- O código funciona igual com ou sem este índice — só mais devagar. Pode rodar
+-- antes ou depois do deploy, e rodar duas vezes é no-op.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+-- Se a tabela estiver travada por outra sessão, ABORTA em vez de enfileirar
+-- atrás dela segurando a fila de escrita da tabela mais quente do sistema.
+SET LOCAL lock_timeout = '5s';
+
+-- Teto para a construção. Medida em 2,08 s; 60 s é margem de 30x.
+SET LOCAL statement_timeout = '60s';
+
+CREATE INDEX IF NOT EXISTS "Product_userId_imageUrl_idx"
+  ON "Product" ("userId", "imageUrl");
+
+COMMIT;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- VERIFICAÇÃO — rodar DEPOIS, com a linha de base tirada NA HORA
+--
+-- ⚠️ Nenhuma destas comparações usa constante congelada. O número de produtos
+-- e a distribuição de `imageUrl` mudam por uso legítimo dos clientes; comparar
+-- com um valor escrito de véspera produz alarme falso ou falso alívio.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- 1. O índice existe, é válido e está pronto?
+--
+-- SELECT i.relname, x.indisvalid, x.indisready,
+--        pg_size_pretty(pg_relation_size(i.oid)) AS tamanho,
+--        pg_get_indexdef(i.oid) AS definicao
+--   FROM pg_index x
+--   JOIN pg_class i ON i.oid = x.indexrelid
+--   JOIN pg_class t ON t.oid = x.indrelid
+--  WHERE t.relname = 'Product' AND i.relname = 'Product_userId_imageUrl_idx';
+--
+-- Esperado: indisvalid = t, indisready = t, ~44 MB, e a definição SEM
+-- cláusula WHERE (se aparecer um WHERE, alguém apertou o predicado — ver a
+-- seção "SEM PREDICADO PARCIAL" acima).
+
+-- 2. Nenhum índice da tabela ficou inválido?
+--
+-- SELECT count(*) FILTER (WHERE NOT x.indisvalid) AS invalidos, count(*) AS total
+--   FROM pg_index x JOIN pg_class t ON t.oid = x.indrelid
+--  WHERE t.relname = 'Product';
+--
+-- Esperado: invalidos = 0, total = 18 (eram 17).
+
+-- 3. O planner escolheu o índice? (o caso dominante: não casa nada)
+--
+-- EXPLAIN (ANALYZE, BUFFERS)
+-- UPDATE "public"."Product" SET "imageUrl" = $1, "updatedAt" = now()
+--  WHERE "public"."Product"."userId" = '<tenant>'
+--    AND "public"."Product"."imageUrl" = 'url-que-nao-existe.png';
+--
+-- Esperado: "Index Scan using Product_userId_imageUrl_idx", com Index Cond
+-- cobrindo AS DUAS colunas e nenhuma linha "Rows Removed by Filter".
+-- Se aparecer "Rows Removed by Filter: <milhares>", o índice NÃO está sendo
+-- usado.
+
+-- 4. Prova de campo (a mais forte): o idx_scan sobe junto com as chamadas.
+--
+-- ⚠️ MARCO PRÉ-DDL JÁ TIRADO — usar ESTE como linha de base, não tirar outro
+-- depois de aplicar (aí já estaria contaminado pelo índice):
+--
+--   momento ......... 2026-08-24 20:20:19.229984+00
+--   calls ........... 75.776
+--   ms_total ........ 1.663.360,5
+--   blks ............ 573.089.208
+--   linhas ......... 2.153
+--   idx_scan ........ (índice ainda não existia; 17 estruturas na tabela)
+--   stats_since ..... 2026-07-30 05:33:21.596293+00
+--   reset_global .... 2026-07-24 02:03:59.548659+00
+--
+-- Reler depois de um período com fila de recorte ativa:
+--
+-- SELECT now() AS momento,
+--        (SELECT calls FROM pg_stat_statements
+--          WHERE query ILIKE 'UPDATE%Product%'
+--            AND query ILIKE '%"imageUrl" = $1, "updatedAt"%'
+--          ORDER BY total_exec_time DESC LIMIT 1)                    AS calls,
+--        (SELECT round(total_exec_time::numeric, 1) FROM pg_stat_statements
+--          WHERE query ILIKE 'UPDATE%Product%'
+--            AND query ILIKE '%"imageUrl" = $1, "updatedAt"%'
+--          ORDER BY total_exec_time DESC LIMIT 1)                    AS ms_total,
+--        (SELECT idx_scan FROM pg_stat_user_indexes
+--          WHERE indexrelname = 'Product_userId_imageUrl_idx')       AS idx_scan;
+--
+-- ⚠️ ANTES de calcular qualquer delta, conferir que os contadores não foram
+-- zerados no meio do caminho — um reset silencioso faz o delta ficar NEGATIVO
+-- e parecer melhora:
+--
+-- SELECT (SELECT stats_reset FROM pg_stat_statements_info) AS reset_global,
+--        stats_since, calls
+--   FROM pg_stat_statements
+--  WHERE query ILIKE 'UPDATE%Product%'
+--    AND query ILIKE '%"imageUrl" = $1, "updatedAt"%'
+--  ORDER BY total_exec_time DESC LIMIT 1;
+--
+-- O delta é válido só se `calls` de agora >= `calls` do marco.
+
+-- 5. A fila de recorte tem movimento? (sem ela, a etapa 1 não é chamada e
+--    "0 chamadas novas" não significa nada)
+--
+-- SELECT status, count(*), max("updatedAt") FROM "ImageBgJob" GROUP BY status;

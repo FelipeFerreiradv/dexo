@@ -1,0 +1,38 @@
+-- Índice composto para a etapa 1 da troca de foto pós-recorte de fundo.
+--
+-- Motivo: `swapImageUrlReferences` roda
+--
+--   UPDATE "Product" SET "imageUrl" = $1, "updatedAt" = $2
+--    WHERE "userId" = $3 AND "imageUrl" = $4
+--
+-- e, sem índice que cubra `imageUrl`, o Postgres carrega todos os produtos do
+-- cliente e filtra em memória — 59.602 linhas lidas para achar zero, no maior
+-- tenant. Em produção: 75.497 chamadas em 25,6 dias, 21,91 ms de média, 7.542
+-- páginas por chamada, e apenas 0,028 linha alterada por chamada (97,2% das
+-- chamadas não mudam nada). O custo é de BUSCA, não de escrita.
+--
+-- Medido em transação desfeita contra o banco de produção:
+-- 50,09 ms / 25.541 páginas -> 0,101 ms / 4 páginas. Índice de 44 MB,
+-- construção de 2,08 s.
+--
+-- Este é b-tree comum, então o Prisma o expressa: está declarado como
+-- @@index([userId, imageUrl]) no model Product. O arquivo de aplicação em
+-- produção, com toda a análise (custo de escrita, por que não CONCURRENTLY,
+-- por que não parcial, por que a etapa 2 ficou de fora), é
+-- prisma/ddl/2026-08-24-product-userid-imageurl-idx.sql.
+--
+-- ⚠️ NÃO transformar em índice parcial (`WHERE "imageUrl" IS NOT NULL`): Prisma
+-- não expressa cláusula WHERE, e o schema passaria a divergir do banco para
+-- sempre. Economizaria ~3% do tamanho.
+--
+-- SEM `CONCURRENTLY`: `migrate` roda a migration dentro de uma transação, e
+-- CONCURRENTLY não pode rodar em transação. A construção foi cronometrada em
+-- 2,08 s numa tabela que recebe ~6 updates/minuto — o lock enfileira ~0,2
+-- escrita.
+--
+-- Não há dependência de ordem com o deploy: o código funciona sem ele, só
+-- devagar.
+--
+-- Idempotente: no-op num banco onde o DDL manual já foi aplicado.
+CREATE INDEX IF NOT EXISTS "Product_userId_imageUrl_idx"
+  ON "Product" ("userId", "imageUrl");

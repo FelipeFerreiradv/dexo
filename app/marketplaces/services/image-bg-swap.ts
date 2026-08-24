@@ -54,15 +54,21 @@
  * própria, e NÃO é pré-requisito do índice: sem índice, tirar as 918 linhas
  * não mudaria nada, porque o custo é ENCONTRAR as linhas, não devolvê-las.
  *
- * AS ETAPAS 1 E 2 SEGUEM CARAS, E ISSO É DELIBERADO. O desperdício é do mesmo
- * tipo — a etapa 1 modifica 0,028 linha por chamada, ou seja 97% das chamadas
- * não mudam nada, e o plano é um Index Scan por `userId` que filtra 59.482
- * produtos em memória para achar zero. Mas a cura é outra: pediriam um índice
- * GIN sobre `Product.imageUrls` e um composto com `Product.imageUrl`, na tabela
- * mais escrita do sistema (511 MB de dados, 380 MB de índices). Índice GIN tem
- * custo de escrita real e ele NÃO foi medido. Enquanto não for, mexer ali é
- * trocar uma lentidão conhecida por um risco desconhecido — e a etapa 3 mostra
- * que a forma da consulta não é o problema: idêntica, na tabela pequena, custa
+ * A ETAPA 1 FOI RESOLVIDA DEPOIS, e a etapa 2 NÃO. As duas pareciam o mesmo
+ * problema; não são.
+ *
+ * A etapa 1 é IGUALDADE PURA (`"imageUrl" = $4`), que é o caso canônico de
+ * b-tree composto. Ganhou `@@index([userId, imageUrl])` — ver
+ * prisma/ddl/2026-08-24-product-userid-imageurl-idx.sql. Medido em transação
+ * desfeita contra produção: 50,09ms/25.541 páginas -> 0,101ms/4 páginas.
+ *
+ * A etapa 2 usa `$4 = ANY("imageUrls")`, e isso NÃO aproveita índice GIN: para
+ * aproveitar, a consulta teria de virar `"imageUrls" @> ARRAY[$4]`. Ou seja,
+ * mudança de índice E de código, com custo de escrita de um GIN sobre 1.822.813
+ * elementos de array na tabela mais escrita do sistema (517 MB de dados, 384 MB
+ * de índices) — custo que NÃO foi medido. Enquanto não for, mexer ali é trocar
+ * uma lentidão conhecida por um risco desconhecido. A etapa 3 mostra que a
+ * forma da consulta não é o problema: idêntica, na tabela pequena, custa
  * 0,05ms.
  *
  * A etapa 3 não tem o que otimizar: 3,5 segundos no mês inteiro.
@@ -88,6 +94,19 @@ export async function swapImageUrlReferences(input: {
   const db = input.db ?? prisma;
   const { userId, oldUrl, newUrl } = input;
 
+  // ⚠️ ESTE `where` ESTÁ CASADO COM UM ÍNDICE COMPOSTO NO BANCO:
+  //
+  //   CREATE INDEX "Product_userId_imageUrl_idx" ON "Product" ("userId", "imageUrl");
+  //
+  // (declarado em prisma/schema.prisma como @@index([userId, imageUrl]);
+  // análise em prisma/ddl/2026-08-24-product-userid-imageurl-idx.sql)
+  //
+  // As DUAS colunas precisam continuar aqui como IGUALDADE. Tirar `userId`, ou
+  // trocar `imageUrl` por `contains`/`startsWith`/`in`, faz o Postgres voltar a
+  // ler todos os produtos do cliente e filtrar em memória — 59.602 linhas para
+  // achar zero, no maior tenant. E o modo de falha é SILENCIOSO: continua
+  // devolvendo o mesmo resultado, nenhum teste de comportamento fica vermelho,
+  // só a conta de banco sobe de novo. Guarda em tests/image-bg-swap-product-index.spec.ts.
   const productImageUrl = (
     await db.product.updateMany({
       where: { userId, imageUrl: oldUrl },
