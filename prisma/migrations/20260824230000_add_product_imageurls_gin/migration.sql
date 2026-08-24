@@ -1,0 +1,37 @@
+-- Índice GIN para a etapa 2 da troca de foto pós-recorte de fundo.
+--
+-- Motivo: `swapImageUrlReferences` procura o produto cuja galeria contém a URL
+-- antiga. Sem índice, o Postgres lia TODOS os produtos do cliente e filtrava em
+-- memória — 59.607 linhas para achar zero, no maior tenant. Em produção: 77.031
+-- chamadas em 26 dias, 29,03 ms e 7.568 páginas cada, e 80% delas não alteram
+-- nada. Medido em transação desfeita: 89,83 ms / 26.262 páginas -> 0,109 ms /
+-- 5 páginas.
+--
+-- ⚠️ ESTE ÍNDICE SÓ SERVE PARA ALGUMA COISA COM A CONDIÇÃO `@>` NA CONSULTA.
+-- `= ANY(coluna)` não é indexável por GIN: medido, com o índice criado e a
+-- consulta antiga, o plano continuou varrendo 59.607 produtos em 99 ms. A ponta
+-- de código está em app/marketplaces/services/image-bg-swap.ts e a guarda que
+-- amarra as duas em tests/image-bg-swap-gin.spec.ts.
+--
+-- ⚠️⚠️ ATENÇÃO AO RODAR ESTA MIGRATION NUM BANCO QUE JÁ TENHA DADOS.
+-- Aqui o índice é criado SEM `CONCURRENTLY`, porque `migrate` executa a
+-- migration dentro de uma transação e o Postgres proíbe CONCURRENTLY nela. Num
+-- banco vazio ou pequeno isso é instantâneo. No banco de PRODUÇÃO o build foi
+-- cronometrado em 24,69 s — e `CREATE INDEX` comum toma ACCESS EXCLUSIVE, que
+-- bloqueia até LEITURA. Seriam ~25 s de apagão em toda consulta que toque
+-- `Product`.
+--
+-- Por isso, em produção aplica-se ANTES o arquivo
+-- prisma/ddl/2026-08-24-product-imageurls-gin.sql, que usa CONCURRENTLY. Com o
+-- índice já existente, o `IF NOT EXISTS` daqui vira no-op e nada bloqueia.
+--
+-- `fastupdate = off` é deliberado: com a lista pendente ligada (padrão), o
+-- custo de escrita é diferido e cobrado em bloco de uma transação azarada —
+-- pico de latência imprevisível na tabela mais escrita do sistema. Desligada,
+-- cada escrita paga na hora (+38% em vez de +20%, medido), mas sem cliff. O
+-- total é ~1 s/dia, então a previsibilidade sai barata.
+--
+-- Idempotente: no-op num banco onde o DDL manual já foi aplicado.
+CREATE INDEX IF NOT EXISTS "Product_imageUrls_idx"
+  ON "Product" USING gin ("imageUrls")
+  WITH (fastupdate = off);

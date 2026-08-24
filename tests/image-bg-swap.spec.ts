@@ -35,19 +35,38 @@ describe("swapImageUrlReferences", () => {
     await swapImageUrlReferences({ userId: "u1", oldUrl: OLD, newUrl: NEW, db });
 
     expect(db.$executeRaw).toHaveBeenCalledTimes(2);
-    for (const call of db.$executeRaw.mock.calls) {
-      const [strings, ...values] = call;
-      const sql = (strings as TemplateStringsArray).join("?");
-      expect(sql).toContain("array_replace");
-      // Escopo de tenant + idempotência via WHERE pela URL antiga.
-      expect(sql).toContain('= ANY("imageUrls")');
-      expect(values).toEqual([OLD, NEW, "u1", OLD]);
+
+    const queries: { sql: string; values: unknown[] }[] =
+      db.$executeRaw.mock.calls.map((call: any[]) => {
+        const [strings, ...values] = call;
+        return { sql: (strings as TemplateStringsArray).join("?"), values };
+      });
+
+    // O que vale para AS DUAS: array_replace, escopo de tenant, e a
+    // idempotência via WHERE pela URL antiga.
+    for (const q of queries) {
+      expect(q.sql).toContain("array_replace");
+      expect(q.sql).toContain('= ANY("imageUrls")');
+      expect(q.values).toContain("u1");
     }
-    const tables = db.$executeRaw.mock.calls.map((c: any[]) =>
-      (c[0] as TemplateStringsArray).join(""),
-    );
-    expect(tables.some((s: string) => s.includes('"Product"'))).toBe(true);
-    expect(tables.some((s: string) => s.includes('"Scrap"'))).toBe(true);
+
+    const produto = queries.find((q) => q.sql.includes('"Product"'))!;
+    const sucata = queries.find((q) => q.sql.includes('"Scrap"'))!;
+    expect(produto).toBeDefined();
+    expect(sucata).toBeDefined();
+
+    // A SUCATA continua exatamente como sempre foi: tabela pequena, 0,05 ms
+    // por chamada, sem índice e sem precisar de um.
+    expect(sucata.values).toEqual([OLD, NEW, "u1", OLD]);
+    expect(sucata.sql).not.toContain("@>");
+
+    // O PRODUTO ganhou a condição `@>`, que é o que torna a busca indexável
+    // pelo GIN `Product_imageUrls_idx`. O `= ANY` foi mantido de propósito (já
+    // conferido acima, no laço) — as duas são equivalentes para URL não-nula,
+    // então o predicado é estritamente não-restritivo. Detalhes e a guarda
+    // completa em tests/image-bg-swap-gin.spec.ts.
+    expect(produto.sql).toContain('"imageUrls" @> ARRAY[?]');
+    expect(produto.values).toEqual([OLD, NEW, "u1", OLD, OLD]);
   });
 
   it("overrides de anúncio: RMW com CAS pelo valor lido (edição concorrente não é sobrescrita)", async () => {

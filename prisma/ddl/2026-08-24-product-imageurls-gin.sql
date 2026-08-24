@@ -1,0 +1,223 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ÍNDICE GIN PARA A ETAPA 2 DA TROCA DE FOTO (recorte de fundo)
+--
+-- ⚠️⚠️ ESTE ARQUIVO NÃO PODE RODAR DENTRO DE TRANSAÇÃO. Usa `CONCURRENTLY`,
+-- que o Postgres proíbe em transação. Colar bloco a bloco no psql, sem BEGIN.
+--
+-- Fecha o último ponto em aberto do fluxo de troca de foto. As etapas 4 (#298)
+-- e 1 (#300) já foram; esta é a terceira e mais cara de todas as decisões,
+-- porque foi a única em que o custo de escrita ficou ACIMA do piso de ruído.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- O QUE ESTÁ LENTO
+--
+--   UPDATE "Product" SET "imageUrls" = array_replace("imageUrls", $1, $2)
+--    WHERE "userId" = $3 AND $4 = ANY("imageUrls")
+--
+-- MEDIDO EM PRODUÇÃO (pg_stat_statements, 26 dias):
+--
+--   chamadas ................. 77.031
+--   média .................... 29,03 ms
+--   páginas por chamada ...... 7.568
+--   linhas alteradas ......... 15.118 = 0,198 por chamada  (80% não altera nada)
+--   custo diário ............. ~85,6 s de tempo de banco, ~175 GB de leitura
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ⚠️⚠️ O ÍNDICE SOZINHO NÃO RESOLVE — A CONSULTA TAMBÉM MUDA
+--
+-- `$4 = ANY(coluna_array)` é um ScalarArrayOpExpr sobre uma COLUNA, e nenhuma
+-- classe de operador do GIN o atende. Isso não é teoria: com o índice criado e
+-- a consulta INALTERADA, o plano medido foi
+--
+--   Index Scan using "Product_userId_partNumberNormalized_idx"
+--     Filter: ('...' = ANY ("imageUrls"))
+--     Rows Removed by Filter: 59.607          -> 99,42 ms
+--
+-- Ou seja: criar o índice e não mexer na consulta gasta 244 MB para NADA, em
+-- silêncio. O que torna a busca indexável é `"imageUrls" @> ARRAY[$4]` em
+-- app/marketplaces/services/image-bg-swap.ts. As duas pontas andam juntas, e
+-- tests/image-bg-swap-gin.spec.ts existe para impedir que uma ande sem a outra.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- MEDIÇÃO DO GANHO (transação + ROLLBACK contra produção, maior tenant)
+--
+--   cenário                                       tempo        páginas
+--   ───────────────────────────────────────────   ──────────   ────────
+--   sem índice, caso dominante (fria)              90,37 ms     26.262
+--   sem índice, caso dominante (aquecida)          89,83 ms     26.262
+--   COM GIN, consulta INALTERADA (= ANY)           99,42 ms     26.262   <- não usa
+--   COM GIN + `@>` adicionado                       0,109 ms         5
+--   COM GIN + `@>`, caso que casa                  19,43 ms       250
+--
+-- Plano depois: BitmapAnd de "Product_imageUrls_idx" com o índice de userId —
+-- e o ramo do userId aparece como "never executed", porque o GIN já devolveu
+-- zero. É o desenho ideal para uma busca que 80% das vezes não acha nada.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ⚠️ CUSTO DE ESCRITA: DESTA VEZ EXISTE NÚMERO
+--
+-- No índice da etapa 1 o custo ficou abaixo da variância e o arquivo se recusou
+-- a inventar um valor. Aqui é diferente: o GIN grava uma entrada POR ELEMENTO
+-- do array (média 4,98, máximo 56), e `Product` não faz HOT (todo update do
+-- Prisma escreve `updatedAt`, que é indexado), então TODA escrita paga.
+--
+-- Medido com GIN parcial num tenant de 7.612 produtos e 54.601 elementos (7,2
+-- por produto, ACIMA da média — escolha pessimista de propósito), em lotes
+-- disjuntos de 400 linhas, com inversão de ordem dos cenários:
+--
+--   cenário                     rodadas estabilizadas
+--   ─────────────────────────   ──────────────────────────────────
+--   sem GIN                     ~87 ms   (84,3 · 87,0 · 89,1 · 89,1 · 95,5)
+--   GIN fastupdate=ON           ~105 ms  (101,4 · 103,5 · 105,6 · 107,6 · 108,3)
+--   GIN fastupdate=OFF          ~120 ms  (115,9 · 120,2 · 122,0 · 122,9 · 124,8)
+--
+-- ⇒ +20% com a lista pendente ligada, +38% com ela desligada. Por linha:
+-- ~0,045 ms e ~0,083 ms.
+--
+-- EM AGREGADO, ISSO É PEQUENO: `Product` recebe ~10.700 updates/dia, então o
+-- custo total fica em **0,5 a 0,9 s/dia**, contra **85,6 s/dia** que a etapa 2
+-- gastava. Razão de aproximadamente 100 para 1.
+--
+-- ⚠️ Honestidade sobre a medição: a inversão de ordem voltou a mostrar que o
+-- cenário que roda em segundo leva vantagem, e a rodada sem GIN teve um valor
+-- solto de 1.876,85 ms. Os números acima são das rodadas ESTABILIZADAS de cada
+-- cenário. A conclusão que se sustenta é a ordem de grandeza (dezenas de ms num
+-- lote de 400 linhas), não o dígito.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- POR QUE `fastupdate = off`, sendo ele o mais CARO dos dois
+--
+-- Com `fastupdate=on` (padrão) as entradas novas vão para uma lista pendente e
+-- são incorporadas ao índice depois, em bloco. A média melhora — mas a conta
+-- chega inteira para UMA transação azarada, que paga a descarga sozinha. Numa
+-- tabela onde a escrita é o salvamento de um produto por um usuário esperando
+-- na tela, esse pico é pior que o custo médio maior.
+--
+-- Como o total é ~1 s/dia, trocar 0,5 s/dia por previsibilidade é barato.
+--
+-- ⚠️ O Prisma NÃO expressa `fastupdate`. Um `prisma db push` (já proibido — ver
+-- .github/copilot-instructions.md) recriaria este índice com a lista pendente
+-- LIGADA. Não quebra nada; volta o comportamento de pico.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ⚠️⚠️ POR QUE `CONCURRENTLY` AQUI, SE A ETAPA 1 O REJEITOU
+--
+-- Não é incoerência: é o mesmo critério aplicado a números diferentes.
+--
+--   etapa 1 (b-tree):  build de  2,08 s  -> lock curto, CONCURRENTLY rejeitado
+--   etapa 2 (GIN):     build de 24,69 s  -> CONCURRENTLY obrigatório
+--
+-- `CREATE INDEX` comum toma ACCESS EXCLUSIVE, que **bloqueia até LEITURA**.
+-- 24,7 segundos disso significa que toda consulta que toque `Product` — busca
+-- de peça, listagem, pedido, PDV — para. Seria um apagão visível, não um
+-- enfileiramento de escritas.
+--
+-- O preço do CONCURRENTLY: leva ~2x mais tempo, não roda em transação (por isso
+-- este arquivo não tem BEGIN), espera as transações concorrentes terminarem, e
+-- se for interrompido deixa um índice INVÁLIDO. Aqui o índice inválido é
+-- benigno — o planner o ignora e a consulta volta ao plano antigo — mas ocupa
+-- espaço. A recuperação está no rodapé.
+--
+-- Conferir ANTES de aplicar: `CONCURRENTLY` fica pendurado atrás de sessões em
+-- `idle in transaction`.
+--
+--   SELECT count(*) FROM pg_stat_activity
+--    WHERE datname = current_database() AND state = 'idle in transaction';
+--
+-- Se for > 0, esperar. (Na medição desta entrega estava em zero.)
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- TAMANHO: 244 MB
+--
+-- Sobre os 428 MB de índices que `Product` já carrega — um acréscimo de 57%,
+-- de longe o maior desta série (o da etapa 1 tem 44 MB, o da #298 tem 48 kB).
+-- É o preço de indexar 1.823.318 elementos de array em 366.343 produtos.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ORDEM DE APLICAÇÃO
+--
+-- 1º ESTE ARQUIVO (índice). 2º o deploy do código com o `@>`.
+--
+-- Nessa ordem nada fica pior em momento nenhum: antes do deploy o índice existe
+-- e não é usado (custa só a escrita), e depois do deploy passa a ser usado. Na
+-- ordem inversa, o código pediria `@>` sem índice — o que ainda funciona, mas
+-- passa a fazer uma verificação a mais sem nenhum ganho.
+--
+-- Nenhuma das duas ordens quebra: `@>` e `= ANY` são equivalentes aqui, e isso
+-- foi verificado linha a linha nos 366.343 produtos (zero divergências).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ⚠️ SEM BEGIN. Rodar como comando solto.
+SET lock_timeout = '5s';
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "Product_imageUrls_idx"
+  ON "Product" USING gin ("imageUrls")
+  WITH (fastupdate = off);
+
+RESET lock_timeout;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- VERIFICAÇÃO — rodar DEPOIS. Linha de base tirada NA HORA, nunca constante.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- 1. ⚠️ O ÍNDICE FICOU VÁLIDO? (a pergunta específica do CONCURRENTLY)
+--
+-- SELECT i.relname, x.indisvalid, x.indisready,
+--        pg_size_pretty(pg_relation_size(i.oid)) AS tamanho,
+--        pg_get_indexdef(i.oid) AS definicao
+--   FROM pg_index x
+--   JOIN pg_class i ON i.oid = x.indexrelid
+--   JOIN pg_class t ON t.oid = x.indrelid
+--  WHERE t.relname = 'Product' AND i.relname = 'Product_imageUrls_idx';
+--
+-- Esperado: indisvalid = t. SE VIER f, o build foi interrompido. O índice
+-- inválido é ignorado pelo planner (nada quebra) mas ocupa 244 MB. Recuperar:
+--
+--   DROP INDEX CONCURRENTLY IF EXISTS "Product_imageUrls_idx";
+--   -- e rodar o CREATE de novo
+--
+-- 2. `fastupdate` ficou desligado?
+--
+-- SELECT reloptions FROM pg_class WHERE relname = 'Product_imageUrls_idx';
+--   Esperado: {fastupdate=off}
+
+-- 3. O planner escolheu? (caso dominante: não casa nada)
+--
+-- EXPLAIN (ANALYZE, BUFFERS)
+-- UPDATE "Product" SET "imageUrls" = array_replace("imageUrls", 'a', 'b')
+--  WHERE "userId" = '<tenant>'
+--    AND "imageUrls" @> ARRAY['url-que-nao-existe.png']
+--    AND 'url-que-nao-existe.png' = ANY("imageUrls");
+--
+-- ⚠️ ISSO EXECUTA DE VERDADE. Envolver em BEGIN; ... ROLLBACK; ou usar
+-- EXPLAIN (COSTS OFF) sem ANALYZE.
+--
+-- Esperado: "Bitmap Index Scan on Product_imageUrls_idx". Se aparecer
+-- "Rows Removed by Filter: <milhares>", o índice NÃO está sendo usado — quase
+-- sempre porque o `@>` sumiu do código.
+
+-- 4. Prova de campo: o idx_scan sobe junto com as chamadas.
+--
+-- Tirar o marco ANTES do deploy do código e reler depois, com fila de recorte
+-- ativa. ⚠️ Conferir sempre se os contadores não foram zerados no meio:
+--
+-- SELECT (SELECT stats_reset FROM pg_stat_statements_info) AS reset_global,
+--        stats_since, calls,
+--        round(total_exec_time::numeric, 1) AS ms_total, shared_blks_hit AS blks,
+--        (SELECT idx_scan FROM pg_stat_user_indexes
+--          WHERE indexrelname = 'Product_imageUrls_idx')  AS idx_scan
+--   FROM pg_stat_statements
+--  WHERE query ILIKE '%array_replace%' AND query ILIKE '%"Product"%'
+--  ORDER BY total_exec_time DESC LIMIT 1;
+--
+-- O delta só é válido se `calls` de agora >= `calls` do marco.
+
+-- 5. O custo de escrita apareceu em produção?
+--
+-- SELECT calls, round(mean_exec_time::numeric, 3) AS ms
+--   FROM pg_stat_statements
+--  WHERE query ILIKE 'INSERT INTO "public"."Product"%'
+--  ORDER BY calls DESC LIMIT 3;
+--
+-- Comparar com a média de antes. O previsto é subida pequena e estável; um
+-- salto grande e ERRÁTICO seria a lista pendente ligada (ver item 2).

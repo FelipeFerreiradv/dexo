@@ -241,6 +241,30 @@ model Product {
   // etapa 2 ficou de fora) em
   // prisma/ddl/2026-08-24-product-userid-imageurl-idx.sql.
   @@index([userId, imageUrl])
+  // Serve a etapa 2 de `swapImageUrlReferences`:
+  //
+  //   UPDATE "Product" SET "imageUrls" = array_replace("imageUrls", $1, $2)
+  //    WHERE "userId" = $3 AND "imageUrls" @> ARRAY[$1] AND $1 = ANY("imageUrls")
+  //
+  // Sem ele o Postgres lia todos os produtos do cliente e filtrava em memória:
+  // 89,83 ms e 26.262 páginas por chamada, 76 mil chamadas em 26 dias. Com ele:
+  // 0,109 ms e 5 páginas.
+  //
+  // ⚠️ A CONDIÇÃO `@>` NA CONSULTA É PARTE INSEPARÁVEL DESTE ÍNDICE. `= ANY()`
+  // sobre uma coluna NÃO é indexável por GIN — medido: com o índice criado e a
+  // consulta antiga, o plano continuou varrendo 59.607 produtos em 99 ms. Tirar
+  // o `@>` do código deixa este índice de 244 MB sem nenhum uso, em silêncio.
+  //
+  // ⚠️ EM PRODUÇÃO ELE É CRIADO COM `WITH (fastupdate = off)`, que o Prisma não
+  // expressa. Com a lista pendente ligada (padrão), o custo de escrita é
+  // diferido e cobrado em bloco de uma transação azarada — pico de latência
+  // imprevisível na tabela mais escrita do sistema. Ver
+  // prisma/ddl/2026-08-24-product-imageurls-gin.sql.
+  //
+  // ⚠️ E É CRIADO COM `CONCURRENTLY`, ao contrário do índice da etapa 1. O build
+  // leva ~25 s, e `CREATE INDEX` comum toma ACCESS EXCLUSIVE, que bloqueia
+  // **até leitura** — 25 s de apagão em toda consulta que toque `Product`.
+  @@index([imageUrls], type: Gin)
 }
 
 model ProductCompatibility {

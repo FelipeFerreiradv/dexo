@@ -232,18 +232,23 @@ describe("índice composto de Product: o `where` e o índice casam", () => {
     expect(fonte).toContain("2026-08-24-product-userid-imageurl-idx.sql");
   });
 
-  it("a etapa 2 continua SEM índice e com a consulta na forma antiga", () => {
-    // A etapa 2 usa `= ANY(array)`, que não aproveita GIN — precisaria virar
-    // `@>`, ou seja mudança de código, com custo de escrita não medido na
-    // tabela mais escrita do sistema. As duas pontas precisam andar juntas:
-    // trocar a forma da consulta SEM criar o índice não adianta nada, e criar
-    // o índice SEM medir é o que a entrega se recusou a fazer.
+  it("a etapa 2 foi resolvida, e as duas pontas dela andam juntas", () => {
+    // ⚠️ ESTE TESTE JÁ AFIRMOU O CONTRÁRIO, e a troca é deliberada.
     //
-    // ⚠️ A asserção é sobre a linha EXECUTÁVEL, não sobre a prosa do
-    // comentário. A primeira versão deste teste casava a frase "NÃO foi
-    // medido" do cabeçalho do serviço — e aí reescrever o comentário, ou até
-    // só requebrar a linha no meio da frase, deixava o teste vermelho sem que
-    // nada funcional mudasse. Comentário se reescreve; código não.
+    // Enquanto o custo de escrita de um GIN na tabela mais escrita do sistema
+    // não tinha número, a entrega da etapa 1 se recusou a criar índice para a
+    // etapa 2 — e este teste travava isso, exigindo `@> ARRAY` AUSENTE e
+    // nenhum índice sobre `imageUrls`.
+    //
+    // A guarda funcionou: ela ficou vermelha no exato momento em que o índice
+    // da etapa 2 foi adicionado. Ela não foi silenciada — a premissa dela foi
+    // RESOLVIDA. O custo foi medido (num lote de 400 linhas que não toca o
+    // array: ~87 ms sem GIN, ~120 ms com GIN e `fastupdate=off`; em agregado
+    // menos de 1 s/dia contra 85,6 s/dia de ganho), e só então o índice entrou.
+    //
+    // O que este teste guarda agora é o acoplamento: o índice sem o `@>` é
+    // 244 MB de desperdício silencioso, porque `= ANY(coluna)` não é indexável
+    // por GIN. A guarda completa está em tests/image-bg-swap-gin.spec.ts.
     const executaveis = fs
       .readFileSync(SERVICO, "utf8")
       .split("\n")
@@ -252,11 +257,18 @@ describe("índice composto de Product: o `where` e o índice casam", () => {
         return !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
       });
 
+    // O `= ANY` continua: a mudança de predicado é não-restritiva.
     expect(executaveis.some((l) => l.includes('= ANY("imageUrls")'))).toBe(true);
-    expect(executaveis.some((l) => l.includes("@> ARRAY"))).toBe(false);
+    // E o `@>`, que é o que o GIN entende.
+    expect(executaveis.some((l) => l.includes('"imageUrls" @> ARRAY'))).toBe(
+      true,
+    );
 
+    // O índice existe no schema — e é GIN, não btree: btree comum sobre coluna
+    // de array não serve para containment.
     const indices = indicesDoModelProduct();
-    expect(indices.every((l) => !l.includes("imageUrls"))).toBe(true);
+    expect(indices).toContain("@@index([imageUrls], type: Gin)");
+    expect(indices).not.toContain("@@index([imageUrls])");
   });
 
   it("as três etapas seguem sendo disparadas, na mesma ordem", async () => {
