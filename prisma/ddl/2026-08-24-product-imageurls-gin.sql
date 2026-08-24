@@ -1,8 +1,66 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ÍNDICE GIN PARA A ETAPA 2 DA TROCA DE FOTO (recorte de fundo)
 --
--- ⚠️⚠️ ESTE ARQUIVO NÃO PODE RODAR DENTRO DE TRANSAÇÃO. Usa `CONCURRENTLY`,
--- que o Postgres proíbe em transação. Colar bloco a bloco no psql, sem BEGIN.
+-- ⛔⛔⛔ NÃO RODE ESTE ARQUIVO NO EDITOR SQL DO SUPABASE. ⛔⛔⛔
+--
+-- O editor do Supabase envolve TUDO o que você cola numa transação, e o
+-- Postgres proíbe `CREATE INDEX CONCURRENTLY` dentro de transação. O erro é:
+--
+--   ERROR: 25001: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+--
+-- Isso já aconteceu (24/08/2026). Não é problema deste arquivo nem do banco: é
+-- o editor. A tentativa aborta ANTES de criar qualquer coisa, então não deixa
+-- índice inválido para trás — conferido na ocasião.
+--
+-- ✅ O CAMINHO QUE FUNCIONA — psql, que roda em autocommit. Pela VPS, com
+-- HEREDOC (nada de `-c` com aspas aninhadas; ver a armadilha logo abaixo):
+--
+--   ssh vps-assuncao
+--   set -a; . /var/www/dexo/.env; set +a
+--   psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+--   DROP INDEX CONCURRENTLY IF EXISTS "Product_imageUrls_idx";
+--   CREATE INDEX CONCURRENTLY "Product_imageUrls_idx"
+--     ON "Product" USING gin ("imageUrls") WITH (fastupdate = off);
+--   SQL
+--
+-- ⚠️ `DATABASE_URL` NÃO serve no psql (carrega `?pgbouncer=true` e o psql
+-- aborta). Usar `DIRECT_URL`.
+--
+-- ⚠️ NÃO montar o comando com `-c "... '...' ..."`: as aspas aninhadas passam
+-- por DOIS shells (o local e o da VPS) e chegam quebradas. Aconteceu em
+-- 24/08/2026 — `SET lock_timeout=\x275s\x27` virou erro de sintaxe. Heredoc com
+-- delimitador entre aspas (`<<'SQL'`) não expande nada e é imune.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ⛔⛔ ARMADILHA: `IF NOT EXISTS` PULA UM ÍNDICE INVÁLIDO — PARA SEMPRE
+--
+-- `CREATE INDEX CONCURRENTLY` acontece em fases: primeiro cria a entrada no
+-- catálogo (inválida, não-pronta) e só depois constrói. Se for interrompido no
+-- meio, o **toco fica**: `indisvalid = f`, `indisready = f`.
+--
+-- E aí vem o problema: **`IF NOT EXISTS` vê o toco e diz "already exists,
+-- skipping"**. Repetir o comando NUNCA conserta — ele pula em silêncio,
+-- reporta `CREATE INDEX` como se tivesse funcionado, e o índice continua
+-- inútil. Foi exatamente isso que aconteceu em 24/08/2026: a mensagem foi
+--
+--   NOTICE:  relation "Product_imageUrls_idx" already exists, skipping
+--   CREATE INDEX
+--
+-- ...com o índice em 16 kB e inválido. Parece sucesso e não é.
+--
+-- ✅ RECEITA: sempre `DROP INDEX CONCURRENTLY IF EXISTS` ANTES do CREATE, e
+-- **conferir `indisvalid` depois** — nunca confiar no tag `CREATE INDEX`.
+--
+-- Enquanto está inválido E não-pronto, o toco é inofensivo: o planner o ignora
+-- e as escritas não o mantêm. Custa só o espaço. (Cuidado com o outro estado:
+-- `indisready = t` com `indisvalid = f` — aí ele É mantido pelas escritas e
+-- NÃO é usado pelas leituras: custo puro, ganho zero.)
+--
+-- ⚠️ SEM ALTERNATIVA PELO EDITOR. Tirar o `CONCURRENTLY` para fazer o comando
+-- caber lá é uma troca ruim: o build leva 24,69 s e `CREATE INDEX` comum toma
+-- ACCESS EXCLUSIVE, que bloqueia **até leitura** — 25 segundos de apagão em
+-- toda tela que mostre produto. Se por algum motivo não houver psql, isso só
+-- pode ser feito em janela de baixíssimo tráfego e com decisão consciente.
 --
 -- Fecha o último ponto em aberto do fluxo de troca de foto. As etapas 4 (#298)
 -- e 1 (#300) já foram; esta é a terceira e mais cara de todas as decisões,
@@ -147,14 +205,23 @@
 -- foi verificado linha a linha nos 366.343 produtos (zero divergências).
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- ⚠️ SEM BEGIN. Rodar como comando solto.
-SET lock_timeout = '5s';
+-- ⚠️ SEM BEGIN. Rodar como comandos soltos (psql em autocommit).
+--
+-- ⚠️ O DROP vem ANTES de propósito: sem ele, um toco inválido de uma tentativa
+-- interrompida faria o CREATE ... IF NOT EXISTS pular em silêncio. Se não
+-- houver toco, o DROP é no-op. Por isso o CREATE aqui NÃO usa IF NOT EXISTS —
+-- se o índice já existir e estiver bom, o DROP o teria removido; e um erro de
+-- "já existe" é preferível a um "pulei e você não viu".
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "Product_imageUrls_idx"
+DROP INDEX CONCURRENTLY IF EXISTS "Product_imageUrls_idx";
+
+CREATE INDEX CONCURRENTLY "Product_imageUrls_idx"
   ON "Product" USING gin ("imageUrls")
   WITH (fastupdate = off);
 
-RESET lock_timeout;
+-- ✅ APLICADO EM PRODUÇÃO em 24/08/2026: build de 26.055,7 ms, resultado
+-- indisvalid = t, indisready = t, gin, {fastupdate=off}, 244 MB. Índices da
+-- Product foram de 430 MB para 674 MB. Zero locks durante e depois.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- VERIFICAÇÃO — rodar DEPOIS. Linha de base tirada NA HORA, nunca constante.

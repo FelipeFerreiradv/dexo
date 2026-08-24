@@ -157,16 +157,36 @@ describe("índice GIN de imageUrls: o `@>` e o índice andam juntos", () => {
     expect(indices).not.toContain("@@index([imageUrls])");
   });
 
-  it("o DDL de produção usa CONCURRENTLY e fastupdate=off", () => {
+  it("o DDL de produção usa CONCURRENTLY, fastupdate=off e DROP antes", () => {
     const sql = comandos(DDL);
     expect(sql).toContain(`"${NOME_DO_INDICE}"`);
     expect(sql).toContain('USING gin ("imageUrls")');
+
     // O build leva ~25 s e ACCESS EXCLUSIVE bloqueia até LEITURA. Sem
     // CONCURRENTLY isso é apagão, não enfileiramento.
-    expect(sql).toContain("CREATE INDEX CONCURRENTLY IF NOT EXISTS");
+    expect(sql).toContain("CREATE INDEX CONCURRENTLY");
+
+    // ⚠️ O DROP ANTES DO CREATE NÃO É ZELO — É OBRIGATÓRIO, e custou uma
+    // tentativa perdida em produção para virar regra.
+    //
+    // `CREATE INDEX CONCURRENTLY` cria a entrada de catálogo ANTES de
+    // construir. Interrompido no meio, deixa um toco `indisvalid = f`. E aí
+    // `IF NOT EXISTS` vê o toco, diz "already exists, skipping", devolve o tag
+    // `CREATE INDEX` — e o índice segue inútil. Repetir NUNCA conserta.
+    //
+    // Por isso: DROP CONCURRENTLY IF EXISTS antes, e CREATE **sem**
+    // IF NOT EXISTS (um erro de "já existe" é melhor que um "pulei em
+    // silêncio").
+    expect(sql).toContain("DROP INDEX CONCURRENTLY IF EXISTS");
+    expect(sql.indexOf("DROP INDEX CONCURRENTLY")).toBeLessThan(
+      sql.indexOf("CREATE INDEX CONCURRENTLY"),
+    );
+    expect(sql).not.toContain("CREATE INDEX CONCURRENTLY IF NOT EXISTS");
+
     // Sem lista pendente: custo previsível em vez de pico numa transação
     // azarada.
     expect(sql).toMatch(/fastupdate\s*=\s*off/);
+
     // CONCURRENTLY não roda em transação — este arquivo não pode ter BEGIN.
     expect(sql).not.toMatch(/\bBEGIN\b/i);
   });
