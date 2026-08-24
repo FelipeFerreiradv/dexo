@@ -54,8 +54,8 @@
  * própria, e NÃO é pré-requisito do índice: sem índice, tirar as 918 linhas
  * não mudaria nada, porque o custo é ENCONTRAR as linhas, não devolvê-las.
  *
- * A ETAPA 1 FOI RESOLVIDA DEPOIS, e a etapa 2 NÃO. As duas pareciam o mesmo
- * problema; não são.
+ * AS ETAPAS 1 E 2 FORAM RESOLVIDAS DEPOIS, em entregas SEPARADAS. Elas
+ * pareciam o mesmo problema; não são — e é por isso que não vieram juntas.
  *
  * A etapa 1 é IGUALDADE PURA (`"imageUrl" = $4`), que é o caso canônico de
  * b-tree composto. Ganhou `@@index([userId, imageUrl])` — ver
@@ -82,10 +82,10 @@
  * desligada, cada escrita paga na hora. Dado que o total é ~1 s/dia, vale mais
  * a previsibilidade que a média.
  *
- * A etapa 3 continua sem índice e sem precisar: idêntica em forma, na tabela
- * pequena de sucatas, custa 0,05ms — 3,5 segundos no mês inteiro.
- *
- * A etapa 3 não tem o que otimizar: 3,5 segundos no mês inteiro.
+ * A ETAPA 3 continua sem índice e sem precisar dele: idêntica em forma à etapa
+ * 2, mas na tabela pequena de sucatas custa 0,05ms — 3,5 segundos no mês
+ * inteiro. É o controle que mostra que a FORMA da consulta nunca foi o
+ * problema: o que pesava era o tamanho do catálogo de produtos.
  */
 
 import { Prisma } from "@prisma/client";
