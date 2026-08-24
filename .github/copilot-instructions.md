@@ -96,8 +96,45 @@ npm run lint:prettier:fix  # Format code
 npx prisma migrate dev    # Apply migrations
 npx prisma generate       # Regenerate client
 npx prisma studio         # Visual DB browser (port 5555)
-npx prisma db push        # Push schema changes without migration
+
+# ⛔ NUNCA use `prisma db push` neste projeto — nem em produção, nem local.
+#    Ele sincroniza o banco com o schema e REMOVE o que não está lá.
 ```
+
+#### ⛔ Por que `prisma db push` é proibido aqui
+
+O banco tem **11 índices parciais** (com cláusula `WHERE`) que o Prisma **não
+consegue expressar** em `schema.prisma`. Como eles não estão no schema, um
+`db push` os apaga. **Sete são ÚNICOS** — ou seja, não são otimização, são
+regra de integridade:
+
+| índice | o que se perde |
+| --- | --- |
+| `NfeSequence_cfcId_ambiente_serie_modelo_key` | numeração de NF-e duplicada |
+| `NfeEmitida_cfcId_ambiente_serie_numero_modelo_key` | nota fiscal duplicada |
+| `NfeSequence_legacy_null_key` · `NfeEmitida_legacy_null_key` | idem, no recorte legado |
+| `Product_userId_skuNormalized_key` | SKU duplicado por tenant |
+| `BankAccount_userId_default_uq` | mais de uma conta bancária padrão |
+| `CompanyFiscalConfig_userId_default_key` | mais de um CNPJ padrão |
+
+E quatro não-únicos, cuja perda é lentidão silenciosa:
+`ProductListing_productId_imageUrlsOverride_idx` (a troca de foto volta de
+~7,6 ms para ~155 ms), `Product_userId_reservedStock_idx`,
+`Receivable_userId_settledAt_idx`, `Receivable_userId_cancelledAt_idx`.
+
+⚠️ **O modo de falha é silencioso.** Para vários deles o schema declara uma
+versão **não-única e sem predicado** — por exemplo, `Product` declara
+`@@index([userId, skuNormalized])`, que o Prisma recriaria como
+`Product_userId_skuNormalized_idx`. O banco fica com um índice de nome
+parecido no lugar da garantia de unicidade, e nada acusa erro.
+
+**Como aplicar mudança de banco, então:**
+
+1. Alteração que o Prisma expressa → `prisma/migrations/` + `npx prisma migrate deploy`.
+2. Índice parcial, único parcial ou qualquer DDL que o schema não expressa →
+   arquivo em `prisma/ddl/`, aplicado à mão. Ver
+   `prisma/ddl/PENDENTES-rodar-antes-do-deploy.sql`,
+   `docs/multi-cnpj-sql.md` e `docs/dedupe-sku-sql.md`.
 
 Schema at `/prisma/schema.prisma`. Central stock model: `Product.stock` is the source of truth.
 
