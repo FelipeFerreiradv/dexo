@@ -25,6 +25,11 @@ import { Input } from "@/components/ui/input";
 import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import {
+  availableForSale,
+  describeAvailability,
+  isStockReservationUiEnabled,
+} from "@/app/financeiro/lib/stock-reservation";
 
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
 
@@ -60,6 +65,8 @@ export interface ProductLookupResult {
   name: string;
   price: number;
   stock: number;
+  // BLOCO G — comprometido em venda PENDENTE. Ausente ⇒ tela igual à de hoje.
+  reservedStock?: number | null;
   // Sucata de origem (aditivo) — pré-preenche o vínculo do item cadastrado.
   scrapId?: string | null;
   scrapLabel?: string | null;
@@ -69,6 +76,9 @@ export interface ProductMeta {
   sku: string;
   name: string;
   stock: number;
+  // BLOCO G — viaja junto com o `stock` porque quem decide "excede?" é o
+  // DISPONÍVEL, e o aviso da quantidade lê daqui.
+  reservedStock?: number | null;
 }
 
 // Resultado da busca de sucata (GET /scraps?search=) — só o necessário p/ rótulo.
@@ -210,7 +220,12 @@ export function ProductPickerBlock({
 
     setProductMeta((m: Record<string, ProductMeta>) => ({
       ...m,
-      [p.id]: { sku: p.sku, name: p.name, stock: p.stock },
+      [p.id]: {
+        sku: p.sku,
+        name: p.name,
+        stock: p.stock,
+        reservedStock: p.reservedStock ?? null,
+      },
     }));
 
     // Registra o rótulo da sucata de origem do produto (o default da venda já
@@ -350,7 +365,13 @@ export function ProductPickerBlock({
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate font-medium">{opt.name}</span>
                       <span className="text-xs text-muted-foreground">
-                        SKU: {opt.sku} · Estoque: {opt.stock}
+                        SKU: {opt.sku} ·{" "}
+                        {/* BLOCO G — "1 em estoque · 1 reservada" em vez de
+                            "Estoque: 1". Flag de UI desligada ⇒ o texto sai
+                            byte-idêntico ao de sempre. */}
+                        {isStockReservationUiEnabled()
+                          ? describeAvailability(opt.stock, opt.reservedStock)
+                          : `Estoque: ${opt.stock}`}
                       </span>
                     </span>
                     <span className="whitespace-nowrap text-xs text-muted-foreground">
@@ -556,6 +577,7 @@ function ItemRow({
               value={Number(field.value ?? 1)}
               onChange={field.onChange}
               stock={meta?.stock}
+              reservedStock={meta?.reservedStock}
             />
           )}
         />
@@ -794,13 +816,45 @@ function QuantityInput({
   value,
   onChange,
   stock,
+  reservedStock,
 }: {
   value: number;
   onChange: (v: number) => void;
   stock: number | undefined;
+  reservedStock?: number | null;
 }) {
-  const overStock =
-    typeof stock === "number" && stock > 0 && value > stock;
+  // BLOCO G — o teto passa a ser o DISPONÍVEL: com 5 em estoque e 2 já
+  // comprometidas em outro fiado, vender 4 excede, e antes disto a tela dizia
+  // que estava tudo bem.
+  //
+  // Continua sendo AVISO, não trava: vender fiado em cima de fiado é decisão de
+  // negócio (pré-venda existe), e o oversell é medido depois pelo SystemLog.
+  // Flag desligada ⇒ `limite` é o próprio `stock` e a condição fica idêntica.
+  const comReserva = isStockReservationUiEnabled();
+  const limite =
+    comReserva && typeof stock === "number"
+      ? availableForSale(stock, reservedStock)
+      : stock;
+  const overStock = typeof limite === "number" && limite > 0 && value > limite;
+
+  // A peça EXISTE fisicamente mas está inteiramente comprometida em outra venda
+  // pendente. Sem este ramo o caso mais comum do balcão — peça única, já vendida
+  // fiado — passava MUDO: a condição de cima exige `limite > 0`, e aqui o limite
+  // é exatamente 0. O operador via "Estoque: 1" no seletor, digitava 1, e nada
+  // avisava que aquela peça já estava com outro cliente.
+  //
+  // Continua sendo AVISO. Vender fiado em cima de fiado é decisão de negócio
+  // (pré-venda, peça que volta), não de código — o submit não é bloqueado.
+  const semDisponivel =
+    comReserva &&
+    typeof stock === "number" &&
+    stock > 0 &&
+    limite === 0 &&
+    value > 0;
+
+  const alerta = overStock || semDisponivel;
+  const reservada = Number(reservedStock) || 0;
+
   return (
     <div className="relative">
       <Input
@@ -812,13 +866,15 @@ function QuantityInput({
           const v = parseInt(e.target.value, 10);
           onChange(Number.isFinite(v) && v > 0 ? v : 1);
         }}
-        className={cn("h-9", overStock && "border-amber-500")}
-        aria-invalid={overStock || undefined}
+        className={cn("h-9", alerta && "border-amber-500")}
+        aria-invalid={alerta || undefined}
       />
-      {overStock && (
+      {alerta && (
         <p className="mt-1 flex items-center gap-1 text-[10px] text-amber-600">
           <AlertTriangle className="size-3" />
-          Excede estoque ({stock})
+          {semDisponivel
+            ? `Sem disponível — ${reservada} em venda pendente`
+            : `Excede estoque (${limite})`}
         </p>
       )}
     </div>

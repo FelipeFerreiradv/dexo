@@ -205,6 +205,11 @@ export interface ProductLookup {
   name: string;
   price: number;
   stock: number;
+  // BLOCO G — quanto desta peça já está comprometido em venda PENDENTE.
+  // OPCIONAL de propósito: o módulo fiscal consome o mesmo contrato e não tem
+  // nada a ver com reserva, e um campo obrigatório forçaria toda projeção a
+  // carregá-lo. Ausente ⇒ o seletor mostra o estoque cru, como sempre mostrou.
+  reservedStock?: number | null;
   // Sucata de origem do produto (aditivo). Usado pelo financeiro (venda
   // balcão) para pré-preencher o vínculo de sucata do item. O módulo fiscal
   // ignora estes campos.
