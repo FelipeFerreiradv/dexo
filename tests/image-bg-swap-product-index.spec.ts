@@ -271,9 +271,16 @@ describe("índice composto de Product: o `where` e o índice casam", () => {
     expect(indices).not.toContain("@@index([imageUrls])");
   });
 
-  it("as três etapas seguem sendo disparadas, na mesma ordem", async () => {
+  it("as quatro etapas seguem sendo disparadas, uma vez cada", async () => {
     // Controle de não-regressão: o índice é aditivo e não pode ter mexido no
     // que o swap faz.
+    //
+    // ⚠️ O título dizia "na mesma ordem" e não havia asserção de ordem por
+    // trás — a revisão adversarial provou com mutantes que sobreviveram.
+    // Corrigido o título, não a asserção: as quatro etapas são independentes e
+    // idempotentes, então a ordem não é requisito e travá-la congelaria um
+    // detalhe de implementação. Ver a nota completa em
+    // tests/image-bg-swap-gin.spec.ts.
     const db = makeDb();
     const contas = await swapImageUrlReferences({
       userId: "u1",

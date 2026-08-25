@@ -208,8 +208,22 @@ describe("índice GIN de imageUrls: o `@>` e o índice andam juntos", () => {
     expect(fonte).toContain("2026-08-24-product-imageurls-gin.sql");
   });
 
-  it("as três etapas seguem sendo disparadas, na mesma ordem", async () => {
+  it("as quatro etapas seguem sendo disparadas, uma vez cada", async () => {
     // Controle de não-regressão: o que o swap FAZ não pode ter mudado.
+    //
+    // ⚠️ ESTE TESTE JÁ SE CHAMOU "na mesma ordem", E O TÍTULO MENTIA. A revisão
+    // adversarial provou com dois mutantes que SOBREVIVERAM: inverter as
+    // etapas de Product e Scrap, e mover a busca de overrides para o começo.
+    // Nenhum dos dois deixava o teste vermelho, porque as asserções só olham
+    // CONTAGEM em três mocks diferentes — nada compara a sequência.
+    //
+    // A correção foi o título, não a asserção, e isso é deliberado: as quatro
+    // etapas são INDEPENDENTES (tabelas/colunas distintas) e IDEMPOTENTES (o
+    // WHERE é pela URL antiga). A ordem não é requisito, e travá-la aqui
+    // congelaria um detalhe de implementação que ninguém precisa manter.
+    //
+    // O que este teste guarda de fato — e prova por mutação — é que nenhuma
+    // etapa SOME, nenhuma é DUPLICADA, e as contas voltam certas.
     const db = makeDb();
     const contas = await swapImageUrlReferences({
       userId: "u1",

@@ -222,6 +222,80 @@ CREATE INDEX CONCURRENTLY "Product_imageUrls_idx"
 -- ✅ APLICADO EM PRODUÇÃO em 24/08/2026: build de 26.055,7 ms, resultado
 -- indisvalid = t, indisready = t, gin, {fastupdate=off}, 244 MB. Índices da
 -- Product foram de 430 MB para 674 MB. Zero locks durante e depois.
+--
+-- ✅ E O PLANO GENÉRICO TAMBÉM USA O ÍNDICE — conferido, não suposto.
+--
+-- A dúvida é legítima: a medição de laboratório usou LITERAIS, e o Prisma
+-- manda PARÂMETROS. Com parâmetro, o planner pode cair no plano genérico, que
+-- usa seletividade padrão para `@>` em vez da constante real — e aí poderia
+-- escolher outro caminho.
+--
+-- Testado contra o índice REAL, com PREPARE e sete execuções (a partir da
+-- sexta o Postgres já cogita o genérico), e depois com
+-- `SET plan_cache_mode = force_generic_plan`:
+--
+--   Bitmap Heap Scan on "Product"
+--     Recheck Cond: (("imageUrls" @> ARRAY[$1]) AND ("userId" = $3))
+--     Filter: ($1 = ANY ("imageUrls"))
+--     ->  BitmapAnd
+--           ->  Bitmap Index Scan on "Product_imageUrls_idx"
+--                 Index Cond: ("imageUrls" @> ARRAY[$1])
+--           ->  Bitmap Index Scan on "Product_userId_partNumberNormalized_idx"
+--                 Index Cond: ("userId" = $3)     <- never executed
+--
+--   Buffers: shared hit=5   ·   Execution Time: 0,102 ms
+--
+-- Mesma forma do plano com literal, mesmas 5 páginas. O ramo do userId nem
+-- chega a executar, porque o GIN já devolveu zero.
+--
+-- ✅ TETO DE CHAVE DO GIN: 14× DE FOLGA — medido, não presumido.
+--
+-- O GIN tem limite por ITEM indexado (~1/3 da página de 8 kB, ~2.700 bytes), e
+-- não existe validação de comprimento em nenhum caminho de escrita de
+-- `imageUrls`. Medido em produção:
+--
+--   SELECT max(octet_length(u)), avg(octet_length(u)), count(*)
+--     FROM "Product", unnest("imageUrls") AS u;
+--   -> maior 191 bytes · média 75,6 · 1.823.343 elementos
+--
+-- 191 contra ~2.700 é folga de 14×. (Em `Scrap`, o maior tem 113 bytes.) A
+-- mesma classe de exposição já existe desde a #300, cuja chave de btree impõe
+-- teto parecido sobre `imageUrl`, vindo da mesma fonte de URL. E a falha aqui
+-- seria ALTA E IMEDIATA no INSERT, nunca silenciosa.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- MARCO PRÉ-DEPLOY DO CÓDIGO — usar ESTE como linha de base do delta de campo
+--
+-- Tirado com o índice JÁ criado e o código com `@>` AINDA NÃO deployado, que é
+-- exatamente o estado em que o ganho ainda não começou:
+--
+--   momento ......... 2026-08-25 00:15:03.743479+00
+--   calls ........... 77.118
+--   ms_total ........ 2.236.568,8   (média acumulada 29,002 ms)
+--   blks ............ 588.435.825
+--   linhas .......... 15.118
+--   idx_scan ........ 7            (só as verificações manuais)
+--   reset_global .... 2026-07-24 02:03:59.548659+00
+--
+-- ⚠️ Antes de calcular qualquer delta, conferir que `calls` de agora é >= 77.118
+-- e que `stats_reset` não mudou. Reset silencioso faz o delta ficar NEGATIVO e
+-- parecer melhora.
+--
+-- ⚠️ O SINAL DE QUE FUNCIONOU é `idx_scan` subir ~1:1 com `calls`. Se `calls`
+-- subir e `idx_scan` ficar parado, o `@>` sumiu do código e o índice virou
+-- 244 MB de enfeite.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+-- ⚠️ NÃO MEDIDO: o custo do GIN numa IMPORTAÇÃO EM MASSA
+--
+-- A medição de escrita usou lotes de 400 UPDATEs que não tocam o array. O caso
+-- mais pesado que este índice vai encontrar é outro: `createMany` de dezenas de
+-- milhares de produtos com galeria cheia, que é rotina neste projeto.
+--
+-- Derivando do que foi medido (~0,083 ms por linha), uma importação de 30.000
+-- produtos pagaria ~2,5 s a mais no total. É uma DERIVAÇÃO de uma medição de
+-- UPDATE, não uma medição de INSERT — fica registrado como tal, e não como
+-- número aferido.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- VERIFICAÇÃO — rodar DEPOIS. Linha de base tirada NA HORA, nunca constante.

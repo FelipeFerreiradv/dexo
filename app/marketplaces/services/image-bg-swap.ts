@@ -20,7 +20,14 @@
  * que nada mais referencia a URL antiga é no-op — é o que permite as
  * varreduras extras (+2min/+10min) cobrirem a corrida save-vs-complete.
  *
- * ── CUSTO MEDIDO EM PRODUÇÃO (pg_stat_statements, janela de 28,69 dias) ────
+ * ── CUSTO MEDIDO EM PRODUÇÃO ────────────────────────────────────────────────
+ *
+ * ⚠️ A TABELA ABAIXO É A FOTOGRAFIA DO DIAGNÓSTICO ORIGINAL (21/08/2026,
+ * janela de 28,69 dias, 68.211 chamadas). Os números das seções seguintes são
+ * de leituras POSTERIORES (24/08, 26 dias, 77.031 chamadas) e por isso não
+ * batem dígito a dígito com ela. Não é contradição: `pg_stat_statements`
+ * acumula, e cada seção diz de quando é. Onde os dois aparecem, vale o mais
+ * recente.
  *
  * Este é o caminho mais caro do banco inteiro. As quatro etapas rodam sempre
  * juntas — as 68.211 chamadas idênticas confirmam isso — e o total passa de
