@@ -36,6 +36,53 @@ export function isStockReservationEnabled(
   return env.STOCK_RESERVATION_ENABLED === "1";
 }
 
+/**
+ * Flag da PROPAGAÇÃO — sub-flag de `STOCK_RESERVATION_ENABLED`.
+ *
+ * Separada de propósito, e não é preciosismo: são dois riscos diferentes.
+ * `STOCK_RESERVATION_ENABLED` só grava uma coluna; esta aqui faz o número SAIR
+ * para o marketplace, e num tenant com 20 mil anúncios ativos isso é a única
+ * parte que o operador vê acontecer sozinha. Com as duas separadas a ativação
+ * é em dois passos — liga a reserva, confere a coluna se preencher, e só então
+ * deixa o número viajar — e o rollback do efeito visível não obriga a desligar
+ * a medição junto.
+ *
+ * Ausente ⇒ o recompute faz exatamente o que faz hoje: grava a coluna e para.
+ * Nenhuma consulta nova, nenhum job, nenhuma chamada de marketplace.
+ */
+export function isStockReservationSyncEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.STOCK_RESERVATION_SYNC_ENABLED === "1";
+}
+
+/**
+ * Flag do DESTRAVAMENTO da venda parcelada PENDENTE.
+ *
+ * O BURACO QUE ELA FECHA: uma venda parcelada que nunca foi recebida não tem
+ * saída nenhuma hoje. O `DELETE` a recusa porque ela tem parcelas filhas
+ * (finance.usecase.ts:1038-1045, "Use Estornar") e o `reverse` a recusa porque
+ * ela não está PAGA (:1111-1115). O operador fica sem caminho, e com a reserva
+ * ligada a peça fica COMPROMETIDA PARA SEMPRE — o pior modo de falha possível,
+ * porque some do disponível sem ninguém conseguir desfazer.
+ *
+ * Por que apagar é seguro AQUI e não no caso geral: numa venda que nunca foi
+ * recebida o estoque NUNCA baixou (a baixa só acontece em `markPaid`) e nenhum
+ * dinheiro entrou. Não há o que devolver — é por isso que o caminho é o DELETE,
+ * o mesmo que já resolve a venda fiado simples, e não o `reverse`, que
+ * RESTAURARIA estoque que nunca saiu e inflaria o catálogo.
+ *
+ * A guarda que fica: se QUALQUER parcela já foi paga, dinheiro entrou e o
+ * bloqueio continua valendo.
+ *
+ * Ausente ⇒ o `delete` recusa exatamente como hoje.
+ */
+export function isInstallmentPendingDeleteEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.INSTALLMENT_PENDING_DELETE_ENABLED === "1";
+}
+
 // Referência literal a process.env.NEXT_PUBLIC_* para o Next inlinar.
 const RESERVATION_UI_ENABLED =
   process.env.NEXT_PUBLIC_STOCK_RESERVATION_ENABLED === "true";

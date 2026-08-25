@@ -1,15 +1,19 @@
 import prisma from "../../lib/prisma";
-import { isStockReservationEnabled } from "../../financeiro/lib/stock-reservation";
+import {
+  availableForSale,
+  isStockReservationEnabled,
+  isStockReservationSyncEnabled,
+} from "../../financeiro/lib/stock-reservation";
 
-// BLOCO G — mantém `Product.reservedStock`.
+// BLOCO G — mantém `Product.reservedStock` E leva a mudança até o anúncio.
 //
 // ⭐ A DECISÃO DE DESENHO QUE IMPORTA: RECALCULAR, NÃO ACUMULAR.
 //
 // O caminho óbvio seria somar no create e subtrair no markPaid/reverse/delete.
 // Ele tem uma classe de bug embutida: basta UM caminho esquecer de subtrair e
-// a peça fica reservada para sempre, sem ninguém saber por quê. Com 65 vendas
-// pendentes e a mais antiga aberta há 51 dias, uma reserva órfã não seria
-// percebida — ela só apareceria como "peça que sumiu do estoque disponível".
+// a peça fica reservada para sempre, sem ninguém saber por quê. Uma reserva
+// órfã não seria percebida — ela só apareceria como "peça que sumiu do estoque
+// disponível", semanas depois.
 //
 // Aqui o valor é RECALCULADO a partir da fonte da verdade (as linhas de venda
 // em aberto) para os produtos tocados. Consequências:
@@ -20,13 +24,82 @@ import { isStockReservationEnabled } from "../../financeiro/lib/stock-reservatio
 //
 // O custo é um `groupBy` por escrita de venda. Uma venda tem poucos itens, e
 // isso acontece no fluxo do balcão — não numa importação de 13 mil peças.
+// (Medido em 25/08: `ReceivableItem` tem 359 linhas em TODA a produção.)
+//
+// ── A PROPAGAÇÃO (o que faltava) ──
+//
+// Até 25/08 esta função terminava no `updateMany` e mais nada: não enfileirava
+// `StockSyncJob`, não disparava o retry, não pausava anúncio. O número existia
+// na tabela e nunca saía dela. E a rede de segurança não pegava: o
+// `StockReconciliationService` só varre produtos com `StockLog` na última hora
+// (stock-reconciliation.service.ts:37-42), e a reserva NÃO gera `StockLog` —
+// por desenho, já que `stock` não muda. Ou seja, "o anúncio reflete no próximo
+// sync" era, na prática, NUNCA.
+//
+// Era exatamente o sintoma relatado: peça vendida fiado sai com o cliente e o
+// anúncio continua no ar.
+//
+// O que se enfileira é o espelho do caminho da baixa real
+// (stock-deduction.service.ts:174-207): listings do produto → advisory lock por
+// listing → upsert em (listingId, "PENDING"). Nada mais é preciso, porque o
+// consumidor RELÊ o produto e aplica a sombra (stock-sync-retry.service.ts:148
+// → sync.usercase.ts:3408-3426), e cada plataforma já sabe o que fazer quando o
+// disponível chega a zero: ML pausa, Facebook marca out-of-stock, OLX
+// despublica, Shopee e Magalu mandam quantidade 0.
+//
+// ⭐ É POR ISSO QUE A PROPAGAÇÃO NÃO CHAMA `pauseListings`. Ela não precisa — e
+// não precisar é o que a mantém livre de `userId`, porque `StockSyncJob` não
+// tem coluna de tenant. `pauseListings` só entra na REABERTURA, e lá o `userId`
+// vem do próprio produto (ver `firePostReservationEffects`).
 
 /** Status em que a venda SEGURA a peça. Espelha `reservesStock` do módulo puro. */
 const STATUS_QUE_RESERVAM = ["PENDENTE", "VENCIDA"] as const;
 
 /**
+ * Quanto o job da reserva espera antes de poder rodar.
+ *
+ * NÃO é folga arbitrária — é o que impede uma regressão concreta. Toda venda do
+ * PDV nasce PENDENTE, inclusive a À VISTA: o dialog salva com
+ * `POST /finance/receivables` e o cliente encadeia `POST /:id/pay`
+ * (pdv-view.tsx:389). Sem o atraso, cada venda de balcão tocaria o marketplace
+ * DUAS vezes — uma pela reserva, outra milissegundos depois pela baixa real.
+ *
+ * Pior que o desperdício: a segunda passada encontraria o anúncio ML já
+ * `paused` com `available_quantity` ainda em 1 (a pausa por estoque zero NÃO
+ * zera a quantidade remota) e cairia no ramo `ml_paused_with_remote_qty`
+ * (sync.usercase.ts:3664-3679), acendendo "RISCO DE OVERSELL" em toda venda
+ * paga. Alerta falso em massa é pior que alerta nenhum: ensina o operador a
+ * ignorar o canal.
+ *
+ * Com o atraso, o upsert em (listingId, "PENDING") faz os dois eventos caírem
+ * na MESMA linha e o marketplace é tocado UMA vez, já com o estado final.
+ */
+const RESERVATION_SYNC_DELAY_MS = 5_000;
+
+/** O que o recálculo mudou, e o que o chamador precisa disparar pós-commit. */
+export interface ReservationPropagation {
+  /** Produtos cujo DISPONÍVEL mudou. Produto sem mudança não entra. */
+  changed: Array<{ productId: string; before: number; after: number }>;
+  /**
+   * Produtos cujo disponível SUBIU DE ZERO — o anúncio precisa voltar ao ar.
+   *
+   * Gatilho próprio, e não o `reopenOnRefill` que já existe: aquele dispara em
+   * `previousStock === 0 && newStock > 0` (stock-deduction.service.ts:425-427),
+   * condição que a reserva NUNCA produz, porque `stock` não muda. A liberação
+   * só é visível comparando o DISPONÍVEL antes e depois.
+   */
+  reopened: Array<{ productId: string; userId: string }>;
+  /** Quantos `StockSyncJob` foram enfileirados (0 ⇒ nada a disparar). */
+  enqueued: number;
+}
+
+function nadaAPropagar(): ReservationPropagation {
+  return { changed: [], reopened: [], enqueued: 0 };
+}
+
+/**
  * Recalcula `reservedStock` dos produtos informados, DENTRO da transação do
- * chamador.
+ * chamador, e enfileira a propagação para os anúncios afetados.
  *
  * Roda depois da escrita que mudou a venda — é por isso que lê o estado já
  * atualizado. Fora da transação, uma venda criada e recebida em sequência
@@ -34,14 +107,39 @@ const STATUS_QUE_RESERVAM = ["PENDENTE", "VENCIDA"] as const;
  *
  * Flag ausente ⇒ NADA acontece e nenhuma consulta é feita: a coluna pode não
  * existir no banco ainda.
+ *
+ * O retorno é ADITIVO: quem ignora continua funcionando exatamente como antes.
  */
 export async function recomputeReservedStockWithinTx(
   tx: any,
   productIds: Array<string | null | undefined>,
-): Promise<void> {
-  if (!isStockReservationEnabled()) return;
+): Promise<ReservationPropagation> {
+  if (!isStockReservationEnabled()) return nadaAPropagar();
   const ids = Array.from(new Set(productIds.filter((p): p is string => !!p)));
-  if (ids.length === 0) return;
+  if (ids.length === 0) return nadaAPropagar();
+
+  // Sub-flag DESLIGADA ⇒ nem esta leitura acontece. O caminho fica com
+  // exatamente as mesmas consultas de antes desta entrega: o groupBy e os
+  // updateMany, nada mais.
+  const propagar = isStockReservationSyncEnabled();
+
+  // O estado ANTES da escrita. Precisa vir daqui e não de um parâmetro: o
+  // chamador conhece os ITENS da venda, não o estoque das peças — e no
+  // `markPaid` o `stock` já foi decrementado pelo `deductWithinTx`
+  // (finance.usecase.ts:773, antes daqui em :813). Ler o valor corrente é o que
+  // faz o recebimento sair como "disponível não mudou" em vez de "liberou".
+  const antes = propagar
+    ? ((await tx.product.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, userId: true, stock: true, reservedStock: true },
+      })) as Array<{
+        id: string;
+        userId: string;
+        stock: number;
+        reservedStock: number | null;
+      }>)
+    : [];
+  const estadoAntes = new Map(antes.map((p) => [p.id, p]));
 
   // A verdade: quanto cada peça está comprometida em vendas AINDA ABERTAS.
   const somas = await tx.receivableItem.groupBy({
@@ -73,6 +171,162 @@ export async function recomputeReservedStockWithinTx(
       data: { reservedStock: valor },
     });
   }
+
+  if (!propagar) return nadaAPropagar();
+
+  // Só o que MUDOU de disponível vira trabalho. Um recompute que chega ao mesmo
+  // número — o caso mais comum, porque o `markPaid` baixa `stock` e zera a
+  // reserva na mesma transação — não pode gerar chamada nenhuma. É esta linha
+  // que garante que RECEBER a venda não faz o anúncio piscar de volta ao ar.
+  const changed: ReservationPropagation["changed"] = [];
+  const reopened: ReservationPropagation["reopened"] = [];
+  for (const id of ids) {
+    const p = estadoAntes.get(id);
+    if (!p) continue; // produto apagado entre a leitura e agora
+    const before = availableForSale(p.stock, p.reservedStock);
+    const after = availableForSale(p.stock, porProduto.get(id) ?? 0);
+    if (before === after) continue;
+    changed.push({ productId: id, before, after });
+    if (before === 0 && after > 0) {
+      reopened.push({ productId: id, userId: p.userId });
+    }
+  }
+
+  if (changed.length === 0) return nadaAPropagar();
+
+  let enqueued = 0;
+  const nextRunAt = new Date(Date.now() + RESERVATION_SYNC_DELAY_MS);
+
+  for (const c of changed) {
+    const listings = await tx.productListing.findMany({
+      where: { productId: c.productId },
+      include: { marketplaceAccount: { select: { platform: true } } },
+    });
+
+    for (const listing of listings) {
+      // Serializa com StockReconciliationService e StockDeductionService pelo
+      // mesmo listing para evitar P2002 no upsert não-atômico do Prisma: os
+      // três lados pegam o mesmo advisory lock antes de SELECT/INSERT.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + listing.id}))`;
+
+      await tx.stockSyncJob.upsert({
+        where: {
+          listingId_status: { listingId: listing.id, status: "PENDING" },
+        },
+        create: {
+          productId: c.productId,
+          listingId: listing.id,
+          platform: listing.marketplaceAccount.platform,
+          // O DISPONÍVEL, como o reconciliador grava
+          // (stock-reconciliation.service.ts:117). Hoje a coluna é write-only —
+          // o consumidor relê o produto —, mas gravar o número errado seria uma
+          // mina para o primeiro leitor que ela vier a ter.
+          targetStock: c.after,
+          status: "PENDING",
+          nextRunAt,
+        },
+        update: {
+          // ⚠️ SÓ `targetStock`, como faz o reconciliador (:148-150).
+          //
+          // Mexer em `nextRunAt` aqui seria uma REGRESSÃO silenciosa e cara: no
+          // `markPaid` o `deductWithinTx` acabou de enfileirar este mesmo job
+          // com `nextRunAt: new Date()` (stock-deduction.service.ts:201-205), e
+          // sobrescrevê-lo com "daqui a 5s" ATRASARIA a baixa real por causa de
+          // um recálculo de reserva que nem mudou nada.
+          //
+          // Não resetar `attempts`/`lastError` é deliberado pelo mesmo motivo do
+          // reconciliador: um job que vinha falhando não pode ser "curado" por
+          // uma reserva. O preço é que uma reserva nova sobre um job em backoff
+          // longo espera o backoff — raro (21 jobs pendentes em toda a produção
+          // em 25/08) e preferível a mascarar falha.
+          targetStock: c.after,
+        },
+      });
+      enqueued++;
+    }
+  }
+
+  return { changed, reopened, enqueued };
+}
+
+/**
+ * Efeitos pós-commit da propagação. Espelho de
+ * `StockDeductionService.firePostEffects`, com duas diferenças que importam.
+ *
+ * 1. `setTimeout` e não `setImmediate`. O job nasce com `nextRunAt = +5s` e a
+ *    query do retry filtra por `nextRunAt <= now`
+ *    (stock-sync-retry.service.ts:124-131): um `runOnce()` imediato não veria o
+ *    próprio job que acabou de ser criado, e a peça só sairia do disponível no
+ *    tick de 30s. O timer é `unref`ado para nunca segurar o processo (nem a
+ *    suíte de testes).
+ *
+ * 2. Empurrar estoque e reabrir acontecem em SEQUÊNCIA, no mesmo timer. No ML a
+ *    reabertura exige `pauseListings("active")`: quando o anúncio foi pausado
+ *    por disponível zero, o sync fez `updateItem({status:"paused"})`
+ *    (sync.usercase.ts:3697-3703) e NÃO zerou a quantidade remota, então um
+ *    `updateItemStock` posterior não o traz de volta ao ar.
+ *
+ * NUNCA lança: a venda já commitou, e nada aqui pode desfazê-la.
+ */
+export function firePostReservationEffects(
+  resultado: ReservationPropagation | null | undefined,
+  logPrefix = "[StockReservation]",
+): void {
+  const r = resultado;
+  if (!r || r.enqueued === 0) return;
+
+  const timer = setTimeout(() => {
+    void (async () => {
+      try {
+        const { StockSyncRetryService } =
+          await import("./stock-sync-retry.service");
+        await StockSyncRetryService.runOnce();
+      } catch (err) {
+        console.error(
+          `${logPrefix} Falha ao disparar StockSyncRetryService.runOnce (ignorado):`,
+          err,
+        );
+      }
+
+      if (r.reopened.length === 0) return;
+
+      try {
+        const { ProductUseCase } =
+          await import("@/app/usecases/product.usercase");
+        const uc = new ProductUseCase();
+        for (const p of r.reopened) {
+          try {
+            // `userId` vem do PRÓPRIO produto, e não do `dataOwnerId` da
+            // requisição. `pauseListings` valida posse com
+            // `productRepository.findById(productId, userId)`
+            // (product.usercase.ts:609), que compara contra `Product.userId`
+            // — então ler do produto é auto-consistente por construção.
+            //
+            // Não é teoria: 1.009 produtos em produção (25/08) têm
+            // `Product.userId` apontando para um COLABORADOR (usuário com
+            // `parentUserId`). Neles, passar o dataOwnerId da rota faria o
+            // `findById` não achar o produto e a reabertura falhar em
+            // silêncio.
+            await uc.pauseListings(p.productId, p.userId, "active");
+          } catch (err) {
+            console.error(
+              `${logPrefix} Falha ao reabrir anuncios do produto ${p.productId} (best-effort):`,
+              err,
+            );
+          }
+        }
+      } catch (err) {
+        console.error(
+          `${logPrefix} Falha ao importar ProductUseCase para reabrir anuncios:`,
+          err,
+        );
+      }
+    })();
+  }, RESERVATION_SYNC_DELAY_MS + 500);
+
+  // Não segura o event loop: em processo de longa duração é indiferente, mas na
+  // suíte de testes um timer pendente atrasaria o encerramento do worker.
+  timer.unref?.();
 }
 
 /**
@@ -91,7 +345,20 @@ export function recomputeReservedStock(
   const ids = productIds.filter((p): p is string => !!p);
   if (ids.length === 0) return;
   setImmediate(() => {
-    void recomputeReservedStockWithinTx(prisma as any, ids).catch((err) =>
+    void (async () => {
+      // Com a propagação ligada há advisory lock e upsert de job em jogo, e
+      // `pg_advisory_xact_lock` fora de transação é liberado no fim do próprio
+      // statement — ou seja, não protege nada. Abrir a transação aqui é o que
+      // torna o lock real. Sem a sub-flag, o caminho fica idêntico ao de antes
+      // desta entrega: `prisma` cru, sem transação nova.
+      const r = isStockReservationSyncEnabled()
+        ? await prisma.$transaction(
+            (tx) => recomputeReservedStockWithinTx(tx as any, ids),
+            { timeout: 60_000, maxWait: 20_000 },
+          )
+        : await recomputeReservedStockWithinTx(prisma as any, ids);
+      firePostReservationEffects(r, logPrefix);
+    })().catch((err) =>
       console.error(
         `${logPrefix} Falha ao recalcular estoque reservado (ignorado):`,
         err,
