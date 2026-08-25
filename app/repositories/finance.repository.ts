@@ -1,6 +1,9 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
-import { recomputeReservedStockWithinTx } from "../marketplaces/services/stock-reservation.service";
+import {
+  recomputeReservedStockWithinTx,
+  type ReservationPropagation,
+} from "../marketplaces/services/stock-reservation.service";
 import {
   FinanceEntry,
   FinanceEntryCreate,
@@ -227,11 +230,33 @@ function buildInclude(kind: FinanceKind, withItems: boolean): any {
   return include;
 }
 
+/**
+ * BLOCO G — coletor da propagação da reserva.
+ *
+ * O recálculo acontece DENTRO da transação, mas os efeitos que ele gera (rodar
+ * o sync, reabrir anúncio) só podem sair DEPOIS do commit — senão um rollback
+ * deixaria anúncio reaberto para uma liberação que não existiu.
+ *
+ * O repositório não pode disparar sozinho: ele às vezes abre a própria
+ * transação e às vezes reusa a do chamador (quick-create), então "aqui é
+ * pós-commit" não é uma pergunta que ele saiba responder. Quem sabe é o
+ * usecase, e é para lá que o resultado sobe.
+ *
+ * Coletor explícito, e não um buffer de módulo: com duas requisições
+ * simultâneas um buffer compartilhado entregaria ao usecase o resultado da
+ * transação do vizinho — e se a do vizinho tivesse sofrido rollback, o efeito
+ * disparado seria sobre um estado que nunca existiu.
+ *
+ * Ausente ⇒ nada é coletado e o comportamento é o de antes desta entrega.
+ */
+export type ReservationSink = (r: ReservationPropagation) => void;
+
 export class FinanceRepository {
   async create(
     kind: FinanceKind,
     data: FinanceEntryCreate,
     tx?: Prisma.TransactionClient,
+    sink?: ReservationSink,
   ): Promise<FinanceEntry> {
     const wantsItems =
       kind === "receivable" && Array.isArray(data.items) && data.items.length > 0;
@@ -249,9 +274,9 @@ export class FinanceRepository {
       data.installmentPlan.installments.length > 0;
 
     if (wantsSplit) {
-      if (tx) return this.createWithSplit(data, tx);
+      if (tx) return this.createWithSplit(data, tx, sink);
       return prisma.$transaction((txClient) =>
-        this.createWithSplit(data, txClient),
+        this.createWithSplit(data, txClient, sink),
       );
     }
 
@@ -265,10 +290,10 @@ export class FinanceRepository {
     // ReceivablePayment na MESMA transação). Se o caller já abriu tx (ex.:
     // quick-create), reusa.
     if (tx) {
-      return this.createWithItems(kind, data, tx);
+      return this.createWithItems(kind, data, tx, sink);
     }
     return prisma.$transaction((txClient) =>
-      this.createWithItems(kind, data, txClient),
+      this.createWithItems(kind, data, txClient, sink),
     );
   }
 
@@ -326,6 +351,7 @@ export class FinanceRepository {
     kind: FinanceKind,
     data: FinanceEntryCreate,
     tx: Prisma.TransactionClient,
+    sink?: ReservationSink,
   ): Promise<FinanceEntry> {
     if (kind !== "receivable") {
       // Defesa-em-profundidade — o usecase já bloqueia este caminho.
@@ -408,9 +434,14 @@ export class FinanceRepository {
 
     // BLOCO G — a venda nasce PENDENTE e COMPROMETE as peças. Dentro da MESMA
     // transação: se o create falhar, nada fica reservado.
-    await recomputeReservedStockWithinTx(
-      tx,
-      (data.items ?? []).map((i) => i.productId),
+    //
+    // O retorno leva ao usecase o que precisa ser empurrado ao marketplace
+    // DEPOIS do commit — é o elo que faltava para a peça sair do disponível.
+    sink?.(
+      await recomputeReservedStockWithinTx(
+        tx,
+        (data.items ?? []).map((i) => i.productId),
+      ),
     );
 
     const full = await (tx as any).receivable.findUnique({
@@ -436,14 +467,21 @@ export class FinanceRepository {
   private async createWithSplit(
     data: FinanceEntryCreate,
     tx: Prisma.TransactionClient,
+    sink?: ReservationSink,
   ): Promise<FinanceEntry> {
     const plan = data.installmentPlan!;
 
     // Mãe: mesmo caminho de sempre, só com o valor da entrada.
+    //
+    // BLOCO G — o `sink` vai SÓ aqui, e é o que garante que a reserva siga a
+    // mãe: as parcelas filhas são criadas logo abaixo por `createMany`, sem
+    // itens, então não há peça a comprometer nelas. Uma reserva por parcela
+    // seguraria a mesma peça N vezes.
     const mae = await this.createWithItems(
       "receivable",
       { ...data, totalAmount: plan.downPayment, installments: 1 },
       tx,
+      sink,
     );
 
     const total = plan.installments.length;
@@ -512,6 +550,7 @@ export class FinanceRepository {
     data: FinanceEntryUpdate,
     tx?: Prisma.TransactionClient,
     guard?: StatusGuard,
+    sink?: ReservationSink,
   ): Promise<FinanceEntry> {
     // `items` no payload significa "substituir lista de itens" (replace
     // strategy). Ausência (undefined) preserva itens existentes — fluxo atual
@@ -530,10 +569,10 @@ export class FinanceRepository {
       );
     }
     if (tx) {
-      return this.updateWithItems(kind, id, userId, data, tx);
+      return this.updateWithItems(kind, id, userId, data, tx, sink);
     }
     return prisma.$transaction((txClient) =>
-      this.updateWithItems(kind, id, userId, data, txClient),
+      this.updateWithItems(kind, id, userId, data, txClient, sink),
     );
   }
 
@@ -591,6 +630,7 @@ export class FinanceRepository {
     userId: string,
     data: FinanceEntryUpdate,
     tx: Prisma.TransactionClient,
+    sink?: ReservationSink,
   ): Promise<FinanceEntry> {
     const hasItemsField = "items" in data && data.items !== undefined;
     const hasPaymentsField = "payments" in data && data.payments !== undefined;
@@ -698,10 +738,15 @@ export class FinanceRepository {
     // precisa ser liberado, e olhar só os novos deixaria a peça removida
     // reservada para sempre.
     if (hasItemsField) {
-      await recomputeReservedStockWithinTx(tx, [
-        ...produtosAntes,
-        ...items.map((i) => i.productId),
-      ]);
+      // O retorno sobe ao usecase pelo `sink`: remover um item de uma venda
+      // pendente LIBERA a peça, e liberar sem avisar o marketplace deixaria o
+      // anúncio pausado por uma reserva que não existe mais.
+      sink?.(
+        await recomputeReservedStockWithinTx(tx, [
+          ...produtosAntes,
+          ...items.map((i) => i.productId),
+        ]),
+      );
     }
 
     const updated = await (tx as any).receivable.findUnique({
@@ -991,6 +1036,41 @@ export class FinanceRepository {
   async delete(kind: FinanceKind, id: string, userId: string): Promise<void> {
     const res = await model(kind).deleteMany({ where: { id, userId } });
     if (res.count === 0) throw new Error("Registro financeiro não encontrado");
+  }
+
+  /**
+   * Apaga a venda parcelada INTEIRA — parcelas primeiro, mãe depois.
+   *
+   * A ORDEM NÃO É ESTILO. `parentReceivableId` é `onDelete: SetNull`
+   * (schema, `model Receivable`), então apagar a mãe primeiro NÃO apagaria as
+   * filhas: elas ficariam com o vínculo nulo, viradas cobranças soltas no total
+   * a receber do cliente, sem venda de origem. É exatamente o cenário que o
+   * guard do `delete` existe para impedir — o que muda aqui é que agora existe
+   * um caminho que o resolve em vez de só recusar.
+   *
+   * Tudo numa transação: metade apagada seria pior que nada apagado.
+   *
+   * Só é chamado depois de o usecase verificar que NADA está pago. O `where`
+   * repete `userId` nas duas escritas mesmo já tendo sido validado, porque
+   * ownership em query é barato e uma checagem só no chamador é a que se perde
+   * na próxima refatoração.
+   */
+  async deleteWithChildren(
+    id: string,
+    userId: string,
+  ): Promise<{ children: number }> {
+    return prisma.$transaction(async (tx) => {
+      const filhas = await (tx as any).receivable.deleteMany({
+        where: { parentReceivableId: id, userId },
+      });
+      const mae = await (tx as any).receivable.deleteMany({
+        where: { id, userId },
+      });
+      if (mae.count === 0) {
+        throw new Error("Registro financeiro não encontrado");
+      }
+      return { children: filhas.count };
+    });
   }
 
   async summary(

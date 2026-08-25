@@ -42,9 +42,12 @@ import {
   isSettlementEnabled,
   settlementBreakdown,
 } from "../financeiro/lib/settlement";
+import { isInstallmentPendingDeleteEnabled } from "../financeiro/lib/stock-reservation";
 import {
+  firePostReservationEffects,
   recomputeReservedStock,
   recomputeReservedStockWithinTx,
+  type ReservationPropagation,
 } from "../marketplaces/services/stock-reservation.service";
 import { CustomerRepository } from "../repositories/customer.repository";
 import {
@@ -529,6 +532,9 @@ export class FinanceUseCase {
         await this.assertUnidade(data.unidadeId, data.userId);
 
       const { newCustomer, ...rest } = data;
+      // BLOCO G — a propagação da reserva, coletada DENTRO da tx e disparada
+      // depois dela. Ver o comentário do `ReservationSink` no repositório.
+      let reserva: ReservationPropagation | null = null;
       const criadaQuick = await prisma.$transaction(async (tx) => {
         const customer = await this.customerUseCase.createWithTx(tx, {
           userId: data.userId,
@@ -539,10 +545,16 @@ export class FinanceUseCase {
           kind,
           { ...rest, customerId: customer.id },
           tx,
+          (r) => {
+            reserva = r;
+          },
         );
       });
       // Pós-commit: a venda já existe. Falha de auditoria não pode desfazê-la.
       this.registrarCriacao(kind, criadaQuick, actor);
+      // Idem — e best-effort por dentro: `firePostReservationEffects` nunca
+      // lança, porque a venda já está persistida e nada aqui pode desfazê-la.
+      firePostReservationEffects(reserva, "[FinanceUseCase]");
       return criadaQuick;
     }
 
@@ -550,8 +562,14 @@ export class FinanceUseCase {
     this.validate(data);
     await this.assertCustomer(data.customerId, data.userId);
     if (data.unidadeId) await this.assertUnidade(data.unidadeId, data.userId);
-    const criada = await this.repo.create(kind, data);
+    // BLOCO G — o `await` do create já é pós-commit: quando há itens, o
+    // repositório abre a própria transação e só retorna depois de fechá-la.
+    let reservaCriada: ReservationPropagation | null = null;
+    const criada = await this.repo.create(kind, data, undefined, (r) => {
+      reservaCriada = r;
+    });
     this.registrarCriacao(kind, criada, actor);
+    firePostReservationEffects(reservaCriada, "[FinanceUseCase]");
     return criada;
   }
 
@@ -626,7 +644,22 @@ export class FinanceUseCase {
       }
     }
 
-    const atualizada = await this.repo.update(kind, id, userId, data);
+    // BLOCO G — editar os itens muda o que está comprometido. Quando o payload
+    // NÃO traz `items`, o repositório roteia para `updateSingle` e o sink nunca
+    // é chamado: nada mudou de reserva, nada a propagar.
+    let reservaEditada: ReservationPropagation | null = null;
+    const atualizada = await this.repo.update(
+      kind,
+      id,
+      userId,
+      data,
+      undefined,
+      undefined,
+      (r) => {
+        reservaEditada = r;
+      },
+    );
+    firePostReservationEffects(reservaEditada, "[FinanceUseCase]");
 
     if (antes) {
       const campos = diffSaleFields(
@@ -737,6 +770,9 @@ export class FinanceUseCase {
     }> = [];
     // Bloco F — ids dos produtos que NASCERAM nesta operação (peças avulsas).
     const promotedProductIds = new Set<string>();
+    // BLOCO G — propagação da reserva liberada pelo recebimento. Quase sempre
+    // vem VAZIA, e isso é o desejado: ver o comentário no ponto do recálculo.
+    let reservaRecebida: ReservationPropagation | null = null;
 
     try {
       await prisma.$transaction(
@@ -810,7 +846,15 @@ export class FinanceUseCase {
           // A venda saiu de PENDENTE: o estoque foi baixado de verdade, então
           // a reserva daquelas peças deixa de existir. Recalculado a partir da
           // verdade, dentro da mesma tx.
-          await recomputeReservedStockWithinTx(
+          //
+          // ⭐ E É AQUI QUE O ANÚNCIO NÃO PISCA. O `deductWithinTx` logo acima
+          // já baixou o `stock` nesta MESMA transação, então o disponível ANTES
+          // que o recálculo lê já é o de depois da baixa: a peça de estoque 1
+          // reservada estava em 0 e continua em 0 (`stock` 1→0, reserva 1→0).
+          // Disponível igual ⇒ `changed` vazio ⇒ nenhum job novo, nenhuma
+          // chamada de marketplace, e nada que traga o anúncio de volta ao ar
+          // entre reservar e receber.
+          reservaRecebida = await recomputeReservedStockWithinTx(
             tx,
             items.map((it) => it.productId),
           );
@@ -854,6 +898,13 @@ export class FinanceUseCase {
       reason: `Venda balcão — Conta a Receber ${id}`,
       pauseOnZero: { userId },
     });
+
+    // BLOCO G — irmão do de cima, e no caso normal um no-op: receber uma venda
+    // não muda o disponível (ver o recálculo dentro da tx). Fica aqui porque
+    // existe um caso em que MUDA — venda de peça com estoque de sobra, em que a
+    // baixa real derruba o disponível abaixo do que a reserva já segurava — e
+    // omitir a chamada deixaria esse anúncio dessincronizado.
+    firePostReservationEffects(reservaRecebida, "[FinanceUseCase]");
 
     // Reflexo no fluxo da sucata (best-effort, pós-commit, idempotente):
     // AVAILABLE→IN_USE→DEPLETED conforme a venda atribuída ao lote. Irmão do
@@ -1038,9 +1089,58 @@ export class FinanceUseCase {
       if (current) {
         const filhas = await this.repo.findChildren(id, userId);
         if (filhas.length > 0) {
-          throw new Error(
-            "Venda parcelada não pode ser excluída — ela tem parcelas vinculadas. Use Estornar.",
+          // BLOCO G — o BECO SEM SAÍDA que a reserva transformou em armadilha.
+          //
+          // Uma venda parcelada que NUNCA foi recebida não tinha caminho
+          // nenhum: o `delete` recusava aqui e o `reverse` recusava por não
+          // estar PAGA (:1111-1115). Sem reserva isso era só um incômodo. Com
+          // a reserva ligada, a peça fica comprometida PARA SEMPRE — sai do
+          // disponível e ninguém consegue devolvê-la.
+          //
+          // Destravar é seguro só quando NADA foi pago: aí o estoque nunca
+          // baixou (a baixa é do `markPaid`) e nenhum dinheiro entrou, então
+          // não há o que devolver — só o que apagar. Parcela já recebida é
+          // dinheiro no caixa e continua bloqueando.
+          const algumaPaga = filhas.some((f) => f.status === "PAGA");
+          const podeApagarTudo =
+            isInstallmentPendingDeleteEnabled() &&
+            current.status !== "PAGA" &&
+            !algumaPaga;
+
+          if (!podeApagarTudo) {
+            throw new Error(
+              "Venda parcelada não pode ser excluída — ela tem parcelas vinculadas. Use Estornar.",
+            );
+          }
+
+          const { children } = await this.repo.deleteWithChildren(id, userId);
+
+          // Mesmo recálculo do caminho normal, mesmo motivo. Repetido aqui (e
+          // não movido para depois do `if`) porque este ramo já apagou tudo e
+          // precisa sair do método sem passar pelo `repo.delete` de baixo.
+          if (Array.isArray(snapshot?.items)) {
+            recomputeReservedStock(
+              snapshot!.items!.map((it) => it.productId),
+              "[FinanceUseCase]",
+            );
+          }
+
+          logFinanceAction(
+            actor,
+            "FINANCE_ENTRY_DELETED",
+            `Venda parcelada excluída (${children} parcela(s) junto)`,
+            {
+              kind,
+              receivableId: id,
+              totalAmount: snapshot ? Number(snapshot.totalAmount) : null,
+              status: snapshot?.status ?? null,
+              itemCount: Array.isArray(snapshot?.items)
+                ? snapshot!.items!.length
+                : null,
+              installmentsDeleted: children,
+            },
           );
+          return;
         }
       }
     }

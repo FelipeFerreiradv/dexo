@@ -558,6 +558,11 @@ export class NfeRepository {
         name: true,
         price: true,
         stock: true,
+        // BLOCO G — sem esta linha o seletor de peças mostra estoque BRUTO e o
+        // operador vende de novo a peça que já saiu com outro cliente. É o
+        // ponto de entrada do dado na tela: a coluna existe, o módulo puro sabe
+        // formatá-la, e até 25/08 nada a projetava.
+        reservedStock: true,
         // Aditivo: sucata de origem (id p/ vínculo + rótulo p/ exibição no balcão).
         scrapId: true,
         scrap: {
@@ -571,6 +576,10 @@ export class NfeRepository {
       name: r.name,
       price: Number(r.price),
       stock: r.stock,
+      // `?? null` e não `?? 0`: zero seria uma AFIRMAÇÃO de "nada reservado"
+      // sobre um dado que talvez não tenha sido lido — a mesma razão do
+      // `?? undefined` em product.repository.ts:279. Ausente é honesto.
+      reservedStock: r.reservedStock ?? null,
       scrapId: r.scrapId ?? null,
       scrapLabel: r.scrap
         ? [

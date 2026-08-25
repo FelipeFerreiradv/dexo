@@ -37,13 +37,24 @@ vi.mock("@/app/marketplaces/services/stock-deduction.service", () => ({
   },
 }));
 
+// A factory do `vi.mock` ENUMERA os exports: um export novo no módulo real que
+// não apareça aqui vira "No export is defined on the mock" em tempo de
+// execução, e a rota devolve 500 — foi exatamente o que aconteceu quando
+// `firePostReservationEffects` entrou junto com a propagação (25/08), e por
+// isso ele precisa estar nos dois duplos.
+//
+// NENHUMA asserção deste arquivo mudou: os quatro pontos de fiação que ele
+// trava — criar, editar, receber, e o PUT sem itens que NÃO recalcula —
+// continuam sendo verificados exatamente como antes.
 vi.mock("../app/marketplaces/services/stock-reservation.service", () => ({
   recomputeReservedStockWithinTx: vi.fn().mockResolvedValue(undefined),
   recomputeReservedStock: vi.fn(),
+  firePostReservationEffects: vi.fn(),
 }));
 vi.mock("@/app/marketplaces/services/stock-reservation.service", () => ({
   recomputeReservedStockWithinTx: vi.fn().mockResolvedValue(undefined),
   recomputeReservedStock: vi.fn(),
+  firePostReservationEffects: vi.fn(),
 }));
 
 function makePrisma() {
@@ -91,10 +102,16 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
 
 import prisma from "../app/lib/prisma";
 import { financeRoutes } from "../app/routes/finance.routes";
-import { recomputeReservedStockWithinTx } from "../app/marketplaces/services/stock-reservation.service";
+import {
+  firePostReservationEffects,
+  recomputeReservedStockWithinTx,
+} from "../app/marketplaces/services/stock-reservation.service";
 
 const OWNER = "owner@test.com";
 const recompute = recomputeReservedStockWithinTx as unknown as ReturnType<
+  typeof vi.fn
+>;
+const propagar = firePostReservationEffects as unknown as ReturnType<
   typeof vi.fn
 >;
 
@@ -226,6 +243,124 @@ describe("Editar itens libera quem SAIU — a reserva órfã", () => {
       payload: { document: "NF 1" },
     });
     expect(recompute).not.toHaveBeenCalled();
+  });
+});
+
+// ── A PROPAGAÇÃO (25/08) ─────────────────────────────────────────────────────
+//
+// Os testes acima travam que o RECÁLCULO acontece. Não travam que o resultado
+// dele SAI — e era exatamente aí que a corrente arrebentava: o recompute
+// gravava a coluna e terminava, sem enfileirar job nem disparar o sync, então a
+// peça vendida fiado continuava anunciada.
+//
+// O que segue trava o elo: o resultado do recálculo (que roda DENTRO da tx)
+// chega a `firePostReservationEffects` DEPOIS do commit. Um sink esquecido em
+// qualquer um dos caminhos volta a ser um bug silencioso — a venda funciona, os
+// números ficam certos, e só o anúncio fica errado.
+describe("A propagação sai — e sai PÓS-COMMIT", () => {
+  it("criar venda: o resultado do recálculo vira efeito", async () => {
+    recompute.mockResolvedValueOnce({
+      changed: [{ productId: "p-1", before: 1, after: 0 }],
+      reopened: [],
+      enqueued: 1,
+    });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables",
+      headers: { email: OWNER },
+      payload: {
+        customerId: "c-1",
+        totalAmount: 100,
+        dueDate: "2026-09-01",
+        items: [{ productId: "p-1", quantity: 1, unitPrice: 100 }],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(propagar).toHaveBeenCalledTimes(1);
+    expect(propagar.mock.calls[0][0]).toEqual({
+      changed: [{ productId: "p-1", before: 1, after: 0 }],
+      reopened: [],
+      enqueued: 1,
+    });
+  });
+
+  it("editar itens: a liberação de quem saiu também propaga", async () => {
+    (prisma as any).receivableItem.findMany.mockResolvedValue([
+      { productId: "p-1", autoCreatedProduct: false },
+    ]);
+    recompute.mockResolvedValueOnce({
+      changed: [{ productId: "p-1", before: 0, after: 1 }],
+      reopened: [{ productId: "p-1", userId: "dono-1" }],
+      enqueued: 2,
+    });
+
+    const app = buildApp();
+    await app.inject({
+      method: "PUT",
+      url: "/finance/receivables/r-1",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: { items: [{ productId: "p-2", quantity: 1, unitPrice: 40 }] },
+    });
+
+    expect(propagar).toHaveBeenCalledTimes(1);
+    expect(propagar.mock.calls[0][0].reopened).toEqual([
+      { productId: "p-1", userId: "dono-1" },
+    ]);
+  });
+
+  it("venda PARCELADA: a reserva segue a MÃE, e propaga UMA vez só", async () => {
+    // A venda vira 1 conta-ENTRADA (que carrega os itens) + N contas-PARCELA
+    // criadas por `createMany`, SEM itens. Se o sink vazasse para as filhas, a
+    // mesma peça seria segurada N+1 vezes e o disponível afundaria para
+    // negativo — que `availableForSale` clampa em 0, escondendo o erro e
+    // pausando anúncio de peça que ainda tinha estoque.
+    recompute.mockResolvedValueOnce({
+      changed: [{ productId: "p-1", before: 1, after: 0 }],
+      reopened: [],
+      enqueued: 1,
+    });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables",
+      headers: { email: OWNER },
+      payload: {
+        customerId: "c-1",
+        totalAmount: 300,
+        dueDate: "2026-09-01",
+        items: [{ productId: "p-1", quantity: 1, unitPrice: 300 }],
+        installmentPlan: {
+          downPayment: 100,
+          installments: [
+            { amount: 100, dueDate: "2026-10-01" },
+            { amount: 100, dueDate: "2026-11-01" },
+          ],
+        },
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    // UM recálculo (o da mãe) e UMA propagação — não três.
+    expect(recompute).toHaveBeenCalledTimes(1);
+    expect(idsRecalculados()).toEqual(["p-1"]);
+    expect(propagar).toHaveBeenCalledTimes(1);
+  });
+
+  it("PUT sem itens não propaga nada — nada mudou de comprometido", async () => {
+    const app = buildApp();
+    await app.inject({
+      method: "PUT",
+      url: "/finance/receivables/r-1",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: { document: "NF 1" },
+    });
+    // Chamado, mas com `null`: é o contrato de "não houve recálculo".
+    // `firePostReservationEffects` trata isso como no-op (spec de propagação).
+    expect(propagar).toHaveBeenCalledWith(null, expect.anything());
   });
 });
 
