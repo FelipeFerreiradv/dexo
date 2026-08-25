@@ -286,16 +286,59 @@ CREATE INDEX CONCURRENTLY "Product_imageUrls_idx"
 -- 244 MB de enfeite.
 --
 -- ───────────────────────────────────────────────────────────────────────────
--- ⚠️ NÃO MEDIDO: o custo do GIN numa IMPORTAÇÃO EM MASSA
+-- ✅ MEDIDO: o custo de ESCRITA deste índice numa carga em massa
 --
--- A medição de escrita usou lotes de 400 UPDATEs que não tocam o array. O caso
--- mais pesado que este índice vai encontrar é outro: `createMany` de dezenas de
--- milhares de produtos com galeria cheia, que é rotina neste projeto.
+-- Medido em produção em 24/08/2026, em tabelas de bancada descartáveis
+-- (`LIKE "Product" INCLUDING INDEXES`), com 10.000 produtos REAIS de um único
+-- tenant, galeria média de 6,04 fotos. Três estados do banco lado a lado:
 --
--- Derivando do que foi medido (~0,083 ms por linha), uma importação de 30.000
--- produtos pagaria ~2,5 s a mais no total. É uma DERIVAÇÃO de uma medição de
--- UPDATE, não uma medição de INSERT — fica registrado como tal, e não como
--- número aferido.
+--   B = 17 índices — antes do #300 e do #302
+--   C = 18 índices — só o btree do #300
+--   A = 19 índices — hoje, o btree e este GIN
+--
+-- Cada carga rodou DUAS VEZES em ORDEM INVERTIDA (A→C→B e depois B→C→A). O
+-- ranking não trocou nas duas ordens — o que se mediu é o índice, não a ordem.
+-- O ruído do próprio arnês foi medido à parte (137 ms / 10.000) e descontado.
+-- As tabelas de bancada foram removidas; a "Product" só foi lida.
+--
+-- ⚠️ A PREMISSA DA VERSÃO ANTERIOR DESTE BLOCO ESTAVA ERRADA. Não existe
+-- `createMany` com galeria cheia neste projeto: os três scripts que usam
+-- `product.createMany` não escrevem `imageUrl` nem `imageUrls`, e o executor da
+-- plataforma insere `imageUrl: ""`. A galeria SEMPRE chega numa SEGUNDA passada,
+-- por UPDATE (`setImageUrlsMany`, 200 por transação). O caso pesado é esse.
+--
+-- INSERÇÃO (10.000 produtos, galeria vazia — o formato real do import):
+--   tempo indistinguível do ruído — A 1.982 ms contra B 1.892 ms, e C 2.122 ms
+--   ficou ACIMA de A. Não é monotônico, logo não há sinal. O GIN cobra
+--   +5,10 MB de WAL e apenas +139 kB de índice: array vazio quase não gera
+--   entrada. Custo prático no import: nenhum.
+--
+-- PASSADA DE FOTOS (10.000 produtos, ~6 fotos cada — o caso pesado de verdade):
+--
+--   estado                      total      por produto*     WAL      índices
+--   B  17 índices (antes)      3.915 ms     0,3778 ms     43,3 MB   24,3 MB
+--   C  18 (+ btree do #300)    4.256 ms     0,4119 ms     47,8 MB   26,3 MB
+--   A  19 (+ este GIN, hoje)   4.858 ms     0,4722 ms     58,6 MB   34,4 MB
+--   * já descontado o arnês do laço (0,0137 ms por produto)
+--
+--   #300 sozinho:  +0,0341 ms por produto   (+9,0%)
+--   #302 sozinho:  +0,0603 ms por produto   (+14,6%)
+--   os dois:       +0,0944 ms por produto   (+25,0%)
+--
+--   Em escala real: 30.000 produtos custam +2,8 s no TOTAL da passada, e a
+--   passada de fotos da MK2 (45.878 produtos) teria custado +4,3 s. A derivação
+--   anterior (~2,5 s só para o GIN) era PESSIMISTA: o medido dá ~1,8 s.
+--
+--   Aferição cruzada do tamanho: +8,13 MB de índice por 10.000 produtos com
+--   galeria projeta ~272 MB para os 334.564 com galeria. O índice real tem
+--   244 MB. A bancada bate com a tabela de verdade.
+--
+-- ⭐ POR QUE O CUSTO É TÃO BAIXO: o HOT já era quase impossível ANTES. No arm B
+-- só 1.239 de 20.000 updates foram HOT (6,2%); nos arms C e A, ZERO. Mas o
+-- `n_tup_newpage_upd` ficou em ~18.765 nos TRÊS arms: ~94% das linhas trocam de
+-- página de qualquer jeito, porque a galeria engorda a tupla de ~0 para ~460
+-- bytes e ela não cabe mais onde estava. Quem impede o HOT é o CRESCIMENTO DA
+-- TUPLA, não o índice — os dois índices novos custaram os 6,2% que sobravam.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- VERIFICAÇÃO — rodar DEPOIS. Linha de base tirada NA HORA, nunca constante.
