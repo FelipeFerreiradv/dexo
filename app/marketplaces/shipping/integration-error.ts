@@ -257,6 +257,35 @@ const STEP_LABEL: Record<string, string> = {
 };
 
 /**
+ * As APIs de LOTE da Shopee respondem com um erro de topo genérico —
+ * `common.batch_api_all_failed` / "All failed, please check result_list for
+ * detail" — e enterram o motivo REAL dentro do `result_list`.
+ *
+ * Era essa frase inútil que chegava ao lojista em 25/08/2026: a tela dizia
+ * "Falha ao gerar a etiqueta na Shopee: All failed, please check result_list for
+ * detail", enquanto o motivo de verdade — "The tracking number is invalid.
+ * Please check the tracking number." — vinha na MESMA resposta e era descartado.
+ * Sem ele não dá para distinguir "documento ainda sendo preparado" (temporário)
+ * de "a Shopee não aceita este pedido" (definitivo).
+ *
+ * Os campos são anexados por `ShopeeApiService.createShippingDocument`, no mesmo
+ * padrão que o `ship_order` já usa com `shopeeError`/`shopeeMessage`. Só a
+ * Shopee os preenche — para ML e Magalu esta função continua idêntica.
+ */
+function detalheDoLote(error: MarketplaceIntegrationError): string | undefined {
+  const campos = error as unknown as {
+    shopeeFailMessage?: string;
+    shopeeFailError?: string;
+  };
+  const detalhe = campos.shopeeFailMessage ?? campos.shopeeFailError;
+  if (typeof detalhe !== "string") return undefined;
+  // A Shopee manda espaço duplo no meio ("now.  Detail:"); colapsar deixa a
+  // frase apresentável sem alterar o conteúdo.
+  const limpo = detalhe.replace(/\s+/g, " ").trim();
+  return limpo || undefined;
+}
+
+/**
  * Mensagem em português, acionável, para a UI: o que falhou, em qual pedido, em
  * qual etapa, e o motivo dado pelo parceiro. Nunca "Request failed with status
  * code 404".
@@ -267,6 +296,9 @@ export function toUserFacingMessage(error: MarketplaceIntegrationError): string 
   const pedido = error.orderSn ? ` do pedido ${error.orderSn}` : "";
 
   const reason =
+    // O detalhe do lote vem ANTES do `providerMessage`: quando os dois existem,
+    // o de topo é o genérico e o do lote é o que explica.
+    detalheDoLote(error) ??
     error.providerMessage ??
     (error.providerErrorCode
       ? `a ${marketplace} respondeu "${error.providerErrorCode}"`
