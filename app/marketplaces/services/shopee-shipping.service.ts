@@ -91,6 +91,42 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
   }
 
   /**
+   * A Shopee recusa o get_shipping_parameter depois que o envio já foi
+   * arranjado — e quem arranja é o nosso próprio ship_order, na tentativa
+   * anterior. Duas frases, medidas em produção em 25/08/2026, dizem a mesma
+   * coisa em estados diferentes do pacote:
+   *
+   *   "Package OFG… not eligible for rescheduling"
+   *      → envio criado, ainda não coletado (LOGISTICS_REQUEST_CREATED)
+   *   "Shipping parameters can only be obtained when package is ready to be
+   *    shipped"
+   *      → pacote já coletado ou entregue
+   *
+   * Como get_shipping_parameter só existe para ARRANJAR/REMARCAR o envio, e ele
+   * é a PRIMEIRA etapa da cadeia, um pedido que já passou desse ponto nunca mais
+   * conseguia etiqueta: 14 pedidos ficaram presos em labelStatus=ERROR assim.
+   *
+   * O casamento é pelo TEXTO de propósito. O código que a Shopee devolve é
+   * "error_other" na primeira frase e "error_param" na segunda — baldes
+   * genéricos dela. Casar por código toleraria QUALQUER erro desta etapa, que é
+   * exatamente o que não se quer.
+   *
+   * A segunda alternativa é escrita por inteiro pelo mesmo motivo: /ready/
+   * sozinho casaria também com "not ready", que significa o oposto.
+   */
+  private isShippingParameterNoLongerApplicable(error: unknown): boolean {
+    const msg = (
+      error instanceof Error ? error.message : String(error)
+    ).toLowerCase();
+    return (
+      /not eligible for rescheduling/.test(msg) ||
+      /shipping parameters can only be obtained when package is ready to be shipped/.test(
+        msg,
+      )
+    );
+  }
+
+  /**
    * A Shopee recusa o upload da NF-e depois que o envio já foi arranjado:
    * "Upload is not accepted after shipment is arranged". Isso NÃO é falha —
    * significa que a etapa fiscal já não se aplica àquele pedido, e insistir
@@ -137,11 +173,54 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
   async ensureReadyToShip(ctx: ShippingOrderContext): Promise<ShipReadiness> {
     return ShippingAuthRetry.shopee(ctx.account, async (token, shopId) => {
       const orderSn = ctx.order.externalOrderId;
-      const param = await ShopeeApiService.getShippingParameter(
-        token,
-        shopId,
-        orderSn,
-      );
+      let param: Record<string, any>;
+      try {
+        param = await ShopeeApiService.getShippingParameter(
+          token,
+          shopId,
+          orderSn,
+        );
+      } catch (error) {
+        if (
+          process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED === "1" ||
+          !this.isShippingParameterNoLongerApplicable(error)
+        ) {
+          throw error;
+        }
+        const code =
+          (error as { providerErrorCode?: string })?.providerErrorCode ??
+          "sem codigo";
+        console.warn(
+          `[Shipping] Shopee nao permite mais consultar as opcoes de envio do pedido ${orderSn} (${code}) — o envio ja foi arranjado, entao ship_order nao tem o que fazer; indo direto buscar o rastreio.`,
+        );
+        // O rastreio é a confirmação POSITIVA e independente de que o envio foi
+        // mesmo arranjado. Sem ele, a frase "…when package is ready to be
+        // shipped" também caberia num pedido que AINDA NÃO chegou lá — e aí
+        // pular o ship_order seria errado.
+        let tracking: string | null = null;
+        try {
+          tracking = await ShopeeApiService.getTrackingNumber(
+            token,
+            shopId,
+            orderSn,
+          );
+        } catch {
+          // sem rastreio não dá para confirmar — cai no não-pronto abaixo
+        }
+        // trim: logo depois do ship_order a Shopee devolve string VAZIA, não
+        // null. É o que está gravado nos 14 registros presos.
+        if (tracking?.trim()) {
+          return { ready: true, shipmentId: orderSn, trackingNumber: tracking };
+        }
+        console.warn(
+          `[Shipping] Pedido ${orderSn}: envio ja arranjado, mas a Shopee ainda nao devolveu o rastreio — nao-pronto (NOT_READY, o pedido NAO e marcado como erro).`,
+        );
+        return {
+          ready: false,
+          reason: error instanceof Error ? error.message : String(error),
+          shipmentId: orderSn,
+        };
+      }
       const body = this.buildShipBody(orderSn, param);
       try {
         await ShopeeApiService.shipOrder(token, shopId, body);

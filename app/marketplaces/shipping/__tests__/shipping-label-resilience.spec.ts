@@ -629,6 +629,160 @@ describe("erro com .status numérico vira 502, erro de programação continua 50
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Incidente de 25/08/2026, ponta a ponta. O pedido 2608221M2DR72U ficou preso
+ * em labelStatus=ERROR porque as DUAS primeiras etapas recusam pelo mesmo
+ * motivo — o envio ja foi arranjado pelo nosso proprio ship_order na tentativa
+ * anterior — mas so a primeira tolerava isso.
+ *
+ * Este teste percorre o pipeline inteiro com os corpos REAIS da Shopee e exige
+ * que o pedido chegue a GENERATED sem nunca passar por ERROR.
+ */
+describe("Shopee: consulta de opções de envio recusada após o envio arranjado", () => {
+  const SHOPEE_ORDER = {
+    id: "order1",
+    externalOrderId: "2608221M2DR72U",
+    marketplaceAccountId: "acc1",
+    marketplaceAccount: {
+      id: "acc1",
+      platform: "SHOPEE",
+      accessToken: "tok",
+      refreshToken: "ref",
+      externalUserId: null,
+      shopId: 1322438439,
+    },
+  };
+
+  beforeEach(() => {
+    process.env.SHOPEE_INVOICE_ARRANGED_TOLERANT_DISABLED = "0";
+    process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED = "0";
+    vi.spyOn(prisma.order, "findFirst").mockResolvedValue(SHOPEE_ORDER as never);
+  });
+
+  it("o pedido preso sai de ERROR e chega a GENERATED, sem chamar ship_order", async () => {
+    vi.spyOn(ShopeeApiService, "uploadInvoiceDoc").mockRejectedValue(
+      new MarketplaceIntegrationError(
+        "shopee.order.upload_invoice_doc recusado pela SHOPEE: Upload invoice failed. Upload is not accepted after shipment is arranged.",
+        {
+          marketplace: "SHOPEE",
+          operation: "shopee.order.upload_invoice_doc",
+          step: "upload_invoice_doc",
+          httpStatus: 200,
+          providerErrorCode: "error_param",
+        },
+      ),
+    );
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      new MarketplaceIntegrationError(
+        "shopee.logistics.get_shipping_parameter recusado pela SHOPEE: Package OFG241055916134686 not eligible for rescheduling",
+        {
+          marketplace: "SHOPEE",
+          operation: "shopee.logistics.get_shipping_parameter",
+          step: "get_shipping_parameter",
+          httpStatus: 200,
+          providerErrorCode: "error_other",
+          providerMessage:
+            "Package OFG241055916134686 not eligible for rescheduling",
+          orderSn: "2608221M2DR72U",
+        },
+      ),
+    );
+    const ship = vi.spyOn(ShopeeApiService, "shipOrder");
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockResolvedValue(
+      "BR267967530076P",
+    );
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockResolvedValue(
+      undefined,
+    );
+    vi.spyOn(ShopeeApiService, "getShippingDocumentResult").mockResolvedValue([
+      { order_sn: "2608221M2DR72U", status: "READY" },
+    ]);
+    vi.spyOn(ShopeeApiService, "downloadShippingDocument").mockResolvedValue(
+      await makeRealPdf(),
+    );
+    const upsert = vi.spyOn(shipmentLabelRepository, "upsert");
+
+    const r = await ShippingLabelUseCase.generateLabelForOrder(
+      "u1",
+      "order1",
+      "THERMAL",
+    );
+
+    expect(r.record.labelStatus).toBe("GENERATED");
+    expect(r.pdf.subarray(0, 4).toString()).toBe("%PDF");
+    // O envio já estava arranjado: não há o que arranjar de novo.
+    expect(ship).not.toHaveBeenCalled();
+    // E em nenhum momento o pedido foi marcado como erro.
+    const statuses = upsert.mock.calls.map((c) => (c[1] as any).labelStatus);
+    expect(statuses).not.toContain("ERROR");
+    expect(statuses).toContain("READY_TO_PRINT");
+  });
+
+  it("sem rastreio o pedido para em NOT_READY (409) em vez de virar ERROR", async () => {
+    vi.spyOn(ShopeeApiService, "uploadInvoiceDoc").mockResolvedValue(
+      undefined as never,
+    );
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      new MarketplaceIntegrationError(
+        "shopee.logistics.get_shipping_parameter recusado pela SHOPEE: Shipping parameters can only be obtained when package is ready to be shipped",
+        {
+          marketplace: "SHOPEE",
+          operation: "shopee.logistics.get_shipping_parameter",
+          step: "get_shipping_parameter",
+          httpStatus: 200,
+          providerErrorCode: "error_param",
+          providerMessage:
+            "Shipping parameters can only be obtained when package is ready to be shipped",
+          orderSn: "2608221M2DR72U",
+        },
+      ),
+    );
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockResolvedValue(null);
+    const create = vi.spyOn(ShopeeApiService, "createShippingDocument");
+    const upsert = vi.spyOn(shipmentLabelRepository, "upsert");
+
+    const err = await captureError(
+      ShippingLabelUseCase.generateLabelForOrder("u1", "order1", "THERMAL"),
+    );
+
+    expect((err as ShippingLabelError).code).toBe("NOT_READY");
+    expect(create).not.toHaveBeenCalled();
+    const statuses = upsert.mock.calls.map((c) => (c[1] as any).labelStatus);
+    expect(statuses).not.toContain("ERROR");
+  });
+
+  it("kill-switch =1: volta a falhar como antes, com PROVIDER_ERROR", async () => {
+    process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED = "1";
+    vi.spyOn(ShopeeApiService, "uploadInvoiceDoc").mockResolvedValue(
+      undefined as never,
+    );
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      new MarketplaceIntegrationError(
+        "shopee.logistics.get_shipping_parameter recusado pela SHOPEE: Package OFG… not eligible for rescheduling",
+        {
+          marketplace: "SHOPEE",
+          operation: "shopee.logistics.get_shipping_parameter",
+          step: "get_shipping_parameter",
+          httpStatus: 200,
+          providerErrorCode: "error_other",
+          providerMessage: "Package OFG… not eligible for rescheduling",
+          orderSn: "2608221M2DR72U",
+        },
+      ),
+    );
+
+    const err = await captureError(
+      ShippingLabelUseCase.generateLabelForOrder("u1", "order1", "THERMAL"),
+    );
+
+    expect((err as ShippingLabelError).code).toBe("PROVIDER_ERROR");
+    expect((err as ShippingLabelError).message).toContain(
+      "consultar as opções de envio",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe("orçamento de tempo (SHIPPING_LABEL_TIME_BUDGET)", () => {
   it("estourar o orçamento vira NOT_READY (409), não 504 do proxy", async () => {
     process.env.SHIPPING_LABEL_TIME_BUDGET_DISABLED = "0";
