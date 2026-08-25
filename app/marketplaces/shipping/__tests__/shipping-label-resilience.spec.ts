@@ -158,6 +158,94 @@ describe("erro de provider vira PROVIDER_ERROR (HTTP 502), não 500 opaco", () =
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * As APIs de LOTE da Shopee escondem o motivo real dentro do result_list e
+ * respondem, no topo, "All failed, please check result_list for detail" — frase
+ * que nao ajuda ninguem. Era isso que o lojista via em 25/08/2026 ao tentar a
+ * etiqueta do pedido 2608221M2DR72U, enquanto o motivo de verdade vinha na mesma
+ * resposta e era descartado.
+ */
+describe("motivo real do lote aparece na mensagem, no lugar do genérico", () => {
+  /** Erro como `createShippingDocument` o monta: topo genérico + detalhe anexado. */
+  const comDetalhe = (fail: { error?: string; message?: string }) => {
+    const err = new MarketplaceIntegrationError(
+      "shopee.logistics.create_shipping_document recusado pela SHOPEE: All failed, please check result_list for detail",
+      {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        httpStatus: 200,
+        providerErrorCode: "common.batch_api_all_failed",
+        providerMessage: "All failed, please check result_list for detail",
+        providerRequestId: "req-99",
+      },
+    );
+    (err as unknown as { shopeeFailError?: string }).shopeeFailError = fail.error;
+    (err as unknown as { shopeeFailMessage?: string }).shopeeFailMessage =
+      fail.message;
+    return err;
+  };
+
+  it("mostra o motivo do result_list em vez de 'All failed…'", () => {
+    const msg = toUserFacingMessage(
+      comDetalhe({
+        error: "logistics.tracking_number_invalid",
+        message: "The tracking number is invalid. Please check the tracking number.",
+      }),
+    );
+    expect(msg).toBe(
+      "Falha ao gerar a etiqueta na Shopee: " +
+        "The tracking number is invalid. Please check the tracking number. " +
+        "(referência Shopee: req-99)",
+    );
+    expect(msg).not.toContain("All failed");
+  });
+
+  it("colapsa o espaço duplo que a Shopee manda no meio da frase", () => {
+    const msg = toUserFacingMessage(
+      comDetalhe({
+        error: "logistics.package_can_not_print",
+        message:
+          "The package can not print now.  Detail: The document is not yet ready for printing. Please try again later.",
+      }),
+    );
+    expect(msg).toContain("now. Detail:");
+    expect(msg).not.toContain("now.  Detail:");
+  });
+
+  it("usa o código quando a Shopee não manda a frase", () => {
+    const msg = toUserFacingMessage(
+      comDetalhe({ error: "logistics.package_can_not_print" }),
+    );
+    expect(msg).toContain("logistics.package_can_not_print");
+    expect(msg).not.toContain("All failed");
+  });
+
+  it("detalhe vazio ou só espaço cai no motivo de topo, não some", () => {
+    expect(toUserFacingMessage(comDetalhe({ message: "   " }))).toContain(
+      "All failed",
+    );
+    expect(toUserFacingMessage(comDetalhe({}))).toContain("All failed");
+  });
+
+  it("NÃO-REGRESSÃO: erro sem detalhe de lote continua idêntico", () => {
+    const msg = toUserFacingMessage(
+      new MarketplaceIntegrationError("x", {
+        marketplace: "MERCADO_LIVRE",
+        operation: "ml.shipping_label",
+        step: "create_shipping_document",
+        httpStatus: 500,
+        providerMessage: "internal error",
+        providerRequestId: "req-1",
+      }),
+    );
+    expect(msg).toBe(
+      "Falha ao gerar a etiqueta na Mercado Livre: internal error (referência Mercado Livre: req-1)",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe("pré-checagem do XML (SHIPPING_LABEL_PRECHECKS)", () => {
   beforeEach(() => {
     process.env.SHIPPING_LABEL_PRECHECKS_DISABLED = "0";
