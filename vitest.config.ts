@@ -115,6 +115,12 @@ process.env.SHOPEE_INVOICE_ARRANGED_TOLERANT_DISABLED ??= "1";
 // reabilitam explicitamente por caso.
 process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED ??= "1";
 
+// Tolerância ao "documento ainda não está pronto para impressão" do
+// create_shipping_document: desligada por default na suíte pelo mesmo motivo —
+// ela troca PROVIDER_ERROR por NOT_READY, e os specs existentes afirmam o
+// comportamento anterior. Em produção o default é o oposto — ligada.
+process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED ??= "1";
+
 // Auto-desativacao de conta Shopee em falha terminal de refresh: desligada por
 // default na suite porque escreve em `MarketplaceAccount` (status=ERROR) a
 // partir de dentro do refresh, e os specs de OAuth mockam axios sem mockar o

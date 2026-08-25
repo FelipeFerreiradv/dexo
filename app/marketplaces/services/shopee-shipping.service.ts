@@ -146,6 +146,38 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
     );
   }
 
+  /**
+   * A Shopee recusa o create_shipping_document enquanto o documento de envio
+   * ainda está sendo preparado do lado dela:
+   *
+   *   fail_error   "logistics.package_can_not_print"
+   *   fail_message "The package can not print now.  Detail: The document is not
+   *                 yet ready for printing. Please try again later."
+   *
+   * É TEMPORÁRIO — a própria Shopee manda tentar de novo. Mas o corpo chega com
+   * `error: "common.batch_api_all_failed"` na raiz, virava PROVIDER_ERROR e
+   * gravava labelStatus=ERROR: 9 dos 17 pedidos presos em 25/08/2026 caíram
+   * aqui. Medido no mesmo dia: nos 14 presos o documento JÁ estava pronto, ou
+   * seja, era só questão de tentar mais tarde.
+   *
+   * Aqui o CÓDIGO serve de critério (ao contrário do get_shipping_parameter):
+   * "logistics.package_can_not_print" é específico, não é balde genérico.
+   */
+  private isLabelNotReadyYet(error: unknown): boolean {
+    const code = (
+      (error as { shopeeFailError?: string })?.shopeeFailError ?? ""
+    ).toLowerCase();
+    const msg = (
+      ((error as { shopeeFailMessage?: string })?.shopeeFailMessage ?? "") +
+      " " +
+      (error instanceof Error ? error.message : String(error))
+    ).toLowerCase();
+    return (
+      code === "logistics.package_can_not_print" ||
+      /document is not yet ready for printing/.test(msg)
+    );
+  }
+
   async ensureInvoiceSent(ctx: ShippingOrderContext): Promise<void> {
     // upload_invoice_doc envia/atualiza — re-chamar é idempotente (update).
     try {
@@ -293,12 +325,30 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
         }
       }
 
-      await ShopeeApiService.createShippingDocument(
-        token,
-        shopId,
-        orderList,
-        effectiveDocType,
-      );
+      try {
+        await ShopeeApiService.createShippingDocument(
+          token,
+          shopId,
+          orderList,
+          effectiveDocType,
+        );
+      } catch (error) {
+        if (
+          process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED === "1" ||
+          !this.isLabelNotReadyYet(error)
+        ) {
+          throw error;
+        }
+        console.warn(
+          `[Shipping] Shopee ainda esta preparando a etiqueta do(s) pedido(s) ${orderList
+            .map((o) => o.order_sn)
+            .join(", ")} (logistics.package_can_not_print) — NOT_READY em vez de erro definitivo.`,
+        );
+        throw new ShippingLabelError(
+          "NOT_READY",
+          "A Shopee ainda está preparando a etiqueta deste pedido. Tente novamente em alguns instantes.",
+        );
+      }
 
       let ready = false;
       for (let i = 0; i < this.pollMaxAttempts; i++) {

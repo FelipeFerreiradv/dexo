@@ -353,6 +353,116 @@ describe("ShopeeShippingLabelProvider — get_shipping_parameter recusado após 
   });
 });
 
+/**
+ * Segundo modo de falha do mesmo incidente: o create_shipping_document recusa
+ * enquanto a Shopee ainda prepara o documento. E temporario — ela mesma manda
+ * tentar de novo — mas virava labelStatus=ERROR permanente em 9 dos 17 pedidos
+ * presos.
+ */
+describe("ShopeeShippingLabelProvider — documento de envio ainda não está pronto", () => {
+  const ORIGINAL = process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED;
+
+  beforeEach(() => {
+    process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED = "0";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED;
+    } else {
+      process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED = ORIGINAL;
+    }
+  });
+
+  /** Corpo real: erro de topo generico, motivo enterrado no result_list. */
+  const naoPronto = (opts: { comCodigo: boolean }) => {
+    const err = new MarketplaceIntegrationError(
+      "shopee.logistics.create_shipping_document recusado pela SHOPEE: All failed, please check result_list for detail",
+      {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        httpStatus: 200,
+        providerErrorCode: "common.batch_api_all_failed",
+        providerMessage: "All failed, please check result_list for detail",
+        shopId: 123,
+      },
+    );
+    if (opts.comCodigo) {
+      (err as unknown as { shopeeFailError?: string }).shopeeFailError =
+        "logistics.package_can_not_print";
+    }
+    (err as unknown as { shopeeFailMessage?: string }).shopeeFailMessage =
+      "The package can not print now.  Detail: The document is not yet ready for printing. Please try again later.";
+    return err;
+  };
+
+  it("vira NOT_READY, não PROVIDER_ERROR — o pedido não é marcado como erro", async () => {
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      naoPronto({ comCodigo: true }),
+    );
+    const result = vi.spyOn(ShopeeApiService, "getShippingDocumentResult");
+
+    let caught: unknown;
+    try {
+      await new ShopeeShippingLabelProvider().getLabelPdf([ctx], {
+        size: "THERMAL",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as ShippingLabelError).code).toBe("NOT_READY");
+    expect((caught as ShippingLabelError).message).toContain(
+      "Tente novamente em alguns instantes",
+    );
+    expect(result).not.toHaveBeenCalled();
+  });
+
+  it("reconhece pela mensagem mesmo quando o fail_error não vem", async () => {
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      naoPronto({ comCodigo: false }),
+    );
+    let caught: unknown;
+    try {
+      await new ShopeeShippingLabelProvider().getLabelPdf([ctx], {
+        size: "THERMAL",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as ShippingLabelError).code).toBe("NOT_READY");
+  });
+
+  it("outra falha do create continua propagando como antes", async () => {
+    const outro = new MarketplaceIntegrationError(
+      "shopee.logistics.create_shipping_document recusado pela SHOPEE: invalid document type",
+      {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        httpStatus: 200,
+        providerErrorCode: "error_param",
+      },
+    );
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      outro,
+    );
+    await expect(
+      new ShopeeShippingLabelProvider().getLabelPdf([ctx], { size: "THERMAL" }),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+  });
+
+  it("kill-switch =1 restaura exatamente o comportamento anterior", async () => {
+    process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED = "1";
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      naoPronto({ comCodigo: true }),
+    );
+    await expect(
+      new ShopeeShippingLabelProvider().getLabelPdf([ctx], { size: "THERMAL" }),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+  });
+});
+
 describe("ShopeeApiService — logistics (HTTP de baixo nível)", () => {
   it("getShippingParameter → GET get_shipping_parameter com order_sn", async () => {
     (mockedAxios as any).request.mockResolvedValue({
@@ -365,6 +475,45 @@ describe("ShopeeApiService — logistics (HTTP de baixo nível)", () => {
     expect(cfg.url).toContain("/api/v2/logistics/get_shipping_parameter");
     expect(cfg.url).toContain("order_sn=2504ABC");
     expect(cfg.url).toContain("sign=");
+  });
+
+  it("createShippingDocument → expõe o fail_error enterrado no result_list", async () => {
+    // Corpo real da Shopee: erro generico na raiz, motivo real la dentro.
+    (mockedAxios as any).request.mockResolvedValue({
+      data: {
+        error: "common.batch_api_all_failed",
+        message: "All failed, please check result_list for detail",
+        response: {
+          result_list: [
+            {
+              order_sn: "2504ABC",
+              fail_error: "logistics.package_can_not_print",
+              fail_message:
+                "The package can not print now.  Detail: The document is not yet ready for printing. Please try again later.",
+            },
+          ],
+        },
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await ShopeeApiService.createShippingDocument(
+        "tok",
+        123,
+        [{ order_sn: "2504ABC" }],
+        "THERMAL_AIR_WAYBILL",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(MarketplaceIntegrationError);
+    expect(
+      (caught as unknown as { shopeeFailError?: string }).shopeeFailError,
+    ).toBe("logistics.package_can_not_print");
+    expect(
+      (caught as unknown as { shopeeFailMessage?: string }).shopeeFailMessage,
+    ).toContain("not yet ready for printing");
   });
 
   it("downloadShippingDocument → POST binário (arraybuffer) devolve Buffer", async () => {
