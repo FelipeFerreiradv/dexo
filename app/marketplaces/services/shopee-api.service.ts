@@ -1484,8 +1484,14 @@ export class ShopeeApiService {
         })),
       },
     );
+    // O motivo REAL da recusa vem enterrado no result_list — a mensagem de topo
+    // ("All failed, please check result_list for detail") não diz nada. Extrair
+    // aqui serve aos dois ramos de falha abaixo.
+    const failed = (response.response?.result_list ?? []).find(
+      (r) => r.fail_error || r.fail_message,
+    );
     if (response.error) {
-      throw integrationErrorFromBody(
+      const err = integrationErrorFromBody(
         response,
         {
         marketplace: "SHOPEE",
@@ -1494,10 +1500,15 @@ export class ShopeeApiService {
         shopId,
       },
       );
+      // Mesmo padrão do ship_order: campos extras preservados além do erro
+      // tipado, porque o adapter os lê para distinguir "documento ainda não
+      // ficou pronto" (temporário) de recusa definitiva.
+      (err as unknown as { shopeeFailError?: string }).shopeeFailError =
+        failed?.fail_error;
+      (err as unknown as { shopeeFailMessage?: string }).shopeeFailMessage =
+        failed?.fail_message;
+      throw err;
     }
-    const failed = (response.response?.result_list ?? []).find(
-      (r) => r.fail_error || r.fail_message,
-    );
     if (failed) {
       throw new Error(
         `Shopee rejeitou create_shipping_document (${failed.order_sn}): ${failed.fail_message ?? failed.fail_error}`,

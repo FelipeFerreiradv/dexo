@@ -319,6 +319,13 @@ como está, seguindo o estilo do entorno.
 | URL chamada | desconhecida | registrada, sem segredos |
 | `SystemLog` | nenhum | log estruturado com `correlationId` |
 
+> ⚠️ **CORRIGIDO EM 25/08/2026 — o parágrafo abaixo está ERRADO.** A mensagem
+> *"Shipping parameters can only be obtained when package is ready to be shipped"* não era a
+> janela da Shopee fechando: era um bug nosso, diagnosticado um mês depois. O `2607290P63B8P8`
+> tem rastreio (`BR266234950831I`) e etiqueta disponível, e foi destravado por
+> [`2026-08-25-shopee-etiqueta-autotranca.md`](2026-08-25-shopee-etiqueta-autotranca.md).
+> Os outros dois pedidos citados também. Nenhum precisou do Seller Center.
+
 **Sobre o pedido do incidente:** ele **não é recuperável por API**. A janela da Shopee fechou —
 `get_shipping_parameter` responde *"Shipping parameters can only be obtained when package is ready
 to be shipped"*, `create_shipping_document` falha e o download pede

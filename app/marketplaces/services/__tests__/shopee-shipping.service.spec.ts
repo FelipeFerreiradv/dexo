@@ -12,6 +12,7 @@ import axios from "axios";
 import { ShopeeApiService } from "../shopee-api.service";
 import { ShopeeShippingLabelProvider } from "../shopee-shipping.service";
 import { ShippingLabelError } from "../../shipping/shipping-label.types";
+import { MarketplaceIntegrationError } from "../../shipping/integration-error";
 import type { ShippingOrderContext } from "../../shipping/shipping-label.types";
 
 vi.mock("axios");
@@ -202,6 +203,266 @@ describe("ShopeeShippingLabelProvider", () => {
   });
 });
 
+/**
+ * Incidente de 25/08/2026: o pedido 2608221M2DR72U (e outros 13) ficou preso em
+ * labelStatus=ERROR porque o get_shipping_parameter — PRIMEIRA etapa da cadeia —
+ * recusa depois que o envio foi arranjado. E quem arranja o envio e o nosso
+ * proprio ship_order, na tentativa anterior: o pipeline se auto-tranca.
+ *
+ * Os erros abaixo sao os corpos REAIS medidos contra a Shopee de producao, com
+ * os codigos reais (error_other / error_param). Repare que os dois codigos sao
+ * baldes genericos — e por isso que o casamento e pelo texto.
+ */
+describe("ShopeeShippingLabelProvider — get_shipping_parameter recusado após o envio arranjado", () => {
+  const ORIGINAL = process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED;
+
+  beforeEach(() => {
+    process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED = "0";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED;
+    } else {
+      process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED = ORIGINAL;
+    }
+  });
+
+  /** Corpo real da Shopee: HTTP 200 com `error` preenchido. */
+  const recusa = (code: string, message: string) =>
+    new MarketplaceIntegrationError(
+      `shopee.logistics.get_shipping_parameter recusado pela SHOPEE: ${message}`,
+      {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_shipping_parameter",
+        step: "get_shipping_parameter",
+        httpStatus: 200,
+        providerErrorCode: code,
+        providerMessage: message,
+        orderSn: "2504ABC",
+        shopId: 123,
+      },
+    );
+
+  const NAO_REMARCAVEL = () =>
+    recusa("error_other", "Package OFG241055916134686 not eligible for rescheduling");
+  const JA_DESPACHADO = () =>
+    recusa(
+      "error_param",
+      "Shipping parameters can only be obtained when package is ready to be shipped",
+    );
+
+  it("pronto quando a Shopee diz 'not eligible for rescheduling' e há rastreio", async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      NAO_REMARCAVEL(),
+    );
+    const ship = vi.spyOn(ShopeeApiService, "shipOrder");
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockResolvedValue(
+      "BR267967530076P",
+    );
+
+    const r = await new ShopeeShippingLabelProvider().ensureReadyToShip(ctx);
+    expect(r.ready).toBe(true);
+    expect(r.trackingNumber).toBe("BR267967530076P");
+    expect(r.shipmentId).toBe("2504ABC");
+    // Não há o que arranjar: o envio já foi arranjado.
+    expect(ship).not.toHaveBeenCalled();
+  });
+
+  it("pronto também na outra frase, 'can only be obtained when package is ready to be shipped'", async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      JA_DESPACHADO(),
+    );
+    const ship = vi.spyOn(ShopeeApiService, "shipOrder");
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockResolvedValue("BR2601S");
+
+    const r = await new ShopeeShippingLabelProvider().ensureReadyToShip(ctx);
+    expect(r.ready).toBe(true);
+    expect(r.trackingNumber).toBe("BR2601S");
+    expect(ship).not.toHaveBeenCalled();
+  });
+
+  it("NÃO pronto (e sem marcar erro) quando não há rastreio para confirmar", async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      JA_DESPACHADO(),
+    );
+    const ship = vi.spyOn(ShopeeApiService, "shipOrder");
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockResolvedValue(null);
+
+    const r = await new ShopeeShippingLabelProvider().ensureReadyToShip(ctx);
+    expect(r.ready).toBe(false);
+    expect(r.reason).toContain("ready to be shipped");
+    expect(r.shipmentId).toBe("2504ABC");
+    expect(ship).not.toHaveBeenCalled();
+  });
+
+  it("rastreio VAZIO conta como ausência — é o que a Shopee devolve logo após o ship_order", async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      NAO_REMARCAVEL(),
+    );
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockResolvedValue("   ");
+
+    const r = await new ShopeeShippingLabelProvider().ensureReadyToShip(ctx);
+    expect(r.ready).toBe(false);
+  });
+
+  it("falha do get_tracking_number não vira sucesso silencioso", async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      NAO_REMARCAVEL(),
+    );
+    vi.spyOn(ShopeeApiService, "getTrackingNumber").mockRejectedValue(
+      new Error("indisponível"),
+    );
+
+    const r = await new ShopeeShippingLabelProvider().ensureReadyToShip(ctx);
+    expect(r.ready).toBe(false);
+  });
+
+  it("falha GENUÍNA do get_shipping_parameter continua propagando", async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      recusa("error_param", "Order does not exist"),
+    );
+    const ship = vi.spyOn(ShopeeApiService, "shipOrder");
+
+    await expect(
+      new ShopeeShippingLabelProvider().ensureReadyToShip(ctx),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+    expect(ship).not.toHaveBeenCalled();
+  });
+
+  it('"not ready" NÃO é tolerado — significa o oposto de "já arranjado"', async () => {
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      recusa("error_param", "Package is not ready"),
+    );
+    await expect(
+      new ShopeeShippingLabelProvider().ensureReadyToShip(ctx),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+  });
+
+  it("kill-switch =1 restaura exatamente o comportamento anterior", async () => {
+    process.env.SHOPEE_SHIPPING_PARAM_TOLERANT_DISABLED = "1";
+    vi.spyOn(ShopeeApiService, "getShippingParameter").mockRejectedValue(
+      NAO_REMARCAVEL(),
+    );
+    const tracking = vi.spyOn(ShopeeApiService, "getTrackingNumber");
+
+    await expect(
+      new ShopeeShippingLabelProvider().ensureReadyToShip(ctx),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+    expect(tracking).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Segundo modo de falha do mesmo incidente: o create_shipping_document recusa
+ * enquanto a Shopee ainda prepara o documento. E temporario — ela mesma manda
+ * tentar de novo — mas virava labelStatus=ERROR permanente em 9 dos 17 pedidos
+ * presos.
+ */
+describe("ShopeeShippingLabelProvider — documento de envio ainda não está pronto", () => {
+  const ORIGINAL = process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED;
+
+  beforeEach(() => {
+    process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED = "0";
+  });
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED;
+    } else {
+      process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED = ORIGINAL;
+    }
+  });
+
+  /** Corpo real: erro de topo generico, motivo enterrado no result_list. */
+  const naoPronto = (opts: { comCodigo: boolean }) => {
+    const err = new MarketplaceIntegrationError(
+      "shopee.logistics.create_shipping_document recusado pela SHOPEE: All failed, please check result_list for detail",
+      {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        httpStatus: 200,
+        providerErrorCode: "common.batch_api_all_failed",
+        providerMessage: "All failed, please check result_list for detail",
+        shopId: 123,
+      },
+    );
+    if (opts.comCodigo) {
+      (err as unknown as { shopeeFailError?: string }).shopeeFailError =
+        "logistics.package_can_not_print";
+    }
+    (err as unknown as { shopeeFailMessage?: string }).shopeeFailMessage =
+      "The package can not print now.  Detail: The document is not yet ready for printing. Please try again later.";
+    return err;
+  };
+
+  it("vira NOT_READY, não PROVIDER_ERROR — o pedido não é marcado como erro", async () => {
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      naoPronto({ comCodigo: true }),
+    );
+    const result = vi.spyOn(ShopeeApiService, "getShippingDocumentResult");
+
+    let caught: unknown;
+    try {
+      await new ShopeeShippingLabelProvider().getLabelPdf([ctx], {
+        size: "THERMAL",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as ShippingLabelError).code).toBe("NOT_READY");
+    expect((caught as ShippingLabelError).message).toContain(
+      "Tente novamente em alguns instantes",
+    );
+    expect(result).not.toHaveBeenCalled();
+  });
+
+  it("reconhece pela mensagem mesmo quando o fail_error não vem", async () => {
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      naoPronto({ comCodigo: false }),
+    );
+    let caught: unknown;
+    try {
+      await new ShopeeShippingLabelProvider().getLabelPdf([ctx], {
+        size: "THERMAL",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as ShippingLabelError).code).toBe("NOT_READY");
+  });
+
+  it("outra falha do create continua propagando como antes", async () => {
+    const outro = new MarketplaceIntegrationError(
+      "shopee.logistics.create_shipping_document recusado pela SHOPEE: invalid document type",
+      {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        httpStatus: 200,
+        providerErrorCode: "error_param",
+      },
+    );
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      outro,
+    );
+    await expect(
+      new ShopeeShippingLabelProvider().getLabelPdf([ctx], { size: "THERMAL" }),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+  });
+
+  it("kill-switch =1 restaura exatamente o comportamento anterior", async () => {
+    process.env.SHOPEE_LABEL_NOT_READY_TOLERANT_DISABLED = "1";
+    vi.spyOn(ShopeeApiService, "createShippingDocument").mockRejectedValue(
+      naoPronto({ comCodigo: true }),
+    );
+    await expect(
+      new ShopeeShippingLabelProvider().getLabelPdf([ctx], { size: "THERMAL" }),
+    ).rejects.toBeInstanceOf(MarketplaceIntegrationError);
+  });
+});
+
 describe("ShopeeApiService — logistics (HTTP de baixo nível)", () => {
   it("getShippingParameter → GET get_shipping_parameter com order_sn", async () => {
     (mockedAxios as any).request.mockResolvedValue({
@@ -214,6 +475,45 @@ describe("ShopeeApiService — logistics (HTTP de baixo nível)", () => {
     expect(cfg.url).toContain("/api/v2/logistics/get_shipping_parameter");
     expect(cfg.url).toContain("order_sn=2504ABC");
     expect(cfg.url).toContain("sign=");
+  });
+
+  it("createShippingDocument → expõe o fail_error enterrado no result_list", async () => {
+    // Corpo real da Shopee: erro generico na raiz, motivo real la dentro.
+    (mockedAxios as any).request.mockResolvedValue({
+      data: {
+        error: "common.batch_api_all_failed",
+        message: "All failed, please check result_list for detail",
+        response: {
+          result_list: [
+            {
+              order_sn: "2504ABC",
+              fail_error: "logistics.package_can_not_print",
+              fail_message:
+                "The package can not print now.  Detail: The document is not yet ready for printing. Please try again later.",
+            },
+          ],
+        },
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await ShopeeApiService.createShippingDocument(
+        "tok",
+        123,
+        [{ order_sn: "2504ABC" }],
+        "THERMAL_AIR_WAYBILL",
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(MarketplaceIntegrationError);
+    expect(
+      (caught as unknown as { shopeeFailError?: string }).shopeeFailError,
+    ).toBe("logistics.package_can_not_print");
+    expect(
+      (caught as unknown as { shopeeFailMessage?: string }).shopeeFailMessage,
+    ).toContain("not yet ready for printing");
   });
 
   it("downloadShippingDocument → POST binário (arraybuffer) devolve Buffer", async () => {
