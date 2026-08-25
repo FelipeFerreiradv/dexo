@@ -20,7 +20,14 @@
  * que nada mais referencia a URL antiga é no-op — é o que permite as
  * varreduras extras (+2min/+10min) cobrirem a corrida save-vs-complete.
  *
- * ── CUSTO MEDIDO EM PRODUÇÃO (pg_stat_statements, janela de 28,69 dias) ────
+ * ── CUSTO MEDIDO EM PRODUÇÃO ────────────────────────────────────────────────
+ *
+ * ⚠️ A TABELA ABAIXO É A FOTOGRAFIA DO DIAGNÓSTICO ORIGINAL (21/08/2026,
+ * janela de 28,69 dias, 68.211 chamadas). Os números das seções seguintes são
+ * de leituras POSTERIORES (24/08, 26 dias, 77.031 chamadas) e por isso não
+ * batem dígito a dígito com ela. Não é contradição: `pg_stat_statements`
+ * acumula, e cada seção diz de quando é. Onde os dois aparecem, vale o mais
+ * recente.
  *
  * Este é o caminho mais caro do banco inteiro. As quatro etapas rodam sempre
  * juntas — as 68.211 chamadas idênticas confirmam isso — e o total passa de
@@ -54,24 +61,38 @@
  * própria, e NÃO é pré-requisito do índice: sem índice, tirar as 918 linhas
  * não mudaria nada, porque o custo é ENCONTRAR as linhas, não devolvê-las.
  *
- * A ETAPA 1 FOI RESOLVIDA DEPOIS, e a etapa 2 NÃO. As duas pareciam o mesmo
- * problema; não são.
+ * AS ETAPAS 1 E 2 FORAM RESOLVIDAS DEPOIS, em entregas SEPARADAS. Elas
+ * pareciam o mesmo problema; não são — e é por isso que não vieram juntas.
  *
  * A etapa 1 é IGUALDADE PURA (`"imageUrl" = $4`), que é o caso canônico de
  * b-tree composto. Ganhou `@@index([userId, imageUrl])` — ver
  * prisma/ddl/2026-08-24-product-userid-imageurl-idx.sql. Medido em transação
  * desfeita contra produção: 50,09ms/25.541 páginas -> 0,101ms/4 páginas.
  *
- * A etapa 2 usa `$4 = ANY("imageUrls")`, e isso NÃO aproveita índice GIN: para
- * aproveitar, a consulta teria de virar `"imageUrls" @> ARRAY[$4]`. Ou seja,
- * mudança de índice E de código, com custo de escrita de um GIN sobre 1.822.813
- * elementos de array na tabela mais escrita do sistema (517 MB de dados, 384 MB
- * de índices) — custo que NÃO foi medido. Enquanto não for, mexer ali é trocar
- * uma lentidão conhecida por um risco desconhecido. A etapa 3 mostra que a
- * forma da consulta não é o problema: idêntica, na tabela pequena, custa
- * 0,05ms.
+ * A ETAPA 2 FOI RESOLVIDA DEPOIS, quando o custo que faltava foi medido.
+ * Ela precisou de duas coisas ao mesmo tempo, e é por isso que demorou mais:
+ * um índice GIN sobre `imageUrls` E a condição `@>` na consulta (ver a nota no
+ * `$executeRaw` abaixo). Medido em transação desfeita contra produção:
+ * 89,83ms/26.262 páginas -> 0,109ms/5 páginas.
  *
- * A etapa 3 não tem o que otimizar: 3,5 segundos no mês inteiro.
+ * O QUE SEGURAVA A DECISÃO ERA O CUSTO DE ESCRITA, e ele agora tem número.
+ * Diferente do índice da etapa 1 — cujo custo ficou abaixo do piso de ruído —
+ * o do GIN é mensurável: num lote de 400 linhas que NÃO toca o array, o UPDATE
+ * passou de ~87ms para ~105ms com `fastupdate=on` e ~120ms com `fastupdate=off`
+ * (medições pareadas, com inversão de ordem). Em produção isso dá ~0,08ms por
+ * linha; a tabela recebe ~10.700 updates/dia, logo **menos de 1 s/dia** contra
+ * **85,6 s/dia** que a etapa 2 gastava. Razão de ~100:1.
+ *
+ * Escolhido `fastupdate=off` DE PROPÓSITO, apesar de ser o mais caro dos dois:
+ * com a lista pendente ligada, o custo é diferido e depois cobrado de uma
+ * transação azarada em bloco — um pico de latência imprevisível. Com ela
+ * desligada, cada escrita paga na hora. Dado que o total é ~1 s/dia, vale mais
+ * a previsibilidade que a média.
+ *
+ * A ETAPA 3 continua sem índice e sem precisar dele: idêntica em forma à etapa
+ * 2, mas na tabela pequena de sucatas custa 0,05ms — 3,5 segundos no mês
+ * inteiro. É o controle que mostra que a FORMA da consulta nunca foi o
+ * problema: o que pesava era o tamanho do catálogo de produtos.
  */
 
 import { Prisma } from "@prisma/client";
@@ -114,10 +135,34 @@ export async function swapImageUrlReferences(input: {
     })
   ).count;
 
+  // ⚠️ A CONDIÇÃO `@>` EXISTE PARA O ÍNDICE GIN, E O `= ANY` FICOU DE PROPÓSITO.
+  //
+  //   CREATE INDEX "Product_imageUrls_idx" ON "Product" USING gin ("imageUrls")
+  //     WITH (fastupdate = off);
+  //
+  // (declarado em prisma/schema.prisma como @@index([imageUrls], type: Gin);
+  // análise em prisma/ddl/2026-08-24-product-imageurls-gin.sql)
+  //
+  // `$4 = ANY(coluna)` NÃO usa índice GIN — é ScalarArrayOpExpr sobre uma
+  // COLUNA, não uma constante, e nenhuma classe de operador do GIN o atende.
+  // Medido em produção: com o GIN criado e a consulta inalterada, o plano
+  // continuou varrendo 59.607 produtos em 99 ms. Só `@>` é indexável.
+  //
+  // As DUAS condições ficam porque são equivalentes para `oldUrl` não-nulo — e
+  // isso foi VERIFICADO, não deduzido: comparando `@>` contra `= ANY` linha a
+  // linha nos 366.343 produtos, deram ZERO divergências. Manter o `= ANY` faz
+  // a mudança de predicado ser estritamente não-restritiva: ele continua sendo
+  // a âncora semântica e vira o `Filter` de recheck do Bitmap Heap Scan, que
+  // custa nada porque os candidatos são ~0.
+  //
+  // ⚠️ NÃO trocar `@>` por `&&` (sobreposição): com array de um elemento os
+  // dois coincidem, mas `&&` é "tem algum em comum" e mudaria de significado
+  // se alguém passasse mais de uma URL.
   const productImageUrls = await db.$executeRaw`
     UPDATE "Product"
        SET "imageUrls" = array_replace("imageUrls", ${oldUrl}, ${newUrl})
      WHERE "userId" = ${userId}
+       AND "imageUrls" @> ARRAY[${oldUrl}]
        AND ${oldUrl} = ANY("imageUrls")`;
 
   const scrapImageUrls = await db.$executeRaw`
