@@ -1535,6 +1535,30 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         versions: ["Style", "Premium", "Evolution", "Diamond Plus", "1.6"],
       },
       {
+        // Utilitario leve (VUC) 2.5 turbodiesel, concorrente do Kia Bongo.
+        // NAO confundir com o Honda HR-V, que ja existe na marca Honda: nome
+        // parecido, veiculo completamente diferente.
+        //
+        // Anos: a FIPE (015065-7, "HR 2.5 TCI Diesel (RS/RD)") cobre 2005-2022;
+        // 2023-2025 vem do "HR 2.5 CRDI 4WD". Producao encerrada em abril/2024
+        // pelo Proconve L8, ultimo exemplar saiu de Anapolis em nov/2025.
+        name: "HR",
+        yearFrom: 2005,
+        yearTo: 2025,
+        versions: [
+          "2.5 TCI",
+          "2.5 CRDi",
+          "HD",
+          "HD Cabine Curta",
+          "HD Longo com Caçamba",
+          "HD Longo sem Caçamba",
+          "Baú",
+          "Chassi",
+          "4x4",
+          "GL",
+        ],
+      },
+      {
         name: "i30",
         yearFrom: 2009,
         yearTo: 2019,
