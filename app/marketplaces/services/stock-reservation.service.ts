@@ -197,13 +197,51 @@ export async function recomputeReservedStockWithinTx(
   let enqueued = 0;
   const nextRunAt = new Date(Date.now() + RESERVATION_SYNC_DELAY_MS);
 
-  for (const c of changed) {
-    const listings = await tx.productListing.findMany({
-      where: { productId: c.productId },
-      include: { marketplaceAccount: { select: { platform: true } } },
-    });
+  // ── Pré-carga em LOTE ───────────────────────────────────────────────────
+  //
+  // Duas das sete regras de egress da casa
+  // (scripts/docs/doc-ingestao-pedidos.tsx) se aplicam aqui, e a primeira
+  // versão deste código violava as duas:
+  //
+  //  · "Pré-carga em lote no lugar de consultas repetidas dentro de laços" —
+  //    era um `findMany` POR PRODUTO dentro do `for`. Num backfill de lote 25
+  //    isso são 25 idas ao banco onde uma basta.
+  //
+  //  · "Nenhuma leitura sem seleção explícita de campos em caminho recorrente"
+  //    e "proibido carregar a linha inteira de um produto numa consulta de
+  //    anúncios" — o `include` sem `select` trazia as 61 colunas de
+  //    `ProductListing`, incluindo `compatDiagnostics` (JSON, média 310 bytes
+  //    nas 11.155 linhas que o têm) e `lastError`. MEDIDO em produção (25/08):
+  //    280 bytes/linha inteira contra 52 bytes dos campos realmente usados —
+  //    5,4× de desperdício, em 402.305 linhas.
+  //
+  // `orderBy` explícito não é enfeite: o lock é adquirido na ordem em que os
+  // listings saem daqui, e ordem determinística entre os três produtores que
+  // disputam `stock_sync_job:<listingId>` é a cura clássica para deadlock. A
+  // iteração externa continua sendo por `changed`, na mesma ordem de antes.
+  const listings = (await tx.productListing.findMany({
+    where: { productId: { in: changed.map((c) => c.productId) } },
+    select: {
+      id: true,
+      productId: true,
+      marketplaceAccount: { select: { platform: true } },
+    },
+    orderBy: { id: "asc" },
+  })) as Array<{
+    id: string;
+    productId: string;
+    marketplaceAccount: { platform: string } | null;
+  }>;
 
-    for (const listing of listings) {
+  const listingsPorProduto = new Map<string, typeof listings>();
+  for (const l of listings) {
+    const lista = listingsPorProduto.get(l.productId);
+    if (lista) lista.push(l);
+    else listingsPorProduto.set(l.productId, [l]);
+  }
+
+  for (const c of changed) {
+    for (const listing of listingsPorProduto.get(c.productId) ?? []) {
       // Serializa com StockReconciliationService e StockDeductionService pelo
       // mesmo listing para evitar P2002 no upsert não-atômico do Prisma: os
       // três lados pegam o mesmo advisory lock antes de SELECT/INSERT.
@@ -216,7 +254,7 @@ export async function recomputeReservedStockWithinTx(
         create: {
           productId: c.productId,
           listingId: listing.id,
-          platform: listing.marketplaceAccount.platform,
+          platform: listing.marketplaceAccount!.platform,
           // O DISPONÍVEL, como o reconciliador grava
           // (stock-reconciliation.service.ts:117). Hoje a coluna é write-only —
           // o consumidor relê o produto —, mas gravar o número errado seria uma

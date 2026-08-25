@@ -39,7 +39,11 @@ type Produto = {
 function makeTx(opts: {
   produtos?: Produto[];
   somas?: Array<{ productId: string; _sum: { quantity: number | null } }>;
-  listings?: Array<{ id: string; marketplaceAccount: { platform: string } }>;
+  listings?: Array<{
+    id: string;
+    productId: string;
+    marketplaceAccount: { platform: string };
+  }>;
 }) {
   return {
     product: {
@@ -58,7 +62,11 @@ function makeTx(opts: {
 }
 
 const UM_LISTING = [
-  { id: "listing-1", marketplaceAccount: { platform: "MERCADO_LIVRE" } },
+  {
+    id: "listing-1",
+    productId: "p-1",
+    marketplaceAccount: { platform: "MERCADO_LIVRE" },
+  },
 ];
 
 /** Liga as duas flags. O serviço lê `process.env` direto, sem injeção. */
@@ -401,5 +409,137 @@ describe("Venda parcelada PENDENTE — quando destravar é seguro", () => {
 
   it("flag OFF ⇒ recusa como sempre recusou", () => {
     expect(podeApagarTudo(false, "PENDENTE", ["PENDENTE"])).toBe(false);
+  });
+});
+
+// ── EGRESS: as sete regras da casa aplicadas a este caminho ────────────────
+//
+// A primeira versão deste serviço violava duas delas — um `findMany` por
+// produto dentro do laço, e `include` sem `select` trazendo as 61 colunas de
+// `ProductListing` quando só duas são usadas (280 bytes/linha contra 52,
+// medido em produção sobre 402.305 linhas).
+//
+// Estes testes existem para que a violação não volte: são a única coisa que
+// separa "uma consulta enxuta" de "N consultas gordas" numa próxima edição.
+describe("Egress — pré-carga em lote e seleção explícita", () => {
+  it("UMA consulta de anúncios para TODOS os produtos, não uma por produto", async () => {
+    ligarTudo();
+    const tx = makeTx({
+      produtos: [
+        { id: "p-1", userId: "u-1", stock: 1, reservedStock: 0 },
+        { id: "p-2", userId: "u-1", stock: 1, reservedStock: 0 },
+        { id: "p-3", userId: "u-1", stock: 1, reservedStock: 0 },
+      ],
+      somas: [
+        { productId: "p-1", _sum: { quantity: 1 } },
+        { productId: "p-2", _sum: { quantity: 1 } },
+        { productId: "p-3", _sum: { quantity: 1 } },
+      ],
+      listings: [
+        {
+          id: "l-1",
+          productId: "p-1",
+          marketplaceAccount: { platform: "MERCADO_LIVRE" },
+        },
+        {
+          id: "l-2",
+          productId: "p-2",
+          marketplaceAccount: { platform: "SHOPEE" },
+        },
+        {
+          id: "l-3",
+          productId: "p-3",
+          marketplaceAccount: { platform: "MERCADO_LIVRE" },
+        },
+      ],
+    });
+
+    const r = await recomputeReservedStockWithinTx(tx, ["p-1", "p-2", "p-3"]);
+
+    // Três produtos mudaram, UMA ida ao banco.
+    expect(tx.productListing.findMany).toHaveBeenCalledTimes(1);
+    expect(r.enqueued).toBe(3);
+
+    const arg = tx.productListing.findMany.mock.calls[0][0];
+    expect(arg.where).toEqual({
+      productId: { in: ["p-1", "p-2", "p-3"] },
+    });
+  });
+
+  it("seleção EXPLÍCITA: só os campos usados, nunca a linha inteira", async () => {
+    ligarTudo();
+    const tx = makeTx({
+      produtos: [{ id: "p-1", userId: "u-1", stock: 1, reservedStock: 0 }],
+      somas: [{ productId: "p-1", _sum: { quantity: 1 } }],
+      listings: UM_LISTING,
+    });
+
+    await recomputeReservedStockWithinTx(tx, ["p-1"]);
+
+    const arg = tx.productListing.findMany.mock.calls[0][0];
+    // `include` traria as 61 colunas, incluindo o JSON de compatDiagnostics.
+    expect(arg.include).toBeUndefined();
+    expect(arg.select).toEqual({
+      id: true,
+      productId: true,
+      marketplaceAccount: { select: { platform: true } },
+    });
+    // Ordem determinística: o advisory lock é adquirido nesta ordem, e três
+    // produtores disputam a mesma chave.
+    expect(arg.orderBy).toEqual({ id: "asc" });
+  });
+
+  it("cada anúncio vira UM job — o agrupamento não perde nem duplica", async () => {
+    ligarTudo();
+    const tx = makeTx({
+      produtos: [{ id: "p-1", userId: "u-1", stock: 1, reservedStock: 0 }],
+      somas: [{ productId: "p-1", _sum: { quantity: 1 } }],
+      listings: [
+        {
+          id: "l-1",
+          productId: "p-1",
+          marketplaceAccount: { platform: "MERCADO_LIVRE" },
+        },
+        {
+          id: "l-2",
+          productId: "p-1",
+          marketplaceAccount: { platform: "SHOPEE" },
+        },
+      ],
+    });
+
+    const r = await recomputeReservedStockWithinTx(tx, ["p-1"]);
+
+    expect(r.enqueued).toBe(2);
+    expect(tx.stockSyncJob.upsert).toHaveBeenCalledTimes(2);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    const plataformas = tx.stockSyncJob.upsert.mock.calls.map(
+      (c: any) => c[0].create.platform,
+    );
+    expect(plataformas.sort()).toEqual(["MERCADO_LIVRE", "SHOPEE"]);
+  });
+
+  it("anúncio de produto que NÃO mudou não entra no lote", async () => {
+    // O `where` do lote é montado a partir de `changed`, não de `ids`. Se um dia
+    // alguém trocar por `ids`, este teste falha — e o custo seria carregar
+    // anúncio de produto que não tinha nada a propagar.
+    ligarTudo();
+    const tx = makeTx({
+      produtos: [
+        { id: "p-1", userId: "u-1", stock: 1, reservedStock: 0 },
+        // p-2 já está com o disponível que terá: não muda nada.
+        { id: "p-2", userId: "u-1", stock: 0, reservedStock: 1 },
+      ],
+      somas: [
+        { productId: "p-1", _sum: { quantity: 1 } },
+        { productId: "p-2", _sum: { quantity: 1 } },
+      ],
+      listings: UM_LISTING,
+    });
+
+    await recomputeReservedStockWithinTx(tx, ["p-1", "p-2"]);
+
+    const arg = tx.productListing.findMany.mock.calls[0][0];
+    expect(arg.where).toEqual({ productId: { in: ["p-1"] } });
   });
 });
