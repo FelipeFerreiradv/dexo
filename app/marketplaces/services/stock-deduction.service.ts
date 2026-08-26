@@ -171,9 +171,29 @@ export class StockDeductionService {
       }
 
       // Enfileira sync durável para cada listing vinculado ao produto.
+      //
+      // `select` e não `include`: destes registros o código usa exatamente DOIS
+      // campos — `listing.id` e `marketplaceAccount.platform`. O `include`
+      // trazia as 61 colunas de `ProductListing`, entre elas o JSON de
+      // `compatDiagnostics` e o texto de `lastError`.
+      //
+      // MEDIDO em produção (25/08), sobre 402.305 linhas: 280 bytes por linha
+      // inteira contra 52 bytes dos campos usados — 5,4× de desperdício, num
+      // caminho que roda em TODA baixa de estoque (venda de balcão e pedido de
+      // marketplace). É a regra "nenhuma leitura sem seleção explícita em
+      // caminho recorrente" (scripts/docs/doc-ingestao-pedidos.tsx).
+      //
+      // A consulta continua sendo por item, e não em lote, DE PROPÓSITO: o
+      // advisory lock é adquirido na ordem em que os listings saem daqui, e
+      // agrupar mudaria essa ordem num caminho onde três produtores disputam a
+      // mesma chave. Uma dedução típica tem 1–5 itens; o ganho do lote seria
+      // marginal e o risco não é.
       const listings = await tx.productListing.findMany({
         where: { productId: item.productId },
-        include: { marketplaceAccount: { select: { platform: true } } },
+        select: {
+          id: true,
+          marketplaceAccount: { select: { platform: true } },
+        },
       });
 
       for (const listing of listings) {
@@ -276,9 +296,14 @@ export class StockDeductionService {
         `${logPrefix} Stock restored: ${product.name} (${previousStock} → ${newStock})`,
       );
 
+      // `select` e não `include` — mesmo motivo do gêmeo em `deductWithinTx`:
+      // dois campos usados, 61 carregados. Ver a nota lá.
       const listings = await tx.productListing.findMany({
         where: { productId: item.productId },
-        include: { marketplaceAccount: { select: { platform: true } } },
+        select: {
+          id: true,
+          marketplaceAccount: { select: { platform: true } },
+        },
       });
 
       for (const listing of listings) {
