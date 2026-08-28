@@ -449,6 +449,22 @@ class ProductRepositoryPrisma implements ProductRepository {
       description: true,
       price: true,
       stock: true,
+      // BLOCO G — sem esta linha a exibição do DISPONÍVEL na listagem é no-op.
+      //
+      // `productSelect` é allowlist fechada e alimenta os 5 caminhos do
+      // `findAll`. Sem a coluna aqui, `mapPrismaToProduct` resolve
+      // `reservedStock` para `undefined` (:279, e o `?? undefined` é
+      // deliberado), o campo some do JSON e o card do catálogo mostra estoque
+      // BRUTO — foi exatamente o que fez uma peça vendida fiado continuar
+      // aparecendo como "1 un." depois da venda.
+      //
+      // Custo medido: ~18 bytes/linha. Página default são 10 itens e o teto é
+      // 100 (product.routes.ts, products-list.tsx), então ~180 bytes no caso
+      // típico e ~2 KB no pior — duas ordens de grandeza abaixo do
+      // `mlCatalogSnapshot` que este mesmo bloco removeu de propósito. Mesmo
+      // raciocínio (e mesmo precedente) do lookup do financeiro em
+      // nfe.repository.ts.
+      reservedStock: true,
       createdAt: true,
       updatedAt: true,
       costPrice: true,

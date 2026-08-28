@@ -27,6 +27,10 @@ export interface Product {
   description?: string | null;
   price: number;
   stock: number;
+  // BLOCO G — comprometido por venda pendente. OPCIONAL: projeções antigas em
+  // cache ou respostas de versões anteriores da API não trazem o campo, e um
+  // tipo obrigatório mentiria. Ausente ⇒ o disponível é o próprio `stock`.
+  reservedStock?: number | null;
   createdAt: string;
   updatedAt: string;
   costPrice?: number | null;

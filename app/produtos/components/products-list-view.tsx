@@ -30,6 +30,7 @@ import {
   formatDate,
   formatPrice,
   getStockBadgeVariant,
+  getStockDisplay,
 } from "../lib/product-format";
 import {
   computeProductPauseState,
@@ -205,9 +206,29 @@ export function ProductsListView({
                   {formatPrice(product.price)}
                 </TableCell>
                 <TableCell>
-                  <Badge variant={getStockBadgeVariant(product.stock)}>
-                    {product.stock} un.
-                  </Badge>
+                  {(() => {
+                    // BLOCO G — disponível quando há venda pendente segurando a
+                    // peça; sem reserva, idêntico ao de antes.
+                    const e = getStockDisplay(
+                      product.stock,
+                      product.reservedStock,
+                    );
+                    return (
+                      <>
+                        <Badge
+                          variant={getStockBadgeVariant(e.value)}
+                          title={e.detail ?? undefined}
+                        >
+                          {e.value} {e.suffix}
+                        </Badge>
+                        {e.detail ? (
+                          <p className="mt-1 text-[11px] leading-tight text-muted-foreground">
+                            {e.detail}
+                          </p>
+                        ) : null}
+                      </>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell className="hidden text-muted-foreground lg:table-cell">
                   {product.locationPath ??
@@ -355,9 +376,28 @@ export function ProductsListView({
                       </p>
                     )}
                   </div>
-                  <Badge variant={getStockBadgeVariant(product.stock)}>
-                    {product.stock} un.
-                  </Badge>
+                  {(() => {
+                    // BLOCO G — mesma regra da visão de tabela.
+                    const e = getStockDisplay(
+                      product.stock,
+                      product.reservedStock,
+                    );
+                    return (
+                      <div className="text-right">
+                        <Badge
+                          variant={getStockBadgeVariant(e.value)}
+                          title={e.detail ?? undefined}
+                        >
+                          {e.value} {e.suffix}
+                        </Badge>
+                        {e.detail ? (
+                          <p className="mt-1 text-[11px] leading-tight text-muted-foreground">
+                            {e.detail}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {product.description && (
                   <p
