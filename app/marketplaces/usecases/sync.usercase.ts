@@ -4284,6 +4284,10 @@ export class SyncUseCase {
     externalListingId: string,
     account: any,
     knownListingId?: string | null,
+    // Status LOCAL do anúncio e memo da preferência. Ambos opcionais:
+    // omitidos, o método se comporta exatamente como antes.
+    statusLocal?: string | null,
+    prefMemo?: Map<string, boolean>,
   ): Promise<SyncResult> {
     const result: SyncResult = {
       success: false,
@@ -4312,6 +4316,28 @@ export class SyncUseCase {
         if (knownListingId) {
           await ListingRepository.updateStatus(knownListingId, "paused");
         }
+      } else if (
+        await this.manterForaDoArPorPreferencia(
+          { id: knownListingId, status: statusLocal },
+          account,
+          prefMemo,
+        )
+      ) {
+        // O lojista desligou a reabertura automática e este anúncio está
+        // `paused` — fomos NÓS que o despublicamos. Na OLX não existe
+        // "atualizar sem publicar": `submitImport` É a publicação. Então
+        // sincronizar os dados aqui significaria devolver o anúncio ao ar
+        // por causa de uma edição de cadastro, desfazendo a decisão dele.
+        //
+        // Mesmo desenho do Mercado Livre, que já não sincroniza título e
+        // descrição de item pausado (o gate `status === "active" &&
+        // stock > 0` no `syncMLProductData`). A edição chega ao canal
+        // quando o anúncio for reativado.
+        result.success = true;
+        result.newStock = targetStock;
+        (result as any).skipped = true;
+        (result as any).skipReason = "olx_reopen_disabled_by_preference";
+        return result;
       } else {
         const category =
           OlxCategoryResolutionService.resolveCategoryId(product);
@@ -4564,6 +4590,11 @@ export class SyncUseCase {
     product: any,
     externalListingId: string,
     account: any,
+    // Status LOCAL do anúncio e memo da preferência. Ambos opcionais:
+    // omitidos, o método se comporta exatamente como antes.
+    statusLocal?: string | null,
+    knownListingId?: string | null,
+    prefMemo?: Map<string, boolean>,
   ): Promise<SyncResult> {
     const result: SyncResult = {
       success: false,
@@ -4587,11 +4618,28 @@ export class SyncUseCase {
 
     try {
       const targetStock = Number(product.stock) || 0;
+
+      // ⚠️ AQUI A GUARDA NÃO PULA A SINCRONIZAÇÃO — ela segura só a
+      // DISPONIBILIDADE, e a diferença para a OLX é da API, não de
+      // capricho: o `upsertItem` da Meta atualiza título, descrição e
+      // fotos SEM precisar tornar o item comprável, enquanto na OLX
+      // publicar é a única forma de atualizar. Então aqui dá para fazer o
+      // certo pelos dois lados: a edição de cadastro chega ao catálogo, e
+      // o item continua fora do ar até o lojista reativar.
+      const manterFora = await this.manterForaDoArPorPreferencia(
+        { id: knownListingId, status: statusLocal },
+        account,
+        prefMemo,
+      );
+      const disponibilidade =
+        !manterFora && targetStock > 0 ? "in stock" : "out of stock";
+      const quantidade = manterFora ? 0 : targetStock;
+
       const data = FacebookPayloadBuilderService.build(product, {
         googleProductCategory:
           FacebookCategoryResolutionService.resolveCategory(product),
-        availability: targetStock > 0 ? "in stock" : "out of stock",
-        quantity: targetStock,
+        availability: disponibilidade,
+        quantity: quantidade,
         // URL da página do vendedor por conta (env só fallback): sem isto o
         // `link` do item seria reescrito com a URL global de outro tenant.
         productUrlBase:
@@ -5150,6 +5198,10 @@ export class SyncUseCase {
     productId: string,
     externalListingId: string,
     marketplaceAccountId: string,
+    // Tabela viva do chamador (não é cache): `syncProductListings` roda
+    // este método uma vez por anúncio do MESMO produto — e portanto do
+    // mesmo dono. Omitido, cada chamada lê por conta própria.
+    prefMemo?: Map<string, boolean>,
   ): Promise<SyncResult> {
     const result: SyncResult = {
       success: false,
@@ -5285,12 +5337,18 @@ export class SyncUseCase {
             // Mesmo padrão do ML: o listing já está carregado, e a despublicação
             // por estoque zerado precisa do id para gravar o status "paused".
             listingForOverrides?.id ?? null,
+            // O status vem do MESMO findUnique de cima — nenhuma consulta nova.
+            listingForOverrides?.status ?? null,
+            prefMemo,
           );
         case Platform.FACEBOOK:
           return await this.syncFacebookProductData(
             effectiveProduct,
             externalListingId,
             account,
+            listingForOverrides?.status ?? null,
+            listingForOverrides?.id ?? null,
+            prefMemo,
           );
         default:
           throw new Error(
