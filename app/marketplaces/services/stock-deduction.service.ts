@@ -1,5 +1,4 @@
 import type { Prisma } from "@prisma/client";
-import { Platform } from "@prisma/client";
 
 /**
  * Serviço compartilhado de baixa atômica de estoque.
@@ -53,32 +52,6 @@ export interface DeductWithinTxInput {
   logPrefix?: string;
 }
 
-/**
- * Plataformas em que o anúncio REALMENTE sai do ar quando o estoque zera por
- * venda de MARKETPLACE.
- *
- * ML: `updateItem({status:"paused"})`. OLX: `deleteAd` (a OLX não tem pausa).
- * Facebook: `setAvailability("out of stock")`.
- *
- * Shopee e Magalu ficam DE FORA, e a ausência é a parte importante: o
- * cancelamento de pedido nunca passou `pauseOnZero` (ver o comentário em
- * `OrderUseCase.deductStockForOrder`), e o sync a estoque zero desses dois só
- * empurra QUANTIDADE — `updateItemStock(0)` e `setStock(0)`. O anúncio
- * continua publicado, só sem unidade. Mandar `paused` para eles seria
- * DESPUBLICAR (`unlist_item`, `active:false`) algo que nunca saiu do ar — e
- * nenhuma rotina automática desfaz isso: não existe `unlist:false` nem
- * `active:true` em nenhum caminho de sync, só no botão manual da tela.
- *
- * ⚠️ Vale só para o caminho de PEDIDO. No balcão o `markPaid` passa
- * `pauseOnZero` (finance.usecase.ts), então lá os cinco canais saíram do ar de
- * verdade e o estorno pode devolver todos — por isso `FinanceUseCase.reverse`
- * NÃO usa esta lista.
- */
-export const PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE: Platform[] = [
-  Platform.MERCADO_LIVRE,
-  Platform.OLX,
-  Platform.FACEBOOK,
-];
 export interface FirePostEffectsInput {
   deductions: StockDeductionResult[];
   /** Preserva prefixo de log do caller. */
@@ -128,8 +101,22 @@ export interface FirePostEffectsInput {
    * `firePostEffects`: a ordem é o ponto todo.
    *
    * Mesmo filtro do irmão: só produtos que saíram de zero.
+   *
+   * ⭐ VALE PARA TODOS OS CANAIS, e a uniformidade é o requisito, não um
+   * detalhe. A peça é UMA e ainda não voltou ao pátio: deixá-la comprável na
+   * Shopee porque "lá o anúncio nunca saiu do ar" reproduz exatamente o
+   * problema que a preferência existe para resolver — o lojista de peça usada
+   * vende de novo o que não tem, e cancela pela segunda vez.
+   *
+   * Cada plataforma tira do ar do seu jeito (`updateItem status:paused` no ML,
+   * `unlist_item` na Shopee, `active:false` na Magalu, `deleteAd` na OLX,
+   * `out of stock` no Facebook), e em nenhuma delas a pausa é desfeita por
+   * rotina automática: `unlist:false` e `active:true` existem SÓ em
+   * `updateListingStatus`, ou seja, no botão de reativar da tela. É o mesmo
+   * contrato do ML, e é o que o texto da preferência promete: "o anúncio
+   * continua pausado até você reativar".
    */
-  keepPausedOnRefill?: { userId: string; platforms?: Platform[] };
+  keepPausedOnRefill?: { userId: string };
   /**
    * Opcional, só para observabilidade: o mesmo `reason` que foi para o
    * StockLog. Enriquece o SystemLog de `STOCK_ZEROED_IN_ONE_MOVE`. Ausente =
@@ -589,7 +576,7 @@ export class StockDeductionService {
     );
     if (refilled.length === 0) return;
 
-    const { userId, platforms } = input.keepPausedOnRefill;
+    const { userId } = input.keepPausedOnRefill;
     try {
       const { ProductUseCase } = await import("@/app/usecases/product.usercase");
       const uc = new ProductUseCase();
@@ -597,9 +584,6 @@ export class StockDeductionService {
         try {
           await uc.pauseListings(d.productId, userId, "paused", {
             forceRemote: true,
-            // Ausente ⇒ todos os canais — é o caso do estorno de balcão, que
-            // pausou os cinco ao receber a venda.
-            ...(platforms ? { platforms } : {}),
           });
         } catch (err) {
           console.error(

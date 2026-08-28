@@ -20,7 +20,6 @@ import {
   StockDeductionService,
   type StockDeductionResult,
   type StockOversellAlert,
-  PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
 } from "../services/stock-deduction.service";
 import {
   ScrapStatusReconcileService,
@@ -4226,22 +4225,15 @@ export class OrderUseCase {
               }
             : // Preferência OFF não é "não fazer nada": o empurrão de
               // quantidade que acontece logo acima REABRE o anúncio sozinho
-              // (o ML tira o `out_of_stock`; Shopee/Magalu voltam a vender
-              // porque aqui nunca houve `pauseOnZero`). Sem esta chave a tela
-              // promete uma coisa e o marketplace faz outra — medido em
-              // produção em 5 anúncios da REBOOTEC.
-              // `platforms`: só os canais em que a venda REALMENTE tirou o
-              // anúncio do ar. Shopee e Magalu ficam de fora porque este
-              // caminho nunca passou `pauseOnZero` — lá o anúncio seguiu
-              // publicado com quantidade 0, e despublicá-lo agora seria uma
-              // ação nova, mais forte que "manter pausado", que nenhuma
-              // rotina desfaz.
-              {
-                keepPausedOnRefill: {
-                  userId: contaDoPedido.userId,
-                  platforms: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
-                },
-              }),
+              // (o ML tira o `out_of_stock`; na Shopee e na Magalu a peça
+              // volta a ser comprável porque aqui nunca houve `pauseOnZero`).
+              // Sem esta chave a tela promete uma coisa e o marketplace faz
+              // outra — medido em produção em 5 anúncios de uma conta real.
+              //
+              // Vale para TODOS os canais do produto: a peça é uma só e ainda
+              // não voltou ao pátio. Manter só o ML fora do ar enquanto a
+              // Shopee segue vendendo é o próprio bug, de outro ângulo.
+              { keepPausedOnRefill: { userId: contaDoPedido.userId } }),
         });
 
         // Reflexo no status do LOTE. `Scrap.status` é coluna persistida; só o

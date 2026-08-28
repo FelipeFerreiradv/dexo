@@ -38,7 +38,6 @@ import { OrderUseCase } from "@/app/marketplaces/usecases/order.usercase";
 import prisma from "@/app/lib/prisma";
 import { ScrapStatusReconcileService } from "@/app/marketplaces/services/scrap-status-reconcile.service";
 import { SystemLogService } from "@/app/services/system-log.service";
-import { PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE } from "@/app/marketplaces/services/stock-deduction.service";
 import { Platform } from "@prisma/client";
 
 /** firePostEffects usa setImmediate + dynamic import + cadeia de `.then()`. */
@@ -92,26 +91,9 @@ describe("StockDeductionService.firePostEffects — keepPausedOnRefill", () => {
     );
   });
 
-  it("repassa a lista de plataformas quando o chamador manda uma", async () => {
-    StockDeductionService.firePostEffects({
-      deductions: [deduction()],
-      logPrefix: "[OrderUseCase]",
-      keepPausedOnRefill: {
-        userId: "tenant-1",
-        platforms: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
-      },
-    });
-    await flushSetImmediates();
-
-    expect(pauseListingsMock).toHaveBeenCalledWith("p-1", "tenant-1", "paused", {
-      forceRemote: true,
-      platforms: [Platform.MERCADO_LIVRE, Platform.OLX, Platform.FACEBOOK],
-    });
-  });
-
-  it("SEM lista: pausa em todos os canais — é o caso do estorno de balcão", async () => {
-    // No balcão o `markPaid` passou `pauseOnZero`, então os cinco canais
-    // saíram do ar de verdade e o estorno pode devolver todos.
+  it("a pausa não tem recorte por canal", async () => {
+    // `pauseListings` fana para todos os anúncios do produto. A peça é uma só:
+    // se não voltou ao pátio, não pode estar comprável em canal nenhum.
     StockDeductionService.firePostEffects({
       deductions: [deduction()],
       logPrefix: "[FinanceUseCase]",
@@ -307,21 +289,15 @@ describe("Cancelamento de pedido — a preferência escolhe a chave", () => {
   it("DESLIGADA: keepPausedOnRefill presente, reopenOnRefill ausente", async () => {
     const { res, arg } = await cancelar(makeOrder({ pref: false }));
     expect(res.action).toBe("cancelled_restored");
-    expect(arg.keepPausedOnRefill).toEqual({
-      userId: "u-1",
-      platforms: [Platform.MERCADO_LIVRE, Platform.OLX, Platform.FACEBOOK],
-    });
+    expect(arg.keepPausedOnRefill).toEqual({ userId: "u-1" });
     expect(arg.reopenOnRefill).toBeUndefined();
   });
 
-  it("⚠️ o pedido NUNCA manda pausar Shopee nem Magalu", async () => {
-    // O caminho de pedido não passa `pauseOnZero`: nesses dois canais o
-    // anúncio seguiu PUBLICADO com quantidade 0. Despublicá-lo agora seria
-    // uma ação nova, mais forte que "manter pausado", e nenhuma rotina
-    // automática a desfaz — só o botão manual.
+  it("a chave não carrega recorte de canal — vale para o produto inteiro", async () => {
+    // A peça é uma só. Manter só o Mercado Livre fora do ar enquanto a Shopee
+    // segue vendendo é o próprio bug, visto de outro ângulo.
     const { arg } = await cancelar(makeOrder({ pref: false }));
-    expect(arg.keepPausedOnRefill.platforms).not.toContain(Platform.SHOPEE);
-    expect(arg.keepPausedOnRefill.platforms).not.toContain(Platform.MAGALU);
+    expect(Object.keys(arg.keepPausedOnRefill)).toEqual(["userId"]);
   });
 
   it("LIGADA: reopenOnRefill presente, keepPausedOnRefill ausente", async () => {
@@ -346,13 +322,13 @@ describe("Cancelamento de pedido — a preferência escolhe a chave", () => {
 
   it("conta conectada por COLABORADOR obedece ao admin pai", async () => {
     const { arg } = await cancelar(makeOrder({ pref: true, parentPref: false }));
-    expect(arg.keepPausedOnRefill).toMatchObject({ userId: "u-1" });
+    expect(arg.keepPausedOnRefill).toEqual({ userId: "u-1" });
     expect(arg.reopenOnRefill).toBeUndefined();
   });
 
   it("ISOLAMENTO: a escolha de um tenant não vaza para o outro", async () => {
     const a = await cancelar(makeOrder({ userId: "tenant-A", pref: false }));
-    expect(a.arg.keepPausedOnRefill).toMatchObject({ userId: "tenant-A" });
+    expect(a.arg.keepPausedOnRefill).toEqual({ userId: "tenant-A" });
     vi.restoreAllMocks();
 
     const b = await cancelar(makeOrder({ userId: "tenant-B", pref: true }));
@@ -370,7 +346,7 @@ describe("Cancelamento de pedido — a preferência escolhe a chave", () => {
   it("as 3 plataformas passam pelo mesmo caminho", async () => {
     for (const plataforma of ["ML", "Shopee", "Magalu"] as const) {
       const { arg } = await cancelar(makeOrder({ pref: false }), plataforma);
-      expect(arg.keepPausedOnRefill).toMatchObject({ userId: "u-1" });
+      expect(arg.keepPausedOnRefill).toEqual({ userId: "u-1" });
       vi.restoreAllMocks();
     }
   });

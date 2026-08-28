@@ -27,12 +27,11 @@
  *     Restauração que não saiu de zero nunca teve anúncio pausado por falta de
  *     peça e por isso não entra.
  *
- *  3. QUAIS anúncios estão vendáveis HOJE. `status = 'active'` E numa das
- *     plataformas em que a venda REALMENTE tira o anúncio do ar (ML, OLX,
- *     Facebook). Shopee e Magalu ficam fora: ali o anúncio nunca saiu do ar,
- *     só ficou com quantidade 0, e despublicá-lo seria uma ação nova que
- *     nenhuma rotina automática desfaz. Ver
- *     PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE.
+ *  3. QUAIS anúncios estão vendáveis HOJE. `status = 'active'`, em QUALQUER
+ *     canal. Não há recorte por plataforma: a peça é uma só e, se ela não
+ *     voltou ao pátio, não pode estar comprável em lugar nenhum — mesma
+ *     regra do motor. Os demais status ou já estão fora do ar, ou estão
+ *     assim por outra causa.
  *
  * ── ⚠️ O QUE ESTA LISTA NÃO PROVA ────────────────────────────────────────
  *
@@ -72,7 +71,6 @@
 import prisma from "../app/lib/prisma";
 import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 import { SystemLogService } from "../app/services/system-log.service";
-import { PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE } from "../app/marketplaces/services/stock-deduction.service";
 
 const argv = process.argv.slice(2);
 const has = (f: string) => argv.includes(f);
@@ -187,13 +185,6 @@ async function levantar(conta: Conta): Promise<Linha[]> {
     where: {
       productId: { in: [...new Set(restauros.map((r) => r.productId))] },
       status: "active",
-      // MESMA restrição do motor: só os canais em que a venda de marketplace
-      // REALMENTE tirou o anúncio do ar. Na Shopee e na Magalu ele seguiu
-      // publicado com quantidade 0 — despublicá-lo aqui seria uma ação nova,
-      // e nenhuma rotina automática a desfaz.
-      marketplaceAccount: {
-        platform: { in: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE },
-      },
     },
     select: {
       id: true,

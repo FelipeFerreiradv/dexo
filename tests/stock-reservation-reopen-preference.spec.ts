@@ -52,7 +52,6 @@ vi.mock("@/app/lib/prisma", () => ({
 
 import prismaMock from "@/app/lib/prisma";
 import { firePostReservationEffects } from "../app/marketplaces/services/stock-reservation.service";
-import { PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE } from "../app/marketplaces/services/stock-deduction.service";
 import { Platform } from "@prisma/client";
 
 const findManyMock = (prismaMock as any).user.findMany as ReturnType<
@@ -115,23 +114,7 @@ describe("firePostReservationEffects — preferência do tenant", () => {
     expect(pauseListingsMock).toHaveBeenCalledTimes(1);
     expect(pauseListingsMock).toHaveBeenCalledWith("p-1", "u-1", "paused", {
       forceRemote: true,
-      platforms: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
     });
-  });
-
-  it("⚠️ a liberação de reserva NUNCA despublica Shopee nem Magalu", async () => {
-    // A propagação da reserva também só empurra QUANTIDADE: nesses dois canais
-    // o anúncio nunca saiu do ar, e despublicá-lo aqui seria irreversível por
-    // rotina automática.
-    findManyMock.mockResolvedValue([
-      { id: "u-1", reopenListingsOnSaleCancel: false, parent: null },
-    ]);
-    firePostReservationEffects(propagacao([{ productId: "p-1", userId: "u-1" }]));
-    await dispararEDrenar();
-
-    const opts = pauseListingsMock.mock.calls[0][3];
-    expect(opts.platforms).not.toContain(Platform.SHOPEE);
-    expect(opts.platforms).not.toContain(Platform.MAGALU);
   });
 
   it("o empurrão de estoque acontece nos dois casos", async () => {
@@ -161,7 +144,6 @@ describe("firePostReservationEffects — preferência do tenant", () => {
 
     expect(pauseListingsMock).toHaveBeenCalledWith("p-1", "colab-1", "paused", {
       forceRemote: true,
-      platforms: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
     });
   });
 
@@ -181,7 +163,6 @@ describe("firePostReservationEffects — preferência do tenant", () => {
 
     expect(pauseListingsMock).toHaveBeenCalledWith("p-a", "tenant-A", "paused", {
       forceRemote: true,
-      platforms: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
     });
     expect(pauseListingsMock).toHaveBeenCalledWith("p-b", "tenant-B", "active");
   });

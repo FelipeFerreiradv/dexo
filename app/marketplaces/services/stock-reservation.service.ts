@@ -1,6 +1,5 @@
 import prisma from "../../lib/prisma";
 import { resolveReopenPrefForOwners } from "../../services/reopen-listings-preference";
-import { PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE } from "./stock-deduction.service";
 import {
   availableForSale,
   isStockReservationEnabled,
@@ -378,13 +377,10 @@ export function firePostReservationEffects(
               // remoto já voltou a `active` pelo empurrão de quantidade — e é
               // esse par que o fast-path `alreadyInState` tornaria no-op.
               //
-              // `platforms`: mesma restrição do cancelamento de pedido. A
-              // propagação da reserva também só empurra QUANTIDADE, então na
-              // Shopee e na Magalu o anúncio nunca saiu do ar — despublicá-lo
-              // aqui seria irreversível por rotina automática.
+              // Todos os canais, como no cancelamento de pedido: a peça é uma
+              // só e continua fora do pátio.
               await uc.pauseListings(p.productId, p.userId, "paused", {
                 forceRemote: true,
-                platforms: PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE,
               });
             }
           } catch (err) {
