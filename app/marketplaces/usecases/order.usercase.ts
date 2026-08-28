@@ -4223,7 +4223,17 @@ export class OrderUseCase {
                   force: true,
                 },
               }
-            : {}),
+            : // Preferência OFF não é "não fazer nada": o empurrão de
+              // quantidade que acontece logo acima REABRE o anúncio sozinho
+              // (o ML tira o `out_of_stock`; na Shopee e na Magalu a peça
+              // volta a ser comprável porque aqui nunca houve `pauseOnZero`).
+              // Sem esta chave a tela promete uma coisa e o marketplace faz
+              // outra — medido em produção em 5 anúncios de uma conta real.
+              //
+              // Vale para TODOS os canais do produto: a peça é uma só e ainda
+              // não voltou ao pátio. Manter só o ML fora do ar enquanto a
+              // Shopee segue vendendo é o próprio bug, de outro ângulo.
+              { keepPausedOnRefill: { userId: contaDoPedido.userId } }),
         });
 
         // Reflexo no status do LOTE. `Scrap.status` é coluna persistida; só o

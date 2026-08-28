@@ -616,6 +616,9 @@ export class ProductUseCase {
       }
 
       const listings = await this.getProductListings(productId);
+      // Sem filtro de plataforma, e é deliberado: "pausar o produto" vale para
+      // TODOS os canais em que ele está publicado. Ver a nota de
+      // `keepPausedOnRefill` em stock-deduction.service.ts.
       const publishable = listings.filter(
         (l) =>
           l.externalListingId && !l.externalListingId.startsWith("PENDING_"),

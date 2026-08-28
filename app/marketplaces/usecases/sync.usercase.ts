@@ -3450,6 +3450,11 @@ export class SyncUseCase {
     // 2. Sincronizar cada listing baseado na plataforma
     const results: SyncResult[] = [];
 
+    // Tabela viva desta invocação (não é cache — morre com a chamada). Só a
+    // OLX e o Facebook a consultam, e só para anúncio `paused`: no caminho
+    // comum ela fica vazia e nenhuma consulta acontece.
+    const prefMemo = new Map<string, boolean>();
+
     for (const listing of product.listings) {
       const account = listing.marketplaceAccount;
 
@@ -3483,10 +3488,14 @@ export class SyncUseCase {
             result = await this.syncMagaluProductStock(listing, product);
             break;
           case Platform.OLX:
-            result = await this.syncOlxProductStock(listing, product);
+            result = await this.syncOlxProductStock(listing, product, prefMemo);
             break;
           case Platform.FACEBOOK:
-            result = await this.syncFacebookProductStock(listing, product);
+            result = await this.syncFacebookProductStock(
+              listing,
+              product,
+              prefMemo,
+            );
             break;
           default:
             result = {
@@ -3519,6 +3528,68 @@ export class SyncUseCase {
     return results;
   }
 
+  /**
+   * O anúncio foi tirado do ar DE PROPÓSITO e não pode voltar sozinho?
+   *
+   * Só OLX e Facebook precisam desta pergunta. Nas outras três plataformas a
+   * pausa se sustenta sozinha: item ML pausado pelo vendedor não é reaberto
+   * por quantidade, `unlist_item` da Shopee e `active:false` da Magalu também
+   * não. OLX e Facebook são o contrário — cada rodada de sync com estoque
+   * positivo REPUBLICA (a OLX nem tem API de quantidade; publicar é a única
+   * forma de sincronizar). Sem esta guarda, a pausa aplicada no cancelamento
+   * duraria até a próxima passada do StockReconciliationService: 15 minutos.
+   *
+   * Escopo deliberadamente estreito, para não virar regra global:
+   *   · só quando o status LOCAL é `paused` — que é o que
+   *     `updateListingStatus` grava quando NÓS despublicamos. `error`,
+   *     `closed` e afins continuam com o comportamento de retry de hoje;
+   *   · só quando o tenant DESLIGOU `reopenListingsOnSaleCancel` — 3 dos 34
+   *     donos de conta em 28/08 (a base tem 117 linhas de `User`, mas 83 são
+   *     colaboradores, que herdam do pai e nunca governam nada).
+   *
+   * ⚠️ A guarda de cima é por STATUS do anúncio, não por tenant: quem tem
+   * anúncio OLX/FB `paused` paga UMA leitura por invocação (memoizada) antes
+   * de se saber a preferência. Quem não tem — hoje, a base inteira — não paga
+   * consulta nenhuma.
+   *
+   * Fail-open: erro de leitura ⇒ `false` ⇒ republica, como sempre fez.
+   *
+   * ⚠️ `memo` NÃO é cache — é uma tabela viva por INVOCAÇÃO do funil, criada
+   * pelo chamador e descartada com ele. A diferença importa: um cache com TTL
+   * produziria exatamente "desliguei e mesmo assim reativou", que é o sintoma
+   * que esta preferência existe para eliminar (ver a nota de "SEM CACHE,
+   * deliberado" em `reopen-listings-preference.ts`). O memo, por outro lado,
+   * evita a repetição que a regra de egress da casa proíbe — "pré-carga em
+   * lote no lugar de consultas repetidas dentro de laços":
+   * `syncAllStock` varre TODOS os anúncios de UMA conta, ou seja, o mesmo
+   * dono milhares de vezes seguidas.
+   */
+  private static async manterForaDoArPorPreferencia(
+    listing: any,
+    account: { userId?: string | null } | null | undefined,
+    memo?: Map<string, boolean>,
+  ): Promise<boolean> {
+    if (listing?.status !== "paused") return false;
+    const ownerId = account?.userId;
+    if (!ownerId) return false;
+    const jaLido = memo?.get(ownerId);
+    if (jaLido !== undefined) return jaLido === false;
+    try {
+      const { resolveReopenPrefForOwners } = await import(
+        "@/app/services/reopen-listings-preference"
+      );
+      const mapa = await resolveReopenPrefForOwners([ownerId]);
+      const pref = mapa.get(ownerId) ?? true;
+      memo?.set(ownerId, pref);
+      return pref === false;
+    } catch (err) {
+      console.warn(
+        `[SyncUseCase] Falha ao ler preferencia de reabertura p/ listing ${listing?.id} (republica como antes):`,
+        err instanceof Error ? err.message : err,
+      );
+      return false;
+    }
+  }
   /**
    * Espelha o status remoto no ProductListing local (best-effort, aditivo).
    * Muta listing.status em memória após gravar, para chamadas subsequentes
@@ -3928,6 +3999,8 @@ export class SyncUseCase {
   private static async syncOlxProductStock(
     listing: any,
     product: any,
+    // Aridade condicional: omitido ⇒ chamada byte-idêntica à de antes.
+    prefMemo?: Map<string, boolean>,
   ): Promise<SyncResult> {
     const account = listing.marketplaceAccount;
 
@@ -3997,6 +4070,32 @@ export class SyncUseCase {
           newStock: targetStock,
           skipped: true,
           skipReason: "olx_listing_already_active",
+        };
+      } else if (
+        await this.manterForaDoArPorPreferencia(listing, account, prefMemo)
+      ) {
+        // O lojista desligou a reabertura automática e o anúncio está `paused`
+        // — foi NÓS que o despublicamos. Republicar aqui desfaria a decisão
+        // dele a cada rodada do reconciliador.
+        await this.logSync(
+          account.id,
+          SyncType.STOCK_UPDATE,
+          SyncStatus.SUCCESS,
+          `Anúncio ${olxId} do produto ${product.name} permanece despublicado na OLX: a conta optou por não reabrir anúncio automaticamente.`,
+          {
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            newStock: targetStock,
+            skipReason: "olx_reopen_disabled_by_preference",
+          },
+        );
+        return {
+          success: true,
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+          skipped: true,
+          skipReason: "olx_reopen_disabled_by_preference",
         };
       } else {
         // Anúncio saiu do ar: republica com o mesmo id. Recarrega o produto se
@@ -4332,6 +4431,8 @@ export class SyncUseCase {
   private static async syncFacebookProductStock(
     listing: any,
     product: any,
+    // Aridade condicional: omitido ⇒ chamada byte-idêntica à de antes.
+    prefMemo?: Map<string, boolean>,
   ): Promise<SyncResult> {
     const account = listing.marketplaceAccount;
 
@@ -4383,6 +4484,20 @@ export class SyncUseCase {
           catalogId,
         );
         await this.espelharStatusFacebook(listing, "paused");
+      } else if (
+        await this.manterForaDoArPorPreferencia(listing, account, prefMemo)
+      ) {
+        // Gêmeo da guarda da OLX. Aqui a peça volta ao estoque e o catálogo
+        // do Facebook voltaria a "in stock" na primeira rodada — desfazendo,
+        // sem ninguém pedir, a decisão de quem desligou a reabertura.
+        return {
+          success: true,
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+          skipped: true,
+          skipReason: "facebook_reopen_disabled_by_preference",
+        };
       } else {
         const resp = await FacebookApiService.setAvailability(
           account.accessToken,
@@ -4914,6 +5029,13 @@ export class SyncUseCase {
         `[syncAllStock] Conta ${account.id} (${platform}): ${uniqueListings.length} listings únicos de ${listings.length} totais`,
       );
 
+      // Tabela viva desta conta. Aqui ela importa de verdade: este laço varre
+      // TODOS os anúncios de UMA conta — sempre o MESMO dono —, então sem o
+      // memo a preferência seria relida uma vez por anúncio `paused` de OLX /
+      // Facebook, que é exatamente a "consulta repetida dentro de laço" que a
+      // regra de egress da casa proíbe. Morre no fim da conta; não é cache.
+      const prefMemo = new Map<string, boolean>();
+
       // Processar em lotes de 3 para evitar sobrecarga de conexão DB + API
       const BATCH_SIZE = 3;
       for (let i = 0; i < uniqueListings.length; i += BATCH_SIZE) {
@@ -4950,9 +5072,13 @@ export class SyncUseCase {
                 case Platform.MAGALU:
                   return this.syncMagaluProductStock(listing, produto);
                 case Platform.OLX:
-                  return this.syncOlxProductStock(listing, produto);
+                  return this.syncOlxProductStock(listing, produto, prefMemo);
                 case Platform.FACEBOOK:
-                  return this.syncFacebookProductStock(listing, produto);
+                  return this.syncFacebookProductStock(
+                    listing,
+                    produto,
+                    prefMemo,
+                  );
                 default:
                   return {
                     success: false,

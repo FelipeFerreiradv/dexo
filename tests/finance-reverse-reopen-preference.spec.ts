@@ -386,3 +386,53 @@ describe("Preferência de reabertura — estorno de venda de balcão", () => {
     });
   });
 });
+
+// ── O ESPELHO: `keepPausedOnRefill` ────────────────────────────────────────
+//
+// Somar casos, sem tocar em nenhum dos de cima. Suprimir `reopenOnRefill` era
+// metade da resposta: o `firePostEffects` continua (e tem de continuar)
+// disparando o sync de estoque, e é o empurrão de quantidade que traz o
+// anúncio de volta — no ML porque o `out_of_stock` cai sozinho, na OLX porque
+// republicar é a única forma de sincronizar, no Facebook porque a peça volta a
+// "in stock". Por isso o estorno com a preferência OFF precisa mandar PAUSAR.
+describe("Estorno de balcão — o espelho keepPausedOnRefill", () => {
+  it("DESLIGADA: manda manter pausado", async () => {
+    (prisma as any).user.findUnique.mockResolvedValue({
+      reopenListingsOnSaleCancel: false,
+    });
+    const { res, arg } = await estornar();
+    expect(res.statusCode).toBe(200);
+    expect(arg.keepPausedOnRefill).toEqual({ userId: "user-owner" });
+    expect(arg.reopenOnRefill).toBeUndefined();
+  });
+
+  it("LIGADA: nunca manda pausar", async () => {
+    (prisma as any).user.findUnique.mockResolvedValue({
+      reopenListingsOnSaleCancel: true,
+    });
+    const { arg } = await estornar();
+    expect(arg.keepPausedOnRefill).toBeUndefined();
+    expect(arg.reopenOnRefill).toEqual({ userId: "user-owner" });
+  });
+
+  it("FAIL-OPEN: leitura falhando não manda pausar", async () => {
+    // Pausar por engano é o erro caro e silencioso: o lojista não vê o anúncio
+    // sumir. Na dúvida, reabre.
+    (prisma as any).user.findUnique.mockRejectedValue(new Error("db down"));
+    const { res, arg } = await estornar();
+    expect(res.statusCode).toBe(200);
+    expect(arg.keepPausedOnRefill).toBeUndefined();
+    expect(arg.reopenOnRefill).toEqual({ userId: "user-owner" });
+  });
+
+  it("ISOLAMENTO: a decisão de um tenant não vaza para o outro", async () => {
+    (prisma as any).user.findUnique.mockImplementation(
+      async ({ where }: any) =>
+        where.id === "tenant-off"
+          ? { reopenListingsOnSaleCancel: false }
+          : { reopenListingsOnSaleCancel: true },
+    );
+    const a = await estornar("tenant-off");
+    expect(a.arg.keepPausedOnRefill).toEqual({ userId: "tenant-off" });
+  });
+});

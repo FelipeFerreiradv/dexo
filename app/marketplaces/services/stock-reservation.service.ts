@@ -1,4 +1,5 @@
 import prisma from "../../lib/prisma";
+import { resolveReopenPrefForOwners } from "../../services/reopen-listings-preference";
 import {
   availableForSale,
   isStockReservationEnabled,
@@ -328,11 +329,33 @@ export function firePostReservationEffects(
 
       if (r.reopened.length === 0) return;
 
+      // ── A PREFERÊNCIA DO TENANT, que este motor não conhecia ──
+      //
+      // Este é um SEGUNDO motor de reabertura, criado depois de
+      // `User.reopenListingsOnSaleCancel` e nunca ligado a ela. Liberar a
+      // reserva ao excluir uma venda pendente é, para o lojista, cancelar a
+      // venda — e quem desligou a preferência não quer o anúncio de volta.
+      //
+      // A resolução do tenant NÃO pode usar `p.userId` cru: `Product.userId`
+      // aponta para um COLABORADOR em 1.049 produtos de produção, e a linha do
+      // colaborador nunca governa nada. Uma chamada só, agrupada pelos
+      // `userId` distintos (o array costuma ter 1 a 3 itens), com a mesma
+      // precedência do cancelamento de pedido: o valor do PAI vence.
+      const prefPorUsuario = await resolveReopenPrefForOwners(
+        r.reopened.map((p) => p.userId),
+      );
+
       try {
         const { ProductUseCase } =
           await import("@/app/usecases/product.usercase");
         const uc = new ProductUseCase();
         for (const p of r.reopened) {
+          // Preferência OFF ⇒ o oposto de reabrir, e não "não fazer nada": o
+          // `runOnce()` logo acima já empurrou o disponível, e é esse empurrão
+          // que faz o ML remover o `out_of_stock` e devolver o item ao ar.
+          const alvo = (prefPorUsuario.get(p.userId) ?? true)
+            ? "active"
+            : "paused";
           try {
             // `userId` vem do PRÓPRIO produto, e não do `dataOwnerId` da
             // requisição. `pauseListings` valida posse com
@@ -340,12 +363,26 @@ export function firePostReservationEffects(
             // (product.usercase.ts:609), que compara contra `Product.userId`
             // — então ler do produto é auto-consistente por construção.
             //
-            // Não é teoria: 1.009 produtos em produção (25/08) têm
+            // Não é teoria: 1.049 produtos em produção (28/08) têm
             // `Product.userId` apontando para um COLABORADOR (usuário com
             // `parentUserId`). Neles, passar o dataOwnerId da rota faria o
             // `findById` não achar o produto e a reabertura falhar em
             // silêncio.
-            await uc.pauseListings(p.productId, p.userId, "active");
+            if (alvo === "active") {
+              // Aridade de 3 args preservada: caminho byte-idêntico ao de
+              // antes desta correção para os tenants com a preferência ON.
+              await uc.pauseListings(p.productId, p.userId, "active");
+            } else {
+              // `forceRemote`: o status local pode dizer `paused` enquanto o
+              // remoto já voltou a `active` pelo empurrão de quantidade — e é
+              // esse par que o fast-path `alreadyInState` tornaria no-op.
+              //
+              // Todos os canais, como no cancelamento de pedido: a peça é uma
+              // só e continua fora do pátio.
+              await uc.pauseListings(p.productId, p.userId, "paused", {
+                forceRemote: true,
+              });
+            }
           } catch (err) {
             console.error(
               `${logPrefix} Falha ao reabrir anuncios do produto ${p.productId} (best-effort):`,

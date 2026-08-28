@@ -156,4 +156,39 @@ describe("ProductUseCase.pauseListings", () => {
     expect(result.listingResults).toEqual([]);
     expect(spyUpdate).not.toHaveBeenCalled();
   });
+
+  // ── O fan-out por canal ────────────────────────────────────────────
+  //
+  // `pauseListings` toca TODOS os anúncios do produto, em todas as
+  // plataformas. Isso é requisito, não acaso: se a peça saiu do pátio (ou não
+  // voltou a ele), ela não pode continuar comprável em canal nenhum. Deixar a
+  // Shopee vendendo porque "lá o anúncio nunca saiu do ar" reproduz o próprio
+  // problema que a preferência de reabertura existe para resolver.
+  it("pausa o produto nos CINCO canais em que ele está publicado", async () => {
+    vi.spyOn((useCase as any).productRepository, "findById").mockResolvedValue({
+      id: "prod-1",
+    });
+    vi.spyOn(useCase as any, "getProductListings").mockResolvedValue([
+      makeListing("l-ml", "MLB1", Platform.MERCADO_LIVRE),
+      makeListing("l-shopee", "999", Platform.SHOPEE),
+      makeListing("l-magalu", "SKU-1", Platform.MAGALU),
+      makeListing("l-olx", "SKU-1", Platform.OLX),
+      makeListing("l-fb", "SKU-1", Platform.FACEBOOK),
+    ]);
+    const spy = vi
+      .spyOn(ListingUseCase, "updateListingStatus")
+      .mockResolvedValue({ success: true });
+
+    await useCase.pauseListings("prod-1", "user-1", "paused", {
+      forceRemote: true,
+    });
+
+    expect(spy.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "l-fb",
+      "l-magalu",
+      "l-ml",
+      "l-olx",
+      "l-shopee",
+    ]);
+  });
 });

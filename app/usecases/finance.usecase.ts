@@ -1362,7 +1362,14 @@ export class FinanceUseCase {
     StockDeductionService.firePostEffects({
       deductions: restorations,
       logPrefix: "[FinanceUseCase]",
-      ...(reabrirAnuncio ? { reopenOnRefill: { userId } } : {}),
+      // Preferência OFF ⇒ o ESPELHO, não o vazio: o `runOnce` disparado por
+      // `firePostEffects` empurra a quantidade restaurada e o marketplace
+      // reabre o anúncio sozinho (ML remove o `out_of_stock`; OLX republica;
+      // Facebook volta a "in stock"). Só omitir `reopenOnRefill` suprimiria o
+      // `updateItem({status:"active"})`, que nunca foi quem reabria.
+      ...(reabrirAnuncio
+        ? { reopenOnRefill: { userId } }
+        : { keepPausedOnRefill: { userId } }),
     });
 
     // Estorno simétrico: reavalia o status da sucata (DEPLETED→IN_USE→AVAILABLE

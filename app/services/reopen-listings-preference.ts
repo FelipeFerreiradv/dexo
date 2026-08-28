@@ -98,3 +98,88 @@ export async function isReopenOnCancelEnabled(
     return REOPEN_ON_CANCEL_DEFAULT;
   }
 }
+
+/**
+ * A MESMA preferência, quando o id em mãos é o de um DONO DE LINHA e não o do
+ * tenant — `Product.userId`, `MarketplaceAccount.userId`. Esses ids apontam
+ * para um COLABORADOR em parte da base (1.049 produtos e 1 conta de
+ * marketplace em produção, 28/08), e a linha do colaborador nunca governa
+ * nada: quem manda é o admin pai.
+ *
+ * Existe para que os caminhos que NÃO recebem o `dataOwnerId` resolvido pela
+ * rota — a liberação de reserva e o sync de anúncio — leiam a preferência
+ * pela mesma regra de precedência do cancelamento de pedido (`parent` vence),
+ * em vez de cada um reinventar a sua.
+ *
+ * Em LOTE porque os dois chamadores tratam vários produtos de uma vez: uma
+ * chamada só, com três booleanos por linha, nunca a linha inteira do usuário.
+ * (No fio o Prisma emite DOIS statements — o `parent` sai numa segunda
+ * consulta, porque o client é gerado sem `relationJoins`. Continua O(1) por
+ * lote, que é o que a regra de egress cobra.)
+ *
+ * Chaveado pelo id RECEBIDO (não pelo do tenant): o chamador itera sobre a
+ * lista que ele já tem em mãos.
+ *
+ * FAIL-OPEN e NUNCA lança, pelo mesmo argumento de `isReopenOnCancelEnabled`:
+ * id ausente do mapa ⇒ o chamador aplica o default LIGADO.
+ */
+export async function resolveReopenPrefForOwners(
+  ownerUserIds: Array<string | null | undefined>,
+): Promise<Map<string, boolean>> {
+  const mapa = new Map<string, boolean>();
+  const ids = Array.from(
+    new Set(ownerUserIds.filter((id): id is string => !!id)),
+  );
+  if (ids.length === 0) return mapa;
+
+  try {
+    const users = (await prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        reopenListingsOnSaleCancel: true,
+        parent: { select: { reopenListingsOnSaleCancel: true } },
+      },
+    })) as Array<{
+      id: string;
+      reopenListingsOnSaleCancel: boolean | null;
+      parent: { reopenListingsOnSaleCancel: boolean | null } | null;
+    }>;
+
+    for (const u of users) {
+      mapa.set(
+        u.id,
+        resolveReopenPref(
+          u.parent?.reopenListingsOnSaleCancel ?? u.reopenListingsOnSaleCancel,
+        ),
+      );
+    }
+  } catch (err) {
+    // Cobre inclusive `prisma.user === undefined` — o TypeError é síncrono e
+    // cai aqui. Mapa vazio ⇒ default LIGADO em todos, que é o comportamento
+    // de antes de existir este gate.
+    //
+    // ⚠️ O aviso vai no PRÓPRIO try/catch: vários specs mockam o
+    // SystemLogService só com os métodos que usam, e `logWarning` ausente
+    // estoura TypeError SÍNCRONO — antes de existir promessa para um
+    // `.catch()` segurar. Um tratador que pode falhar não é tratador.
+    try {
+      void Promise.resolve(
+        SystemLogService.logWarning(
+          "REOPEN_PREFERENCE_READ_FAILED",
+          "Não foi possível ler a preferência de reabertura de anúncio; assumindo LIGADO (comportamento padrão).",
+          {
+            resource: "user",
+            details: {
+              ownerUserIds: ids,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          },
+        ),
+      ).catch(() => {});
+    } catch {
+      // Log é best-effort.
+    }
+  }
+  return mapa;
+}
