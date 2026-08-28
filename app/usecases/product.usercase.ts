@@ -1183,6 +1183,12 @@ export class ProductUseCase {
         return []; // Nenhum anúncio para sincronizar
       }
 
+      // Tabela viva desta edição de produto. Todos os anúncios abaixo são
+      // do MESMO produto, logo do mesmo dono: sem ela, a preferência de
+      // reabertura seria relida uma vez por anúncio OLX/Facebook pausado.
+      // Morre com a chamada — não é cache.
+      const prefMemo = new Map<string, boolean>();
+
       // Sincronizar cada anúncio em paralelo
       const results = await Promise.all(
         listings.map(async (listing) => {
@@ -1194,6 +1200,7 @@ export class ProductUseCase {
               product.id,
               listing.externalListingId,
               listing.marketplaceAccountId,
+              prefMemo,
             );
           } catch (error) {
             console.error(
