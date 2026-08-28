@@ -44,6 +44,7 @@ import {
   LISTING_PLATFORM_LABELS,
   LISTING_STATUS_LABELS,
 } from "@/app/produtos/lib/listing-status-labels";
+import { getStockDisplay } from "@/app/produtos/lib/product-format";
 
 type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
 
@@ -57,6 +58,10 @@ interface ProductLike {
   description?: string | null;
   price: number;
   stock: number;
+  // BLOCO G — comprometido por venda pendente. Opcional porque `merged` cai no
+  // objeto da LISTAGEM enquanto o fetch de detalhe não volta (ver `merged`
+  // abaixo), e nesse instante o campo pode não existir.
+  reservedStock?: number | null;
   createdAt: Date | string;
   updatedAt: Date | string;
   costPrice?: number | null;
@@ -312,6 +317,11 @@ export function ProductDetailSheet({
   if (!product) return null;
 
   const merged = detail?.product ?? product;
+  // BLOCO G — `merged` é fallback de OBJETO inteiro: enquanto o fetch de
+  // detalhe não volta, é o payload da listagem. `getStockDisplay` tolera
+  // `reservedStock` ausente e devolve o estoque cru, então a janela de loading
+  // mostra o mesmo que mostrava antes — nunca um número errado.
+  const estoque = getStockDisplay(merged.stock, merged.reservedStock);
   const qualityKey = (merged.quality ?? "") as string;
   const qualityLabel = QUALITY_LABELS[qualityKey];
   const qualityClass = QUALITY_BADGE_CLASS[qualityKey];
@@ -420,9 +430,10 @@ export function ProductDetailSheet({
                       ) : null}
                       <Badge
                         variant="outline"
-                        className={`text-[11px] font-medium uppercase tracking-[0.08em] ${getStockBadgeClass(merged.stock)}`}
+                        title={estoque.detail ?? undefined}
+                        className={`text-[11px] font-medium uppercase tracking-[0.08em] ${getStockBadgeClass(estoque.value)}`}
                       >
-                        {merged.stock} un.
+                        {estoque.value} {estoque.suffix}
                       </Badge>
                     </div>
                     <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
@@ -546,9 +557,10 @@ export function ProductDetailSheet({
                     label="Estoque"
                     value={
                       <span
-                        className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-sm font-semibold ${getStockBadgeClass(merged.stock)}`}
+                        title={estoque.detail ?? undefined}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-sm font-semibold ${getStockBadgeClass(estoque.value)}`}
                       >
-                        {merged.stock} un.
+                        {estoque.value} {estoque.suffix}
                       </span>
                     }
                   />

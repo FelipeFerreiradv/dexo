@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 
 import { getApiBaseUrl } from "@/lib/api";
+import { getStockDisplay } from "@/app/produtos/lib/product-format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -82,6 +83,9 @@ interface ProductData {
   name: string;
   description?: string;
   stock: number;
+  // BLOCO G — comprometido por venda pendente. `GET /products/:id` já devolvia
+  // o campo (usa `include`, não `select`); só o tipo não o declarava.
+  reservedStock?: number | null;
   price: number;
   createdAt: string;
   updatedAt: string;
@@ -266,7 +270,11 @@ export function ProductDetail({ productId }: { productId: string }) {
   const hasActiveListings = detailedListings.some(
     (l) => l.status === "active" || l.status === "normal",
   );
+  // FÍSICO de propósito: o aviso ao lado diz literalmente "Sem estoque", e uma
+  // peça reservada CONTINUA no pátio. Quem mostra o disponível é o badge.
   const isOutOfStock = product.stock === 0;
+  // BLOCO G — o que o badge e a linha "Estoque" exibem.
+  const estoque = getStockDisplay(product.stock, product.reservedStock);
   const allListingsClosed = detailedListings.length > 0 && detailedListings.every(
     (l) => ["closed", "deleted", "seller_deleted", "inactive"].includes(l.status),
   );
@@ -304,8 +312,11 @@ export function ProductDetail({ productId }: { productId: string }) {
             </h1>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">{product.sku}</Badge>
-              <Badge variant={getStockBadgeVariant(product.stock)}>
-                {product.stock} un.
+              <Badge
+                variant={getStockBadgeVariant(estoque.value)}
+                title={estoque.detail ?? undefined}
+              >
+                {estoque.value} {estoque.suffix}
               </Badge>
               {product.createdFromMarketplace && product.originPlatform && (
                 <Badge variant="secondary">
@@ -392,7 +403,12 @@ export function ProductDetail({ productId }: { productId: string }) {
             {product.markup !== undefined && (
               <InfoRow label="Markup" value={`${product.markup}%`} />
             )}
-            <InfoRow label="Estoque" value={`${product.stock} un.`} />
+            {/* BLOCO G — com peça comprometida mostra "1 em estoque · 1
+                reservada"; sem reserva, o texto é o de sempre. */}
+            <InfoRow
+              label="Estoque"
+              value={estoque.detail ?? `${product.stock} un.`}
+            />
             <InfoRow label="Qualidade" value={product.quality ? (QUALITY_LABELS[product.quality] || product.quality) : undefined} />
           </CardContent>
         </Card>

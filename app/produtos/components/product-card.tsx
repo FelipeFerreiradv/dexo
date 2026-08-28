@@ -27,7 +27,11 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 
 import type { MarketplacePlatform, Product } from "../lib/product-view-types";
-import { formatPrice, getStockBadgeVariant } from "../lib/product-format";
+import {
+  formatPrice,
+  getStockBadgeVariant,
+  getStockDisplay,
+} from "../lib/product-format";
 import {
   computeProductPauseState,
   MarketplaceBadges,
@@ -82,6 +86,9 @@ export function ProductCard({
   const showImage = Boolean(product.imageUrl) && !imgError;
   const location =
     product.locationPath ?? product.productLocation?.code ?? product.location;
+  // BLOCO G — o número do badge é o DISPONÍVEL quando a peça está comprometida
+  // em venda pendente; sem reserva devolve o próprio `stock`, como antes.
+  const estoque = getStockDisplay(product.stock, product.reservedStock);
 
   return (
     <div
@@ -167,12 +174,20 @@ export function ProductCard({
             </span>
           ) : null}
           <Badge
-            variant={getStockBadgeVariant(product.stock)}
+            variant={getStockBadgeVariant(estoque.value)}
             className="ml-auto"
+            title={estoque.detail ?? undefined}
           >
-            {product.stock} un.
+            {estoque.value} {estoque.suffix}
           </Badge>
         </div>
+        {/* BLOCO G — só aparece quando há peça comprometida em venda pendente.
+            Sem reserva, o card fica byte-idêntico ao de antes. */}
+        {estoque.detail ? (
+          <p className="text-[11px] leading-tight text-muted-foreground">
+            {estoque.detail}
+          </p>
+        ) : null}
 
         <div className="mt-auto flex items-center justify-between border-t border-border/60 pt-2">
           <span className="font-mono text-base font-semibold tabular-nums text-foreground">
