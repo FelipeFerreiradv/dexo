@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { Platform } from "@prisma/client";
 
 /**
  * Serviço compartilhado de baixa atômica de estoque.
@@ -52,6 +53,32 @@ export interface DeductWithinTxInput {
   logPrefix?: string;
 }
 
+/**
+ * Plataformas em que o anúncio REALMENTE sai do ar quando o estoque zera por
+ * venda de MARKETPLACE.
+ *
+ * ML: `updateItem({status:"paused"})`. OLX: `deleteAd` (a OLX não tem pausa).
+ * Facebook: `setAvailability("out of stock")`.
+ *
+ * Shopee e Magalu ficam DE FORA, e a ausência é a parte importante: o
+ * cancelamento de pedido nunca passou `pauseOnZero` (ver o comentário em
+ * `OrderUseCase.deductStockForOrder`), e o sync a estoque zero desses dois só
+ * empurra QUANTIDADE — `updateItemStock(0)` e `setStock(0)`. O anúncio
+ * continua publicado, só sem unidade. Mandar `paused` para eles seria
+ * DESPUBLICAR (`unlist_item`, `active:false`) algo que nunca saiu do ar — e
+ * nenhuma rotina automática desfaz isso: não existe `unlist:false` nem
+ * `active:true` em nenhum caminho de sync, só no botão manual da tela.
+ *
+ * ⚠️ Vale só para o caminho de PEDIDO. No balcão o `markPaid` passa
+ * `pauseOnZero` (finance.usecase.ts), então lá os cinco canais saíram do ar de
+ * verdade e o estorno pode devolver todos — por isso `FinanceUseCase.reverse`
+ * NÃO usa esta lista.
+ */
+export const PLATAFORMAS_QUE_SAEM_DO_AR_POR_ESTOQUE: Platform[] = [
+  Platform.MERCADO_LIVRE,
+  Platform.OLX,
+  Platform.FACEBOOK,
+];
 export interface FirePostEffectsInput {
   deductions: StockDeductionResult[];
   /** Preserva prefixo de log do caller. */
@@ -78,6 +105,31 @@ export interface FirePostEffectsInput {
    * sempre apesar do estoque restaurado.
    */
   reopenOnRefill?: { userId: string; force?: boolean };
+  /**
+   * Opt-in — o ESPELHO de `reopenOnRefill`, para o tenant que desligou
+   * `User.reopenListingsOnSaleCancel`: a peça volta ao estoque, mas o anúncio
+   * NÃO pode voltar ao ar.
+   *
+   * POR QUE NÃO BASTA OMITIR `reopenOnRefill`.
+   * Omitir só suprime o `updateItem({status:"active"})` — que nunca foi o que
+   * reabria o anúncio no caminho de cancelamento. Quem reabre é o empurrão de
+   * QUANTIDADE, que acontece sempre (o `runOnce()` logo abaixo é
+   * incondicional, e tem de ser): o Mercado Livre tira sozinho o
+   * `sub_status: out_of_stock` assim que `available_quantity` sobe, e
+   * Shopee/Magalu voltam a vender porque no cancelamento de PEDIDO o anúncio
+   * nunca chegou a ser despausado (não há `pauseOnZero` ali).
+   *
+   * Medido em produção (28/08): 5 anúncios ML da conta REBOOTEC, com a
+   * preferência OFF desde 19/08, voltaram a `active` — o `last_updated` do
+   * item no ML é, ao milissegundo, a nossa própria chamada de estoque.
+   *
+   * Por isso a única forma de cumprir a preferência é ADICIONAR uma pausa
+   * DEPOIS que o estoque chega ao marketplace. Ver o encadeamento em
+   * `firePostEffects`: a ordem é o ponto todo.
+   *
+   * Mesmo filtro do irmão: só produtos que saíram de zero.
+   */
+  keepPausedOnRefill?: { userId: string; platforms?: Platform[] };
   /**
    * Opcional, só para observabilidade: o mesmo `reason` que foi para o
    * StockLog. Enriquece o SystemLog de `STOCK_ZEROED_IN_ONE_MOVE`. Ausente =
@@ -365,6 +417,23 @@ export class StockDeductionService {
             `${logPrefix} Falha ao disparar StockSyncRetryService.runOnce:`,
             err,
           ),
+        )
+        // ⚠️ ENCADEADO NO `runOnce`, e não num `setImmediate` próprio: a ordem
+        // é a correção inteira. O empurrão de quantidade REABRE o anúncio (o
+        // ML tira o `out_of_stock` sozinho; Shopee/Magalu voltam a vender), e
+        // uma pausa disparada em paralelo poderia chegar ANTES dele e ser
+        // desfeita. Mesmo desenho de `firePostReservationEffects`, que já
+        // sequencia empurrar-e-reabrir no mesmo timer pelo motivo simétrico.
+        //
+        // O `.catch` acima já neutralizou a falha do runOnce: a pausa acontece
+        // mesmo quando o sync falha — ali o anúncio nem chegou a reabrir, e
+        // `pauseListings` é idempotente.
+        .then(() => StockDeductionService.keepListingsPaused(input, logPrefix))
+        .catch((err) =>
+          console.error(
+            `${logPrefix} Falha ao manter anuncios pausados (best-effort):`,
+            err,
+          ),
         );
     });
 
@@ -483,6 +552,67 @@ export class StockDeductionService {
             );
         });
       }
+    }
+  }
+
+  /**
+   * Espelho de `reopenOnRefill`: garante que o anúncio NÃO volte ao ar quando
+   * o tenant desligou `User.reopenListingsOnSaleCancel`.
+   *
+   * Roda DEPOIS do `StockSyncRetryService.runOnce()` (ver o encadeamento em
+   * `firePostEffects`), porque é o próprio empurrão de quantidade que reabre:
+   *   · ML — `updateItemStock(qty>0)` faz o ML remover o `out_of_stock` e o
+   *     item volta a `active` sozinho;
+   *   · Shopee/Magalu — no cancelamento de PEDIDO o anúncio nunca foi
+   *     despausado (sem `pauseOnZero`), então a quantidade restaurada basta;
+   *   · OLX/Facebook — o sync republica / marca "in stock".
+   *
+   * `forceRemote: true` NÃO é opcional aqui: nesse instante o status LOCAL
+   * pode estar em `paused` enquanto o remoto já voltou a `active`, e é
+   * exatamente esse par que o fast-path `alreadyInState` de
+   * `updateListingStatus` transformaria em no-op — justo no caso que importa.
+   *
+   * Best-effort e NUNCA lança: o cancelamento e o estorno de estoque já
+   * commitaram, e nada aqui pode desfazê-los.
+   */
+  private static async keepListingsPaused(
+    input: FirePostEffectsInput,
+    logPrefix: string,
+  ): Promise<void> {
+    if (!input.keepPausedOnRefill) return;
+
+    // Mesmo filtro do irmão: só o que SAIU de zero. Um produto que foi de 3
+    // para 4 nunca teve anúncio pausado por falta de estoque — pausá-lo aqui
+    // seria tirar do ar um anúncio que a preferência não governa.
+    const refilled = input.deductions.filter(
+      (d) => d.previousStock === 0 && d.newStock > 0,
+    );
+    if (refilled.length === 0) return;
+
+    const { userId, platforms } = input.keepPausedOnRefill;
+    try {
+      const { ProductUseCase } = await import("@/app/usecases/product.usercase");
+      const uc = new ProductUseCase();
+      for (const d of refilled) {
+        try {
+          await uc.pauseListings(d.productId, userId, "paused", {
+            forceRemote: true,
+            // Ausente ⇒ todos os canais — é o caso do estorno de balcão, que
+            // pausou os cinco ao receber a venda.
+            ...(platforms ? { platforms } : {}),
+          });
+        } catch (err) {
+          console.error(
+            `${logPrefix} Falha ao manter pausados os anuncios do produto ${d.productId} (best-effort):`,
+            err,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        `${logPrefix} Falha ao importar ProductUseCase para manter anuncios pausados:`,
+        err,
+      );
     }
   }
 }

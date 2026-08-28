@@ -73,6 +73,11 @@ export type LogAction =
   // seria inaceitável: o cliente que DESLIGOU veria o anúncio reabrir sem
   // nenhum rastro de por quê. Ver app/services/reopen-listings-preference.ts.
   | "REOPEN_PREFERENCE_READ_FAILED"
+  // Remediação do PASSIVO: anúncio que voltou ao ar por um cancelamento
+  // enquanto a preferência já estava DESLIGADA, e que foi pausado de volta
+  // pelo script scripts/audit-reopen-off-relisted.ts --apply. Ação manual e
+  // rara, mas que altera o que o comprador vê — por isso deixa rastro.
+  | "REOPEN_OFF_RELISTED_REMEDIATED"
   | "ORDER_UNCANCEL_REDEDUCT"
   | "MAGALU_CANCEL_DETECTED"
   // Auto-cadastro de Customer a partir de venda de marketplace

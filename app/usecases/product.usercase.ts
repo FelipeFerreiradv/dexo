@@ -593,7 +593,18 @@ export class ProductUseCase {
     // Opcional (default = comportamento atual): forceRemote força a chamada
     // à API mesmo quando o status local já é o desejado — usado pelo
     // cancelamento de pedido marketplace (status local pode estar stale).
-    opts?: { forceRemote?: boolean },
+    //
+    // `platforms` restringe a quais canais a mudança vale. Ausente = TODOS,
+    // que é o comportamento de sempre. Existe porque "pausar o produto" não
+    // quer dizer a mesma coisa em toda plataforma: quando o estoque zera por
+    // venda de MARKETPLACE, o anúncio sai do ar no ML, na OLX e no Facebook,
+    // mas na Shopee e na Magalu ele apenas fica com quantidade 0 — continua
+    // publicado. Mandar `paused` para esses dois seria DESPUBLICAR algo que
+    // nunca saiu do ar, e nenhuma rotina automática os traz de volta
+    // (`unlist:false` e `active:true` só existem no botão manual).
+    // Filtro em memória: `getProductListings` já projeta `platform`, então
+    // não há consulta nova.
+    opts?: { forceRemote?: boolean; platforms?: Platform[] },
   ): Promise<{
     success: boolean;
     message: string;
@@ -616,9 +627,14 @@ export class ProductUseCase {
       }
 
       const listings = await this.getProductListings(productId);
+      const somentePlataformas = opts?.platforms;
       const publishable = listings.filter(
         (l) =>
-          l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
+          l.externalListingId &&
+          !l.externalListingId.startsWith("PENDING_") &&
+          (!somentePlataformas ||
+            (l.marketplaceAccount?.platform != null &&
+              somentePlataformas.includes(l.marketplaceAccount.platform))),
       );
 
       if (publishable.length === 0) {
