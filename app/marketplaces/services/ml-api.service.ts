@@ -19,6 +19,7 @@ import {
 } from "../types/ml-api.types";
 import {
   MLOrderDetails,
+  MLShipmentDetails,
   MLOrdersSearchResponse,
   MLOrdersSearchParams,
   MLOrderStatus,
@@ -1522,6 +1523,48 @@ export class MLApiService {
         );
       }
       throw error;
+    }
+  }
+
+  /**
+   * Envio (shipment) de um pedido ML. É o que diz ONDE A PEÇA ESTÁ.
+   *
+   * Existe porque `order.status === "cancelled"` não separa cancelamento antes
+   * do envio (peça no pátio — estornar é correto) de devolução depois da
+   * entrega (peça com o comprador — estornar cria estoque que não existe).
+   * `shipment.status === "cancelled"` é o único sinal de que a peça nunca saiu.
+   *
+   * Best-effort: devolve `null` em QUALQUER erro, inclusive 403/404. Quem
+   * classifica trata `null` como "sem prova" e cai no comportamento de sempre
+   * (estorna) — a indisponibilidade da API nunca pode fazer peça sumir do
+   * estoque. Por isso não lança, ao contrário de `getOrderDetails`.
+   */
+  static async getShipmentDetails(
+    accessToken: string,
+    shipmentId: string | number,
+  ): Promise<MLShipmentDetails | null> {
+    try {
+      const response = await axios.get<MLShipmentDetails>(
+        `${ML_CONSTANTS.API_URL}/shipments/${shipmentId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          timeout: 10000,
+        },
+      );
+
+      return response.data ?? null;
+    } catch (error) {
+      console.warn(
+        `[MLApiService] Falha ao obter envio ${shipmentId} (best-effort):`,
+        axios.isAxiosError(error)
+          ? (error.response?.status ?? error.message)
+          : error instanceof Error
+            ? error.message
+            : error,
+      );
+      return null;
     }
   }
 
