@@ -282,20 +282,45 @@ async function tokenDaConta(
     return { erro: "token expirado (dry-run não renova — seria escrita)" };
   }
   if (!acc.refreshToken) return { erro: "token expirado e sem refresh token" };
-  const r = await MLOAuthService.refreshAccessToken(acc.refreshToken);
-  await MarketplaceRepository.updateTokens(acc.id, {
-    accessToken: r.accessToken,
-    refreshToken: r.refreshToken,
-    expiresAt: new Date(Date.now() + r.expiresIn * 1000),
-  });
-  return { token: r.accessToken };
+  // A renovação NÃO pode derrubar a varredura. Uma conta conectada sob outra
+  // aplicação do ML devolve `client_id_mismatch`, e sem esta guarda o erro
+  // sobe até o catch final e mata os outros 33 tenants no meio do caminho —
+  // aconteceu em 01/09/2026. Conta que não renova vira "não classificada",
+  // igual ao dry-run, e o laço segue.
+  try {
+    const r = await MLOAuthService.refreshAccessToken(acc.refreshToken);
+    await MarketplaceRepository.updateTokens(acc.id, {
+      accessToken: r.accessToken,
+      refreshToken: r.refreshToken,
+      expiresAt: new Date(Date.now() + r.expiresIn * 1000),
+    });
+    return { token: r.accessToken };
+  } catch (err) {
+    // Só a MENSAGEM: o objeto de erro do axios carrega o corpo da requisição,
+    // e o corpo do refresh tem `client_secret` e `refresh_token`.
+    return {
+      erro: `falha ao renovar token: ${err instanceof Error ? err.message : "erro desconhecido"}`,
+    };
+  }
 }
 
 async function levantar(t: Tenant): Promise<Linha[]> {
+  // Só contas ACTIVE: uma conta em ERROR já falhou a renovação antes e não vai
+  // responder agora. Tentar é queimar chamada e arriscar derrubar o laço.
   const contas = await prisma.marketplaceAccount.findMany({
-    where: { userId: t.id, platform: "MERCADO_LIVRE" },
+    where: { userId: t.id, platform: "MERCADO_LIVRE", status: "ACTIVE" },
     select: { id: true, accountName: true },
   });
+  const inativas = await prisma.marketplaceAccount.count({
+    where: { userId: t.id, platform: "MERCADO_LIVRE", status: { not: "ACTIVE" } },
+  });
+  if (inativas > 0) {
+    naoClassificadas.push({
+      email: t.email,
+      conta: `${inativas} conta(s) ML`,
+      motivo: "conta com status diferente de ACTIVE — reconecte antes de varrer",
+    });
+  }
   if (contas.length === 0) return [];
 
   const estornos = await prisma.stockLog.findMany({
@@ -599,7 +624,7 @@ async function aplicar(linhas: Linha[]): Promise<{ ok: number; erro: number }> {
       erro++;
       console.error(
         `  ✗ ${l.sku} (#${l.externalOrderId}):`,
-        err instanceof Error ? err.message : err,
+        err instanceof Error ? err.message : String(err),
       );
     }
   }
@@ -899,7 +924,13 @@ async function run() {
 
 run()
   .catch((err) => {
-    console.error("[audit-estoque-fantasma-devolucao] Falhou:", err);
+    // SÓ a mensagem. Imprimir o erro cru vaza segredo: o AxiosError carrega
+    // `config.data`, e o corpo do refresh do ML tem `client_secret` e
+    // `refresh_token` em texto puro. Aconteceu em 01/09/2026.
+    console.error(
+      "[audit-estoque-fantasma-devolucao] Falhou:",
+      err instanceof Error ? err.message : String(err),
+    );
     process.exitCode = 2;
   })
   .finally(() => prisma.$disconnect());
