@@ -86,6 +86,22 @@
  *     dizer "a peça voltou" e o estoque voltar pelo caminho normal.
  * Mais `SystemLog` `RETURN_PHANTOM_STOCK_REMEDIATED` por peça.
  *
+ * ── COMO ELE PRESTA CONTAS ───────────────────────────────────────────────
+ *
+ * `ProductUseCase.pauseListings` devolve `success: true` em sucesso PARCIAL —
+ * se o script acreditasse nele, imprimiria "0 falhas" com anúncio no ar, que é
+ * exatamente o estado que esta varredura existe para eliminar. Então ele não
+ * acredita: depois de pausar, RELÊ o banco e conta quantos anúncios daquela
+ * peça continuam `active`.
+ *
+ * São duas listas, e elas têm pesos diferentes:
+ *  - "anúncios que o motor não pausou": informativo. Recusa por item já
+ *    `closed` no ML ou já apagado na Shopee é INOFENSIVA — está mais fora do
+ *    ar que pausado.
+ *  - "anúncios ainda ATIVOS com a peça zerada": é falha de verdade, sai em
+ *    vermelho e leva o exit code a 2 mesmo que todas as peças tenham sido
+ *    zeradas. Peça comprável que a loja não tem é o bug, não o sucesso.
+ *
  * Idempotente: peça que já tem a baixa deste script sai da lista.
  *
  * Uso:
@@ -198,6 +214,32 @@ const naoClassificadas_pecas: Array<{
   sku: string;
   externalOrderId: string;
   motivo: string;
+}> = [];
+
+/**
+ * Anúncios que o motor NÃO conseguiu pausar. Nem toda falha aqui é perigo — a
+ * Shopee recusa desalistar o que ela já apagou, e o ML recusa pausar item já
+ * `closed`, que é MAIS fora do ar que pausado. Serve para o operador ver.
+ */
+const anunciosComFalha: Array<{
+  email: string;
+  sku: string;
+  externalListingId: string;
+  platform: string;
+  erro: string;
+}> = [];
+
+/**
+ * ⚠️ A lista que importa: anúncios que continuam `active` DEPOIS da pausa, com
+ * a peça em estoque 0. É peça comprável que a loja não tem — o próprio estado
+ * que esta varredura existe para eliminar. Se esta lista não estiver vazia, a
+ * execução NÃO foi um sucesso, por mais que as peças tenham sido zeradas.
+ */
+const anunciosAindaVendaveis: Array<{
+  email: string;
+  sku: string;
+  externalListingId: string;
+  platform: string;
 }> = [];
 
 /** Teto de chamadas à API do ML por execução (regra de egress nº 7). */
@@ -492,9 +534,45 @@ async function aplicar(linhas: Linha[]): Promise<{ ok: number; erro: number }> {
 
       // b) pausa em TODOS os canais, pelo motor da aplicação.
       const uc = new ProductUseCase();
-      await uc.pauseListings(l.productId, l.tenantId, "paused", {
+      const r = await uc.pauseListings(l.productId, l.tenantId, "paused", {
         forceRemote: true,
       });
+
+      // Falhas por anúncio, para o operador saber o que sobrou.
+      // `pauseListings` devolve `success: true` em sucesso PARCIAL — acreditar
+      // nele faria o script imprimir "0 falhas" com anúncio no ar, que é
+      // exatamente o bug que esta varredura existe para matar.
+      for (const lr of r.listingResults) {
+        if (!lr.paused) {
+          anunciosComFalha.push({
+            email: l.email,
+            sku: l.sku,
+            externalListingId: lr.externalListingId,
+            platform: String(lr.platform ?? "?"),
+            erro: lr.error ?? "sem detalhe",
+          });
+        }
+      }
+
+      // ⭐ E a CONFERÊNCIA que vale: o que o banco diz depois da pausa.
+      // O retorno da API é interpretação; `status = 'active'` é o fato. Um
+      // anúncio que continua ativo com estoque 0 é peça comprável que a loja
+      // não tem — o estado que esta varredura promete eliminar.
+      const aindaAtivos = await prisma.productListing.findMany({
+        where: { productId: l.productId, status: "active" },
+        select: {
+          externalListingId: true,
+          marketplaceAccount: { select: { platform: true } },
+        },
+      });
+      for (const a of aindaAtivos) {
+        anunciosAindaVendaveis.push({
+          email: l.email,
+          sku: l.sku,
+          externalListingId: a.externalListingId,
+          platform: String(a.marketplaceAccount?.platform ?? "?"),
+        });
+      }
 
       // c) pendência, para o operador ainda poder dizer "a peça voltou".
       await abrirPendencia(l, removido);
@@ -775,8 +853,48 @@ async function run() {
   console.log("Corrigindo...");
   const { ok, erro } = await aplicar(linhas);
   console.log("");
-  console.log(`Concluído: ${ok} peça(s) corrigida(s), ${erro} falha(s).`);
-  process.exitCode = erro > 0 ? 2 : 0;
+  console.log(
+    `Concluído: ${ok} peça(s) corrigida(s), ${erro} peça(s) com erro, ${anunciosComFalha.length} anúncio(s) que o motor não pausou.`,
+  );
+
+  if (anunciosComFalha.length > 0) {
+    console.log("");
+    console.log("Anúncios que o motor não conseguiu pausar:");
+    for (const a of anunciosComFalha.slice(0, 30)) {
+      console.log(
+        `    · ${a.email} — SKU ${a.sku} ${a.platform} ${a.externalListingId}: ${a.erro}`,
+      );
+    }
+    if (anunciosComFalha.length > 30) {
+      console.log(`    ... e mais ${anunciosComFalha.length - 30}.`);
+    }
+    console.log(
+      "  (Recusa por item já `closed` no ML ou já apagado na Shopee é inofensiva — está mais fora do ar que pausado.)",
+    );
+  }
+
+  if (anunciosAindaVendaveis.length > 0) {
+    console.log("");
+    console.log(
+      `🔴 ATENÇÃO: ${anunciosAindaVendaveis.length} anúncio(s) continuam ATIVOS com a peça em estoque 0 — são compráveis e a loja não tem a peça:`,
+    );
+    for (const a of anunciosAindaVendaveis) {
+      console.log(
+        `    · ${a.email} — SKU ${a.sku} ${a.platform} ${a.externalListingId}`,
+      );
+    }
+    console.log("  Pause estes à mão antes de seguir para o próximo tenant.");
+  } else {
+    console.log("");
+    console.log(
+      "✓ Conferido no banco: nenhum anúncio ficou ativo com a peça zerada.",
+    );
+  }
+
+  // Exit code pelo FATO, não pela intenção: anúncio comprável sem peça é
+  // falha, mesmo que todas as peças tenham sido zeradas.
+  process.exitCode =
+    erro > 0 || anunciosAindaVendaveis.length > 0 ? 2 : 0;
 }
 
 run()
