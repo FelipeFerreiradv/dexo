@@ -285,6 +285,7 @@ import { StockSyncRetryService } from "../marketplaces/services/stock-sync-retry
 import { StockReconciliationService } from "../marketplaces/services/stock-reconciliation.service";
 import { ListingStatusSweepService } from "../marketplaces/services/listing-status-sweep.service";
 import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
+import { OrderReturnPendencyReconcilerService } from "../marketplaces/services/order-return-pendency-reconciler.service";
 import { RembgAlertService } from "../marketplaces/services/rembg-alert.service";
 import {
   ImageBgWorkerService,
@@ -414,6 +415,7 @@ async function gracefulShutdown(signal: string, exitCode = 0) {
     (StockReconciliationService as any).stop?.();
     (ListingStatusSweepService as any).stop?.();
     (OrderIngestionReconcilerService as any).stop?.();
+    (OrderReturnPendencyReconcilerService as any).stop?.();
     (RembgAlertService as any).stop?.();
     (ImageBgWorkerService as any).stop?.();
   } catch (err) {
@@ -476,6 +478,12 @@ try {
       // vincula o anúncio ao produto, sem ninguém rodar script
       if (process.env.ORDER_INGESTION_RECONCILER_DISABLED !== "1") {
         OrderIngestionReconcilerService.start();
+      }
+      // reconsulta as pendências de DEVOLUÇÃO: fecha sozinha quando o
+      // marketplace desfaz a devolução e mantém a venda. Nunca repõe estoque —
+      // isso é sempre decisão de gente.
+      if (process.env.ORDER_RETURN_RECONCILER_DISABLED !== "1") {
+        OrderReturnPendencyReconcilerService.start();
       }
       // alerta de taxa de fallback do recorte — o tick é no-op enquanto
       // IMAGE_PIPELINE_METRICS estiver desligado (lê o env a cada execução).

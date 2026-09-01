@@ -406,6 +406,7 @@ model MarketplaceAccount {
   syncLogs                    SyncLog[]
   questions                   MarketplaceQuestion[]
   ingestionIssues             OrderIngestionIssue[]
+  returnPendencies            OrderReturnPendency[]
 
   @@unique([platform, externalUserId])
   @@unique([platform, shopId])
@@ -452,6 +453,70 @@ model OrderIngestionIssue {
   attempts             Int      @default(0)
   nextRetryAt          DateTime @default(now())
   resolvedOrderId      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  marketplaceAccount MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
+
+  /// Reentrega/re-poll ATUALIZA o registro, não duplica.
+  @@unique([marketplaceAccountId, externalOrderId])
+  @@index([status, nextRetryAt])
+  @@index([marketplaceAccountId, status])
+}
+
+/// Pendência de DEVOLUÇÃO: o marketplace encerrou o pedido, mas a peça NÃO
+/// está no pátio — e ninguém sabe se um dia vai estar.
+///
+/// Por que existe (medido em produção 01/09/2026): o ML usa o mesmo estado
+/// terminal (`status: "cancelled"`) para duas coisas opostas. Cancelamento
+/// antes do envio — a peça nunca saiu, o estorno `+1` está certo. E devolução
+/// depois da entrega — a peça está com o comprador, e o estorno recria estoque
+/// que não existe, reabre o anúncio e outra pessoa compra o que a loja não tem.
+/// Varredura de 68 cancelamentos de um tenant real contra a API do ML: 51 (75%)
+/// eram do segundo tipo. 20 peças estavam à venda naquele instante, em 48
+/// anúncios, R$ 2.576,90 expostos.
+///
+/// A regra que este modelo materializa: quando a peça saiu do pátio, o estoque
+/// NÃO volta por decisão de máquina. Fica aqui até uma pessoa dizer se a peça
+/// voltou ou não. Isso é DECISÃO FÍSICA PENDENTE, não falha de ingestão — por
+/// isso não é uma `reason` nova em `OrderIngestionIssue`: aquela fila é varrida
+/// inteira por `OrderIngestionReconcilerService` (que re-tentaria a ingestão
+/// para sempre), o `@@unique` colidiria quando o mesmo pedido tem os dois
+/// problemas, e o invariante de lá é outro ("existe Order OU pendência" — aqui
+/// o Order existe e está correto).
+///
+/// Migração: prisma/migrations/20260901120000_add_order_return_pendency/
+model OrderReturnPendency {
+  id                   String   @id @default(cuid())
+  marketplaceAccountId String
+  platform             Platform
+  externalOrderId      String
+  /// Evidência do desfecho, PODADA: cancel_detail, tags e o status do envio.
+  /// Nunca guarda token, nem dado do comprador. Existe para o operador
+  /// entender POR QUE a peça está pendente sem abrir o painel do marketplace.
+  payload              Json?
+  /// PECA_COM_COMPRADOR | PECA_EM_TRANSITO | DEVOLVIDA_CONFIRMADA_ML
+  /// | SHOPEE_TO_RETURN | ML_PARTIALLY_REFUNDED
+  /// String (não enum) pelo mesmo motivo de `OrderIngestionIssue.reason`:
+  /// motivo novo não deve exigir migração.
+  reason               String
+  detail               String?
+  /// OPEN | NEEDS_ACTION | RESOLVED. Mesma regra do irmão: nada vira estado
+  /// terminal SILENCIOSO. Uma pendência que ninguém fecha é peça boa parada
+  /// fora do estoque — ela continua contada e visível até alguém decidir.
+  status               String   @default("OPEN")
+  /// RECEBIDA | NAO_RECEBIDA | VENDA_MANTIDA — o desfecho registrado no
+  /// fechamento. É o que distingue "a peça voltou" de "o comprador ficou com
+  /// ela" depois que a pendência sai da tela.
+  outcome              String?
+  resolvedByUserId     String?
+  resolvedAt           DateTime?
+  /// `attempts`/`nextRetryAt` não são cópia decorativa do irmão: existe uma
+  /// varredura automática legítima — reconsultar o marketplace para ver se o
+  /// desfecho mudou (a devolução chegou; a mediação virou a favor do vendedor
+  /// e a venda foi mantida). Ela nunca decide sozinha que a peça voltou.
+  attempts             Int      @default(0)
+  nextRetryAt          DateTime @default(now())
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

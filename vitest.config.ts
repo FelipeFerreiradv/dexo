@@ -69,6 +69,35 @@ process.env.ORDER_SOLD_AT_DISABLED ??= "1";
 // correcao (order-ingestion-needs-action) reabilita explicitamente por caso.
 process.env.ORDER_INGESTION_NEEDS_ACTION_DISABLED ??= "1";
 
+// Retencao do estorno quando a peca NAO esta no patio (devolucao, 01/09/2026):
+// desligada por default na suite porque `order-cancellation`,
+// `webhook-cancellation`, `reopen-on-cancel-preference` e
+// `reopen-on-cancel-keep-paused` afirmam o comportamento ANTERIOR — todo
+// cancelamento estorna, e a chamada do handler tem exatamente 4 chaves. Em
+// producao o default e o oposto — ligado —, porque a varredura de 68
+// cancelamentos reais de um tenant contra a API do ML mostrou que 51 (75%) eram
+// devolucao DEPOIS da entrega: a peca estava com o comprador e o estorno
+// recriava estoque inexistente (20 pecas a venda naquele instante, 48 anuncios,
+// R$ 2.576,90). O spec da correcao (order-cancellation-return-hold) reabilita
+// explicitamente por caso.
+process.env.ORDER_RETURN_HOLD_DISABLED ??= "1";
+
+// Pendencia de devolucao da Shopee (TO_RETURN, 01/09/2026): desligada por
+// default na suite porque `shopee-order-import-status-window` afirma o
+// comportamento ANTERIOR (TO_RETURN mapeia para SHIPPED e nada mais acontece).
+// Em producao o default e o oposto — ligado —, senao a peca que volta de uma
+// devolucao Shopee some do estoque: ninguem da entrada dela. O spec da correcao
+// (shopee-return-pendency) reabilita explicitamente por caso.
+process.env.SHOPEE_RETURN_PENDENCY_DISABLED ??= "1";
+
+// Worker que reconsulta as pendencias de devolucao: desligado por default na
+// suite pelo mesmo motivo dos outros workers — nenhum spec pre-existente sobe
+// o api.ts, e um setInterval vivo dentro da suite e ruido. Em producao o
+// default e o oposto — ligado —, senao a pendencia nunca fecha sozinha quando
+// o marketplace desfaz a devolucao. O spec da correcao
+// (order-return-reconciler) reabilita explicitamente por caso.
+process.env.ORDER_RETURN_RECONCILER_DISABLED ??= "1";
+
 // Completar pedido que existe com ZERO itens (31/07/2026): desligado por default
 // na suite porque acrescenta uma consulta `order.findMany` no inicio do laco de
 // import, e os specs pre-existentes mockam `prisma.order.findMany` com UMA

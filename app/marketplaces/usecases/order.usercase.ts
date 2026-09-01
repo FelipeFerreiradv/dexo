@@ -29,6 +29,12 @@ import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { OrderCustomerService } from "../services/order-customer.service";
 import { resolveReopenPref } from "../../services/reopen-listings-preference";
+import {
+  OrderReturnPendencyService,
+  RETURN_STATUS_PENDENTES,
+  type OrderReturnOutcome,
+} from "../services/order-return-pendency.service";
+import type { DesfechoPedido } from "../services/order-outcome.service";
 import { SyncUseCase } from "./sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import { normalizeSku } from "@/app/lib/sku";
@@ -50,6 +56,35 @@ import type {
 } from "@/app/interfaces/order.interface";
 import { SystemLogService } from "@/app/services/system-log.service";
 import { OrderIngestionIssueService } from "../services/order-ingestion-issue.service";
+
+/**
+ * Rótulo de plataforma (o que monta a `reason` do StockLog) → enum `Platform`
+ * (o que a pendência de devolução persiste).
+ *
+ * OLX e FACEBOOK ficam de fora DE PROPÓSITO, e não por esquecimento: os dois
+ * são canais de anúncio sem ingestão de pedido — nada chama o cancelamento com
+ * esses rótulos hoje. Mapear seria fingir uma capacidade que não existe;
+ * `undefined` faz a pendência simplesmente não abrir, e o cancelamento segue
+ * idêntico ao de hoje.
+ */
+/** Inverso de `PLATAFORMA_POR_LABEL`: a pendência guarda o enum, a
+ * `reason` do StockLog precisa do rótulo. */
+const LABEL_POR_PLATAFORMA: Record<string, "ML" | "Shopee" | "Magalu"> = {
+  MERCADO_LIVRE: "ML",
+  SHOPEE: "Shopee",
+  MAGALU: "Magalu",
+};
+
+const PLATAFORMA_POR_LABEL: Partial<
+  Record<
+    "ML" | "Shopee" | "Magalu" | "OLX" | "FACEBOOK",
+    "MERCADO_LIVRE" | "SHOPEE" | "MAGALU"
+  >
+> = {
+  ML: "MERCADO_LIVRE",
+  Shopee: "SHOPEE",
+  Magalu: "MAGALU",
+};
 
 // ====================================================================
 // TIPOS PARA RESULTADOS
@@ -106,6 +141,9 @@ export interface OrderCancellationResult {
     | "already_cancelled"
     | "cancelled_restored"
     | "cancelled_no_restore"
+    // O pedido foi cancelado, mas o estorno de estoque foi RETIDO porque a peça
+    // não está no pátio (devolução depois do envio). Ver OrderOutcomeService.
+    | "cancelled_return_pending"
     | "error";
   restoredItems: number;
   message?: string;
@@ -708,8 +746,73 @@ export class OrderUseCase {
     // externa nenhuma.
     const vaziosPorExtId = await this.pedidosVaziosNaJanela(existingOrders);
 
+    // ADITIVO (devolução): PRÉ-CARGA EM LOTE das devoluções já registradas.
+    // Sem ela, `OrderReturnPendencyService.open` faria um `findUnique` + um
+    // `upsert` para CADA pedido `TO_RETURN`, em CADA ciclo de poll. A janela
+    // da Shopee revisita o mesmo pedido por dias: a 15 min por ciclo são 96
+    // passadas por dia, e cada uma reescreveria a mesma linha com os mesmos
+    // valores — puro dead tuple. Uma consulta por ciclo substitui 2×N, e a
+    // idempotência real continua no @@unique(marketplaceAccountId,
+    // externalOrderId). Mesmo padrão das três pré-cargas vizinhas.
+    //
+    // Zero consulta quando não há nenhum `TO_RETURN` no lote, que é o caso
+    // esmagadoramente mais comum.
+    const snsEmDevolucao =
+      process.env.SHOPEE_RETURN_PENDENCY_DISABLED !== "1" &&
+      // O mestre também manda aqui: com ele ligado o `open()` retornaria
+      // imediatamente e esta consulta seria puro desperdício em todo poll.
+      process.env.ORDER_RETURN_HOLD_DISABLED !== "1"
+        ? (shopeeOrders as ShopeeOrderDetail[])
+            .filter((o) => o.order_status === "TO_RETURN")
+            .map((o) => o.order_sn)
+        : [];
+    const devolucoesJaRegistradas = new Set<string>();
+    if (snsEmDevolucao.length > 0) {
+      const existentes = await (prisma as any).orderReturnPendency.findMany({
+        where: {
+          marketplaceAccountId,
+          externalOrderId: { in: snsEmDevolucao },
+          reason: "SHOPEE_TO_RETURN",
+        },
+        select: { externalOrderId: true },
+      });
+      for (const e of existentes as { externalOrderId: string }[]) {
+        devolucoesJaRegistradas.add(e.externalOrderId);
+      }
+    }
+
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
       const orderVazioId = vaziosPorExtId.get(shopeeOrder.order_sn);
+
+      // ADITIVO (devolução): `TO_RETURN` mapeia para SHIPPED de propósito — a
+      // venda aconteceu e a peça saiu, então NÃO estornar está certo e não
+      // muda aqui. O que faltava era a outra ponta: quando a peça VOLTA de
+      // verdade, ninguém dá entrada dela e ela some do estoque. A pendência é
+      // a pergunta que faltava fazer.
+      //
+      // Best-effort e fora do fluxo: não toca `entry`, contadores nem
+      // `results` — mesma disciplina do gate de cancelamento da Magalu.
+      if (
+        process.env.SHOPEE_RETURN_PENDENCY_DISABLED !== "1" &&
+        shopeeOrder.order_status === "TO_RETURN" &&
+        // Já registrada com este mesmo motivo ⇒ o upsert reescreveria valores
+        // idênticos. Vale para OPEN, NEEDS_ACTION e RESOLVED: em nenhum dos
+        // três o `open()` mudaria alguma coisa.
+        !devolucoesJaRegistradas.has(shopeeOrder.order_sn)
+      ) {
+        await OrderReturnPendencyService.open({
+          marketplaceAccountId,
+          platform: "SHOPEE",
+          externalOrderId: shopeeOrder.order_sn,
+          reason: "SHOPEE_TO_RETURN",
+          detail:
+            "O comprador abriu devolução na Shopee sobre um pedido já enviado. O estoque continua baixado — confirme se a peça voltou ao pátio.",
+          evidencia: {
+            orderStatus: shopeeOrder.order_status,
+            updateTime: shopeeOrder.update_time ?? null,
+          },
+        });
+      }
       // try/catch por PEDIDO, pelo mesmo motivo do laco do ML:
       // `ingestShopeeOrder` tem catch proprio, o caminho novo nao tinha, e uma
       // excecao aqui abortaria o ciclo da conta antes do `logSync` e antes da
@@ -4037,6 +4140,13 @@ export class OrderUseCase {
     externalOrderId: string;
     platformLabel: "ML" | "Shopee" | "Magalu" | "OLX" | "FACEBOOK";
     logPrefix?: string;
+    /**
+     * ADITIVO (devolução). Desfecho FÍSICO do pedido, quando o caller
+     * conseguiu apurá-lo no marketplace. Ausente ⇒ caminho de hoje,
+     * byte-idêntico: é assim que Magalu, Shopee, PATCH manual e OLX/Facebook
+     * continuam sem mudança nenhuma. Ver OrderOutcomeService.
+     */
+    desfecho?: DesfechoPedido;
   }): Promise<OrderCancellationResult> {
     const { marketplaceAccountId, externalOrderId, platformLabel } = params;
     const logPrefix = params.logPrefix ?? "[OrderUseCase]";
@@ -4110,7 +4220,15 @@ export class OrderUseCase {
       }
       const productIds = [...orderedQty.keys()];
 
+      // ADITIVO (devolução): retém o estorno quando há PROVA de que a peça
+      // saiu do pátio. Sem `desfecho` (todos os callers de hoje) ou com o
+      // kill-switch ligado, é `false` e nada abaixo muda.
+      const reterEstorno =
+        process.env.ORDER_RETURN_HOLD_DISABLED !== "1" &&
+        params.desfecho?.reterEstorno === true;
+
       let restorations: StockDeductionResult[] = [];
+      let itensRetidos: Array<{ productId: string; quantity: number }> = [];
       let action: OrderCancellationResult["action"] = "already_cancelled";
 
       await prisma.$transaction(
@@ -4169,6 +4287,26 @@ export class OrderUseCase {
 
           if (items.length === 0) {
             action = "cancelled_no_restore";
+            return;
+          }
+
+          // ADITIVO (devolução): a decisão de NÃO estornar acontece aqui —
+          // dentro da MESMA transação, depois do claim e ANTES de qualquer
+          // escrita de estoque. Nunca "estorna e depois desfaz": isso faria o
+          // anúncio piscar de volta ao ar, e nesse intervalo alguém compra.
+          //
+          // Fica depois do net (e não logo após o claim) de propósito: só é
+          // pendência o pedido que REALMENTE teria estoque devolvido. Pedido
+          // sem baixa dá net 0 e sai por `cancelled_no_restore` acima — abrir
+          // pendência para ele seria pedir uma decisão sobre nada e poluir a
+          // tela do operador. De quebra, `items` já diz QUANTO seria devolvido.
+          //
+          // O status CANCELLED já foi commitado pelo claim: o pedido some do
+          // faturamento como sempre. O que não acontece é o `+1` e, por
+          // consequência (`restorations` vazio), a reabertura do anúncio.
+          if (reterEstorno) {
+            itensRetidos = items;
+            action = "cancelled_return_pending";
             return;
           }
 
@@ -4253,6 +4391,28 @@ export class OrderUseCase {
         });
       }
 
+      // ADITIVO (devolução): pós-commit e best-effort, como os irmãos acima.
+      // Perder o registro é ruim; desfazer o cancelamento já commitado seria
+      // pior. O `await` existe porque o caller do webhook é fire-and-forget e
+      // o processo pode não ter outro tick — mas o serviço nunca lança.
+      if (itensRetidos.length > 0) {
+        const plataformaDaPendencia = PLATAFORMA_POR_LABEL[platformLabel];
+        if (plataformaDaPendencia && params.desfecho) {
+          await OrderReturnPendencyService.open({
+            marketplaceAccountId,
+            platform: plataformaDaPendencia,
+            externalOrderId,
+            reason: params.desfecho.reason ?? "PECA_EM_TRANSITO",
+            detail: params.desfecho.detail,
+            evidencia: {
+              ...params.desfecho.evidencia,
+              desfecho: params.desfecho.peca,
+              itensRetidos,
+            },
+          });
+        }
+      }
+
       void SystemLogService.logInfo(
         "ORDER_CANCEL_RESTORE",
         `Pedido ${platformLabel} #${externalOrderId} cancelado (${action})`,
@@ -4301,6 +4461,333 @@ export class OrderUseCase {
         success: false,
         orderId: null,
         externalOrderId,
+        action: "error",
+        restoredItems: 0,
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      };
+    }
+  }
+
+  /**
+   * Fecha uma pendência de DEVOLUÇÃO com a decisão do operador.
+   *
+   * É o ÚNICO caminho pelo qual o estoque volta depois que a peça saiu do
+   * pátio. Nenhuma rotina automática repõe estoque de devolução — nem quando o
+   * próprio marketplace diz que a peça voltou (decisão do dono, 01/09/2026):
+   * `date_returned` prova que a transportadora entregou de volta, não que a
+   * peça está na prateleira conferida.
+   *
+   * Idempotência, mesmo desenho de `processOrderCancellation`:
+   *  1. Claim atômico da pendência (OPEN|NEEDS_ACTION → RESOLVED) na MESMA
+   *     transação do estorno — dois cliques no botão repõem uma vez só.
+   *  2. Quantidade pelo NET do StockLog, agora com a reason da devolução no
+   *     somatório. Este net é PRÓPRIO deste caminho: o do cancelamento (as três
+   *     reasons de sempre) não pode ganhar um quarto termo sem quebrar o
+   *     contrato que `tests/order-cancellation.spec.ts` congela.
+   *
+   * `NAO_RECEBIDA` e `VENDA_MANTIDA` não tocam estoque: a peça já estava
+   * baixada desde a venda. O registro existe para o desfecho não ser esquecido.
+   *
+   * NUNCA lança — a rota decide o HTTP pelo retorno.
+   */
+  static async resolveReturnPendency(params: {
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    outcome: OrderReturnOutcome;
+    /** Dono dos dados (`parentUserId ?? id`). A posse já foi validada na rota. */
+    userId: string;
+    resolvedByUserId?: string | null;
+    logPrefix?: string;
+  }): Promise<{
+    success: boolean;
+    action:
+      | "resolved_restocked"
+      | "resolved_written_off"
+      | "already_resolved"
+      | "not_found"
+      | "error";
+    restoredItems: number;
+    message?: string;
+  }> {
+    const { marketplaceAccountId, externalOrderId, outcome, userId } = params;
+    const logPrefix = params.logPrefix ?? "[OrderUseCase]";
+    try {
+      const pendencia = await (prisma as any).orderReturnPendency.findUnique({
+        where: {
+          marketplaceAccountId_externalOrderId: {
+            marketplaceAccountId,
+            externalOrderId,
+          },
+        },
+        select: { id: true, status: true, platform: true },
+      });
+      if (!pendencia) {
+        return { success: false, action: "not_found", restoredItems: 0 };
+      }
+      if (pendencia.status === "RESOLVED") {
+        return { success: true, action: "already_resolved", restoredItems: 0 };
+      }
+
+      const platformLabel =
+        LABEL_POR_PLATAFORMA[
+          pendencia.platform as keyof typeof LABEL_POR_PLATAFORMA
+        ] ?? "ML";
+
+      // "Não voltou" / "venda mantida": estoque permanece 0 e o anúncio
+      // permanece fora. Só registra o desfecho.
+      if (outcome !== "RECEBIDA") {
+        const fechou = await OrderReturnPendencyService.resolve(
+          marketplaceAccountId,
+          externalOrderId,
+          outcome,
+          params.resolvedByUserId ?? null,
+        );
+        if (!fechou) {
+          return {
+            success: true,
+            action: "already_resolved",
+            restoredItems: 0,
+          };
+        }
+        void SystemLogService.logInfo(
+          outcome === "VENDA_MANTIDA"
+            ? "ORDER_RETURN_SALE_REINSTATED"
+            : "ORDER_RETURN_WRITTEN_OFF",
+          `Pedido ${platformLabel} #${externalOrderId}: devolução encerrada como ${outcome} — estoque permanece baixado.`,
+          {
+            userId,
+            resource: "Order",
+            resourceId: externalOrderId,
+            details: { marketplaceAccountId, externalOrderId, outcome },
+          },
+        ).catch(() => {});
+        return {
+          success: true,
+          action: "resolved_written_off",
+          restoredItems: 0,
+        };
+      }
+
+      const order = await prisma.order.findFirst({
+        where: { marketplaceAccountId, externalOrderId },
+        select: {
+          id: true,
+          status: true,
+          items: { select: { productId: true, quantity: true } },
+          marketplaceAccount: {
+            select: {
+              userId: true,
+              user: {
+                select: {
+                  reopenListingsOnSaleCancel: true,
+                  parent: { select: { reopenListingsOnSaleCancel: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+      // Pendência SEM pedido importado. Acontece de verdade: a pendência da
+      // Shopee é aberta no laço de importação ANTES de se saber se o pedido
+      // vira `Order` — um `TO_RETURN` de pedido que nunca ingeriu (item sem
+      // produto vinculado) cai exatamente aqui. Devolver `not_found` deixaria
+      // a pendência num BECO SEM SAÍDA: "A peça voltou" responderia 404 para
+      // sempre e nada fecharia a linha.
+      //
+      // Sem `Order` não há baixa nossa para reverter, então não há estoque a
+      // repor — fecha registrando o desfecho, com 0 itens.
+      if (!order) {
+        const fechou = await OrderReturnPendencyService.resolve(
+          marketplaceAccountId,
+          externalOrderId,
+          outcome,
+          params.resolvedByUserId ?? null,
+        );
+        return {
+          success: true,
+          action: fechou ? "resolved_written_off" : "already_resolved",
+          restoredItems: 0,
+          message:
+            "Este pedido não chegou a ser importado, então não havia baixa de estoque para reverter. A pendência foi encerrada.",
+        };
+      }
+
+      // A reposição só vale enquanto o pedido continua CANCELADO. Se ele foi
+      // REATIVADO nesse meio-tempo (PATCH manual, ou o marketplace desfazendo
+      // a devolução), a venda voltou a valer e a peça saiu de novo — repor
+      // aqui recriaria estoque fantasma justamente pela porta dos fundos.
+      // Fecha a pendência registrando o desfecho, sem tocar em estoque.
+      if (order.status !== "CANCELLED") {
+        const fechou = await OrderReturnPendencyService.resolve(
+          marketplaceAccountId,
+          externalOrderId,
+          "VENDA_MANTIDA",
+          params.resolvedByUserId ?? null,
+        );
+        void SystemLogService.logInfo(
+          "ORDER_RETURN_SALE_REINSTATED",
+          `Pedido ${platformLabel} #${externalOrderId}: a venda foi reativada antes da confirmação — estoque permanece baixado.`,
+          {
+            userId,
+            resource: "Order",
+            resourceId: order.id,
+            details: { marketplaceAccountId, externalOrderId, status: order.status },
+          },
+        ).catch(() => {});
+        return {
+          success: true,
+          action: fechou ? "resolved_written_off" : "already_resolved",
+          restoredItems: 0,
+          message:
+            "Este pedido voltou a ser uma venda ativa, então a peça continua vendida. A pendência foi encerrada sem alterar o estoque.",
+        };
+      }
+
+      const deductionReason = `Venda ${platformLabel} #${externalOrderId}`;
+      const restoreReason = `Estorno venda ${platformLabel} #${externalOrderId}`;
+      const reactivateReason = `Reativação venda ${platformLabel} #${externalOrderId}`;
+      const devolucaoReason = `Devolução recebida ${platformLabel} #${externalOrderId}`;
+
+      const orderedQty = new Map<string, number>();
+      for (const item of order.items) {
+        orderedQty.set(
+          item.productId,
+          (orderedQty.get(item.productId) ?? 0) + item.quantity,
+        );
+      }
+      const productIds = [...orderedQty.keys()];
+
+      let restorations: StockDeductionResult[] = [];
+      let venceuOClaim = false;
+
+      await prisma.$transaction(
+        async (tx) => {
+          // 1. Claim atômico da pendência, na MESMA tx do estorno: dois cliques
+          //    no botão repõem uma vez só.
+          const r = await (tx as any).orderReturnPendency.updateMany({
+            where: {
+              id: pendencia.id,
+              status: { in: [...RETURN_STATUS_PENDENTES] },
+            },
+            data: {
+              status: "RESOLVED",
+              outcome: "RECEBIDA",
+              resolvedByUserId: params.resolvedByUserId ?? null,
+              resolvedAt: new Date(),
+            },
+          });
+          if (r.count === 0) return;
+          venceuOClaim = true;
+
+          if (productIds.length === 0) return;
+
+          // 2. Lock dos produtos, mesma ordem do motor de estoque.
+          for (const productId of productIds) {
+            await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+          }
+
+          // 3. Net COM a reason da devolução — repetir não repõe duas vezes.
+          const grouped = await tx.stockLog.groupBy({
+            by: ["productId"],
+            where: {
+              productId: { in: productIds },
+              reason: {
+                in: [
+                  deductionReason,
+                  restoreReason,
+                  reactivateReason,
+                  devolucaoReason,
+                ],
+              },
+            },
+            _sum: { change: true },
+          });
+          const netByProduct = new Map<string, number>(
+            grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+          );
+          const items = productIds
+            .map((productId) => ({
+              productId,
+              quantity: Math.min(
+                Math.max(0, -(netByProduct.get(productId) ?? 0)),
+                orderedQty.get(productId)!,
+              ),
+            }))
+            .filter((i) => i.quantity > 0);
+
+          if (items.length === 0) return;
+
+          const result = await StockDeductionService.restoreWithinTx(tx, {
+            items,
+            reason: devolucaoReason,
+            orderId: order.id,
+            logPrefix,
+          });
+          restorations = result.deductions;
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+
+      if (!venceuOClaim) {
+        return { success: true, action: "already_resolved", restoredItems: 0 };
+      }
+
+      // Pós-commit, idêntico em espírito ao do cancelamento: o empurrão de
+      // quantidade sempre acontece; a reabertura obedece à preferência do
+      // tenant. Aqui a peça voltou de verdade — é o caminho normal.
+      if (restorations.length > 0) {
+        const contaDoPedido = order.marketplaceAccount;
+        const reabrirAnuncio = resolveReopenPref(
+          contaDoPedido.user?.parent?.reopenListingsOnSaleCancel ??
+            contaDoPedido.user?.reopenListingsOnSaleCancel,
+        );
+        StockDeductionService.firePostEffects({
+          deductions: restorations,
+          logPrefix,
+          ...(reabrirAnuncio
+            ? { reopenOnRefill: { userId: contaDoPedido.userId, force: true } }
+            : { keepPausedOnRefill: { userId: contaDoPedido.userId } }),
+        });
+
+        ScrapStatusReconcileService.reconcileForProducts({
+          productIds: restorations.map((d) => d.productId),
+          userId: contaDoPedido.userId,
+          logPrefix,
+        });
+      }
+
+      void SystemLogService.logInfo(
+        "ORDER_RETURN_RESTOCKED",
+        `Pedido ${platformLabel} #${externalOrderId}: devolução recebida — estoque reposto.`,
+        {
+          userId,
+          resource: "Order",
+          resourceId: order.id,
+          details: {
+            marketplaceAccountId,
+            externalOrderId,
+            restored: restorations.map((r) => ({
+              productId: r.productId,
+              quantity: r.quantity,
+              previousStock: r.previousStock,
+              newStock: r.newStock,
+            })),
+          },
+        },
+      ).catch(() => {});
+
+      return {
+        success: true,
+        action: "resolved_restocked",
+        restoredItems: restorations.length,
+      };
+    } catch (error) {
+      console.error(
+        `${logPrefix} Falha ao resolver devolução #${externalOrderId}:`,
+        error,
+      );
+      return {
+        success: false,
         action: "error",
         restoredItems: 0,
         message: error instanceof Error ? error.message : "Erro desconhecido",
@@ -4378,6 +4865,7 @@ export class OrderUseCase {
 
       const restoreReason = `Estorno venda ${platformLabel} #${externalOrderId}`;
       const reactivateReason = `Reativação venda ${platformLabel} #${externalOrderId}`;
+      const devolucaoReason = `Devolução recebida ${platformLabel} #${externalOrderId}`;
 
       const orderedQty = new Map<string, number>();
       for (const item of order.items) {
@@ -4417,11 +4905,29 @@ export class OrderUseCase {
           // 3. Net dos estornos: estornos (+) − reativações anteriores (−)
           //    ⇒ a re-deduzir = max(0, Σ), com teto no pedido. Só desfaz o
           //    que o cancelamento fez — nunca cria dedução "nova".
+          //
+          // ADITIVO (devolução): a reposição por DEVOLUÇÃO RECEBIDA também é
+          // um `+1` que este pedido colocou de volta no estoque, e portanto
+          // também precisa ser desfeita se a venda for reativada. Sem ela no
+          // somatório existe uma sequência real que recria estoque fantasma:
+          // cancelamento retido → operador confirma "a peça voltou" (+1) →
+          // alguém reativa o pedido pelo PATCH manual → o net dá 0 e o `+1`
+          // NUNCA é re-baixado. Peça vendida, estoque 1 — exatamente o bug
+          // que esta entrega existe para matar, entrando pela porta dos
+          // fundos.
+          //
+          // Atrás do kill-switch: com ele ligado o array é byte-idêntico ao
+          // de sempre, que é o que `tests/order-cancellation.spec.ts:568`
+          // congela.
+          const reasonsDoNet =
+            process.env.ORDER_RETURN_HOLD_DISABLED === "1"
+              ? [restoreReason, reactivateReason]
+              : [restoreReason, reactivateReason, devolucaoReason];
           const grouped = await tx.stockLog.groupBy({
             by: ["productId"],
             where: {
               productId: { in: productIds },
-              reason: { in: [restoreReason, reactivateReason] },
+              reason: { in: reasonsDoNet },
             },
             _sum: { change: true },
           });
@@ -4648,6 +5154,16 @@ export class OrderUseCase {
         return "DELIVERED";
       case "cancelled":
         return "CANCELLED";
+      // ADITIVO (devolução): reembolso PARCIAL é venda concretizada com uma
+      // devolução de parte do dinheiro — a peça saiu e o pedido continua
+      // valendo. Caía no `default` e virava PENDING, ou seja, o pedido saía do
+      // faturamento e voltava a parecer "aguardando pagamento". Não mexe em
+      // estoque: quem decide o que fazer com a peça é o operador, pela
+      // pendência de devolução (ML_PARTIALLY_REFUNDED).
+      case "partially_refunded":
+        return process.env.ORDER_RETURN_HOLD_DISABLED === "1"
+          ? "PENDING"
+          : "PAID";
       default:
         return "PENDING";
     }

@@ -80,6 +80,36 @@ export type LogAction =
   | "REOPEN_OFF_RELISTED_REMEDIATED"
   | "ORDER_UNCANCEL_REDEDUCT"
   | "MAGALU_CANCEL_DETECTED"
+  // O marketplace encerrou o pedido, mas a peça NÃO está no pátio — e o estorno
+  // de estoque foi RETIDO por isso. O ML usa o mesmo `status: "cancelled"` para
+  // cancelamento antes do envio (peça no pátio, estorno correto) e para
+  // devolução depois da entrega (peça com o comprador); só `cancel_detail` +
+  // o envio separam os dois. O pedido continua sendo marcado CANCELLED: o que
+  // NÃO acontece é o `+1` e a reabertura do anúncio. `details` carrega a
+  // evidência (group/code/status do envio) para a decisão ser auditável.
+  // Ver OrderOutcomeService e OrderUseCase.processOrderCancellation.
+  | "ORDER_RETURN_HOLD"
+  // O operador confirmou que a peça devolvida chegou ao pátio: `+1` com reason
+  // própria ("Devolução recebida ...", nunca "Estorno venda ...", que
+  // envenenaria o net do cancelamento) e o anúncio reabre pelo caminho normal,
+  // respeitando `reopenListingsOnSaleCancel`. É a única forma de o estoque
+  // voltar depois de uma devolução — nenhuma rotina decide isso sozinha.
+  | "ORDER_RETURN_RESTOCKED"
+  // O operador declarou que a peça NÃO volta (o comprador ficou com ela, o
+  // marketplace bancou o prejuízo, ou extraviou). Estoque permanece 0 e o
+  // anúncio permanece fora. Não mexe em estoque — a peça já estava baixada
+  // desde a venda; este registro existe para o desfecho não ser esquecido.
+  | "ORDER_RETURN_WRITTEN_OFF"
+  // O marketplace desfez a devolução e manteve a venda (o dinheiro ficou com o
+  // vendedor). A pendência fecha como VENDA_MANTIDA e, se o estoque já tinha
+  // voltado, ele é re-baixado pelo net do StockLog — nunca duas vezes.
+  // Ver OrderReturnPendencyReconcilerService.
+  | "ORDER_RETURN_SALE_REINSTATED"
+  // Remediação do PASSIVO: peça cujo estoque voltou por um estorno de
+  // devolução indevido e que foi zerada + pausada em todos os canais pelo
+  // script scripts/audit-estoque-fantasma-devolucao.ts --apply. Altera o que o
+  // comprador vê e desfaz um `+1` já commitado — por isso deixa rastro.
+  | "RETURN_PHANTOM_STOCK_REMEDIATED"
   // Auto-cadastro de Customer a partir de venda de marketplace
   // (ver OrderCustomerService.ensureCustomerForOrder).
   | "ORDER_AUTO_CUSTOMER"
