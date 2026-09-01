@@ -76,3 +76,8 @@ scripts/_tmp-*
 .cache/
 
 __pycache__/
+
+# Relatórios da varredura de estoque fantasma de devolução. Ao contrário dos
+# audits antigos desta pasta, estes carregam e-mail de tenant, SKU, número de
+# pedido do marketplace e valor — dado de cliente não entra no repositório.
+audit-reports/estoque-fantasma-devolucao-*.md
