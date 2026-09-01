@@ -85,6 +85,27 @@ function descreveMotivo(reason: string): string {
   }
 }
 
+/**
+ * Texto em português claro para o operador. O `reason` é vocabulário interno;
+ * quem lê a tela precisa saber O QUE decidir, não o nome do enum.
+ */
+function descreveMotivoDevolucao(reason: string): string {
+  switch (reason) {
+    case "PECA_COM_COMPRADOR":
+      return "A peça foi ENTREGUE ao comprador e o pedido virou devolução ou reclamação. Ela só volta ao estoque quando chegar de volta ao pátio.";
+    case "PECA_EM_TRANSITO":
+      return "A peça saiu do pátio e não está com o comprador: em trânsito de volta, extraviada ou avariada.";
+    case "DEVOLVIDA_CONFIRMADA_ML":
+      return "O marketplace registrou a devolução como concluída. Confira a peça na prateleira e confirme o recebimento.";
+    case "SHOPEE_TO_RETURN":
+      return "O comprador abriu devolução na Shopee sobre um pedido já enviado. Confirme se a peça voltou.";
+    case "ML_PARTIALLY_REFUNDED":
+      return "Houve reembolso parcial neste pedido. Nada foi alterado no estoque — decida o que fazer com a peça.";
+    default:
+      return "A peça deste pedido não está no pátio. Confirme onde ela está.";
+  }
+}
+
 export async function orderRoutes(app: FastifyInstance) {
   // ====================================================================
   // ROTAS DE IMPORTAÇÃO DE PEDIDOS (ML + SHOPEE)
@@ -464,6 +485,142 @@ export async function orderRoutes(app: FastifyInstance) {
         console.error("[Orders] Ingestion issues error:", error);
         return reply.status(500).send({
           error: "Erro ao buscar pendências de importação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /orders/return-pendencies
+   * Devoluções em que a peça saiu do pátio e o estoque ficou (corretamente)
+   * sem voltar. Cada linha é uma pergunta para o operador: a peça voltou?
+   *
+   * Escopo de tenant pela conta de marketplace, igual à listagem irmã — nunca
+   * por id cru. Mesma regra de `total` vs `exibidas`: silenciar o corte da
+   * página é o que o invariante proíbe.
+   */
+  app.get(
+    "/return-pendencies",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+
+        const filtro = {
+          status: { in: ["OPEN", "NEEDS_ACTION"] },
+          marketplaceAccount: { userId },
+        };
+
+        const total = await (prisma as any).orderReturnPendency.count({
+          where: filtro,
+        });
+
+        const pendencias = await (prisma as any).orderReturnPendency.findMany({
+          where: filtro,
+          // Mais ANTIGAS primeiro, mesmo motivo da listagem irmã: são as que
+          // estão paradas há mais tempo e as que somem com um teto de página.
+          orderBy: { createdAt: "asc" },
+          take: 100,
+          select: {
+            id: true,
+            platform: true,
+            externalOrderId: true,
+            reason: true,
+            detail: true,
+            status: true,
+            createdAt: true,
+            marketplaceAccount: { select: { accountName: true } },
+          },
+        });
+
+        return reply.status(200).send({
+          success: true,
+          pendencies: pendencias.map((p: any) => ({
+            id: p.id,
+            platform: p.platform,
+            externalOrderId: p.externalOrderId,
+            reason: p.reason,
+            motivo: descreveMotivoDevolucao(p.reason),
+            detail: p.detail,
+            precisaAcao: p.status === "NEEDS_ACTION",
+            createdAt: p.createdAt,
+            accountName: p.marketplaceAccount?.accountName ?? null,
+          })),
+          total,
+          exibidas: pendencias.length,
+        });
+      } catch (error) {
+        console.error("[Orders] Return pendencies error:", error);
+        return reply.status(500).send({
+          error: "Erro ao buscar devoluções pendentes",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /orders/return-pendencies/:id/resolve
+   * O operador diz se a peça voltou. É o ÚNICO caminho pelo qual o estoque
+   * volta depois de uma devolução.
+   *
+   * Escopa por tenant ANTES de agir (mesmo padrão do retry de ingestão): a
+   * pendência é buscada com `marketplaceAccount: { userId }`, nunca por id cru.
+   */
+  app.post(
+    "/return-pendencies/:id/resolve",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const { outcome } = (request.body || {}) as { outcome?: string };
+
+        if (outcome !== "RECEBIDA" && outcome !== "NAO_RECEBIDA") {
+          return reply.status(400).send({
+            error: "Desfecho inválido",
+            message:
+              "Informe se a peça voltou ao pátio: RECEBIDA ou NAO_RECEBIDA.",
+          });
+        }
+
+        const pendencia = await (prisma as any).orderReturnPendency.findFirst({
+          where: { id, marketplaceAccount: { userId } },
+          select: { id: true, marketplaceAccountId: true, externalOrderId: true },
+        });
+        if (!pendencia) {
+          return reply.status(404).send({
+            error: "Devolução não encontrada",
+            message: "A pendência não existe ou não pertence a esta conta.",
+          });
+        }
+
+        const resultado = await OrderUseCase.resolveReturnPendency({
+          marketplaceAccountId: pendencia.marketplaceAccountId,
+          externalOrderId: pendencia.externalOrderId,
+          outcome,
+          userId,
+          resolvedByUserId: request.user!.id,
+          logPrefix: "[Orders]",
+        });
+
+        if (!resultado.success) {
+          return reply.status(resultado.action === "not_found" ? 404 : 500).send({
+            error: "Não foi possível registrar o desfecho",
+            message: resultado.message ?? "Erro desconhecido",
+          });
+        }
+
+        return reply.status(200).send({
+          success: true,
+          action: resultado.action,
+          restoredItems: resultado.restoredItems,
+        });
+      } catch (error) {
+        console.error("[Orders] Resolve return pendency error:", error);
+        return reply.status(500).send({
+          error: "Erro ao registrar o desfecho da devolução",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

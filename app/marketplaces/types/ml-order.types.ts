@@ -143,6 +143,39 @@ export interface MLOrderDetails {
   mediations: unknown[];
 }
 
+/**
+ * Envio (shipment) de um pedido ML — a fonte da VERDADE FÍSICA sobre onde a
+ * peça está.
+ *
+ * `MLOrderDetails.status === "cancelled"` não distingue "cancelado antes do
+ * envio" (peça no pátio) de "devolvido depois da entrega" (peça com o
+ * comprador). Quem distingue é isto: `status === "cancelled"` é o único sinal
+ * de que a peça nunca saiu, e `status_history.date_delivered` / `date_returned`
+ * dizem onde ela parou. Medido em 68 cancelamentos reais (01/09/2026): a
+ * separação é limpa e não teve uma exceção.
+ *
+ * Campos tipados como opcionais de propósito — é payload de API externa, e a
+ * classificação precisa ser defensiva com envio antigo/parcial.
+ */
+export interface MLShipmentDetails {
+  id?: number;
+  /** pending | handling | ready_to_ship | shipped | delivered | not_delivered | cancelled | returned */
+  status?: string | null;
+  /** Ex.: "damaged", "return_failed", "returned", "claimed_me". */
+  substatus?: string | null;
+  mode?: string | null;
+  status_history?: {
+    date_shipped?: string | null;
+    date_delivered?: string | null;
+    date_returned?: string | null;
+    date_not_delivered?: string | null;
+    date_cancelled?: string | null;
+    date_handling?: string | null;
+    date_ready_to_ship?: string | null;
+    date_first_visit?: string | null;
+  } | null;
+}
+
 // Resposta da busca de orders
 export interface MLOrdersSearchResponse {
   query: string | null;

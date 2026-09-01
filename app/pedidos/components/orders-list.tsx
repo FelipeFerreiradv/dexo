@@ -38,6 +38,10 @@ const isEtiquetasEnabled =
 const isIngestionIssuesEnabled =
   process.env.NEXT_PUBLIC_ORDER_INGESTION_ISSUES_ENABLED === "true";
 
+// Aviso de devoluções a confirmar. Build-time, como as demais flags de UI.
+const isReturnPendenciesEnabled =
+  process.env.NEXT_PUBLIC_ORDER_RETURN_PENDENCIES_ENABLED === "true";
+
 import type { Order } from "@/app/interfaces/order.interface";
 import { OrderSkeleton } from "./order-skeleton";
 import { OrderDetailSheet } from "./order-detail-sheet";
@@ -53,6 +57,10 @@ import {
   IngestionIssuesBanner,
   type IngestionIssue,
 } from "./ingestion-issues-banner";
+import {
+  ReturnPendenciesBanner,
+  type ReturnPendency,
+} from "./return-pendencies-banner";
 import {
   DEFAULT_ORDER_FILTERS,
   countActiveOrderFilters,
@@ -123,6 +131,10 @@ export function OrdersList() {
   // estiver vazia (o caso normal) nada é renderizado e a tela fica idêntica.
   const [ingestionIssues, setIngestionIssues] = useState<IngestionIssue[]>([]);
   const [retryingIssueId, setRetryingIssueId] = useState<string | null>(null);
+  const [returnPendencies, setReturnPendencies] = useState<ReturnPendency[]>([]);
+  const [resolvingPendencyId, setResolvingPendencyId] = useState<string | null>(
+    null,
+  );
 
   // Debounce da busca → filtros (mesma cadência de hoje, 250ms).
   useEffect(() => {
@@ -342,6 +354,69 @@ export function OrdersList() {
     }
   }, [session?.user?.email, filters.marketplace]);
 
+  const fetchReturnPendencies = useCallback(async () => {
+    if (!isReturnPendenciesEnabled || !session?.user?.email) return;
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/orders/return-pendencies`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
+        },
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      setReturnPendencies(data.pendencies ?? []);
+    } catch (error) {
+      // Silencioso de propósito, como o irmão: a lista é informação ADICIONAL.
+      // Se ela falhar, a tela de pedidos continua funcionando como sempre.
+      console.error("Erro ao buscar devoluções pendentes:", error);
+    }
+  }, [session?.user?.email]);
+
+  const handleResolvePendency = useCallback(
+    async (pendencyId: string, outcome: "RECEBIDA" | "NAO_RECEBIDA") => {
+      if (!session?.user?.email) return;
+      try {
+        setResolvingPendencyId(pendencyId);
+        const response = await fetch(
+          `${getApiBaseUrl()}/orders/return-pendencies/${pendencyId}/resolve`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              email: session.user.email,
+            },
+            body: JSON.stringify({ outcome }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.message ?? "Erro");
+
+        showToast(
+          outcome === "RECEBIDA"
+            ? "Peça recebida — estoque reposto."
+            : "Registrado: a peça não voltou. O estoque continua baixado.",
+          "success",
+        );
+        await fetchReturnPendencies();
+        // Só "recebida" mexe em estoque, então só ela precisa recarregar.
+        if (outcome === "RECEBIDA") {
+          await fetchOrders();
+          await fetchStats();
+        }
+      } catch (error) {
+        console.error("Erro ao registrar o desfecho da devolução:", error);
+        showToast("Não foi possível registrar agora", "error");
+      } finally {
+        setResolvingPendencyId(null);
+      }
+    },
+    [session?.user?.email, fetchReturnPendencies, fetchOrders, fetchStats],
+  );
+
   const fetchIngestionIssues = useCallback(async () => {
     if (!isIngestionIssuesEnabled || !session?.user?.email) return;
     try {
@@ -478,6 +553,12 @@ export function OrdersList() {
     }
   }, [fetchIngestionIssues, session, status]);
 
+  useEffect(() => {
+    if (status === "authenticated" && session?.user?.email) {
+      fetchReturnPendencies();
+    }
+  }, [fetchReturnPendencies, session, status]);
+
   if (status === "loading") {
     return <OrderSkeleton />;
   }
@@ -607,6 +688,16 @@ export function OrdersList() {
           issues={ingestionIssues}
           onRetry={handleRetryIssue}
           retryingId={retryingIssueId}
+        />
+      ) : null}
+
+      {/* Devoluções a confirmar: o estoque dessas peças NÃO voltou sozinho.
+          Sem pendência o componente devolve null e a tela fica como era. */}
+      {isReturnPendenciesEnabled ? (
+        <ReturnPendenciesBanner
+          pendencies={returnPendencies}
+          onResolve={handleResolvePendency}
+          resolvingId={resolvingPendencyId}
         />
       ) : null}
 

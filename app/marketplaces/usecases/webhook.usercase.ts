@@ -13,6 +13,11 @@ import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
 import { ListingRepository } from "../repositories/listing.repository";
 import { normalizeListingStatus } from "../lib/listing-status";
 import { MLApiService } from "../services/ml-api.service";
+import {
+  OrderOutcomeService,
+  type DesfechoPedido,
+} from "../services/order-outcome.service";
+import { OrderReturnPendencyService } from "../services/order-return-pendency.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
@@ -297,11 +302,64 @@ export class WebhookUseCase {
                 mlOrderId,
               );
               if (mlOrder.status === "cancelled") {
+                // ADITIVO (devolução): `status: "cancelled"` NÃO diz onde a
+                // peça está. O ML usa o mesmo estado terminal para
+                // cancelamento antes do envio (peça no pátio, estorno certo) e
+                // para devolução depois da entrega (peça com o comprador,
+                // estorno cria estoque que não existe). Quem separa é
+                // `cancel_detail` + o ENVIO — e o pedido já está em mãos aqui,
+                // então o custo é 1 GET a mais, só em cancelamento.
+                //
+                // `getShipmentDetails` nunca lança: API fora do ar ⇒ `null` ⇒
+                // o classificador devolve INDETERMINADO ⇒ estorna igual a
+                // hoje. Indisponibilidade jamais pode fazer peça sumir.
+                //
+                // A chave `desfecho` só é ACRESCENTADA com o kill-switch
+                // desligado — com ele ligado a chamada tem as 4 chaves de
+                // sempre, byte a byte.
+                let desfecho: DesfechoPedido | undefined;
+                if (process.env.ORDER_RETURN_HOLD_DISABLED !== "1") {
+                  const shipmentId = mlOrder.shipping?.id ?? null;
+                  const shipment = shipmentId
+                    ? await MLApiService.getShipmentDetails(
+                        accessToken,
+                        shipmentId,
+                      )
+                    : null;
+                  desfecho = OrderOutcomeService.classificarML(
+                    mlOrder,
+                    shipment,
+                  );
+                }
+
                 await OrderUseCase.processOrderCancellation({
                   marketplaceAccountId: account.id,
                   externalOrderId: mlOrderId,
                   platformLabel: "ML",
                   logPrefix: "[WebhookUseCase]",
+                  ...(desfecho ? { desfecho } : {}),
+                });
+              } else if (
+                process.env.ORDER_RETURN_HOLD_DISABLED !== "1" &&
+                mlOrder.status === "partially_refunded"
+              ) {
+                // ADITIVO (devolução): reembolso PARCIAL não mexe em estoque —
+                // nem para baixar, nem para devolver. A peça pode ter ficado
+                // com o comprador com abatimento, ou parte do pedido pode ter
+                // voltado. Só uma pessoa sabe. Abre a pergunta e não decide
+                // nada sozinho.
+                await OrderReturnPendencyService.open({
+                  marketplaceAccountId: account.id,
+                  platform: "MERCADO_LIVRE",
+                  externalOrderId: mlOrderId,
+                  reason: "ML_PARTIALLY_REFUNDED",
+                  detail:
+                    "Houve reembolso parcial neste pedido. Nada foi alterado no estoque — decida o que fazer com a peça.",
+                  evidencia: {
+                    orderStatus: mlOrder.status,
+                    tags: mlOrder.tags ?? [],
+                    lastUpdated: mlOrder.last_updated ?? null,
+                  },
                 });
               }
             }
