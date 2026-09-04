@@ -98,7 +98,7 @@ export function ratearFrete(
 
   // Sobra vai para os maiores restos; empate resolve pelo menor indice, para
   // que o resultado seja deterministico (o XML precisa ser reproduzivel).
-  let sobra = totalCents - distribuido;
+  const sobra = totalCents - distribuido;
   if (sobra > 0) {
     restos.sort((a, b) => b.resto - a.resto || a.idx - b.idx);
     for (let k = 0; k < sobra && k < n; k++) {
