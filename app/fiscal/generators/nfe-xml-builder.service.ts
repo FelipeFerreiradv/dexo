@@ -28,6 +28,7 @@ import {
   type ModeloDocumento,
 } from "../domain/pagamento-card";
 import { composeInfCpl } from "../domain/inf-cpl";
+import { isNfeFreteMedidasEnabled, ratearFrete } from "../domain/frete";
 
 export interface FocusNfePayload {
   [key: string]: any;
@@ -103,10 +104,37 @@ export class NfeXmlBuilderService {
       this.buildDestinatario(payload, dest);
     }
 
+    // ── Frete (valor) ──
+    // Mesmo rateio do caminho SEFAZ direto: a Focus monta o XML, mas a
+    // Rejeicao 535 vale igual — o vFrete do total tem de bater com a soma dos
+    // itens. Por isso mandamos os DOIS niveis, em vez de confiar que a Focus
+    // rateie sozinha. Nomes dos campos conferidos em campos.focusnfe.com.br.
+    // `modelo !== "65"`: NFC-e nao tem frete (mesma guarda do builder SEFAZ).
+    const valorFreteNota =
+      isNfeFreteMedidasEnabled() && draft.modelo !== "65"
+        ? Math.max(0, Math.round(Number(draft.valorFrete ?? 0) * 100) / 100)
+        : 0;
+    const fretePorItem =
+      valorFreteNota > 0
+        ? ratearFrete(
+            valorFreteNota,
+            draft.itens.map(
+              (i) =>
+                Math.round(
+                  Number(i.quantidade) * Number(i.valorUnitario) * 100,
+                ) / 100,
+            ),
+          )
+        : [];
+    if (valorFreteNota > 0) {
+      payload.valor_frete = String(valorFreteNota.toFixed(2));
+    }
+
     // ── Itens ──
     payload.items = this.buildItems(
       draft.itens,
       config.regimeTributario as RegimeTributario,
+      fretePorItem,
     );
 
     // ── Frete ──
@@ -241,6 +269,7 @@ export class NfeXmlBuilderService {
   private buildItems(
     itens: NfeDraftItem[],
     regime: RegimeTributario,
+    fretePorItem: number[] = [],
   ): any[] {
     return itens.map((item, idx) => {
       const tributos = (item.tributosJson ?? {}) as NfeItemTributos;
@@ -270,6 +299,11 @@ export class NfeXmlBuilderService {
 
       if (desconto > 0) {
         focusItem.valor_desconto = String(desconto.toFixed(2));
+      }
+
+      const vFreteItem = fretePorItem[idx] ?? 0;
+      if (vFreteItem > 0) {
+        focusItem.valor_frete = String(vFreteItem.toFixed(2));
       }
 
       // ── ICMS ──

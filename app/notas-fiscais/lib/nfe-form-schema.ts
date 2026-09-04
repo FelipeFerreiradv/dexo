@@ -105,6 +105,13 @@ export const stepFreteSchema = z.object({
     "SEM_FRETE",
   ]),
   transportadora: transportadoraSchema,
+  // Valor total do frete da nota. Opcional: nota sem frete continua valida.
+  // Negativo e rejeitado; zero e aceito (frete gratis declarado).
+  valorFrete: z.coerce
+    .number()
+    .min(0, "Valor do frete nao pode ser negativo")
+    .optional()
+    .nullable(),
 });
 
 export type StepFreteData = z.infer<typeof stepFreteSchema>;
@@ -118,6 +125,26 @@ export const volumeSchema = z.object({
   numeracao: z.string().optional().nullable(),
   pesoLiquido: z.coerce.number().min(0).optional().nullable(),
   pesoBruto: z.coerce.number().min(0).optional().nullable(),
+  // Dimensoes em centimetros inteiros — mesmo padrao de Product.heightCm/
+  // widthCm/lengthCm. A NF-e 4.00 nao tem campo para elas: vao ao <infCpl>.
+  comprimentoCm: z.coerce
+    .number()
+    .int("Comprimento deve ser um numero inteiro de cm")
+    .min(0, "Comprimento invalido")
+    .optional()
+    .nullable(),
+  larguraCm: z.coerce
+    .number()
+    .int("Largura deve ser um numero inteiro de cm")
+    .min(0, "Largura invalida")
+    .optional()
+    .nullable(),
+  alturaCm: z.coerce
+    .number()
+    .int("Altura deve ser um numero inteiro de cm")
+    .min(0, "Altura invalida")
+    .optional()
+    .nullable(),
 });
 
 export const stepVolumesSchema = z.object({
@@ -231,6 +258,13 @@ export const nfeDraftFormSchema = z.object({
     "SEM_FRETE",
   ]),
   transportadora: transportadoraSchema,
+  // Valor total do frete da nota. Opcional: nota sem frete continua valida.
+  // Negativo e rejeitado; zero e aceito (frete gratis declarado).
+  valorFrete: z.coerce
+    .number()
+    .min(0, "Valor do frete nao pode ser negativo")
+    .optional()
+    .nullable(),
 
   // Step 5
   volumes: z.array(volumeSchema),

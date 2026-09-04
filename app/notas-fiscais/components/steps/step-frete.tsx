@@ -9,8 +9,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CurrencyInput } from "@/components/ui/currency-input";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { MODALIDADE_FRETE_LABELS } from "../../lib/nfe-defaults";
+
+// Kill-switch da entrega de frete/medidas. Desligada, a etapa volta a ser
+// exatamente a de antes. NEXT_PUBLIC_* e embutida no build — trocar exige
+// `npm run build`, nao basta reiniciar o processo.
+const FRETE_MEDIDAS_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED === "true";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -22,28 +29,69 @@ export function StepFrete({ control, errors }: Props) {
     <div className="space-y-6">
       <div>
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
-          Modalidade do frete
+          {FRETE_MEDIDAS_ENABLED ? "Frete" : "Modalidade do frete"}
         </h3>
 
-        <div className="max-w-md">
-          <Controller
-            control={control}
-            name="modalidadeFrete"
-            render={({ field }) => (
-              <Select value={field.value} onValueChange={field.onChange}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(MODALIDADE_FRETE_LABELS).map(([k, v]) => (
-                    <SelectItem key={k} value={k}>
-                      {v}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        <div
+          className={
+            FRETE_MEDIDAS_ENABLED
+              ? "grid grid-cols-1 gap-4 md:grid-cols-2 md:max-w-2xl"
+              : "max-w-md"
+          }
+        >
+          <div className={FRETE_MEDIDAS_ENABLED ? "space-y-1" : undefined}>
+            {FRETE_MEDIDAS_ENABLED && (
+              <label className="text-sm font-medium">Modalidade</label>
             )}
-          />
+            <Controller
+              control={control}
+              name="modalidadeFrete"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(MODALIDADE_FRETE_LABELS).map(([k, v]) => (
+                      <SelectItem key={k} value={k}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </div>
+
+          {FRETE_MEDIDAS_ENABLED && (
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Valor do frete</label>
+              <Controller
+                control={control}
+                name="valorFrete"
+                render={({ field, fieldState }) => (
+                  <>
+                    <CurrencyInput
+                      ref={field.ref}
+                      name={field.name}
+                      value={field.value ?? null}
+                      onChange={field.onChange}
+                      onBlur={field.onBlur}
+                    />
+                    {fieldState.error ? (
+                      <p className="text-sm text-destructive">
+                        {fieldState.error.message}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Somado ao total da nota e rateado entre os itens.
+                      </p>
+                    )}
+                  </>
+                )}
+              />
+            </div>
+          )}
         </div>
       </div>
 

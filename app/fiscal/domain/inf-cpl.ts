@@ -7,8 +7,16 @@
  * (os builders então NÃO emitem `<infAdic>`, preservando o XML atual).
  */
 
+import {
+  formatDimensoesParaInfCpl,
+  isNfeFreteMedidasEnabled,
+} from "./frete";
+
 /** Limite do campo infCpl no leiaute 4.00 da NF-e. */
 export const INF_CPL_MAX_LENGTH = 5000;
+
+/** Separador entre os trechos do infCpl. */
+const SEP = " | ";
 
 /**
  * Normaliza texto livre digitado pelo usuário: CRLF → LF e remove caracteres
@@ -31,18 +39,36 @@ export function sanitizeFreeText(s: string | null | undefined): string {
 export function composeInfCpl(draft: {
   informacoesComplementares?: string | null;
   numeroPedido?: string | null;
+  /** `volumesJson` da nota — fonte das dimensões (o leiaute não tem campo). */
+  volumesJson?: unknown;
 }): string {
   const pedido = draft.numeroPedido ? `Pedido: ${draft.numeroPedido}` : "";
+  // Dimensões dos volumes: a NF-e 4.00 não tem campo para elas, então o único
+  // caminho até o destinatário é este texto livre. Atrás da flag para que o
+  // desligamento devolva o infCpl byte-idêntico ao de antes.
+  // O orcamento das medidas ja desconta o "Pedido: N" e o separador, entao o
+  // pedido nunca pode ser empurrado para fora do limite de 5000 (nem cortado
+  // ao meio) por uma nota com muitos volumes.
+  const reservaPedido = pedido ? pedido.length + SEP.length : 0;
+  const dimensoes = isNfeFreteMedidasEnabled()
+    ? formatDimensoesParaInfCpl(
+        draft.volumesJson,
+        INF_CPL_MAX_LENGTH - reservaPedido,
+      )
+    : "";
   let obs = sanitizeFreeText(draft.informacoesComplementares);
 
-  // O "Pedido: N" tem prioridade no limite de 5000: se a soma estourar, quem
-  // cede espaço é a observação — nunca cortamos o número do pedido no meio.
-  if (obs && pedido) {
-    const maxObs = INF_CPL_MAX_LENGTH - pedido.length - " | ".length;
+  // "Pedido: N" e as dimensões têm prioridade no limite de 5000: se a soma
+  // estourar, quem cede espaço é a observação — nunca cortamos o número do
+  // pedido nem uma medida no meio.
+  const fixos = [dimensoes, pedido].filter(Boolean);
+  if (obs && fixos.length > 0) {
+    const ocupado = fixos.reduce((acc, p) => acc + p.length + SEP.length, 0);
+    const maxObs = INF_CPL_MAX_LENGTH - ocupado;
     if (maxObs <= 0) obs = "";
     else if (obs.length > maxObs) obs = obs.slice(0, maxObs);
   }
 
-  const parts = [obs, pedido].filter(Boolean);
-  return parts.join(" | ").slice(0, INF_CPL_MAX_LENGTH);
+  const parts = [obs, dimensoes, pedido].filter(Boolean);
+  return parts.join(SEP).slice(0, INF_CPL_MAX_LENGTH);
 }

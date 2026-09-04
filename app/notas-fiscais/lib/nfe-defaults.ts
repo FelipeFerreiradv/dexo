@@ -49,6 +49,7 @@ export const DEFAULT_NFE_DRAFT: NfeDraftFormData = {
     municipio: null,
     uf: null,
   },
+  valorFrete: null,
 
   // Step 5
   volumes: [],

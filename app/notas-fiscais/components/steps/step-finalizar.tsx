@@ -19,6 +19,10 @@ import {
   MEIO_PAGAMENTO_LABELS,
 } from "../../lib/nfe-defaults";
 
+// Kill-switch da entrega de frete/medidas (ver step-frete.tsx).
+const FRETE_MEDIDAS_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED === "true";
+
 interface Props {
   getValues: UseFormGetValues<NfeDraftFormData>;
 }
@@ -36,7 +40,13 @@ export function StepFinalizar({ getValues }: Props) {
     0,
   );
 
-  const diff = Math.abs(totalProdutos - totalPagamentos);
+  // O frete entra no total da nota (regra W16). Sem soma-lo, a Revisao diria
+  // "tudo certo" logo depois de a etapa de Pagamentos ter avisado da diferenca
+  // — e vice-versa. Sem frete, o numero e exatamente o de antes.
+  const valorFrete = FRETE_MEDIDAS_ENABLED
+    ? Number(data.valorFrete) || 0
+    : 0;
+  const diff = Math.abs(totalProdutos + valorFrete - totalPagamentos);
 
   return (
     <div className="space-y-6">
@@ -141,6 +151,14 @@ export function StepFinalizar({ getValues }: Props) {
             "Modalidade",
             MODALIDADE_FRETE_LABELS[data.modalidadeFrete] ?? data.modalidadeFrete,
           ],
+          ...(FRETE_MEDIDAS_ENABLED && Number(data.valorFrete) > 0
+            ? [
+                [
+                  "Valor do frete",
+                  `R$ ${formatToBRL(Number(data.valorFrete))}`,
+                ] as [string, string],
+              ]
+            : []),
           ...(data.transportadora?.nome
             ? [["Transportadora", data.transportadora.nome] as [string, string]]
             : []),

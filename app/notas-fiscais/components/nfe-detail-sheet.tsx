@@ -408,6 +408,20 @@ export function NfeDetailSheet({
                           {formatCurrency(totais.totalCofins ?? 0)}
                         </div>
                       </div>
+                      {/* Frete: so aparece quando ha valor. Nota sem frete
+                          (todas as anteriores a esta entrega) renderiza
+                          exatamente como antes. Sai do totaisJson que a
+                          listagem JA carrega — zero consulta a mais. */}
+                      {Number(totais.totalFrete ?? 0) > 0 && (
+                        <div>
+                          <div className="text-xs text-muted-foreground">
+                            Frete
+                          </div>
+                          <div className="font-semibold text-foreground">
+                            {formatCurrency(totais.totalFrete ?? 0)}
+                          </div>
+                        </div>
+                      )}
                       <div className="col-span-2 border-t pt-2 md:col-span-4">
                         <div className="text-xs uppercase tracking-[0.08em] text-muted-foreground">
                           Total da Nota

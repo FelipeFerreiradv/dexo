@@ -203,6 +203,9 @@ export interface NfeTotais {
   totalPis: number;
   // COFINS
   totalCofins: number;
+  // Frete (opcional: `totaisJson` de notas antigas nao tem a chave; leitores
+  // usam `?? 0`). Vai ao <ICMSTot><vFrete> e compoe o vNF (regra W16).
+  totalFrete?: number;
   // Nota
   totalNota: number;
   totalTributos: number;

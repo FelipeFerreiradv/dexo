@@ -38,6 +38,7 @@ import {
   shouldReuseNumero,
   isNfeReemissaoRejeitadaEnabled,
 } from "../fiscal/domain/nfe-number-reuse";
+import { isNfeFreteMedidasEnabled } from "../fiscal/domain/frete";
 import type { NfeDraftResponse } from "../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../interfaces/company-fiscal.interface";
 
@@ -178,7 +179,24 @@ export class NfeEmissionUseCase {
         reducaoBcIcms: item.reducaoBcIcms ?? null,
       }));
 
-      const calcResult = this.calculator.calcular(regime, itensInput);
+      // Frete: so entra no calculo com a flag ligada. Desligada, a chamada e
+      // identica a de sempre — mesmos totais, mesmo XML.
+      // `modelo === "55"`: NFC-e nao tem frete (o builder forca modFrete 9).
+      // A guarda existe tambem no builder SEFAZ; repetida aqui para que os
+      // TOTAIS persistidos de uma 65 nunca ganhem frete, em nenhum provedor.
+      const freteOpts =
+        isNfeFreteMedidasEnabled() && modelo === "55"
+          ? {
+              valorFrete: draft.valorFrete ?? 0,
+              modalidadeFrete: draft.modalidadeFrete ?? null,
+            }
+          : undefined;
+
+      const calcResult = this.calculator.calcular(
+        regime,
+        itensInput,
+        freteOpts,
+      );
 
       // Persist tributos per item
       for (let i = 0; i < draft.itens.length; i++) {
@@ -1136,6 +1154,12 @@ export class NfeEmissionUseCase {
       emitenteJson: row.emitenteJson as any,
       modalidadeFrete: row.modalidadeFrete,
       transportadoraJson: row.transportadoraJson as any,
+      // ATENCAO: este e um SEGUNDO mapper, escrito a mao, paralelo ao
+      // toDraftResponse do repositorio. Campo novo em NfeEmitida tem de ser
+      // copiado NOS DOIS — aqui o esquecimento e silencioso, porque o campo e
+      // opcional em NfeDraftResponse e o tsc nao reclama; o efeito seria o
+      // frete gravado no banco e ignorado na emissao.
+      valorFrete: row.valorFrete != null ? Number(row.valorFrete) : null,
       totaisJson: row.totaisJson as any,
       notasReferenciadasJson: row.notasReferenciadasJson as any,
       exportacaoJson: row.exportacaoJson as any,

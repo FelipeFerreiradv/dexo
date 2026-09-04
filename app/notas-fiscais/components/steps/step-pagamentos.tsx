@@ -20,6 +20,10 @@ import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { MEIO_PAGAMENTO_LABELS } from "../../lib/nfe-defaults";
 import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 
+// Kill-switch da entrega de frete/medidas (ver step-frete.tsx).
+const FRETE_MEDIDAS_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED === "true";
+
 interface Props {
   control: Control<NfeDraftFormData>;
   errors: FieldErrors<NfeDraftFormData>;
@@ -46,7 +50,15 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
     0,
   );
 
-  const diff = totalProdutos - totalPagamentos;
+  // O frete entra no total da nota (regra W16). Sem soma-lo aqui, o aviso de
+  // diferenca apontaria "ok" enquanto a SEFAZ recusa por Rejeicao 865
+  // (pagamentos menores que o total). Sem frete, o numero e o de sempre.
+  const valorFrete = FRETE_MEDIDAS_ENABLED
+    ? Number(getValues("valorFrete")) || 0
+    : 0;
+  const totalNota = totalProdutos + valorFrete;
+
+  const diff = totalNota - totalPagamentos;
 
   const pagErrors = errors.pagamentos as any;
 
@@ -162,6 +174,14 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
                 R$ {formatToBRL(totalProdutos)}
               </span>
             </div>
+            {valorFrete > 0 && (
+              <div className="text-sm">
+                <span className="text-muted-foreground">Frete: </span>
+                <span className="font-semibold">
+                  R$ {formatToBRL(valorFrete)}
+                </span>
+              </div>
+            )}
             <div className="text-sm">
               <span className="text-muted-foreground">Total pagamentos: </span>
               <span className="font-semibold">

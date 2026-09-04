@@ -36,6 +36,7 @@ import {
   MEIO_PAGAMENTO_COD,
 } from "../domain/nfe.types";
 import { composeInfCpl } from "../domain/inf-cpl";
+import { isNfeFreteMedidasEnabled, ratearFrete } from "../domain/frete";
 import {
   exigeGrupoCard,
   TP_INTEGRA_NAO_INTEGRADO,
@@ -140,6 +141,27 @@ export class NfeXmlBuilderSefazService {
     const nfe = doc.ele("NFe", { xmlns: NFE_NS });
     const infNFe = nfe.ele("infNFe", { Id: infNFeId, versao: "4.00" });
 
+    // ── Frete da nota ──
+    // Calculado UMA vez e repassado, para que <ICMSTot><vFrete> e a soma dos
+    // <prod><vFrete> venham do MESMO numero — a Rejeicao 535 exige igualdade
+    // exata. Flag desligada ou modelo 65 ⇒ 0, e o XML sai como sempre.
+    const freteHabilitado = isNfeFreteMedidasEnabled() && modelo === "55";
+    // Math.max(0, ...): valor negativo e invalido no leiaute e, pior, sairia
+    // no total sem sair nos itens (ratearFrete ja zera negativo) — divergencia
+    // que cai na Rejeicao 535. Clampar aqui mantem as duas pontas coerentes.
+    const valorFreteNota = freteHabilitado
+      ? Math.max(0, arred2(draft.valorFrete))
+      : 0;
+    const fretePorItem =
+      valorFreteNota > 0
+        ? ratearFrete(
+            valorFreteNota,
+            draft.itens.map((i) =>
+              arred2(Number(i.quantidade) * Number(i.valorUnitario)),
+            ),
+          )
+        : [];
+
     this.buildIde(infNFe, draft, partes, dhEmi, tpEmis, config, modelo);
     this.buildEmit(infNFe, config);
     this.buildDest(infNFe, draft, modelo);
@@ -151,9 +173,10 @@ export class NfeXmlBuilderSefazService {
         config.regimeTributario as RegimeTributario,
         modelo,
         draft.ambiente,
+        fretePorItem[idx] ?? 0,
       ),
     );
-    this.buildTotal(infNFe, draft);
+    this.buildTotal(infNFe, draft, valorFreteNota);
     this.buildTransp(infNFe, draft, modelo);
     // <cobr> (duplicatas) nao existe no modelo 65.
     if (modelo !== "65") this.buildCobr(infNFe, draft);
@@ -366,6 +389,7 @@ export class NfeXmlBuilderSefazService {
     regime: RegimeTributario,
     modelo: "55" | "65" = "55",
     ambiente?: string,
+    vFreteItem = 0,
   ): void {
     const det = parent.ele("det", { nItem: String(nItem) });
 
@@ -394,6 +418,13 @@ export class NfeXmlBuilderSefazService {
     prod.ele("uTrib").txt(truncate(item.unidade, 6)).up();
     prod.ele("qTrib").txt(fmt4(item.quantidade)).up();
     prod.ele("vUnTrib").txt(fmt4(item.valorUnitario)).up();
+
+    // Parcela rateada do frete. ORDEM DO XSD: vFrete vem depois de vUnTrib e
+    // ANTES de vDesc (sequence vFrete, vSeg, vDesc, vOutro) — trocar a ordem
+    // e rejeicao de schema. Zero ⇒ tag omitida, XML identico ao de hoje.
+    if (vFreteItem > 0) {
+      prod.ele("vFrete").txt(fmt2(vFreteItem)).up();
+    }
 
     if (item.desconto && Number(item.desconto) > 0) {
       prod.ele("vDesc").txt(fmt2(item.desconto)).up();
@@ -559,9 +590,20 @@ export class NfeXmlBuilderSefazService {
 
   // ── <total> ──
 
-  private buildTotal(parent: any, draft: NfeDraftResponse): void {
+  private buildTotal(
+    parent: any,
+    draft: NfeDraftResponse,
+    valorFrete = 0,
+  ): void {
     const totais =
-      draft.totaisJson ?? deriveTotaisFromItens(draft.itens);
+      draft.totaisJson ?? deriveTotaisFromItens(draft.itens, valorFrete);
+
+    // O vNF TEM de incluir o frete (regra W16 — sem isso, Rejeicao 610). Na
+    // emissao o calculo roda antes do builder e o totaisJson ja vem com o
+    // frete; o delta abaixo cobre o caso de um totaisJson calculado ANTES de a
+    // flag ser ligada. Quando ja bate, o delta e 0 e o vNF nao muda.
+    const freteNosTotais = Number(totais.totalFrete ?? 0);
+    const totalNota = arred2(totais.totalNota + (valorFrete - freteNosTotais));
 
     const total = parent.ele("total");
     const icmsTot = total.ele("ICMSTot");
@@ -576,7 +618,7 @@ export class NfeXmlBuilderSefazService {
     icmsTot.ele("vFCPST").txt("0.00").up();
     icmsTot.ele("vFCPSTRet").txt("0.00").up();
     icmsTot.ele("vProd").txt(fmt2(totais.totalProdutos)).up();
-    icmsTot.ele("vFrete").txt("0.00").up();
+    icmsTot.ele("vFrete").txt(fmt2(valorFrete)).up();
     icmsTot.ele("vSeg").txt("0.00").up();
     icmsTot.ele("vDesc").txt(fmt2(totais.totalDesconto)).up();
     icmsTot.ele("vII").txt("0.00").up();
@@ -585,7 +627,7 @@ export class NfeXmlBuilderSefazService {
     icmsTot.ele("vPIS").txt(fmt2(totais.totalPis)).up();
     icmsTot.ele("vCOFINS").txt(fmt2(totais.totalCofins)).up();
     icmsTot.ele("vOutro").txt("0.00").up();
-    icmsTot.ele("vNF").txt(fmt2(totais.totalNota)).up();
+    icmsTot.ele("vNF").txt(fmt2(totalNota)).up();
   }
 
   // ── <transp> ──
@@ -625,6 +667,46 @@ export class NfeXmlBuilderSefazService {
       if (t.endereco) transportador.ele("xEnder").txt(truncate(t.endereco, 60)).up();
       if (t.municipio) transportador.ele("xMun").txt(truncate(t.municipio, 60)).up();
       if (t.uf) transportador.ele("UF").txt(t.uf).up();
+    }
+
+    // ── <vol> ──
+    // ULTIMO filho de <transp> no leiaute 4.00 (depois de transporta/retTransp/
+    // veicTransp/reboque/vagao/balsa). Ate 5000 ocorrencias. Sem volumes ⇒ nada
+    // e emitido e o XML fica identico ao de hoje.
+    // Dimensoes NAO existem no grupo <vol> — vao ao <infCpl>, ver inf-cpl.ts.
+    if (isNfeFreteMedidasEnabled()) {
+      const volumes = Array.isArray(draft.volumesJson) ? draft.volumesJson : [];
+      // Filtra PRIMEIRO e corta DEPOIS: cortar antes gastaria as 5000 vagas com
+      // entradas vazias e descartaria volumes uteis que vem em seguida.
+      const volumesUteis = volumes
+        .map((v: any) => {
+          if (!v || typeof v !== "object") return null;
+          const campos = {
+            qVol: intPositivo(v.quantidade),
+            esp: textoOuNull(v.especie),
+            marca: textoOuNull(v.marca),
+            nVol: textoOuNull(v.numeracao),
+            pesoL: decimalPositivo(v.pesoLiquido),
+            pesoB: decimalPositivo(v.pesoBruto),
+          };
+          // Volume sem NENHUM dado util nao vira tag vazia (rejeicao de schema).
+          const temAlgo = Object.values(campos).some((x) => x !== null);
+          return temAlgo ? campos : null;
+        })
+        .filter((v): v is NonNullable<typeof v> => v !== null)
+        .slice(0, MAX_VOLUMES);
+
+      for (const { qVol, esp, marca, nVol, pesoL, pesoB } of volumesUteis) {
+        // ORDEM DO XSD: qVol, esp, marca, nVol, pesoL, pesoB (pesoL ANTES de pesoB).
+        const vol = transp.ele("vol");
+        if (qVol !== null) vol.ele("qVol").txt(String(qVol)).up();
+        if (esp !== null) vol.ele("esp").txt(truncate(esp, 60)).up();
+        if (marca !== null) vol.ele("marca").txt(truncate(marca, 60)).up();
+        if (nVol !== null) vol.ele("nVol").txt(truncate(nVol, 60)).up();
+        if (pesoL !== null) vol.ele("pesoL").txt(fmt3(pesoL)).up();
+        if (pesoB !== null) vol.ele("pesoB").txt(fmt3(pesoB)).up();
+        vol.up();
+      }
     }
 
     transp.up();
@@ -790,6 +872,39 @@ function fmt4(n: number | null | undefined): string {
   return Number(n ?? 0).toFixed(4);
 }
 
+/** Peso no leiaute 4.00 e decimal de 3 casas (TDec_1203). */
+function fmt3(n: number | null | undefined): string {
+  return Number(n ?? 0).toFixed(3);
+}
+
+/** Arredonda para 2 casas em CENTAVOS (evita residuo de ponto flutuante). */
+function arred2(n: number | null | undefined): number {
+  const num = Number(n ?? 0);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 100) / 100;
+}
+
+/** Teto de ocorrencias de <vol> em <transp> no leiaute 4.00. */
+const MAX_VOLUMES = 5000;
+
+function intPositivo(v: unknown): number | null {
+  const num = Number(v);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Math.round(num);
+}
+
+function decimalPositivo(v: unknown): number | null {
+  const num = Number(v);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return num;
+}
+
+function textoOuNull(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t.length > 0 ? t : null;
+}
+
 // Brasil = UTC-03:00, sem horario de verao desde 2019. A NFe usa a hora LOCAL
 // do estabelecimento emitente. Fixamos -03:00 em vez de derivar de
 // getTimezoneOffset() do runtime — senao um servidor em UTC (caso comum em
@@ -862,7 +977,10 @@ function emptyTributos(): NfeItemTributos {
   };
 }
 
-function deriveTotaisFromItens(itens: NfeDraftItem[]): {
+function deriveTotaisFromItens(
+  itens: NfeDraftItem[],
+  valorFrete = 0,
+): {
   totalProdutos: number;
   totalDesconto: number;
   totalBcIcms: number;
@@ -871,6 +989,7 @@ function deriveTotaisFromItens(itens: NfeDraftItem[]): {
   totalIpi: number;
   totalPis: number;
   totalCofins: number;
+  totalFrete: number;
   totalNota: number;
   totalTributos: number;
 } {
@@ -895,7 +1014,10 @@ function deriveTotaisFromItens(itens: NfeDraftItem[]): {
     cofins += t.valorCofins;
   }
 
-  const totalNota = prod - desc + ipi;
+  // Inclui o frete por exigencia da regra W16 (Rejeicao 610). Sem frete, a
+  // formula e a original.
+  const frete = arred2(valorFrete);
+  const totalNota = prod - desc + ipi + frete;
   return {
     totalProdutos: prod,
     totalDesconto: desc,
@@ -905,6 +1027,7 @@ function deriveTotaisFromItens(itens: NfeDraftItem[]): {
     totalIpi: ipi,
     totalPis: pis,
     totalCofins: cofins,
+    totalFrete: frete,
     totalNota,
     totalTributos: icms + ipi + pis + cofins,
   };

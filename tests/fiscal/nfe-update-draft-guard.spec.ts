@@ -258,3 +258,60 @@ describe("NfeRepository.persistCalculo — persiste totais/itens sem tocar statu
     expect(calls.itemCreateMany).toHaveLength(0);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// valorFrete: persistencia e leitura de volta (Cenario 8 — editar/reabrir).
+// A coluna e nullable e segue o mesmo padrao condicional dos demais blocos:
+// so entra no UPDATE quando veio no input (undefined = campo intocado).
+// ──────────────────────────────────────────────────────────────────────────
+describe("NfeRepository — valorFrete", () => {
+  it("persiste o valor informado", async () => {
+    updateManyResult = { count: 1 };
+    currentRow = makeRow({ status: "DRAFT" });
+    const repo = new NfeRepository();
+    await repo.updateDraft("user-1", "nfe-1", { valorFrete: 50.25 } as any);
+    expect(calls.updateMany[0].data.valorFrete).toBe(50.25);
+  });
+
+  it("aceita zero (frete declarado como gratis)", async () => {
+    updateManyResult = { count: 1 };
+    currentRow = makeRow({ status: "DRAFT" });
+    const repo = new NfeRepository();
+    await repo.updateDraft("user-1", "nfe-1", { valorFrete: 0 } as any);
+    expect(calls.updateMany[0].data.valorFrete).toBe(0);
+  });
+
+  it("null limpa o campo", async () => {
+    updateManyResult = { count: 1 };
+    currentRow = makeRow({ status: "DRAFT" });
+    const repo = new NfeRepository();
+    await repo.updateDraft("user-1", "nfe-1", { valorFrete: null } as any);
+    expect(calls.updateMany[0].data.valorFrete).toBeNull();
+  });
+
+  it("TRAVA: autosave de outra etapa NAO toca no valorFrete", async () => {
+    updateManyResult = { count: 1 };
+    currentRow = makeRow({ status: "DRAFT" });
+    const repo = new NfeRepository();
+    await repo.updateDraft("user-1", "nfe-1", { naturezaOperacao: "VENDA" });
+    expect("valorFrete" in calls.updateMany[0].data).toBe(false);
+  });
+
+  it("le de volta como number (Decimal do Prisma) e null como null", async () => {
+    updateManyResult = { count: 1 };
+    const repo = new NfeRepository();
+
+    currentRow = makeRow({ status: "DRAFT", valorFrete: "50.25" });
+    let res: any = await repo.updateDraft("user-1", "nfe-1", {});
+    expect(res.valorFrete).toBe(50.25);
+
+    currentRow = makeRow({ status: "DRAFT", valorFrete: null });
+    res = await repo.updateDraft("user-1", "nfe-1", {});
+    expect(res.valorFrete).toBeNull();
+
+    // Linha legada, anterior ao ALTER: a coluna nem existe no objeto.
+    currentRow = makeRow({ status: "DRAFT" });
+    res = await repo.updateDraft("user-1", "nfe-1", {});
+    expect(res.valorFrete).toBeNull();
+  });
+});

@@ -62,6 +62,10 @@ const TOTAL_STEPS = 9;
 const REEMISSAO_REJEITADA_ENABLED =
   process.env.NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED === "true";
 
+// Kill-switch da entrega de frete/medidas (ver step-frete.tsx).
+const FRETE_MEDIDAS_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED === "true";
+
 // Multi-CNPJ: gate do fetch de empresas (mesmo padrão do PDV) — com a flag
 // desligada o wizard nem pergunta (egress zero) e o seletor não existe.
 const MULTI_CNPJ_ENABLED =
@@ -285,6 +289,7 @@ export function NfeWizard() {
       })),
       // Step 4
       modalidadeFrete: draft.modalidadeFrete ?? "SEM_FRETE",
+      valorFrete: (draft as any).valorFrete ?? null,
       transportadora: {
         cpfCnpj: transp.cpfCnpj ?? null,
         nome: transp.nome ?? null,
@@ -323,10 +328,20 @@ export function NfeWizard() {
       return trigger(["itens"]);
     }
     if (currentStep === 4) {
-      return trigger(["modalidadeFrete"]);
+      return trigger(
+        FRETE_MEDIDAS_ENABLED
+          ? ["modalidadeFrete", "valorFrete"]
+          : ["modalidadeFrete"],
+      );
     }
-    // Steps 5 (volumes) and 6 (duplicatas) are optional — always valid
-    if (currentStep === 5 || currentStep === 6) {
+    // Volumes seguem OPCIONAIS: nenhum campo e obrigatorio. Com a flag ligada
+    // o trigger so reprova o que foi digitado ERRADO (peso/medida negativos,
+    // medida fracionaria) — array vazio continua valido.
+    if (currentStep === 5) {
+      return FRETE_MEDIDAS_ENABLED ? trigger(["volumes"]) : true;
+    }
+    // Step 6 (duplicatas) is optional — always valid
+    if (currentStep === 6) {
       return true;
     }
     if (currentStep === 7) {
@@ -375,6 +390,9 @@ export function NfeWizard() {
       return saveDraft(draftId, {
         modalidadeFrete: data.modalidadeFrete,
         transportadora: data.transportadora,
+        ...(FRETE_MEDIDAS_ENABLED
+          ? { valorFrete: data.valorFrete ?? null }
+          : {}),
       } as any);
     } else if (currentStep === 5) {
       return saveDraft(draftId, {

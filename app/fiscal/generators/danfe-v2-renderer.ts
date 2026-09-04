@@ -314,6 +314,10 @@ export async function renderDanfeV2(
     { l: "VALOR PIS", v: money(totais.totalPis) },
     { l: "VALOR COFINS", v: money(totais.totalCofins) },
     { l: "PRODUTOS", v: money(totais.totalProdutos) },
+    // FRETE compoe o TOTAL DA NOTA (regra W16). Sem esta celula o total
+    // impresso nao fecha com as parcelas ao lado. Nota sem frete: R$ 0,00,
+    // como as demais celulas zeradas ja fazem.
+    { l: "FRETE", v: money(totais.totalFrete) },
     { l: "DESCONTO", v: money(totais.totalDesconto) },
     { l: "TRIBUTOS", v: money(totais.totalTributos) },
   ];
