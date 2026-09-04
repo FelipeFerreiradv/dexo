@@ -281,6 +281,14 @@ export class DanfePdfService {
       y,
       8,
     );
+    drawText(
+      // FRETE compoe o TOTAL DA NOTA (regra W16); sem esta linha o total
+      // impresso nao fecha. Nota sem frete imprime R$ 0,00.
+      `Frete: R$ ${formatBRLNumber(totais.totalFrete ?? 0)}`,
+      margin + 350,
+      y,
+      8,
+    );
     y -= lineHeight;
     drawText(`ICMS: R$ ${formatBRLNumber(totais.totalIcms ?? 0)}`, margin, y, 8);
     drawText(
@@ -530,6 +538,10 @@ export function projectParsedNfeToDraft(parsed: ParsedNfe): {
     totalIpi: total.vIPI,
     totalPis: total.vPIS,
     totalCofins: total.vCOFINS,
+    // O parser ja lia <ICMSTot><vFrete>; sem repassar aqui, o DANFE
+    // REIMPRESSO a partir do XML autorizado mostraria frete 0,00 enquanto o
+    // XML diz outra coisa. Nota sem frete continua em 0,00, como sempre.
+    totalFrete: total.vFrete,
     totalNota: total.vNF,
     totalTributos: total.vICMS + total.vIPI + total.vPIS + total.vCOFINS,
   };
@@ -565,7 +577,22 @@ export function projectParsedNfeToDraft(parsed: ParsedNfe): {
     exportacaoJson: null,
     pagamentosJson: pag.length > 0 ? pag : null,
     duplicatasJson: null,
-    volumesJson: null,
+    // Antes era `null` porque o parser nao extraia <vol>. Agora extrai, e o
+    // quadro TRANSPORTADOR/VOLUMES do DANFE gerado a PARTIR DO XML mostra o
+    // peso — que e o papel que a transportadora le. As chaves seguem o shape
+    // do banco (normalizeVolumes em danfe-render-extras.ts). Sem <vol> no XML
+    // o array fica vazio e normalizeVolumes devolve null, igual a antes.
+    volumesJson:
+      transp && transp.vol.length > 0
+        ? transp.vol.map((v) => ({
+            quantidade: v.qVol,
+            especie: v.esp,
+            marca: v.marca,
+            numeracao: v.nVol,
+            pesoLiquido: v.pesoL,
+            pesoBruto: v.pesoB,
+          }))
+        : null,
     status: protNFe ? "AUTHORIZED" : "DRAFT",
     createdAt: new Date(),
     updatedAt: new Date(),

@@ -117,6 +117,7 @@ export interface NfeDraftUpdateInput {
   // Steps 4+ (preparado, implementado em F4)
   modalidadeFrete?: ModalidadeFrete | null;
   transportadoraJson?: any | null;
+  valorFrete?: number | null;
   volumesJson?: any | null;
   duplicatasJson?: any | null;
   pagamentosJson?: any | null;
@@ -151,6 +152,9 @@ export interface NfeDraftResponse {
   emitenteJson: any | null;
   modalidadeFrete: string | null;
   transportadoraJson: any | null;
+  /** Valor do frete da nota. Opcional de proposito: nao alarga o TS2739
+   *  pre-existente em danfe-pdf.service.ts nem quebra construtores antigos. */
+  valorFrete?: number | null;
   totaisJson: NfeTotais | null;
   notasReferenciadasJson: any | null;
   exportacaoJson: any | null;

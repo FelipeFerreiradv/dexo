@@ -109,8 +109,19 @@ export interface ParsedTotal {
   vNF: number;
 }
 
+export interface ParsedVolume {
+  qVol: number | null;
+  esp: string | null;
+  marca: string | null;
+  nVol: string | null;
+  pesoL: number | null;
+  pesoB: number | null;
+}
+
 export interface ParsedTransp {
   modFrete: string;
+  /** Volumes transportados. Alimentam o quadro do DANFE gerado a partir do XML. */
+  vol: ParsedVolume[];
   transporta: {
     CNPJ: string | null;
     CPF: string | null;
@@ -354,8 +365,22 @@ function parseTotal(icmsTot: any): ParsedTotal {
 function parseTransp(transp: any): ParsedTransp | null {
   if (!transp) return null;
   const transporta = transp.transporta;
+  // <vol> e repetivel; fast-xml-parser devolve objeto quando ha 1 so.
+  const volRaw = transp.vol
+    ? Array.isArray(transp.vol)
+      ? transp.vol
+      : [transp.vol]
+    : [];
   return {
     modFrete: str(transp.modFrete ?? "9"),
+    vol: volRaw.map((v: any) => ({
+      qVol: v?.qVol != null ? toFloat(v.qVol) : null,
+      esp: v?.esp != null ? str(v.esp) : null,
+      marca: v?.marca != null ? str(v.marca) : null,
+      nVol: v?.nVol != null ? str(v.nVol) : null,
+      pesoL: v?.pesoL != null ? toFloat(v.pesoL) : null,
+      pesoB: v?.pesoB != null ? toFloat(v.pesoB) : null,
+    })),
     transporta: transporta
       ? {
           CNPJ: transporta.CNPJ ? str(transporta.CNPJ) : null,

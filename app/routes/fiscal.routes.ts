@@ -21,6 +21,7 @@ import type {
   NfeItemInput,
   RegimeTributario,
 } from "../fiscal/domain/nfe.types";
+import { isNfeFreteMedidasEnabled } from "../fiscal/domain/frete";
 
 /**
  * Remove segredos do CompanyFiscalConfig antes de devolver ao cliente e deriva
@@ -847,7 +848,18 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           reducaoBcIcms: item.reducaoBcIcms ?? null,
         }));
 
-        const result = calculator.calcular(regime, itensInput);
+        // Frete: so entra no calculo com a flag ligada. Desligada, a chamada
+        // e identica a de sempre e os totais nao mudam em nada.
+        // `modelo !== "65"`: NFC-e nao tem frete (ver nfe-emission.usecase).
+        const freteOpts =
+          isNfeFreteMedidasEnabled() && draft.modelo !== "65"
+            ? {
+                valorFrete: draft.valorFrete ?? 0,
+                modalidadeFrete: draft.modalidadeFrete ?? null,
+              }
+            : undefined;
+
+        const result = calculator.calcular(regime, itensInput, freteOpts);
 
         // Persist totais to the draft
         await nfeRepo.updateDraft(userId, id, {

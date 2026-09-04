@@ -1880,6 +1880,9 @@ model NfeEmitida {
   // Frete
   modalidadeFrete    String?
   transportadoraJson Json?
+  // Valor total do frete (vai ao <ICMSTot><vFrete> e compoe o vNF).
+  // Migracao: ALTER TABLE "NfeEmitida" ADD COLUMN IF NOT EXISTS "valorFrete" DECIMAL(15,2);
+  valorFrete         Decimal? @db.Decimal(15, 2)
 
   // Totalizadores e blocos
   totaisJson             Json?

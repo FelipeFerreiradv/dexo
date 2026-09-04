@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import {
   DanfePdfService,
@@ -336,3 +336,104 @@ function toAscii(bytes: Uint8Array): string {
   for (let i = 0; i < limit; i++) s += String.fromCharCode(bytes[i]);
   return s;
 }
+
+// Round-trip do frete: builder -> XML -> parser -> projecao para o DANFE.
+// Sem repassar o vFrete na projecao, um DANFE REIMPRESSO a partir do XML
+// autorizado mostraria 0,00 enquanto o XML diz outra coisa.
+describe("projectParsedNfeToDraft — valor do frete", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const roundTrip = (draftOver: Record<string, any>) => {
+    const builder = new NfeXmlBuilderSefazService();
+    const built = builder.build({
+      draft: makeDraft(draftOver as any),
+      config: makeConfig(),
+      numero: 51,
+      dhEmi: new Date("2026-05-14T15:00:00-03:00"),
+      cNF: "87654321",
+    });
+    const parsed = parseNfeXml(wrapInProc(built.xml, built.chaveAcesso));
+    return projectParsedNfeToDraft(parsed).draft;
+  };
+
+  it("o frete sobrevive ao round-trip e chega ao totaisJson", () => {
+    vi.stubEnv("NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED", "true");
+    const draft = roundTrip({ valorFrete: 25, modalidadeFrete: "CIF" });
+    expect(draft.totaisJson?.totalFrete).toBe(25);
+    expect(draft.totaisJson?.totalNota).toBe(125);
+    expect(draft.modalidadeFrete).toBe("CIF");
+  });
+
+  it("nota sem frete continua com totalFrete 0 (DANFE identico ao de hoje)", () => {
+    vi.stubEnv("NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED", "true");
+    const draft = roundTrip({});
+    expect(draft.totaisJson?.totalFrete).toBe(0);
+    expect(draft.totaisJson?.totalNota).toBe(100);
+  });
+});
+
+// O DANFE da emissao e gerado a PARTIR DO XML autorizado (generateFromXml), nao
+// do banco. Enquanto o parser nao extraia <vol>, o peso chegava correto ao XML e
+// o quadro "TRANSPORTADOR / VOLUMES TRANSPORTADOS" do PDF saia VAZIO — que e
+// justamente o papel que a transportadora le.
+describe("projectParsedNfeToDraft — volumes e peso", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const roundTripVolumes = (volumesJson: unknown) => {
+    vi.stubEnv("NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED", "true");
+    const builder = new NfeXmlBuilderSefazService();
+    const built = builder.build({
+      draft: makeDraft({ volumesJson } as never),
+      config: makeConfig(),
+      numero: 77,
+      dhEmi: new Date("2026-05-14T15:00:00-03:00"),
+      cNF: "87654321",
+    });
+    const parsed = parseNfeXml(wrapInProc(built.xml, built.chaveAcesso));
+    return projectParsedNfeToDraft(parsed).draft;
+  };
+
+  it("o peso sobrevive ao round-trip e chega ao volumesJson do DANFE", () => {
+    const draft = roundTripVolumes([
+      {
+        quantidade: 2,
+        especie: "CAIXA",
+        marca: "DEXO",
+        numeracao: "001",
+        pesoLiquido: 9.5,
+        pesoBruto: 10.25,
+      },
+    ]);
+    expect(draft.volumesJson).toEqual([
+      {
+        quantidade: 2,
+        especie: "CAIXA",
+        marca: "DEXO",
+        numeracao: "001",
+        pesoLiquido: 9.5,
+        pesoBruto: 10.25,
+      },
+    ]);
+  });
+
+  it("varios volumes voltam na mesma ordem", () => {
+    const draft = roundTripVolumes([
+      { quantidade: 1, especie: "CAIXA", pesoBruto: 5 },
+      { quantidade: 3, especie: "PALLET", pesoBruto: 120 },
+    ]);
+    const vols = draft.volumesJson as Array<Record<string, unknown>>;
+    expect(vols).toHaveLength(2);
+    expect(vols[0].especie).toBe("CAIXA");
+    expect(vols[1].especie).toBe("PALLET");
+    expect(vols[1].pesoBruto).toBe(120);
+  });
+
+  it("nota sem volumes continua com volumesJson null (DANFE igual ao de hoje)", () => {
+    expect(roundTripVolumes(null).volumesJson).toBeNull();
+    expect(roundTripVolumes([]).volumesJson).toBeNull();
+  });
+});

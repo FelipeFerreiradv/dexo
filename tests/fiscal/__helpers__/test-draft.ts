@@ -135,6 +135,7 @@ export function makeDraft(
     emitenteJson: null,
     modalidadeFrete: "SEM_FRETE",
     transportadoraJson: null,
+    valorFrete: null,
     totaisJson: {
       totalProdutos: 100,
       totalDesconto: 0,

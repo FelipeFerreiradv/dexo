@@ -187,6 +187,7 @@ template completo. As variáveis relevantes ao SEFAZ direto:
 | `FISCAL_MODULE_ENABLED` | `true` | Liga o módulo fiscal no servidor |
 | `NEXT_PUBLIC_FISCAL_MODULE_ENABLED` | `true` | Idem no front |
 | `NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED` | `false` | Reemitir nota REJEITADA reaproveitando o mesmo número (botão "Tentar novamente" + banner do motivo). **Ligar só após o ALTER `cStatRejeicao` + `prisma generate`.** Off = reserva número novo na reemissão (comportamento atual) |
+| `NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED` | `false` | Valor do frete, peso e medidas nas etapas Frete/Volumes. Liga o `<vFrete>` (total + rateio por item), a emissão do grupo `<vol>` (hoje o peso é digitado e **descartado** na montagem) e as dimensões no `<infCpl>`. **Ligar só após o ALTER `valorFrete` + `prisma generate`** (ver `docs/nfe-frete-medidas-sql.md`). Com modalidade **CIF** o frete passa a compor a **base do ICMS** — validar com o contador. Off = XML byte-idêntico ao atual |
 | `FISCAL_PRODUCTION_UNLOCKED` | `false` | **Trava emissão em produção.** Só liga após validação |
 | `FISCAL_STORAGE_PATH` | `C:/dexo-fiscal-storage` | Diretório onde XMLs e DANFEs ficam (precisa existir) |
 | `FISCAL_CERT_ENC_KEY` | (vazio) | 32 bytes em hex (64 chars). Gere com `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |

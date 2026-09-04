@@ -12,6 +12,20 @@ import { Button } from "@/components/ui/button";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { ESPECIE_VOLUME_OPTIONS } from "../../lib/nfe-defaults";
 
+// Kill-switch da entrega de frete/medidas (ver step-frete.tsx).
+const FRETE_MEDIDAS_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_FRETE_MEDIDAS_ENABLED === "true";
+
+// Comprimento, largura e altura do volume. A NF-e 4.00 NAO tem campo para
+// elas (o grupo <vol> so aceita qVol/esp/marca/nVol/pesoL/pesoB), entao vao
+// como texto nas Informacoes Complementares. Unidade: cm inteiros, mesmo
+// padrao de Product.heightCm/widthCm/lengthCm.
+const DIMENSOES = [
+  { name: "comprimentoCm", label: "Comprimento (cm)" },
+  { name: "larguraCm", label: "Largura (cm)" },
+  { name: "alturaCm", label: "Altura (cm)" },
+] as const;
+
 interface Props {
   control: Control<NfeDraftFormData>;
   errors: FieldErrors<NfeDraftFormData>;
@@ -31,6 +45,11 @@ export function StepVolumes({ control, errors }: Props) {
       numeracao: null,
       pesoLiquido: null,
       pesoBruto: null,
+      // Com a flag desligada o volume nasce EXATAMENTE como antes — nenhuma
+      // chave nova entra no volumesJson.
+      ...(FRETE_MEDIDAS_ENABLED
+        ? { comprimentoCm: null, larguraCm: null, alturaCm: null }
+        : {}),
     });
   };
 
@@ -82,19 +101,26 @@ export function StepVolumes({ control, errors }: Props) {
                   <Controller
                     control={control}
                     name={`volumes.${idx}.quantidade`}
-                    render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        min={0}
-                        value={field.value ?? ""}
-                        onChange={(e) =>
-                          field.onChange(
-                            e.target.value ? Number(e.target.value) : null,
-                          )
-                        }
-                        className="h-8 text-sm"
-                      />
+                    render={({ field, fieldState }) => (
+                      <>
+                        <Input
+                          {...field}
+                          type="number"
+                          min={0}
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value ? Number(e.target.value) : null,
+                            )
+                          }
+                          className="h-8 text-sm"
+                        />
+                        {fieldState.error && (
+                          <p className="text-xs text-destructive">
+                            {fieldState.error.message}
+                          </p>
+                        )}
+                      </>
                     )}
                   />
                 </div>
@@ -165,20 +191,27 @@ export function StepVolumes({ control, errors }: Props) {
                   <Controller
                     control={control}
                     name={`volumes.${idx}.pesoLiquido`}
-                    render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.001"
-                        min={0}
-                        value={field.value ?? ""}
-                        onChange={(e) =>
-                          field.onChange(
-                            e.target.value ? Number(e.target.value) : null,
-                          )
-                        }
-                        className="h-8 text-sm"
-                      />
+                    render={({ field, fieldState }) => (
+                      <>
+                        <Input
+                          {...field}
+                          type="number"
+                          step="0.001"
+                          min={0}
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value ? Number(e.target.value) : null,
+                            )
+                          }
+                          className="h-8 text-sm"
+                        />
+                        {fieldState.error && (
+                          <p className="text-xs text-destructive">
+                            {fieldState.error.message}
+                          </p>
+                        )}
+                      </>
                     )}
                   />
                 </div>
@@ -188,23 +221,65 @@ export function StepVolumes({ control, errors }: Props) {
                   <Controller
                     control={control}
                     name={`volumes.${idx}.pesoBruto`}
-                    render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.001"
-                        min={0}
-                        value={field.value ?? ""}
-                        onChange={(e) =>
-                          field.onChange(
-                            e.target.value ? Number(e.target.value) : null,
-                          )
-                        }
-                        className="h-8 text-sm"
-                      />
+                    render={({ field, fieldState }) => (
+                      <>
+                        <Input
+                          {...field}
+                          type="number"
+                          step="0.001"
+                          min={0}
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value ? Number(e.target.value) : null,
+                            )
+                          }
+                          className="h-8 text-sm"
+                        />
+                        {fieldState.error && (
+                          <p className="text-xs text-destructive">
+                            {fieldState.error.message}
+                          </p>
+                        )}
+                      </>
                     )}
                   />
                 </div>
+
+                {FRETE_MEDIDAS_ENABLED &&
+                  DIMENSOES.map((dim) => (
+                    <div key={dim.name} className="space-y-1">
+                      <label className="text-xs font-medium">{dim.label}</label>
+                      <Controller
+                        control={control}
+                        name={`volumes.${idx}.${dim.name}`}
+                        render={({ field, fieldState }) => (
+                          <>
+                            <Input
+                              {...field}
+                              type="number"
+                              step="1"
+                              min={0}
+                              value={field.value ?? ""}
+                              onChange={(e) =>
+                                field.onChange(
+                                  e.target.value
+                                    ? Number(e.target.value)
+                                    : null,
+                                )
+                              }
+                              className="h-8 text-sm"
+                            />
+                            {fieldState.error && (
+                              <p className="text-xs text-destructive">
+                                {fieldState.error.message}
+                              </p>
+                            )}
+                          </>
+                        )}
+                      />
+                    </div>
+                  ))}
               </div>
             </div>
           ))}

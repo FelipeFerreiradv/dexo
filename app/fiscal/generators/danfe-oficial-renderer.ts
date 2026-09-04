@@ -751,9 +751,11 @@ export async function renderDanfeOficial(
   const drawImposto = (top: number): number => {
     frame(X0, top, W, H_IMPOSTO);
     let cur = strip(top, "CÁLCULO DO IMPOSTO");
-    // ICMS-ST, frete, seguro e outras despesas não são calculados pela
-    // plataforma nem lidos do <ICMSTot> pelo parser — saem 0,00, que é o valor
-    // verdadeiro dessas notas (e é o que o modelo de referência mostra).
+    // ICMS-ST, seguro e outras despesas não são calculados pela plataforma nem
+    // lidos do <ICMSTot> pelo parser — saem 0,00, que é o valor verdadeiro
+    // dessas notas (e é o que o modelo de referência mostra).
+    // O FRETE, esse sim, passou a ser informável: vem de `totais.totalFrete`,
+    // ausente nos totaisJson antigos ⇒ `?? 0` mantém o DANFE de hoje.
     cur = fieldRow(cur, FIELD_ROW_H, [
       { w: 112, label: "BASE DE CÁLCULO DO ICMS", value: money(totais.totalBcIcms), align: "right" },
       { w: 112, label: "VALOR DO ICMS", value: money(totais.totalIcms), align: "right" },
@@ -762,7 +764,7 @@ export async function renderDanfeOficial(
       { w: 113, label: "VALOR TOTAL DOS PRODUTOS", value: money(totais.totalProdutos), align: "right" },
     ]);
     cur = fieldRow(cur, FIELD_ROW_H, [
-      { w: 93, label: "VALOR DO FRETE", value: money(0), align: "right" },
+      { w: 93, label: "VALOR DO FRETE", value: money(totais.totalFrete ?? 0), align: "right" },
       { w: 93, label: "VALOR DO SEGURO", value: money(0), align: "right" },
       { w: 93, label: "DESCONTO", value: money(totais.totalDesconto), align: "right" },
       { w: 93, label: "OUTRAS DESPESAS", value: money(0), align: "right" },

@@ -43,6 +43,7 @@ function toDraftResponse(row: any): NfeDraftResponse {
     emitenteJson: row.emitenteJson as any,
     modalidadeFrete: row.modalidadeFrete,
     transportadoraJson: row.transportadoraJson as any,
+    valorFrete: row.valorFrete != null ? Number(row.valorFrete) : null,
     totaisJson: row.totaisJson as any,
     notasReferenciadasJson: row.notasReferenciadasJson as any,
     exportacaoJson: row.exportacaoJson as any,
@@ -326,6 +327,7 @@ export class NfeRepository {
       data.modalidadeFrete = input.modalidadeFrete;
     if (input.transportadoraJson !== undefined)
       data.transportadoraJson = input.transportadoraJson;
+    if (input.valorFrete !== undefined) data.valorFrete = input.valorFrete;
     if (input.volumesJson !== undefined) data.volumesJson = input.volumesJson;
     if (input.duplicatasJson !== undefined)
       data.duplicatasJson = input.duplicatasJson;
