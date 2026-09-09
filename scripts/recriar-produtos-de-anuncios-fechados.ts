@@ -62,13 +62,14 @@ type Flags = {
   dryRun: boolean;
   aceitarTituloDivergente: boolean;
   limit: number | null;
+  modo: "com-sku" | "sem-sku";
 };
 
 function parseFlags(): Flags {
   const argv = process.argv.slice(2);
   const conhecidas = new Set([
     "user-id", "user-email", "from", "to", "apply", "dry-run",
-    "aceitar-titulo-divergente", "limit",
+    "aceitar-titulo-divergente", "limit", "modo",
   ]);
   for (const a of argv) {
     const nome = a.replace(/^--/, "").split("=")[0];
@@ -94,6 +95,7 @@ function parseFlags(): Flags {
     dryRun: has("dry-run") || !apply,
     aceitarTituloDivergente: has("aceitar-titulo-divergente"),
     limit: limitRaw && /^\d+$/.test(limitRaw) ? parseInt(limitRaw, 10) : null,
+    modo: get("modo") === "sem-sku" ? "sem-sku" : "com-sku",
   };
 }
 
@@ -227,9 +229,10 @@ function kg(v: string | null | undefined): number | null {
   return val > 0 ? Math.round(val * 100) / 100 : null;
 }
 
-function mapear(item: any, conta: { id: string; nome: string }): Anuncio | null {
+function mapear(item: any, conta: { id: string; nome: string }): Anuncio {
+  // sku vazio é legítimo aqui: anúncios antigos foram publicados antes de o SKU
+  // passar a ser enviado ao ML. Quem separa os dois conjuntos é o `--modo`.
   const sku = String(item?.seller_custom_field ?? "").trim();
-  if (!sku) return null;
   const at: Record<string, string> = {};
   for (const a of item.attributes ?? []) {
     if (a?.id) at[a.id] = a.value_name ?? "";
@@ -272,21 +275,64 @@ type Grupo = {
   tituloEscolhido?: string;
 };
 
+/** Título sem acento, sem pontuação, minúsculo — só para AGRUPAR, nunca para gravar. */
+function chaveTitulo(t: string): string {
+  return t
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 function montarGrupos(
   anuncios: Anuncio[],
   skusOcupados: Set<string>,
   listingsExistentes: Set<string>,
+  modo: "com-sku" | "sem-sku",
 ): Grupo[] {
   const porSku = new Map<string, Anuncio[]>();
   for (const a of anuncios) {
-    const arr = porSku.get(a.sku) ?? [];
+    // No modo sem-sku o SKU original é IRRECUPERÁVEL — não existe no anúncio
+    // nem nos logs. O agrupamento passa a ser título + número de peça, que é
+    // o par que provou separar peça de peça neste tenant (título sozinho não:
+    // duas contas chegam a divergir no texto do mesmo anúncio).
+    const chave =
+      modo === "com-sku" ? a.sku : `${chaveTitulo(a.titulo)}|${(a.partNumber ?? "").toLowerCase()}`;
+    const arr = porSku.get(chave) ?? [];
     arr.push(a);
-    porSku.set(a.sku, arr);
+    porSku.set(chave, arr);
+  }
+
+  // ⚠️ UMA PEÇA POR CONTA. Título e número de peça iguais só provam que é a
+  // mesma peça quando os anúncios estão em contas DIFERENTES (publicação
+  // cruzada). Dois anúncios na MESMA conta com o mesmo título são duas peças
+  // físicas distintas — o lojista anunciou cada uma separadamente. Fundir as
+  // duas num produto só faria SUMIR uma peça do pátio.
+  // Caso real: duas 'Manopla De Marcha Lifan X60', mesma conta, criadas com 3
+  // minutos de diferença, mesmo part number.
+  for (const [chave, lista] of [...porSku.entries()]) {
+    const contas = lista.map((a) => a.contaId);
+    if (contas.length === new Set(contas).size) continue;
+    porSku.delete(chave);
+    for (const a of lista) porSku.set(`${chave}|so:${a.mlb}`, [a]);
   }
 
   const grupos: Grupo[] = [];
-  for (const [sku, lista] of [...porSku.entries()].sort((x, y) => x[0].localeCompare(y[0]))) {
+  for (const [chave, lista] of [...porSku.entries()].sort((x, y) => x[0].localeCompare(y[0]))) {
+    // `REC-<MLB>` é deliberadamente NÃO numérico: a etiqueta de desmanche é um
+    // número, então um SKU assim grita "isto não é etiqueta, preciso ser
+    // corrigido" em vez de se passar por uma. E rastreia até o anúncio de
+    // origem. Um sequencial novo pareceria legítimo e ninguém notaria que não
+    // bate com a peça na prateleira.
+    const sku =
+      modo === "com-sku"
+        ? chave
+        : `REC-${[...lista].map((a) => a.mlb).sort()[0]}`;
     const g: Grupo = { sku, anuncios: lista, acao: "criar", avisos: [] };
+    if (modo === "sem-sku") {
+      g.avisos.push("sku-original-irrecuperavel: etiqueta física precisa ser reconferida");
+    }
     const norm = normalizeSku(sku);
 
     if (!norm) {
@@ -427,25 +473,35 @@ async function main() {
       if (!lu || lu < de || lu > ate) continue;
       naJanela++;
       const a = mapear(it, { id: c.id, nome: c.accountName });
-      if (a) anuncios.push(a);
-      else semSku++;
+      anuncios.push(a);
+      if (!a.sku) semSku++;
     }
     console.log(
       `  ${c.accountName}: ${ids.length} fechados na conta · ${itens.length} lidos · ${naJanela} na janela`,
     );
   }
-  console.log(`\n  com SKU: ${anuncios.length} · sem SKU (fora do escopo): ${semSku}`);
+  const comSku = anuncios.filter((a) => a.sku);
+  const semSkuList = anuncios.filter((a) => !a.sku);
+  console.log(`\n  com SKU: ${comSku.length} | sem SKU: ${semSku}`);
 
-  if (!anuncios.length) {
+  const alvo = f.modo === "com-sku" ? comSku : semSkuList;
+  console.log(`  modo ${f.modo}: processando ${alvo.length} anuncio(s)`);
+
+  if (!alvo.length) {
     console.log("\n  Nada a fazer.");
     return;
   }
 
   // 2) estado atual do banco — o que já existe não pode ser recriado
+  // Candidatos: no modo com-sku e o proprio SKU do anuncio; no sem-sku e o
+  // sintetico de CADA anuncio (superconjunto do que o agrupamento escolhe).
+  const skusCandidatos = [
+    ...new Set(alvo.map((a) => (f.modo === "com-sku" ? a.sku : `REC-${a.mlb}`))),
+  ];
   const skusOcupados = new Set(
     (
       await prisma.product.findMany({
-        where: { userId: user.id, sku: { in: [...new Set(anuncios.map((a) => a.sku))] } },
+        where: { userId: user.id, sku: { in: skusCandidatos } },
         select: { skuNormalized: true, sku: true },
       })
     ).map((p) => p.skuNormalized ?? normalizeSku(p.sku) ?? ""),
@@ -453,14 +509,14 @@ async function main() {
   const listingsExistentes = new Set(
     (
       await prisma.productListing.findMany({
-        where: { externalListingId: { in: [...new Set(anuncios.map((a) => a.mlb))] } },
+        where: { externalListingId: { in: [...new Set(alvo.map((a) => a.mlb))] } },
         select: { marketplaceAccountId: true, externalListingId: true },
       })
     ).map((l) => `${l.marketplaceAccountId}::${l.externalListingId}`),
   );
 
   // 3) categorias ML já sincronizadas localmente (miss = grava null, não aborta)
-  const catExternos = [...new Set(anuncios.map((a) => a.categoriaML).filter(Boolean))] as string[];
+  const catExternos = [...new Set(alvo.map((a) => a.categoriaML).filter(Boolean))] as string[];
   const catLocal = new Map(
     (
       await prisma.marketplaceCategory.findMany({
@@ -470,7 +526,7 @@ async function main() {
     ).map((c) => [c.externalId, c.id]),
   );
 
-  let grupos = montarGrupos(anuncios, skusOcupados, listingsExistentes);
+  let grupos = montarGrupos(alvo, skusOcupados, listingsExistentes, f.modo);
   if (f.limit) grupos = grupos.slice(0, f.limit);
 
   // 3b) descrições — uma chamada por anúncio, só para o que será criado.
