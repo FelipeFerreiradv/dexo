@@ -86,8 +86,12 @@ export const loggingMiddleware = async (
 
 /**
  * Determina o tipo de ação baseado na rota e método HTTP
+ *
+ * Exportada para teste: a classificação da rota é o que decide sob qual
+ * `action` a requisição aparece na auditoria, e um erro aqui é invisível em
+ * runtime (o log é gravado, só que com o rótulo errado).
  */
-function determineActionType(
+export function determineActionType(
   method: string,
   url: string,
 ): {
@@ -104,6 +108,14 @@ function determineActionType(
   }
 
   if (cleanUrl.startsWith("/products")) {
+    // A exclusão em massa é POST, mas é DELEÇÃO. Sem esta exceção ela cai no
+    // ramo genérico abaixo e é auditada como CREATE_PRODUCT — quem varre o
+    // SystemLog por exclusão perde a requisição inteira, e com ela o
+    // `details.body.ids`, que é a única lista do que foi apagado (o produto
+    // some do banco, então não há como reconstruir depois).
+    if (cleanUrl === "/products/bulk-delete" && method === "POST") {
+      return { action: "DELETE_PRODUCT", resource: "Product" };
+    }
     if (method === "POST") {
       return { action: "CREATE_PRODUCT", resource: "Product" };
     }
