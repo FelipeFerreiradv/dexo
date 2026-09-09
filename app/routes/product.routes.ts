@@ -1395,13 +1395,22 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         const user = (request as any).user;
         const result = await productUseCase.bulkDelete(ids, userId);
 
-        // Log fire-and-forget por produto efetivamente deletado.
+        // Log fire-and-forget por produto efetivamente deletado. Grava sku,
+        // nome e os anúncios encerrados: o produto já não existe no banco, e
+        // sem isto o `resourceId` é a única pista — insuficiente para dizer
+        // DEPOIS o que foi apagado numa exclusão em massa.
         for (const r of result.results) {
           if (r.deleted) {
             void SystemLogService.logProductDelete(
               user?.id,
               r.productId,
-              "Produto",
+              r.name ?? "Produto",
+              {
+                sku: r.sku ?? null,
+                externalListingIds: r.listingResults
+                  .map((l) => l.externalListingId)
+                  .filter((v): v is string => Boolean(v)),
+              },
             );
           }
         }
@@ -1445,9 +1454,20 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
-        // Sucesso: produto deletado localmente. Log fire-and-forget.
+        // Sucesso: produto deletado localmente. Log fire-and-forget, com o
+        // mesmo rastro do bulk (sku, nome e anúncios encerrados).
         const user = (request as any).user;
-        void SystemLogService.logProductDelete(user?.id, id, "Produto");
+        void SystemLogService.logProductDelete(
+          user?.id,
+          id,
+          result.name ?? "Produto",
+          {
+            sku: result.sku ?? null,
+            externalListingIds: (result.listingResults ?? [])
+              .map((l) => l.externalListingId)
+              .filter((v): v is string => Boolean(v)),
+          },
+        );
 
         return reply.status(200).send({
           message: result.message,

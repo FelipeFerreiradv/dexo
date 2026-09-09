@@ -223,6 +223,96 @@ describe("POST /products/bulk-delete", () => {
     expect(removeListingMock).toHaveBeenCalledTimes(3);
   });
 
+  /**
+   * `Product` não tem soft delete: terminada a exclusão a linha some e o
+   * `resourceId` do log vira um id órfão. Sem sku/nome/anúncios no `details`,
+   * uma exclusão em massa fica indistinguível de outra na auditoria — foi
+   * exatamente o que impediu de responder rápido ao caso Portal Eco Peças
+   * (04/09/2026, 96 produtos e 121 anúncios ML).
+   */
+  it("registra sku, nome e anúncios encerrados no log de exclusão", async () => {
+    const prismaMock = (await import("@/app/lib/prisma")).default as any;
+    prismaMock.product.findUnique = vi.fn().mockResolvedValue({
+      sku: "6889",
+      name: "Retrovisor Manual Direito Fox Crossfox Spacefox 2004 A 2010",
+    });
+    prismaMock.productListing.findMany = vi.fn().mockResolvedValue([
+      {
+        id: "l-1",
+        externalListingId: "MLB5039520247",
+        marketplaceAccountId: "acc-portal",
+        marketplaceAccount: { id: "acc-portal", platform: "MERCADO_LIVRE" },
+      },
+      {
+        id: "l-2",
+        externalListingId: "MLB5039520233",
+        marketplaceAccountId: "acc-mirian",
+        marketplaceAccount: { id: "acc-mirian", platform: "MERCADO_LIVRE" },
+      },
+    ]);
+    vi.spyOn(ProductRepositoryPrisma.prototype, "delete").mockResolvedValue(
+      undefined as any,
+    );
+    const { SystemLogService } = await import(
+      "../app/services/system-log.service"
+    );
+    (SystemLogService.logProductDelete as any).mockClear();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products/bulk-delete",
+      headers: { email: "test@example.com", "content-type": "application/json" },
+      payload: { ids: ["p-6889"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(SystemLogService.logProductDelete).toHaveBeenCalledWith(
+      expect.anything(),
+      "p-6889",
+      "Retrovisor Manual Direito Fox Crossfox Spacefox 2004 A 2010",
+      {
+        sku: "6889",
+        externalListingIds: ["MLB5039520247", "MLB5039520233"],
+      },
+    );
+  });
+
+  /**
+   * Auditoria não pode derrubar a operação que ela audita: se a leitura da
+   * identidade falhar, a exclusão segue e o log cai no rótulo genérico.
+   */
+  it("exclui normalmente quando a leitura de sku/nome falha", async () => {
+    const prismaMock = (await import("@/app/lib/prisma")).default as any;
+    prismaMock.product.findUnique = vi
+      .fn()
+      .mockRejectedValue(new Error("banco indisponível"));
+    prismaMock.productListing.findMany = vi.fn().mockResolvedValue([]);
+    const deleteSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "delete")
+      .mockResolvedValue(undefined as any);
+    const { SystemLogService } = await import(
+      "../app/services/system-log.service"
+    );
+    (SystemLogService.logProductDelete as any).mockClear();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products/bulk-delete",
+      headers: { email: "test@example.com", "content-type": "application/json" },
+      payload: { ids: ["p-x"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload).summary.deleted).toBe(1);
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(SystemLogService.logProductDelete).toHaveBeenCalledWith(
+      expect.anything(),
+      "p-x",
+      "Produto",
+      { sku: null, externalListingIds: [] },
+    );
+  });
+
   it("marks failing product as deleted=false without touching ProductRepository.delete", async () => {
     const prismaMock = (await import("@/app/lib/prisma")).default as any;
     prismaMock.productListing.findMany = vi.fn().mockImplementation(({ where }) =>

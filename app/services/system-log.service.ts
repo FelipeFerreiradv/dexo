@@ -158,6 +158,15 @@ export class SystemLogService {
     userId: string,
     productId: string,
     productName: string,
+    // Rastro do que foi apagado. `Product` NÃO tem soft delete: terminada a
+    // transação a linha some e o `resourceId` acima vira um id órfão — sem
+    // sku, sem nome e sem os anúncios encerrados junto, uma exclusão em massa
+    // fica indistinguível de outra na auditoria. Opcional: quem não passar
+    // mantém exatamente o registro de antes.
+    details?: {
+      sku?: string | null;
+      externalListingIds?: string[];
+    },
   ) {
     return this.logWarning(
       "DELETE_PRODUCT",
@@ -166,6 +175,7 @@ export class SystemLogService {
         userId,
         resource: "Product",
         resourceId: productId,
+        details,
       },
     );
   }

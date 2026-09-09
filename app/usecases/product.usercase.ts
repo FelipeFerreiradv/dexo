@@ -44,6 +44,11 @@ export interface BulkDeleteProductResult {
   deleted: boolean;
   message: string;
   listingResults: BulkDeleteListingResult[];
+  // Identidade capturada ANTES da exclusão, para a auditoria. Depois do
+  // delete o produto não existe mais e `productId` sozinho não diz o que foi
+  // apagado. `null` = não foi possível ler (produto já inexistente).
+  sku?: string | null;
+  name?: string | null;
 }
 
 export interface BulkDeleteResponse {
@@ -378,6 +383,9 @@ export class ProductUseCase {
   ): Promise<{
     success: boolean;
     message: string;
+    // Mesma razão do bulk: capturados antes da exclusão, para a auditoria.
+    sku?: string | null;
+    name?: string | null;
     listingResults?: Array<{
       listingId: string;
       externalListingId: string;
@@ -387,6 +395,8 @@ export class ProductUseCase {
       retryable?: boolean;
     }>;
   }> {
+    const identity = await this.getProductIdentity(id);
+
     try {
       const listings = await this.getProductListings(id);
 
@@ -421,6 +431,7 @@ export class ProductUseCase {
 
         return {
           success: false,
+          ...identity,
           message: `Produto não foi excluído: ${failures.length} anúncio(s) não puderam ser encerrados no marketplace.`,
           listingResults: listingResults.map(
             ({ success: _success, ...rest }) => rest,
@@ -432,6 +443,7 @@ export class ProductUseCase {
 
       return {
         success: true,
+        ...identity,
         message: "Produto e anúncios associados excluídos com sucesso",
         listingResults: listingResults.map(
           ({ success: _success, ...rest }) => rest,
@@ -509,6 +521,11 @@ export class ProductUseCase {
     userId: string | undefined,
     semaphore: AccountSemaphore,
   ): Promise<BulkDeleteProductResult> {
+    // Lido ANTES de fechar anúncio ou apagar linha: é a única janela em que
+    // sku e nome ainda existem. Best-effort — falhar aqui não pode impedir a
+    // exclusão, então o catch devolve nulo e o fluxo segue igual.
+    const identity = await this.getProductIdentity(productId);
+
     try {
       const listings = await this.getProductListings(productId);
 
@@ -544,6 +561,7 @@ export class ProductUseCase {
         }
         return {
           productId,
+          ...identity,
           deleted: false,
           message: `${failures.length} anúncio(s) não puderam ser encerrados no marketplace.`,
           listingResults: listingResults.map(
@@ -556,6 +574,7 @@ export class ProductUseCase {
 
       return {
         productId,
+        ...identity,
         deleted: true,
         message: "Produto e anúncios associados excluídos com sucesso.",
         listingResults: listingResults.map(
@@ -565,11 +584,31 @@ export class ProductUseCase {
     } catch (error) {
       return {
         productId,
+        ...identity,
         deleted: false,
         message:
           error instanceof Error ? error.message : "Erro ao excluir produto",
         listingResults: [],
       };
+    }
+  }
+
+  /**
+   * Lê sku e nome do produto para a trilha de auditoria da exclusão.
+   * Best-effort: qualquer falha vira `{ sku: null, name: null }` — auditoria
+   * não pode derrubar a operação que ela audita.
+   */
+  private async getProductIdentity(
+    productId: string,
+  ): Promise<{ sku: string | null; name: string | null }> {
+    try {
+      const p = await prisma.product.findUnique({
+        where: { id: productId },
+        select: { sku: true, name: true },
+      });
+      return { sku: p?.sku ?? null, name: p?.name ?? null };
+    } catch {
+      return { sku: null, name: null };
     }
   }
 
