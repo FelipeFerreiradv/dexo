@@ -11,6 +11,14 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 1,
     },
     {
+      // Exigida pela Meta (Termo da Plataforma 4.a): a politica precisa ser
+      // publica e alcancavel pelos rastreadores deles.
+      url: `${baseUrl}/privacidade`,
+      lastModified: new Date(),
+      changeFrequency: "yearly",
+      priority: 0.5,
+    },
+    {
       url: `${baseUrl}/login`,
       lastModified: new Date(),
       changeFrequency: "monthly",
