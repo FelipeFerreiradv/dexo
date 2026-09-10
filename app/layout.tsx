@@ -101,6 +101,12 @@ export const metadata: Metadata = {
       "Gerencie seu estoque de forma centralizada com integrações diretas ao Mercado Livre e Shopee.",
     images: ["/logo.jpg"],
   },
+  // O Depurador de Compartilhamento da Meta trata `fb:app_id` como propriedade
+  // obrigatória e acusa a ausência em toda URL do domínio. É o id público do
+  // app (aparece na própria URL de consentimento), não segredo.
+  ...(process.env.FACEBOOK_APP_ID
+    ? { other: { "fb:app_id": process.env.FACEBOOK_APP_ID } }
+    : {}),
   robots: {
     index: true,
     follow: true,
