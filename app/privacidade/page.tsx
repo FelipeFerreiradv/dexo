@@ -25,6 +25,18 @@ export const metadata: Metadata = {
   description:
     "Como a Dexo coleta, usa, compartilha e protege os dados pessoais tratados na plataforma.",
   robots: { index: true, follow: true },
+  // Sem isto o Open Graph é herdado do layout raiz e o Depurador da Meta mostra
+  // "Dexo | Gestão de Estoque Centralizada" como prévia desta página — quem
+  // analisa a violação vê o título da home no lugar do da política. O `url`
+  // também elimina o aviso "og:url ausente".
+  alternates: { canonical: "/privacidade" },
+  openGraph: {
+    type: "website",
+    url: "/privacidade",
+    title: "Política de Privacidade | Dexo",
+    description:
+      "Como a Dexo coleta, usa, compartilha e protege os dados pessoais tratados na plataforma.",
+  },
 };
 
 /**
