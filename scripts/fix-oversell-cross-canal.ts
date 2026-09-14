@@ -443,11 +443,15 @@ async function main() {
         // para nao afogar erro de verdade no relatorio.
         const m = String(x.erro).toLowerCase();
         x.recusadoPeloML =
-          m.includes("available_quantity") &&
-          (m.includes("not_modifiable") ||
-            m.includes("not modifiable") ||
-            m.includes("not_updatable") ||
-            m.includes("not updatable"));
+          (m.includes("available_quantity") &&
+            (m.includes("not_modifiable") ||
+              m.includes("not modifiable") ||
+              m.includes("not_updatable") ||
+              m.includes("not updatable"))) ||
+          // Terceira forma, vista so na primeira execucao real: o ML recusa o
+          // VALOR zero neste anuncio. Mesma natureza — um nao definitivo.
+          m.includes("item.stock.invalid") ||
+          m.includes("stock of item should be more than");
         if (x.recusadoPeloML) {
           console.log("    – " + x.c.externalListingId + ": ML recusou (esperado)");
         } else {
