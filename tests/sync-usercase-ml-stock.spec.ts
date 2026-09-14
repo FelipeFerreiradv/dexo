@@ -13,7 +13,7 @@ describe("SyncUseCase ML stock sync by listing status", () => {
     vi.restoreAllMocks();
   });
 
-  it("pausa anuncio ativo no ML quando o estoque local chega a zero", async () => {
+  it("zera a quantidade remota E pausa o anuncio ativo quando o estoque local chega a zero", async () => {
     const getItemSpy = vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
       id: "MLB-1",
       status: "active",
@@ -22,9 +22,15 @@ describe("SyncUseCase ML stock sync by listing status", () => {
     const updateItemSpy = vi.spyOn(MLApiService, "updateItem").mockResolvedValue({
       id: "MLB-1",
       status: "paused",
-      available_quantity: 1,
+      available_quantity: 0,
     } as any);
-    const updateStockSpy = vi.spyOn(MLApiService, "updateItemStock");
+    const updateStockSpy = vi
+      .spyOn(MLApiService, "updateItemStock")
+      .mockResolvedValue({
+        id: "MLB-1",
+        status: "paused",
+        available_quantity: 0,
+      } as any);
 
     const result = await (SyncUseCase as any).syncMLProductStock(
       {
@@ -42,10 +48,16 @@ describe("SyncUseCase ML stock sync by listing status", () => {
     );
 
     expect(getItemSpy).toHaveBeenCalledWith("token-1", "MLB-1");
+    // A ordem importa: zerar ANTES de pausar. Se a pausa falhar, a peca ja nao
+    // esta vendavel; e o `status: paused` converte o `out_of_stock` que o ML
+    // poe sozinho (e desfaz) em `paused_by_seller`, que ele nao toca.
+    expect(updateStockSpy).toHaveBeenCalledWith("token-1", "MLB-1", 0);
     expect(updateItemSpy).toHaveBeenCalledWith("token-1", "MLB-1", {
       status: "paused",
     });
-    expect(updateStockSpy).not.toHaveBeenCalled();
+    expect(updateStockSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      updateItemSpy.mock.invocationCallOrder[0],
+    );
     expect(result).toMatchObject({
       success: true,
       productId: "prod-1",
@@ -63,48 +75,134 @@ describe("SyncUseCase ML stock sync by listing status", () => {
     );
   });
 
-  it("trata anuncio pausado com estoque local zero como no-op bem-sucedido", async () => {
+  // O ML PRESERVA `available_quantity` enquanto o anuncio esta fora do ar.
+  // Deixar a quantidade intacta foi o que permitiu que o SKU 33996 (1 unidade)
+  // vendesse na Shopee em 01/08 e de novo no ML em 10/09: os dois anuncios
+  // estavam `under_review` com quantidade remota 1 e o sync os pulou
+  // retornando SUCESSO, apagando o StockSyncJob.
+  it.each(["paused", "inactive", "under_review"])(
+    "zera a quantidade remota de anuncio %s que mantinha quantidade > 0",
+    async (remoteStatus) => {
+      vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
+        id: "MLB-2",
+        status: remoteStatus,
+        available_quantity: 1,
+      } as any);
+      const updateItemSpy = vi.spyOn(MLApiService, "updateItem");
+      const updateStockSpy = vi
+        .spyOn(MLApiService, "updateItemStock")
+        .mockResolvedValue({
+          id: "MLB-2",
+          status: remoteStatus,
+          available_quantity: 0,
+        } as any);
+
+      const result = await (SyncUseCase as any).syncMLProductStock(
+        {
+          externalListingId: "MLB-2",
+          marketplaceAccount: {
+            id: "acc-2",
+            accessToken: "token-2",
+          },
+        },
+        {
+          id: "prod-2",
+          name: "Produto 2",
+          stock: 0,
+        },
+      );
+
+      expect(updateStockSpy).toHaveBeenCalledWith("token-2", "MLB-2", 0);
+      // Nao reativa nem mexe no status: so a quantidade.
+      expect(updateItemSpy).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        success: true,
+        productId: "prod-2",
+        externalListingId: "MLB-2",
+        previousStock: 1,
+        newStock: 0,
+      });
+      expect(prisma.syncLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            marketplaceAccountId: "acc-2",
+            status: "SUCCESS",
+            message: expect.stringContaining("Quantidade zerada"),
+          }),
+        }),
+      );
+    },
+  );
+
+  // Skip legitimo: sem quantidade remota nao ha o que zerar, e uma escrita a
+  // toa custaria uma chamada de API por anuncio a cada tick de 15 min.
+  it("nao chama a API quando o anuncio fora do ar ja esta com quantidade zero", async () => {
     vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
-      id: "MLB-2",
+      id: "MLB-4",
       status: "paused",
-      available_quantity: 1,
+      available_quantity: 0,
     } as any);
     const updateItemSpy = vi.spyOn(MLApiService, "updateItem");
     const updateStockSpy = vi.spyOn(MLApiService, "updateItemStock");
 
     const result = await (SyncUseCase as any).syncMLProductStock(
       {
-        externalListingId: "MLB-2",
-        marketplaceAccount: {
-          id: "acc-2",
-          accessToken: "token-2",
-        },
+        externalListingId: "MLB-4",
+        marketplaceAccount: { id: "acc-4", accessToken: "token-4" },
       },
-      {
-        id: "prod-2",
-        name: "Produto 2",
-        stock: 0,
-      },
+      { id: "prod-4", name: "Produto 4", stock: 0 },
     );
 
-    expect(updateItemSpy).not.toHaveBeenCalled();
     expect(updateStockSpy).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      success: true,
-      productId: "prod-2",
-      externalListingId: "MLB-2",
-      previousStock: 1,
-      newStock: 1,
-    });
-    expect(prisma.syncLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          marketplaceAccountId: "acc-2",
-          status: "WARNING",
-          message: expect.stringContaining("paused com quantidade remota"),
+    expect(updateItemSpy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: true, skipped: true });
+  });
+
+  it("kill-switch ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED=1 restaura o comportamento anterior", async () => {
+    const anterior = process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED;
+    process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED = "1";
+
+    try {
+      vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
+        id: "MLB-5",
+        status: "paused",
+        available_quantity: 1,
+      } as any);
+      const updateItemSpy = vi.spyOn(MLApiService, "updateItem");
+      const updateStockSpy = vi.spyOn(MLApiService, "updateItemStock");
+
+      const result = await (SyncUseCase as any).syncMLProductStock(
+        {
+          externalListingId: "MLB-5",
+          marketplaceAccount: { id: "acc-5", accessToken: "token-5" },
+        },
+        { id: "prod-5", name: "Produto 5", stock: 0 },
+      );
+
+      // Exatamente o contrato antigo: nenhuma escrita, no-op "bem-sucedido"
+      // com a quantidade remota preservada e o WARNING de risco.
+      expect(updateItemSpy).not.toHaveBeenCalled();
+      expect(updateStockSpy).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        success: true,
+        previousStock: 1,
+        newStock: 1,
+      });
+      expect(prisma.syncLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: "WARNING",
+            message: expect.stringContaining("paused com quantidade remota"),
+          }),
         }),
-      }),
-    );
+      );
+    } finally {
+      if (anterior === undefined) {
+        delete process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED;
+      } else {
+        process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED = anterior;
+      }
+    }
   });
 
   it("ignora anuncio fechado no ML sem contaminar o sync como falha", async () => {

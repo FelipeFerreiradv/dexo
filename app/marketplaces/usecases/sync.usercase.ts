@@ -3732,6 +3732,74 @@ export class SyncUseCase {
       }
 
       if (product.stock <= 0) {
+        // OVERSELL — o buraco que deixou uma peça ser vendida duas vezes.
+        //
+        // O Mercado Livre PRESERVA `available_quantity` enquanto o anúncio está
+        // fora do ar (paused/inactive/under_review). Até 10/09/2026 os três
+        // ramos abaixo apenas registravam um WARNING e retornavam SUCESSO — o
+        // `StockSyncJob` era apagado como se a propagação tivesse acontecido e
+        // a quantidade remota ficava intacta. Quando o anúncio voltava ao ar
+        // (fim da revisão, reativação manual, ação do ML), voltava vendável com
+        // a quantidade antiga.
+        //
+        // Caso real, tenant cmn5yc4rn0000vsasmwv9m8nc, SKU 33996 (1 unidade):
+        // venda na Shopee em 01/08 23:02 BRT baixou o estoque para 0 e as três
+        // Shopee foram zeradas em segundos; os dois anúncios do ML estavam
+        // `under_review` e foram pulados com `remoteAvailableQuantity=1`. O
+        // mesmo WARNING se repetiu a cada 15 min por 39 dias. Em 10/09 o
+        // MLB4862117235 vendeu a peça que não existia mais.
+        //
+        // Zerar a quantidade é o que fecha o buraco: um anúncio fora do ar com
+        // quantidade 0 não volta vendável. `closed` fica de fora de propósito —
+        // é terminal, o ML recusa a escrita, e o anúncio não retorna sozinho.
+        //
+        // Kill-switch: ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED=1 devolve o
+        // comportamento anterior byte a byte (a variável fica false e todos os
+        // ramos abaixo seguem exatamente como eram).
+        const deveZerarQuantidadeRemota =
+          process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED !== "1" &&
+          previousStock > 0 &&
+          (currentStatus === "paused" ||
+            currentStatus === "inactive" ||
+            currentStatus === "under_review");
+
+        if (deveZerarQuantidadeRemota) {
+          // Erro aqui NÃO é engolido: o catch do método registra FAILURE e
+          // devolve success:false, então o StockSyncJob reprocessa com backoff
+          // e, esgotadas as tentativas, vira STOCK_SYNC_FAILED. Visível, ao
+          // contrário do silêncio que existia antes.
+          await MLApiService.updateItemStock(
+            account.accessToken,
+            listing.externalListingId,
+            0,
+          );
+
+          await this.logSync(
+            account.id,
+            SyncType.STOCK_UPDATE,
+            SyncStatus.SUCCESS,
+            `Anúncio ${listing.externalListingId} está ${currentStatus} no Mercado Livre e mantinha quantidade remota=${previousStock} com estoque local 0. Quantidade zerada para impedir venda ao reativar.`,
+            {
+              productId: product.id,
+              externalListingId: listing.externalListingId,
+              previousStock,
+              newStock: 0,
+              desiredStock: product.stock,
+              remoteStatus: currentStatus,
+              remoteAvailableQuantity: previousStock,
+              reason: "ml_zero_remote_qty_on_empty",
+            },
+          );
+
+          return {
+            success: true,
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            previousStock,
+            newStock: 0,
+          };
+        }
+
         if (currentStatus === "paused" && previousStock > 0) {
           await this.alertMLReactivationRisk(
             account,
@@ -3765,6 +3833,26 @@ export class SyncUseCase {
         }
 
         if (currentStatus === "active") {
+          // A pausa sozinha nunca bastou: o anúncio ficava `paused` com a
+          // quantidade remota intacta e caía exatamente no caso acima na
+          // próxima vez que alguém o reativasse. Zeramos ANTES de pausar.
+          //
+          // A ordem importa e repete a de #310/#311 (28/08): ao receber
+          // quantidade 0 o ML pausa sozinho com `sub_status: out_of_stock`, que
+          // ele mesmo desfaz quando a quantidade sobe; o `status: "paused"`
+          // logo abaixo converte para `paused_by_seller`, que o ML não toca.
+          // Zerando primeiro, mesmo que a pausa falhe a peça não fica vendável.
+          if (
+            process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED !== "1" &&
+            previousStock > 0
+          ) {
+            await MLApiService.updateItemStock(
+              account.accessToken,
+              listing.externalListingId,
+              0,
+            );
+          }
+
           await MLApiService.updateItem(
             account.accessToken,
             listing.externalListingId,
@@ -3785,6 +3873,12 @@ export class SyncUseCase {
               desiredStock: product.stock,
               remoteStatusBefore: currentStatus,
               remoteStatusAfter: "paused",
+              // Aditivo: permite auditar, no SyncLog, se a quantidade remota
+              // foi de fato zerada antes da pausa ou se o kill-switch estava
+              // ligado. Nenhum consumidor faz match exato deste payload.
+              remoteQuantityZeroed:
+                process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED !== "1" &&
+                previousStock > 0,
             },
           );
 
