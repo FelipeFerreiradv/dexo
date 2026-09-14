@@ -3889,44 +3889,14 @@ export class SyncUseCase {
         }
 
         if (currentStatus === "active") {
-          // A pausa sozinha nunca bastou: o anúncio ficava `paused` com a
-          // quantidade remota intacta e caía exatamente no caso acima na
-          // próxima vez que alguém o reativasse. Zeramos ANTES de pausar.
-          //
-          // A ordem importa e repete a de #310/#311 (28/08): ao receber
-          // quantidade 0 o ML pausa sozinho com `sub_status: out_of_stock`, que
-          // ele mesmo desfaz quando a quantidade sobe; o `status: "paused"`
-          // logo abaixo converte para `paused_by_seller`, que o ML não toca.
-          // Zerando primeiro, mesmo que a pausa falhe a peça não fica vendável.
-          if (
-            process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED !== "1" &&
-            previousStock > 0
-          ) {
-            try {
-              await MLApiService.updateItemStock(
-                account.accessToken,
-                listing.externalListingId,
-                0,
-              );
-            } catch (err) {
-              // Mesmo tratamento do bloco acima: se o ML recusa mexer na
-              // quantidade (acontece tambem em `active` com lances), seguimos
-              // para a pausa, que e o que sempre funcionou. A pausa sozinha nao
-              // resolve o oversell, mas tira o anuncio do ar agora — e nao pode
-              // ser bloqueada por uma escrita que o ML nunca aceitaria.
-              if (!isMLQuantityNotModifiable(err)) throw err;
-              console.warn(
-                JSON.stringify({
-                  event: "ml.zero_remote_qty.recusado",
-                  externalListingId: listing.externalListingId,
-                  remoteStatus: currentStatus,
-                  remoteAvailableQuantity: previousStock,
-                  productId: product.id,
-                }),
-              );
-            }
-          }
-
+          // DELIBERADAMENTE INALTERADO: aqui a pausa e suficiente e e o
+          // mecanismo que comprovadamente funciona (29.087 STOCK_UPDATE de
+          // sucesso no ML). Zerar a quantidade ANTES da pausa foi considerado e
+          // descartado: acrescentaria uma chamada de API em TODA baixa de
+          // estoque da plataforma para um ganho marginal (o anuncio sai do ar
+          // de qualquer forma), e tanto este caminho quanto
+          // tests/stock-deduction-olx-facebook-e2e.spec.ts registram que o ML
+          // rejeita quantidade 0 por API.
           await MLApiService.updateItem(
             account.accessToken,
             listing.externalListingId,
@@ -3947,12 +3917,6 @@ export class SyncUseCase {
               desiredStock: product.stock,
               remoteStatusBefore: currentStatus,
               remoteStatusAfter: "paused",
-              // Aditivo: permite auditar, no SyncLog, se a quantidade remota
-              // foi de fato zerada antes da pausa ou se o kill-switch estava
-              // ligado. Nenhum consumidor faz match exato deste payload.
-              remoteQuantityZeroed:
-                process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED !== "1" &&
-                previousStock > 0,
             },
           );
 

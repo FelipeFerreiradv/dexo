@@ -13,7 +13,10 @@ describe("SyncUseCase ML stock sync by listing status", () => {
     vi.restoreAllMocks();
   });
 
-  it("zera a quantidade remota E pausa o anuncio ativo quando o estoque local chega a zero", async () => {
+  // O ramo `active` segue INALTERADO: a pausa basta e e o mecanismo que
+  // comprovadamente funciona. Zerar antes de pausar foi descartado — custaria
+  // uma chamada de API em toda baixa da plataforma, e o ML rejeita qty 0.
+  it("pausa anuncio ativo no ML quando o estoque local chega a zero", async () => {
     const getItemSpy = vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
       id: "MLB-1",
       status: "active",
@@ -48,16 +51,10 @@ describe("SyncUseCase ML stock sync by listing status", () => {
     );
 
     expect(getItemSpy).toHaveBeenCalledWith("token-1", "MLB-1");
-    // A ordem importa: zerar ANTES de pausar. Se a pausa falhar, a peca ja nao
-    // esta vendavel; e o `status: paused` converte o `out_of_stock` que o ML
-    // poe sozinho (e desfaz) em `paused_by_seller`, que ele nao toca.
-    expect(updateStockSpy).toHaveBeenCalledWith("token-1", "MLB-1", 0);
     expect(updateItemSpy).toHaveBeenCalledWith("token-1", "MLB-1", {
       status: "paused",
     });
-    expect(updateStockSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      updateItemSpy.mock.invocationCallOrder[0],
-    );
+    expect(updateStockSpy).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       success: true,
       productId: "prod-1",
