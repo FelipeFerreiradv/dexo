@@ -47,6 +47,24 @@
  *  7. NAO FAZ REFRESH DE TOKEN. Usa o accessToken gravado; 401 vira relatorio,
  *     nao renovacao — refresh a partir do ambiente errado marca a conta como
  *     ERROR e o motor para de processar aquele lojista.
+ *
+ * O QUE ELE NAO CONSEGUE CONSERTAR, E POR QUE
+ *
+ * O ML RECUSA alterar `available_quantity` em boa parte dos anuncios fora do
+ * ar. Medido no SyncLog de producao (60 dias):
+ *
+ *   inactive      2.922 recusas em 241 anuncios
+ *   under_review  1.408 recusas em 557 anuncios
+ *   paused           97 recusas em   8 anuncios
+ *
+ * Na varredura de 14/09/2026, dos 437 alvos: 173 estavam `paused` (devem ser
+ * corrigidos), 226 `inactive` e 38 `under_review` (o ML deve recusar). O
+ * dry-run imprime essa expectativa em vez de prometer 437 — e o apply separa
+ * "recusado pelo ML" de "falha de verdade", para que erro real nao se perca no
+ * meio do esperado.
+ *
+ * Para inactive/under_review nao existe caminho de API. A defesa e detectar a
+ * volta para `active` e pausar na hora.
  */
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -271,7 +289,13 @@ async function main() {
     if (porReserva.length > 40) console.log("    ... e mais " + (porReserva.length - 40));
   }
 
-  const decisoes: Array<{ c: Candidato; d: Decisao; aplicado?: boolean; erro?: string }> = [];
+  const decisoes: Array<{
+    c: Candidato;
+    d: Decisao;
+    aplicado?: boolean;
+    erro?: string;
+    recusadoPeloML?: boolean;
+  }> = [];
   for (const c of candidatos) {
     const d = await decidir(c);
     decisoes.push({ c, d });
@@ -294,7 +318,34 @@ async function main() {
 
   const unidades = aZerar.reduce((s, x) => s + (x.d.qtdRemotaAgora ?? 0), 0);
   console.log("");
-  console.log("  UNIDADES FANTASMA QUE SERAO RETIRADAS DE VENDA: " + unidades);
+  console.log("  UNIDADES FANTASMA ALVO: " + unidades);
+
+  // EXPECTATIVA REALISTA, e nao promessa. O ML recusa alterar
+  // `available_quantity` em boa parte dos anuncios fora do ar — medido no
+  // SyncLog de producao (60 dias): 2.922 recusas em 241 anuncios `inactive`,
+  // 1.408 em 557 `under_review`, 97 em 8 `paused`. Prometer que 437 serao
+  // corrigidos seria mentira; o numero que importa e este aqui embaixo.
+  const porStatus = new Map<string, number>();
+  for (const x of aZerar) {
+    const st = x.d.statusRemoto ?? "?";
+    porStatus.set(st, (porStatus.get(st) ?? 0) + 1);
+  }
+  const provavelOk = porStatus.get("paused") ?? 0;
+  const provavelRecusa =
+    (porStatus.get("inactive") ?? 0) + (porStatus.get("under_review") ?? 0);
+  console.log("");
+  console.log("  EXPECTATIVA (o ML recusa quantidade em anuncio fora do ar):");
+  for (const [st, n] of [...porStatus.entries()].sort((a, b) => b[1] - a[1])) {
+    console.log("    · " + st + ": " + n);
+  }
+  console.log("    → provavel SUCESSO (paused): " + provavelOk);
+  console.log(
+    "    → provavel RECUSA do ML (inactive/under_review): " + provavelRecusa,
+  );
+  console.log(
+    "      Para esses nao existe caminho de API: a defesa e detectar a volta",
+  );
+  console.log("      para `active` e pausar na hora.");
   const ativos = aZerar.filter((x) => x.d.statusRemoto === "active");
   if (ativos.length > 0) {
     console.log("  🔴 " + ativos.length + " deles estao ATIVOS no ML AGORA (venda iminente):");
@@ -338,13 +389,30 @@ async function main() {
         console.log("    ✓ " + x.c.externalListingId + " (SKU " + (x.c.sku ?? "—") + ")");
       } catch (err: any) {
         x.erro = err?.message ?? String(err);
-        console.error("    ✗ " + x.c.externalListingId + ": " + x.erro);
+        // A recusa do ML e um NAO definitivo, nao um defeito nosso: separamos
+        // para nao afogar erro de verdade no relatorio.
+        const m = String(x.erro).toLowerCase();
+        x.recusadoPeloML =
+          m.includes("available_quantity") &&
+          (m.includes("not_modifiable") ||
+            m.includes("not modifiable") ||
+            m.includes("not_updatable") ||
+            m.includes("not updatable"));
+        if (x.recusadoPeloML) {
+          console.log("    – " + x.c.externalListingId + ": ML recusou (esperado)");
+        } else {
+          console.error("    ✗ " + x.c.externalListingId + ": " + x.erro);
+        }
       }
       await new Promise((r) => setTimeout(r, 150));
     }
     const ok = aZerar.filter((x) => x.aplicado).length;
+    const recusados = aZerar.filter((x) => x.recusadoPeloML).length;
+    const falhos = aZerar.filter((x) => x.erro && !x.recusadoPeloML).length;
     console.log("");
-    console.log("  aplicados: " + ok + " / " + aZerar.length);
+    console.log("  corrigidos          : " + ok + " / " + aZerar.length);
+    console.log("  recusados pelo ML   : " + recusados);
+    console.log("  falhas de verdade   : " + falhos);
   }
 
   mkdirSync(OUT_DIR, { recursive: true });
@@ -365,6 +433,17 @@ async function main() {
           ativosNoML: ativos.length,
           disponivelZeroPorReserva: porReserva.length,
           aplicados: apply ? aZerar.filter((x) => x.aplicado).length : 0,
+          recusadosPeloML: apply
+            ? aZerar.filter((x) => x.recusadoPeloML).length
+            : 0,
+          expectativaSucesso: aZerar.filter(
+            (x) => x.d.statusRemoto === "paused",
+          ).length,
+          expectativaRecusa: aZerar.filter(
+            (x) =>
+              x.d.statusRemoto === "inactive" ||
+              x.d.statusRemoto === "under_review",
+          ).length,
         },
         itens: decisoes.map((x) => ({
           tenant: x.c.tenant,
@@ -380,6 +459,7 @@ async function main() {
           motivo: x.d.motivo,
           aplicado: x.aplicado ?? false,
           erro: x.erro ?? null,
+          recusadoPeloML: x.recusadoPeloML ?? false,
         })),
       },
       null,
