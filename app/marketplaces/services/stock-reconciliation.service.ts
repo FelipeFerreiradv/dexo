@@ -41,9 +41,41 @@ export class StockReconciliationService {
       take: BATCH_LIMIT,
     });
 
-    if (recentLogs.length === 0) return;
+    // O PONTO CEGO desta varredura, registrado em
+    // stock-reservation.service.ts:34-38: ela entra por `StockLog`, e a RESERVA
+    // não gera `StockLog` por desenho — `stock` não muda, só `reservedStock`.
+    // Uma peça comprometida em venda pendente é, portanto, invisível aqui.
+    //
+    // Hoje a propagação da reserva é feita pelo `firePostReservationEffects`,
+    // que agenda com `setTimeout(...).unref()`: um restart do processo dentro
+    // da janela de ~5,5s perde o disparo. Os StockSyncJob já gravados são
+    // duráveis, mas quando a perda acontece ANTES do enfileiramento não sobra
+    // nada — e nenhuma rede pega, porque não há `StockLog`.
+    //
+    // Incluir os produtos com `reservedStock > 0` fecha esse buraco pelo mesmo
+    // caminho de sempre (upsert idempotente em (listingId, PENDING), alvo =
+    // disponível). É barato e termina sozinho: o conjunto é o das vendas
+    // ABERTAS com item (9 produtos em produção em 14/09/2026), e cada peça sai
+    // dele quando a venda é recebida ou cancelada.
+    //
+    // Default DESLIGADO: é varredura nova, não correção de defeito provado.
+    // RESERVED_STOCK_RECONCILE_ENABLED=1 liga.
+    const reservedIds =
+      process.env.RESERVED_STOCK_RECONCILE_ENABLED === "1"
+        ? (
+            await prisma.product.findMany({
+              where: { reservedStock: { gt: 0 } },
+              select: { id: true },
+              take: BATCH_LIMIT,
+            })
+          ).map((p) => p.id)
+        : [];
 
-    const productIds = recentLogs.map((l) => l.productId);
+    if (recentLogs.length === 0 && reservedIds.length === 0) return;
+
+    const productIds = [
+      ...new Set([...recentLogs.map((l) => l.productId), ...reservedIds]),
+    ];
 
     // Com o espelhamento de status ligado, listings podem carregar
     // under_review/reviewing/unlist/inactive (item ainda existe no

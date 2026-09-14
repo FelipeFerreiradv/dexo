@@ -5,6 +5,7 @@ vi.mock("@/app/lib/prisma", () => {
   const mock: any = {
     stockLog: { findMany: vi.fn() },
     productListing: { findMany: vi.fn() },
+    product: { findMany: vi.fn() },
     stockSyncJob,
     $queryRaw: vi.fn().mockResolvedValue([]),
     // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
@@ -46,6 +47,81 @@ describe("StockReconciliationService.runOnce", () => {
 
     expect((prisma as any).productListing.findMany).not.toHaveBeenCalled();
     expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+  });
+
+  // A reserva não gera StockLog (o `stock` não muda), então peça comprometida
+  // em venda aberta é invisível para esta varredura. A flag inclui esses
+  // produtos; sem ela, o comportamento é o de sempre.
+  describe("peças comprometidas em venda aberta (RESERVED_STOCK_RECONCILE_ENABLED)", () => {
+    const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+      const anterior = process.env.RESERVED_STOCK_RECONCILE_ENABLED;
+      if (valor === undefined) {
+        delete process.env.RESERVED_STOCK_RECONCILE_ENABLED;
+      } else {
+        process.env.RESERVED_STOCK_RECONCILE_ENABLED = valor;
+      }
+      try {
+        await fn();
+      } finally {
+        if (anterior === undefined) {
+          delete process.env.RESERVED_STOCK_RECONCILE_ENABLED;
+        } else {
+          process.env.RESERVED_STOCK_RECONCILE_ENABLED = anterior;
+        }
+      }
+    };
+
+    it("sem a flag, não consulta produtos reservados nem muda a varredura", async () => {
+      await comFlag(undefined, async () => {
+        (prisma as any).stockLog.findMany.mockResolvedValue([]);
+
+        await StockReconciliationService.runOnce();
+
+        expect((prisma as any).product.findMany).not.toHaveBeenCalled();
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      });
+    });
+
+    it("com a flag, enfileira a peça reservada mesmo sem StockLog recente", async () => {
+      await comFlag("1", async () => {
+        (prisma as any).stockLog.findMany.mockResolvedValue([]);
+        (prisma as any).product.findMany.mockResolvedValue([
+          { id: "prod-reservado" },
+        ]);
+        (prisma as any).productListing.findMany.mockResolvedValue([
+          makeListingRow({
+            id: "lst-reservado",
+            productId: "prod-reservado",
+            // 1 em estoque, 1 comprometida ⇒ disponível 0.
+            product: { stock: 1, reservedStock: 1 },
+          }),
+        ]);
+
+        await StockReconciliationService.runOnce();
+
+        expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+        const arg = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+        // O alvo é o DISPONÍVEL, não o estoque bruto.
+        expect(arg.create.targetStock).toBe(0);
+        expect(arg.create.listingId).toBe("lst-reservado");
+      });
+    });
+
+    it("com a flag, não duplica produto que já veio pelo StockLog", async () => {
+      await comFlag("1", async () => {
+        (prisma as any).stockLog.findMany.mockResolvedValue([
+          { productId: "prod-1" },
+        ]);
+        (prisma as any).product.findMany.mockResolvedValue([{ id: "prod-1" }]);
+        (prisma as any).productListing.findMany.mockResolvedValue([]);
+
+        await StockReconciliationService.runOnce();
+
+        const where = (prisma as any).productListing.findMany.mock.calls[0][0]
+          .where;
+        expect(where.productId.in).toEqual(["prod-1"]);
+      });
+    });
   });
 
   it("enfileira um upsert por listing ativo dos produtos com drift", async () => {
