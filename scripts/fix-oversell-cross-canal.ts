@@ -196,8 +196,60 @@ type Decisao = {
   statusRemoto?: string;
 };
 
+/**
+ * Pre-carga em LOTE do estado no ML, por conta, em blocos de 20 com selecao
+ * explicita de campos. Uma consulta por candidato custaria 555 chamadas e
+ * ~6,8 MB; assim sao ~28 chamadas e ~85 KB. E a regra de egress da casa:
+ * pre-carga em lote no lugar de consulta repetida dentro de laco.
+ *
+ * Conta cujo multiget falha fica com o mapa vazio, e todo candidato dela cai
+ * em PULAR com o motivo registrado — nunca em escrita as cegas.
+ */
+async function carregarSnapshots(
+  candidatos: Candidato[],
+): Promise<Map<string, { status: string; available_quantity: number }>> {
+  const mapa = new Map<string, { status: string; available_quantity: number }>();
+  const porConta = new Map<string, Candidato[]>();
+  for (const c of candidatos) {
+    if (!c.accessToken) continue;
+    const atual = porConta.get(c.accountId) ?? [];
+    atual.push(c);
+    porConta.set(c.accountId, atual);
+  }
+
+  for (const [, lista] of porConta) {
+    try {
+      const snap = await MLApiService.getItemsStockSnapshot(
+        lista[0].accessToken!,
+        lista.map((c) => c.externalListingId),
+      );
+      for (const s of snap) {
+        mapa.set(s.id, {
+          status: s.status,
+          available_quantity: s.available_quantity,
+        });
+      }
+    } catch (err: any) {
+      const status = err?.response?.status ?? err?.status;
+      console.error(
+        "  ! multiget falhou para a conta " +
+          lista[0].accountName +
+          (status ? " (HTTP " + status + ")" : "") +
+          " — " +
+          lista.length +
+          " anuncio(s) ficam sem leitura e serao PULADOS",
+      );
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return mapa;
+}
+
 /** A verdade e a do canal: o SyncLog acha o candidato, a API do ML decide. */
-async function decidir(c: Candidato): Promise<Decisao> {
+function decidir(
+  c: Candidato,
+  snapshot: Map<string, { status: string; available_quantity: number }>,
+): Decisao {
   if (c.temDevolucaoPendente) {
     return { acao: "PULAR", motivo: "devolucao pendente — a peca pode voltar ao patio" };
   }
@@ -211,21 +263,17 @@ async function decidir(c: Candidato): Promise<Decisao> {
     return { acao: "PULAR", motivo: "conta sem accessToken" };
   }
 
-  let item: any;
-  try {
-    item = await MLApiService.getItemDetails(c.accessToken, c.externalListingId);
-  } catch (err: any) {
-    const status = err?.response?.status ?? err?.status;
+  const item = snapshot.get(c.externalListingId);
+  if (!item) {
     return {
       acao: "PULAR",
       motivo:
-        "falha ao consultar o ML" +
-        (status ? " (HTTP " + status + (status === 401 ? " — token expirado; NAO renovamos aqui" : "") + ")" : ""),
+        "sem leitura do ML (multiget falhou, token expirado ou item inacessivel) — NAO escrevemos as cegas",
     };
   }
 
-  const qtd = Number(item?.available_quantity ?? 0);
-  const st = String(item?.status ?? "");
+  const qtd = Number(item.available_quantity ?? 0);
+  const st = String(item.status ?? "");
 
   if (st === "closed") {
     return { acao: "PULAR", motivo: "ja esta closed no ML", qtdRemotaAgora: qtd, statusRemoto: st };
@@ -289,6 +337,11 @@ async function main() {
     if (porReserva.length > 40) console.log("    ... e mais " + (porReserva.length - 40));
   }
 
+  console.log("");
+  console.log("  lendo o estado atual no ML (multiget por conta)...");
+  const snapshot = await carregarSnapshots(candidatos);
+  console.log("  lidos: " + snapshot.size + " / " + candidatos.length);
+
   const decisoes: Array<{
     c: Candidato;
     d: Decisao;
@@ -297,10 +350,7 @@ async function main() {
     recusadoPeloML?: boolean;
   }> = [];
   for (const c of candidatos) {
-    const d = await decidir(c);
-    decisoes.push({ c, d });
-    // Respiro entre chamadas: 566 GETs em rajada nao ajudam ninguem.
-    await new Promise((r) => setTimeout(r, 120));
+    decisoes.push({ c, d: decidir(c, snapshot) });
   }
 
   const aZerar = decisoes.filter((x) => x.d.acao === "ZERAR");

@@ -18,7 +18,7 @@ vi.mock("@/app/lib/prisma", () => {
 });
 
 vi.mock("@/app/marketplaces/services/ml-api.service", () => ({
-  MLApiService: { getItemDetails: vi.fn() },
+  MLApiService: { getItemDetails: vi.fn(), getItemsStockSnapshot: vi.fn() },
 }));
 
 vi.mock("@/app/services/system-log.service", () => ({
@@ -319,24 +319,28 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
       await StockReconciliationService.watchAvailabilityOnce();
 
       expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
-      expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
+      expect(MLApiService.getItemsStockSnapshot).not.toHaveBeenCalled();
     });
   });
 
   it("anúncio que segue fora do ar não gera alerta nem job", async () => {
     await comFlag("1", async () => {
       (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
-      (MLApiService.getItemDetails as any).mockResolvedValue({
-        status: "under_review",
-        available_quantity: 1,
-      });
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        {
+          id: "MLB4862135565",
+          status: "under_review",
+          available_quantity: 1,
+        },
+      ]);
 
       await StockReconciliationService.watchAvailabilityOnce();
 
-      expect(MLApiService.getItemDetails).toHaveBeenCalledWith(
-        "tok-ml",
+      // Multiget, nunca item a item: uma chamada por CONTA, com os ids juntos.
+      expect(MLApiService.getItemsStockSnapshot).toHaveBeenCalledWith("tok-ml", [
         "MLB4862135565",
-      );
+      ]);
+      expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
       expect(SystemLogService.logError).not.toHaveBeenCalled();
       expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
     });
@@ -345,10 +349,9 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
   it("anúncio ATIVO vendendo peça inexistente: alerta e enfileira a pausa", async () => {
     await comFlag("1", async () => {
       (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
-      (MLApiService.getItemDetails as any).mockResolvedValue({
-        status: "active",
-        available_quantity: 1,
-      });
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        { id: "MLB4862135565", status: "active", available_quantity: 1 },
+      ]);
 
       await StockReconciliationService.watchAvailabilityOnce();
 
@@ -369,10 +372,9 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
   it("ativo com quantidade 0 não é risco: nada a fazer", async () => {
     await comFlag("1", async () => {
       (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
-      (MLApiService.getItemDetails as any).mockResolvedValue({
-        status: "active",
-        available_quantity: 0,
-      });
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        { id: "MLB4862135565", status: "active", available_quantity: 0 },
+      ]);
 
       await StockReconciliationService.watchAvailabilityOnce();
 
@@ -384,12 +386,23 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
   it("falha na API do ML não derruba o restante do lote", async () => {
     await comFlag("1", async () => {
       (prisma as any).$queryRaw.mockResolvedValue([
-        candidato({ listingId: "lst-1", externalListingId: "MLB-1" }),
-        candidato({ listingId: "lst-2", externalListingId: "MLB-2" }),
+        candidato({
+          listingId: "lst-1",
+          externalListingId: "MLB-1",
+          accountId: "acc-a",
+        }),
+        candidato({
+          listingId: "lst-2",
+          externalListingId: "MLB-2",
+          accountId: "acc-b",
+        }),
       ]);
-      (MLApiService.getItemDetails as any)
+      // Contas diferentes: a primeira falha, a segunda tem de seguir.
+      (MLApiService.getItemsStockSnapshot as any)
         .mockRejectedValueOnce(new Error("401 token expirado"))
-        .mockResolvedValueOnce({ status: "active", available_quantity: 1 });
+        .mockResolvedValueOnce([
+          { id: "MLB-2", status: "active", available_quantity: 1 },
+        ]);
 
       await StockReconciliationService.watchAvailabilityOnce();
 
@@ -408,7 +421,7 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
 
       await StockReconciliationService.watchAvailabilityOnce();
 
-      expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
+      expect(MLApiService.getItemsStockSnapshot).not.toHaveBeenCalled();
       expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
     });
   });
@@ -416,10 +429,9 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
   it("alerta repetido é deduplicado em 24h", async () => {
     await comFlag("1", async () => {
       (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
-      (MLApiService.getItemDetails as any).mockResolvedValue({
-        status: "active",
-        available_quantity: 1,
-      });
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        { id: "MLB4862135565", status: "active", available_quantity: 1 },
+      ]);
       (prisma as any).systemLog.findFirst.mockResolvedValue({ id: "ja-existe" });
 
       await StockReconciliationService.watchAvailabilityOnce();

@@ -791,6 +791,56 @@ export class MLApiService {
   }
 
   /**
+   * EGRESS/PERF-lean: irmão de `getItemsStatuses`, com `available_quantity`
+   * junto. Multiget em blocos de 20 com `attributes=id,status,available_quantity`
+   * (~150 bytes/item contra ~12 KB do JSON completo).
+   *
+   * Uso: a vigília de disponibilidade (StockReconciliationService), que precisa
+   * saber de centenas de anúncios por hora se voltaram ao ar com quantidade.
+   * Fazer isso com `getItemDetails` um a um custaria 566 chamadas e ~6,8 MB por
+   * passada, contra 29 chamadas e ~85 KB por aqui — e violaria duas das regras
+   * de egress da casa ("pré-carga em lote no lugar de consultas repetidas dentro
+   * de laços" e "nenhuma leitura sem seleção explícita de campos em caminho
+   * recorrente").
+   *
+   * Items deletados/inacessíveis (code≠200) são omitidos, igual ao irmão.
+   */
+  static async getItemsStockSnapshot(
+    accessToken: string,
+    itemIds: string[],
+  ): Promise<
+    Array<{ id: string; status: string; available_quantity: number }>
+  > {
+    if (itemIds.length === 0) return [];
+
+    const results: Array<{
+      id: string;
+      status: string;
+      available_quantity: number;
+    }> = [];
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const chunk = itemIds.slice(i, i + 20);
+      const url = `${ML_CONSTANTS.API_URL}/items?ids=${chunk.join(",")}&attributes=id,status,available_quantity`;
+      const response = await axios.get<MLMultigetResponse[]>(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 10000,
+      });
+      for (const item of response.data) {
+        if (item.code === 200 && item.body?.id && item.body?.status) {
+          results.push({
+            id: item.body.id,
+            status: item.body.status,
+            available_quantity: Number(
+              (item.body as any)?.available_quantity ?? 0,
+            ),
+          });
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
    * ObtÃ©m detalhes de um Ãºnico item
    * @param accessToken Token de acesso OAuth
    * @param itemId ID do item

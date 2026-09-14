@@ -313,46 +313,74 @@ export class StockReconciliationService {
     this.watchCursor += candidatos.length;
     if (candidatos.length < AVAILABILITY_WATCH_BATCH) this.watchCursor = 0;
 
-    let reabertos = 0;
+    // MULTIGET POR CONTA, nunca item a item. Uma passada com `getItemDetails`
+    // custaria uma chamada e ~12 KB por anúncio — 566 chamadas e ~6,8 MB com o
+    // volume de 14/09/2026. Em blocos de 20 com seleção explícita de campos são
+    // ~29 chamadas e ~85 KB. As regras de egress da casa exigem as duas coisas:
+    // pré-carga em lote no lugar de consulta dentro de laço, e nada de ler a
+    // linha inteira em caminho recorrente.
+    const porConta = new Map<string, typeof candidatos>();
     for (const c of candidatos) {
       if (!c.accessToken) continue;
+      const atual = porConta.get(c.accountId) ?? [];
+      atual.push(c);
+      porConta.set(c.accountId, atual);
+    }
 
-      let item: { status?: string; available_quantity?: number } | null = null;
+    let verificados = 0;
+    let reabertos = 0;
+
+    for (const [, lista] of porConta) {
+      const token = lista[0].accessToken!;
+      let snapshot: Array<{
+        id: string;
+        status: string;
+        available_quantity: number;
+      }> = [];
       try {
-        item = await MLApiService.getItemDetails(
-          c.accessToken,
-          c.externalListingId,
+        snapshot = await MLApiService.getItemsStockSnapshot(
+          token,
+          lista.map((c) => c.externalListingId),
         );
       } catch {
-        // Token expirado, item removido, instabilidade: a vigília nunca
-        // derruba o loop nem renova token por conta própria — refresh a partir
-        // do processo errado marca a conta como ERROR e o motor para de
-        // processar o lojista inteiro.
+        // Token expirado, conta instável: a vigília nunca derruba o laço nem
+        // renova token por conta própria — refresh a partir do processo errado
+        // marca a conta como ERROR e para o lojista inteiro. Próxima conta.
         continue;
       }
 
-      const qtd = Number(item?.available_quantity ?? 0);
-      if (item?.status !== "active" || qtd <= 0) continue;
+      const porItem = new Map(snapshot.map((s) => [s.id, s]));
+      verificados += snapshot.length;
 
-      // ACHOU: anúncio no ar vendendo peça que não existe. É o estado que
-      // precede a venda dupla.
-      reabertos++;
-      await this.alertBackOnlineWithoutStock(c, qtd);
-      await this.enqueue({
-        productId: c.productId,
-        stock: Math.max(0, c.disponivel),
-        listingId: c.listingId,
-        marketplaceAccountId: c.accountId,
-        platform: "MERCADO_LIVRE",
-      });
+      for (const c of lista) {
+        const item = porItem.get(c.externalListingId);
+        if (!item) continue; // item removido/inacessível: o multiget omite
+        if (item.status !== "active" || item.available_quantity <= 0) continue;
 
+        // ACHOU: anúncio no ar vendendo peça que não existe. É o estado que
+        // precede a venda dupla.
+        reabertos++;
+        await this.alertBackOnlineWithoutStock(c, item.available_quantity);
+        await this.enqueue({
+          productId: c.productId,
+          stock: Math.max(0, c.disponivel),
+          listingId: c.listingId,
+          marketplaceAccountId: c.accountId,
+          platform: "MERCADO_LIVRE",
+        });
+      }
+
+      // Respiro entre CONTAS (não entre itens): a vigília nunca deve competir
+      // com o sync do usuário.
       await new Promise((r) => setTimeout(r, AVAILABILITY_WATCH_DELAY_MS));
     }
 
     console.log(
       JSON.stringify({
         event: "availability_watch.tick",
-        verificados: candidatos.length,
+        candidatos: candidatos.length,
+        verificados,
+        contas: porConta.size,
         reabertosSemEstoque: reabertos,
         proximoOffset: this.watchCursor,
       }),
