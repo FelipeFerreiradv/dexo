@@ -220,17 +220,20 @@ export async function auditOversellCrossCanal(
   );
 
   // ─── BLOCO 3 — pedidos sem baixa ───────────────────────────────────────────
-  // O filtro `items.some.productId` NAO e detalhe: sem ele a contagem sobe de
-  // 15 para 666 em producao (14/09/2026), porque 651 sao pedidos que nunca
-  // vincularam a um produto do catalogo — nesses nao ha o que baixar, e a
-  // quarentena (OrderIngestionIssue) ja e o mecanismo que cuida deles. Contar
-  // os dois juntos daria um numero alarmante e falso.
+  // O filtro `items.some` NAO e detalhe: sem ele a contagem sobe de 15 para
+  // 666 em producao (14/09/2026), porque 651 sao pedidos SEM NENHUM OrderItem
+  // — venda que nunca vinculou a um produto do catalogo e virou `Order` seca
+  // (commit 7a0e282). Nesses nao ha o que baixar, e a quarentena
+  // (OrderIngestionIssue) ja e o mecanismo que cuida deles. Contar os dois
+  // juntos daria um numero alarmante e falso.
+  //
+  // `some: {}` e nao `none: {}`: a forma negada vira Seq Scan nesta base.
   const semBaixa = await prisma.order.count({
     where: {
       stockDeductedAt: null,
       status: { not: "CANCELLED" },
       createdAt: { gte: new Date(Date.now() - 90 * 864e5) },
-      items: { some: { productId: { not: null } } },
+      items: { some: {} },
       ...(tenant ? { marketplaceAccount: { userId: tenant } } : {}),
     },
   });
