@@ -5,6 +5,8 @@ vi.mock("@/app/lib/prisma", () => {
   const mock: any = {
     stockLog: { findMany: vi.fn() },
     productListing: { findMany: vi.fn() },
+    product: { findMany: vi.fn() },
+    systemLog: { findFirst: vi.fn().mockResolvedValue(null) },
     stockSyncJob,
     $queryRaw: vi.fn().mockResolvedValue([]),
     // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
@@ -15,7 +17,17 @@ vi.mock("@/app/lib/prisma", () => {
   return { default: mock };
 });
 
+vi.mock("@/app/marketplaces/services/ml-api.service", () => ({
+  MLApiService: { getItemDetails: vi.fn(), getItemsStockSnapshot: vi.fn() },
+}));
+
+vi.mock("@/app/services/system-log.service", () => ({
+  SystemLogService: { logError: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import prisma from "@/app/lib/prisma";
+import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
+import { SystemLogService } from "@/app/services/system-log.service";
 import { StockReconciliationService } from "@/app/marketplaces/services/stock-reconciliation.service";
 
 const makeListingRow = (overrides: Partial<any> = {}) => ({
@@ -46,6 +58,81 @@ describe("StockReconciliationService.runOnce", () => {
 
     expect((prisma as any).productListing.findMany).not.toHaveBeenCalled();
     expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+  });
+
+  // A reserva não gera StockLog (o `stock` não muda), então peça comprometida
+  // em venda aberta é invisível para esta varredura. A flag inclui esses
+  // produtos; sem ela, o comportamento é o de sempre.
+  describe("peças comprometidas em venda aberta (RESERVED_STOCK_RECONCILE_ENABLED)", () => {
+    const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+      const anterior = process.env.RESERVED_STOCK_RECONCILE_ENABLED;
+      if (valor === undefined) {
+        delete process.env.RESERVED_STOCK_RECONCILE_ENABLED;
+      } else {
+        process.env.RESERVED_STOCK_RECONCILE_ENABLED = valor;
+      }
+      try {
+        await fn();
+      } finally {
+        if (anterior === undefined) {
+          delete process.env.RESERVED_STOCK_RECONCILE_ENABLED;
+        } else {
+          process.env.RESERVED_STOCK_RECONCILE_ENABLED = anterior;
+        }
+      }
+    };
+
+    it("sem a flag, não consulta produtos reservados nem muda a varredura", async () => {
+      await comFlag(undefined, async () => {
+        (prisma as any).stockLog.findMany.mockResolvedValue([]);
+
+        await StockReconciliationService.runOnce();
+
+        expect((prisma as any).product.findMany).not.toHaveBeenCalled();
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      });
+    });
+
+    it("com a flag, enfileira a peça reservada mesmo sem StockLog recente", async () => {
+      await comFlag("1", async () => {
+        (prisma as any).stockLog.findMany.mockResolvedValue([]);
+        (prisma as any).product.findMany.mockResolvedValue([
+          { id: "prod-reservado" },
+        ]);
+        (prisma as any).productListing.findMany.mockResolvedValue([
+          makeListingRow({
+            id: "lst-reservado",
+            productId: "prod-reservado",
+            // 1 em estoque, 1 comprometida ⇒ disponível 0.
+            product: { stock: 1, reservedStock: 1 },
+          }),
+        ]);
+
+        await StockReconciliationService.runOnce();
+
+        expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+        const arg = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+        // O alvo é o DISPONÍVEL, não o estoque bruto.
+        expect(arg.create.targetStock).toBe(0);
+        expect(arg.create.listingId).toBe("lst-reservado");
+      });
+    });
+
+    it("com a flag, não duplica produto que já veio pelo StockLog", async () => {
+      await comFlag("1", async () => {
+        (prisma as any).stockLog.findMany.mockResolvedValue([
+          { productId: "prod-1" },
+        ]);
+        (prisma as any).product.findMany.mockResolvedValue([{ id: "prod-1" }]);
+        (prisma as any).productListing.findMany.mockResolvedValue([]);
+
+        await StockReconciliationService.runOnce();
+
+        const where = (prisma as any).productListing.findMany.mock.calls[0][0]
+          .where;
+        expect(where.productId.in).toEqual(["prod-1"]);
+      });
+    });
   });
 
   it("enfileira um upsert por listing ativo dos produtos com drift", async () => {
@@ -178,5 +265,180 @@ describe("StockReconciliationService.runOnce", () => {
     expect(since).toBeGreaterThanOrEqual(before - 60 * 60 * 1000 - 5);
     expect(since).toBeLessThanOrEqual(after - 60 * 60 * 1000 + 5);
     expect(call.distinct).toEqual(["productId"]);
+  });
+});
+
+/**
+ * VIGÍLIA DE DISPONIBILIDADE
+ *
+ * O caso que a motivou: SKU 33996, peça de 1 unidade, vendida na Shopee em
+ * 01/08/2026 e DE NOVO no ML em 10/09. Entre 02/08 02:50 e 10/09 15:28 não há
+ * UM registro de sync dos dois anúncios do ML — o sync roda por StockSyncJob,
+ * que nasce de StockLog, e estoque que já foi a zero nunca mais muda.
+ *
+ * E zerar a quantidade não resolve: o ML RECUSA alterar `available_quantity`
+ * em anúncio fora do ar (4.330 recusas medidas em 60 dias, 0 sucessos). A
+ * única defesa é ver a VOLTA para `active` e pausar.
+ */
+describe("StockReconciliationService.watchAvailabilityOnce", () => {
+  const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+    const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
+    if (valor === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+    else process.env.AVAILABILITY_WATCH_ENABLED = valor;
+    try {
+      await fn();
+    } finally {
+      if (anterior === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+      else process.env.AVAILABILITY_WATCH_ENABLED = anterior;
+    }
+  };
+
+  const candidato = (over: Partial<any> = {}) => ({
+    listingId: "lst-ml",
+    externalListingId: "MLB4862135565",
+    productId: "prod-33996",
+    productName: "Circuito lanterna traseira direita Fiat Strada 2015",
+    sku: "33996",
+    disponivel: 0,
+    accountId: "acc-ml",
+    accountName: "DESMONTE-JOTABE",
+    accessToken: "tok-ml",
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    StockReconciliationService.stop(); // zera o cursor entre os testes
+    (prisma as any).$transaction.mockImplementation(async (cb: any) => cb(prisma));
+    (prisma as any).systemLog.findFirst.mockResolvedValue(null);
+    (prisma as any).stockSyncJob.upsert.mockResolvedValue({});
+  });
+
+  it("sem a flag não consulta nada — nem banco, nem ML", async () => {
+    await comFlag(undefined, async () => {
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
+      expect(MLApiService.getItemsStockSnapshot).not.toHaveBeenCalled();
+    });
+  });
+
+  it("anúncio que segue fora do ar não gera alerta nem job", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        {
+          id: "MLB4862135565",
+          status: "under_review",
+          available_quantity: 1,
+        },
+      ]);
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      // Multiget, nunca item a item: uma chamada por CONTA, com os ids juntos.
+      expect(MLApiService.getItemsStockSnapshot).toHaveBeenCalledWith("tok-ml", [
+        "MLB4862135565",
+      ]);
+      expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
+      expect(SystemLogService.logError).not.toHaveBeenCalled();
+      expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("anúncio ATIVO vendendo peça inexistente: alerta e enfileira a pausa", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        { id: "MLB4862135565", status: "active", available_quantity: 1 },
+      ]);
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(SystemLogService.logError).toHaveBeenCalledWith(
+        "ML_BACK_ONLINE_WITHOUT_STOCK",
+        expect.stringContaining("MLB4862135565"),
+        expect.objectContaining({ resourceId: "lst-ml" }),
+      );
+      expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+      const arg = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+      expect(arg.create.targetStock).toBe(0);
+      expect(arg.create.listingId).toBe("lst-ml");
+      // Mesmo caminho do reconciliador, advisory lock incluído.
+      expect((prisma as any).$executeRaw).toHaveBeenCalled();
+    });
+  });
+
+  it("ativo com quantidade 0 não é risco: nada a fazer", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        { id: "MLB4862135565", status: "active", available_quantity: 0 },
+      ]);
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(SystemLogService.logError).not.toHaveBeenCalled();
+      expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("falha na API do ML não derruba o restante do lote", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([
+        candidato({
+          listingId: "lst-1",
+          externalListingId: "MLB-1",
+          accountId: "acc-a",
+        }),
+        candidato({
+          listingId: "lst-2",
+          externalListingId: "MLB-2",
+          accountId: "acc-b",
+        }),
+      ]);
+      // Contas diferentes: a primeira falha, a segunda tem de seguir.
+      (MLApiService.getItemsStockSnapshot as any)
+        .mockRejectedValueOnce(new Error("401 token expirado"))
+        .mockResolvedValueOnce([
+          { id: "MLB-2", status: "active", available_quantity: 1 },
+        ]);
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      // O segundo foi processado apesar da falha do primeiro.
+      expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+      const arg = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+      expect(arg.create.listingId).toBe("lst-2");
+    });
+  });
+
+  it("conta sem token é pulada sem chamar o ML", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([
+        candidato({ accessToken: null }),
+      ]);
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(MLApiService.getItemsStockSnapshot).not.toHaveBeenCalled();
+      expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("alerta repetido é deduplicado em 24h", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+        { id: "MLB4862135565", status: "active", available_quantity: 1 },
+      ]);
+      (prisma as any).systemLog.findFirst.mockResolvedValue({ id: "ja-existe" });
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(SystemLogService.logError).not.toHaveBeenCalled();
+      // O alerta é deduplicado, mas a pausa continua sendo enfileirada.
+      expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+    });
   });
 });

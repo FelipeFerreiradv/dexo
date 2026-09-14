@@ -55,6 +55,36 @@ import { isPlatformDisabled } from "@/app/lib/integration-flags";
 import fs from "node:fs";
 import path from "node:path";
 
+/**
+ * O Mercado Livre recusa alterar `available_quantity` em boa parte dos anúncios
+ * que estão fora do ar. Medido em produção pelo SyncLog (60 dias):
+ *
+ *   inactive      2.922 recusas em 241 anúncios
+ *   under_review  1.408 recusas em 557 anúncios
+ *   paused           97 recusas em   8 anúncios
+ *   active           20 recusas em   3 anúncios (itens com lances)
+ *
+ * Em duas formas: `field_not_updatable: available_quantity is not modifiable`
+ * e `item.available_quantity.not_modifiable`.
+ *
+ * Distinguir essa recusa de um erro de verdade importa: ela é um NÃO definitivo
+ * do marketplace, e insistir só encheria a fila de retry. Erro de rede, 401 ou
+ * 500 continuam sendo falha e devem ser reprocessados.
+ */
+function isMLQuantityNotModifiable(err: unknown): boolean {
+  const msg =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return (
+    m.includes("available_quantity") &&
+    (m.includes("not_modifiable") ||
+      m.includes("not modifiable") ||
+      m.includes("not_updatable") ||
+      m.includes("not updatable"))
+  );
+}
+
 // Tipos para resultados de sincronizaÃ§Ã£o
 export interface ImportResult {
   totalItems: number;
@@ -3732,6 +3762,100 @@ export class SyncUseCase {
       }
 
       if (product.stock <= 0) {
+        // OVERSELL — o buraco que deixou uma peça ser vendida duas vezes.
+        //
+        // O Mercado Livre PRESERVA `available_quantity` enquanto o anúncio está
+        // fora do ar (paused/inactive/under_review). Até 10/09/2026 os três
+        // ramos abaixo apenas registravam um WARNING e retornavam SUCESSO — o
+        // `StockSyncJob` era apagado como se a propagação tivesse acontecido e
+        // a quantidade remota ficava intacta. Quando o anúncio voltava ao ar
+        // (fim da revisão, reativação manual, ação do ML), voltava vendável com
+        // a quantidade antiga.
+        //
+        // Caso real, tenant cmn5yc4rn0000vsasmwv9m8nc, SKU 33996 (1 unidade):
+        // venda na Shopee em 01/08 23:02 BRT baixou o estoque para 0 e as três
+        // Shopee foram zeradas em segundos; os dois anúncios do ML estavam
+        // `under_review` e foram pulados com `remoteAvailableQuantity=1`. O
+        // mesmo WARNING se repetiu a cada 15 min por 39 dias. Em 10/09 o
+        // MLB4862117235 vendeu a peça que não existia mais.
+        //
+        // Zerar a quantidade é o que fecha o buraco: um anúncio fora do ar com
+        // quantidade 0 não volta vendável. `closed` fica de fora de propósito —
+        // é terminal, o ML recusa a escrita, e o anúncio não retorna sozinho.
+        //
+        // Kill-switch: ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED=1 devolve o
+        // comportamento anterior byte a byte (a variável fica false e todos os
+        // ramos abaixo seguem exatamente como eram).
+        const deveZerarQuantidadeRemota =
+          process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED !== "1" &&
+          previousStock > 0 &&
+          (currentStatus === "paused" ||
+            currentStatus === "inactive" ||
+            currentStatus === "under_review");
+
+        if (deveZerarQuantidadeRemota) {
+          try {
+            await MLApiService.updateItemStock(
+              account.accessToken,
+              listing.externalListingId,
+              0,
+            );
+
+            await this.logSync(
+              account.id,
+              SyncType.STOCK_UPDATE,
+              SyncStatus.SUCCESS,
+              `Anúncio ${listing.externalListingId} está ${currentStatus} no Mercado Livre e mantinha quantidade remota=${previousStock} com estoque local 0. Quantidade zerada para impedir venda ao reativar.`,
+              {
+                productId: product.id,
+                externalListingId: listing.externalListingId,
+                previousStock,
+                newStock: 0,
+                desiredStock: product.stock,
+                remoteStatus: currentStatus,
+                remoteAvailableQuantity: previousStock,
+                reason: "ml_zero_remote_qty_on_empty",
+              },
+            );
+
+            return {
+              success: true,
+              productId: product.id,
+              externalListingId: listing.externalListingId,
+              previousStock,
+              newStock: 0,
+            };
+          } catch (err) {
+            // O ML RECUSA alterar `available_quantity` em boa parte dos itens
+            // fora do ar, e isso está medido em producao (SyncLog, 60 dias):
+            //   inactive      2.922 recusas em   241 anuncios
+            //   under_review  1.408 recusas em   557 anuncios
+            //   paused           97 recusas em     8 anuncios
+            // com `field_not_updatable: available_quantity is not modifiable`
+            // ou `item.available_quantity.not_modifiable`.
+            //
+            // Tratar isso como falha seria TROCAR um problema por outro: 800+
+            // anuncios entrariam em retry a cada ciclo, inflando a fila e o log
+            // de erro sem nunca conseguir gravar. Entao degradamos para o
+            // comportamento anterior — os ramos logo abaixo — registrando o
+            // motivo REAL da recusa, que e o dado que faltava.
+            //
+            // Erro de qualquer outra natureza (rede, 401, 500) continua subindo
+            // para o catch do metodo, virando FAILURE e retry, como sempre foi.
+            if (!isMLQuantityNotModifiable(err)) throw err;
+
+            console.warn(
+              JSON.stringify({
+                event: "ml.zero_remote_qty.recusado",
+                externalListingId: listing.externalListingId,
+                remoteStatus: currentStatus,
+                remoteAvailableQuantity: previousStock,
+                productId: product.id,
+              }),
+            );
+          }
+        }
+
         if (currentStatus === "paused" && previousStock > 0) {
           await this.alertMLReactivationRisk(
             account,
@@ -3765,6 +3889,14 @@ export class SyncUseCase {
         }
 
         if (currentStatus === "active") {
+          // DELIBERADAMENTE INALTERADO: aqui a pausa e suficiente e e o
+          // mecanismo que comprovadamente funciona (29.087 STOCK_UPDATE de
+          // sucesso no ML). Zerar a quantidade ANTES da pausa foi considerado e
+          // descartado: acrescentaria uma chamada de API em TODA baixa de
+          // estoque da plataforma para um ganho marginal (o anuncio sai do ar
+          // de qualquer forma), e tanto este caminho quanto
+          // tests/stock-deduction-olx-facebook-e2e.spec.ts registram que o ML
+          // rejeita quantidade 0 por API.
           await MLApiService.updateItem(
             account.accessToken,
             listing.externalListingId,
