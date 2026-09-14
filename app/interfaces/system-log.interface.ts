@@ -58,6 +58,12 @@ export type LogAction =
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
   | "TOKEN_EXPIRED_REPEATED"
   | "ML_REACTIVATION_RISK"
+  // A vigília horária achou um anúncio que VOLTOU ao ar no Mercado Livre
+  // vendendo peça que não está disponível. É o estado que precede a venda
+  // dupla — e o ML não deixa zerar a quantidade de anúncio fora do ar
+  // (`available_quantity is not modifiable`), então ver a volta e pausar é a
+  // única defesa. Ver StockReconciliationService.watchAvailabilityOnce.
+  | "ML_BACK_ONLINE_WITHOUT_STOCK"
   // Listing que apontava para a conta errada e foi reapontado para a conta
   // correta do mesmo tenant. Já era emitido por
   // SystemLogService.logListingOwnershipRepaired, mas faltava no union — o

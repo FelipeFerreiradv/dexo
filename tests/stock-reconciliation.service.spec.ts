@@ -6,6 +6,7 @@ vi.mock("@/app/lib/prisma", () => {
     stockLog: { findMany: vi.fn() },
     productListing: { findMany: vi.fn() },
     product: { findMany: vi.fn() },
+    systemLog: { findFirst: vi.fn().mockResolvedValue(null) },
     stockSyncJob,
     $queryRaw: vi.fn().mockResolvedValue([]),
     // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
@@ -16,7 +17,17 @@ vi.mock("@/app/lib/prisma", () => {
   return { default: mock };
 });
 
+vi.mock("@/app/marketplaces/services/ml-api.service", () => ({
+  MLApiService: { getItemDetails: vi.fn() },
+}));
+
+vi.mock("@/app/services/system-log.service", () => ({
+  SystemLogService: { logError: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import prisma from "@/app/lib/prisma";
+import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
+import { SystemLogService } from "@/app/services/system-log.service";
 import { StockReconciliationService } from "@/app/marketplaces/services/stock-reconciliation.service";
 
 const makeListingRow = (overrides: Partial<any> = {}) => ({
@@ -254,5 +265,168 @@ describe("StockReconciliationService.runOnce", () => {
     expect(since).toBeGreaterThanOrEqual(before - 60 * 60 * 1000 - 5);
     expect(since).toBeLessThanOrEqual(after - 60 * 60 * 1000 + 5);
     expect(call.distinct).toEqual(["productId"]);
+  });
+});
+
+/**
+ * VIGÍLIA DE DISPONIBILIDADE
+ *
+ * O caso que a motivou: SKU 33996, peça de 1 unidade, vendida na Shopee em
+ * 01/08/2026 e DE NOVO no ML em 10/09. Entre 02/08 02:50 e 10/09 15:28 não há
+ * UM registro de sync dos dois anúncios do ML — o sync roda por StockSyncJob,
+ * que nasce de StockLog, e estoque que já foi a zero nunca mais muda.
+ *
+ * E zerar a quantidade não resolve: o ML RECUSA alterar `available_quantity`
+ * em anúncio fora do ar (4.330 recusas medidas em 60 dias, 0 sucessos). A
+ * única defesa é ver a VOLTA para `active` e pausar.
+ */
+describe("StockReconciliationService.watchAvailabilityOnce", () => {
+  const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+    const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
+    if (valor === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+    else process.env.AVAILABILITY_WATCH_ENABLED = valor;
+    try {
+      await fn();
+    } finally {
+      if (anterior === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+      else process.env.AVAILABILITY_WATCH_ENABLED = anterior;
+    }
+  };
+
+  const candidato = (over: Partial<any> = {}) => ({
+    listingId: "lst-ml",
+    externalListingId: "MLB4862135565",
+    productId: "prod-33996",
+    productName: "Circuito lanterna traseira direita Fiat Strada 2015",
+    sku: "33996",
+    disponivel: 0,
+    accountId: "acc-ml",
+    accountName: "DESMONTE-JOTABE",
+    accessToken: "tok-ml",
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    StockReconciliationService.stop(); // zera o cursor entre os testes
+    (prisma as any).$transaction.mockImplementation(async (cb: any) => cb(prisma));
+    (prisma as any).systemLog.findFirst.mockResolvedValue(null);
+    (prisma as any).stockSyncJob.upsert.mockResolvedValue({});
+  });
+
+  it("sem a flag não consulta nada — nem banco, nem ML", async () => {
+    await comFlag(undefined, async () => {
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
+      expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
+    });
+  });
+
+  it("anúncio que segue fora do ar não gera alerta nem job", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemDetails as any).mockResolvedValue({
+        status: "under_review",
+        available_quantity: 1,
+      });
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(MLApiService.getItemDetails).toHaveBeenCalledWith(
+        "tok-ml",
+        "MLB4862135565",
+      );
+      expect(SystemLogService.logError).not.toHaveBeenCalled();
+      expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("anúncio ATIVO vendendo peça inexistente: alerta e enfileira a pausa", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemDetails as any).mockResolvedValue({
+        status: "active",
+        available_quantity: 1,
+      });
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(SystemLogService.logError).toHaveBeenCalledWith(
+        "ML_BACK_ONLINE_WITHOUT_STOCK",
+        expect.stringContaining("MLB4862135565"),
+        expect.objectContaining({ resourceId: "lst-ml" }),
+      );
+      expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+      const arg = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+      expect(arg.create.targetStock).toBe(0);
+      expect(arg.create.listingId).toBe("lst-ml");
+      // Mesmo caminho do reconciliador, advisory lock incluído.
+      expect((prisma as any).$executeRaw).toHaveBeenCalled();
+    });
+  });
+
+  it("ativo com quantidade 0 não é risco: nada a fazer", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemDetails as any).mockResolvedValue({
+        status: "active",
+        available_quantity: 0,
+      });
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(SystemLogService.logError).not.toHaveBeenCalled();
+      expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("falha na API do ML não derruba o restante do lote", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([
+        candidato({ listingId: "lst-1", externalListingId: "MLB-1" }),
+        candidato({ listingId: "lst-2", externalListingId: "MLB-2" }),
+      ]);
+      (MLApiService.getItemDetails as any)
+        .mockRejectedValueOnce(new Error("401 token expirado"))
+        .mockResolvedValueOnce({ status: "active", available_quantity: 1 });
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      // O segundo foi processado apesar da falha do primeiro.
+      expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+      const arg = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+      expect(arg.create.listingId).toBe("lst-2");
+    });
+  });
+
+  it("conta sem token é pulada sem chamar o ML", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([
+        candidato({ accessToken: null }),
+      ]);
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
+      expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("alerta repetido é deduplicado em 24h", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).$queryRaw.mockResolvedValue([candidato()]);
+      (MLApiService.getItemDetails as any).mockResolvedValue({
+        status: "active",
+        available_quantity: 1,
+      });
+      (prisma as any).systemLog.findFirst.mockResolvedValue({ id: "ja-existe" });
+
+      await StockReconciliationService.watchAvailabilityOnce();
+
+      expect(SystemLogService.logError).not.toHaveBeenCalled();
+      // O alerta é deduplicado, mas a pausa continua sendo enfileirada.
+      expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+    });
   });
 });
