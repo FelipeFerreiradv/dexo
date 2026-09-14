@@ -64,24 +64,44 @@ import path from "node:path";
  *   paused           97 recusas em   8 anúncios
  *   active           20 recusas em   3 anúncios (itens com lances)
  *
- * Em duas formas: `field_not_updatable: available_quantity is not modifiable`
- * e `item.available_quantity.not_modifiable`.
+ * São TRÊS formas distintas, e a terceira só apareceu ao aplicar de verdade —
+ * nenhuma leitura a revela, porque só o PUT a provoca:
  *
- * Distinguir essa recusa de um erro de verdade importa: ela é um NÃO definitivo
- * do marketplace, e insistir só encheria a fila de retry. Erro de rede, 401 ou
- * 500 continuam sendo falha e devem ser reprocessados.
+ *   1. `field_not_updatable: available_quantity is not modifiable`
+ *   2. `item.available_quantity.not_modifiable`
+ *   3. `item.stock.invalid: Stock of item should be more than 0`
+ *
+ * A terceira apareceu em 10 de 39 anúncios na primeira execução real
+ * (14/09/2026, tenant do caso original), todos `paused`. Não reconhecê-la
+ * custaria caro: o erro subiria como falha, o StockSyncJob entraria em retry e
+ * o STOCK_SYNC_FAILED — que existe para sinalizar problema real — viraria
+ * ruído em cima de um NÃO definitivo do marketplace.
+ *
+ * Distinguir a recusa de um erro de verdade é o ponto: erro de rede, 401 ou 500
+ * continuam sendo falha e devem ser reprocessados.
  */
 function isMLQuantityNotModifiable(err: unknown): boolean {
   const msg =
     err instanceof Error ? err.message : typeof err === "string" ? err : "";
   if (!msg) return false;
   const m = msg.toLowerCase();
-  return (
+
+  // Formas 1 e 2: o campo não é atualizável neste estado.
+  if (
     m.includes("available_quantity") &&
     (m.includes("not_modifiable") ||
       m.includes("not modifiable") ||
       m.includes("not_updatable") ||
       m.includes("not updatable"))
+  ) {
+    return true;
+  }
+
+  // Forma 3: o ML recusa o VALOR zero neste anúncio. Mesma natureza — um não
+  // definitivo para a única escrita que faríamos aqui.
+  return (
+    m.includes("item.stock.invalid") ||
+    m.includes("stock of item should be more than")
   );
 }
 

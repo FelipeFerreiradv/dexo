@@ -272,3 +272,52 @@ describe("Caso A — a mesma unidade vendida em dois canais", () => {
   // nao sobre a correcao. A cobertura da Shopee fica nos specs dedicados
   // (stock-deduction-*, order-usecase-shopee-multi).
 });
+
+/**
+ * A TERCEIRA forma de recusa do ML, descoberta so ao APLICAR de verdade:
+ * `item.stock.invalid: Stock of item should be more than 0`. Apareceu em 10 de
+ * 39 anuncios na primeira execucao real (14/09/2026), todos `paused`.
+ *
+ * Nenhuma leitura a revela — so o PUT a provoca. Nao reconhece-la faria o erro
+ * subir como falha, o StockSyncJob entrar em retry e o STOCK_SYNC_FAILED virar
+ * ruido em cima de um NAO definitivo do marketplace.
+ */
+describe("Recusa do ML: as tres formas", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.ML_ZERO_REMOTE_QTY_ON_EMPTY_DISABLED;
+    (prisma as any).syncLog.create.mockResolvedValue({});
+    (prisma as any).systemLog.findFirst.mockResolvedValue(null);
+  });
+
+  it.each([
+    [
+      "field_not_updatable",
+      "Erro ao atualizar item: Cannot update item MLB-X [status:inactive] (validation_error | field_not_updatable: available_quantity is not modifiable.)",
+    ],
+    [
+      "item.available_quantity.not_modifiable",
+      "Erro ao atualizar estoque: All the fields cannot be updated (item.available_quantity.not_modifiable)",
+    ],
+    [
+      "item.stock.invalid",
+      "Erro ao atualizar item: Validation error (validation_error | item.stock.invalid: Stock of item should be more than 0.)",
+    ],
+  ])("degrada sem virar falha na recusa por %s", async (_nome, mensagem) => {
+    (MLApiService.getItemDetails as any).mockResolvedValue({
+      id: "MLB-X",
+      status: "paused",
+      available_quantity: 1,
+    });
+    (MLApiService.updateItemStock as any).mockRejectedValue(new Error(mensagem));
+    const produto = produtoSku33996(0) as any;
+    produto.listings = [produto.listings[0]];
+    (prisma as any).product.findUnique.mockResolvedValue(produto);
+
+    const results = await SyncUseCase.syncProductStock("cmrb9wd4m001018gb7aj5yb68");
+
+    // Recusa NAO vira FAILURE: nada de retry eterno, nada de STOCK_SYNC_FAILED.
+    expect(results[0].success).toBe(true);
+    expect((results[0] as any).skipped).toBe(true);
+  });
+});
