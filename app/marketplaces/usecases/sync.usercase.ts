@@ -3735,16 +3735,44 @@ export class SyncUseCase {
 
     if (tokenExpirado && account.refreshToken) {
       try {
-        const renovado = await MLOAuthService.refreshAccessTokenForAccount(
-          account.id,
-          account.refreshToken,
-        );
-        await MarketplaceRepository.updateTokens(account.id, {
-          accessToken: renovado.accessToken,
-          refreshToken: renovado.refreshToken,
-          expiresAt: new Date(Date.now() + renovado.expiresIn * 1000),
+        // RELÊ a conta do banco ANTES de decidir renovar. O `account` daqui é
+        // um snapshot carregado junto com o listing; quando um produto tem
+        // DOIS anúncios na mesma conta, o segundo chega com o snapshot velho.
+        // Sem esta releitura, o segundo renovaria com o refresh_token que o
+        // primeiro acabou de ROTACIONAR — invalid_grant — e o serviço de OAuth
+        // marcaria a conta como ERROR, derrubando o lojista inteiro por causa
+        // de uma corrida interna nossa. Custa um SELECT, e só no caminho raro
+        // (token já expirado).
+        const fresco = await (prisma as any).marketplaceAccount.findUnique({
+          where: { id: account.id },
+          select: { accessToken: true, refreshToken: true, expiresAt: true },
         });
-        account.accessToken = renovado.accessToken;
+        const aindaExpirado = fresco?.expiresAt
+          ? new Date(fresco.expiresAt).getTime() <= Date.now()
+          : tokenExpirado;
+
+        if (!aindaExpirado && fresco?.accessToken) {
+          // Outro listing deste mesmo ciclo já renovou: usa o token novo.
+          account.accessToken = fresco.accessToken;
+          account.refreshToken = fresco.refreshToken;
+          account.expiresAt = fresco.expiresAt;
+        } else {
+          const renovado = await MLOAuthService.refreshAccessTokenForAccount(
+            account.id,
+            fresco?.refreshToken ?? account.refreshToken,
+          );
+          const novoExpiresAt = new Date(
+            Date.now() + renovado.expiresIn * 1000,
+          );
+          await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: renovado.accessToken,
+            refreshToken: renovado.refreshToken,
+            expiresAt: novoExpiresAt,
+          });
+          account.accessToken = renovado.accessToken;
+          account.refreshToken = renovado.refreshToken;
+          account.expiresAt = novoExpiresAt;
+        }
       } catch (err) {
         console.error(
           `[SyncUseCase] Falha ao renovar token do ML da conta ${account.id}:`,

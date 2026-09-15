@@ -722,6 +722,36 @@ describe("StockReconciliationService — vigília na Shopee", () => {
     );
   });
 
+  it("mais de 50 anúncios na mesma conta: a consulta é fatiada no teto da Shopee", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        // 60 anúncios da mesma conta — acima do teto de 50 ids por chamada
+        // que a Shopee impõe (o mesmo que getOrderDetails já respeita).
+        const candidatos = Array.from({ length: 60 }, (_, i) =>
+          candidatoShopee({
+            listingId: `lst-shp-${i}`,
+            externalListingId: String(58263970000 + i),
+          }),
+        );
+        (prisma as any).$queryRaw.mockResolvedValue(candidatos);
+        (ShopeeApiService.getItemsBaseInfo as any).mockResolvedValue([]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        // Uma chamada única com 60 ids falharia no canal e a conta inteira
+        // cairia como "não verificada" — o defeito de cobertura de novo.
+        const chamadas = (ShopeeApiService.getItemsBaseInfo as any).mock.calls;
+        expect(chamadas).toHaveLength(2);
+        expect(chamadas[0][2]).toHaveLength(50);
+        expect(chamadas[1][2]).toHaveLength(10);
+      },
+    );
+  });
+
   it("conta de Shopee sem shopId é pulada sem chamar a API", async () => {
     await comFlags(
       {

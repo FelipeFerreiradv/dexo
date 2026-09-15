@@ -435,13 +435,23 @@ export class StockReconciliationService {
             ),
           ].filter((n) => Number.isFinite(n) && n > 0);
 
-          const itens = await ShopeeApiService.getItemsBaseInfo(
-            token,
-            shopId,
-            itemIds,
-          );
+          // A Shopee limita item_id_list a 50 por chamada (o mesmo teto que
+          // este arquivo já respeita em getOrderDetails e documenta no
+          // unlist_item). `getItemsBaseInfo` não fatia sozinho — mandar a
+          // fatia inteira de uma conta grande numa chamada só falharia, e a
+          // conta inteira cairia no `catch` como "não verificada".
+          const itens: any[] = [];
+          for (let i = 0; i < itemIds.length; i += 50) {
+            itens.push(
+              ...(await ShopeeApiService.getItemsBaseInfo(
+                token,
+                shopId,
+                itemIds.slice(i, i + 50),
+              )),
+            );
+          }
 
-          for (const item of itens as any[]) {
+          for (const item of itens) {
             const id = String(item?.item_id ?? "");
             if (!id) continue;
             // Item com variação e listing sem modelo: não dá para decidir pelo

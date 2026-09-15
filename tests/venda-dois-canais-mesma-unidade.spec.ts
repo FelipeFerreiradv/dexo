@@ -48,8 +48,18 @@ vi.mock("@/app/marketplaces/services/shopee-api.service", () => ({
   },
 }));
 
+vi.mock("@/app/marketplaces/services/ml-oauth.service", () => ({
+  MLOAuthService: { refreshAccessTokenForAccount: vi.fn() },
+}));
+
+vi.mock("@/app/marketplaces/repositories/marketplace.repository", () => ({
+  MarketplaceRepository: { updateTokens: vi.fn().mockResolvedValue({}) },
+}));
+
 import prisma from "@/app/lib/prisma";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
+import { MLOAuthService } from "@/app/marketplaces/services/ml-oauth.service";
+import { MarketplaceRepository } from "@/app/marketplaces/repositories/marketplace.repository";
 
 import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 
@@ -319,5 +329,147 @@ describe("Recusa do ML: as tres formas", () => {
     // Recusa NAO vira FAILURE: nada de retry eterno, nada de STOCK_SYNC_FAILED.
     expect(results[0].success).toBe(true);
     expect((results[0] as any).skipped).toBe(true);
+  });
+});
+
+/**
+ * RENOVACAO DE TOKEN NO CAMINHO DO ML — e a corrida que ela nao pode criar.
+ *
+ * O `account` que chega em cada listing e um SNAPSHOT carregado junto com o
+ * produto. Quando a peca tem dois anuncios na MESMA conta e o token esta
+ * expirado, o primeiro renova — e o ML ROTACIONA o refresh_token no ato. Se o
+ * segundo renovar com o snapshot velho, o canal responde invalid_grant e o
+ * servico de OAuth marca a conta como ERROR: o lojista inteiro para por causa
+ * de uma corrida interna nossa. Ja aconteceu por outro caminho em 03/09/2026
+ * (conta WENHENRIQUE2012).
+ *
+ * O invariante: N listings da mesma conta com token expirado = UMA renovacao.
+ */
+describe("Renovacao de token do ML no sync de estoque", () => {
+  const contaExpirada = () => ({
+    id: "acc-ml-unica",
+    platform: Platform.MERCADO_LIVRE,
+    accessToken: "tok-velho",
+    refreshToken: "refresh-velho",
+    expiresAt: new Date(Date.now() - 60_000), // expirou ha 1 min
+    status: "ACTIVE",
+  });
+
+  const produtoComDoisAnunciosDaMesmaConta = (stock: number) => ({
+    id: "prod-refresh",
+    name: "Alternador Gol G5",
+    sku: "77001",
+    stock,
+    reservedStock: 0,
+    price: 250,
+    listings: [
+      {
+        id: "lst-a",
+        externalListingId: "MLB111",
+        status: "active",
+        marketplaceAccount: contaExpirada(),
+      },
+      {
+        id: "lst-b",
+        externalListingId: "MLB222",
+        status: "active",
+        marketplaceAccount: contaExpirada(),
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (prisma as any).syncLog.create.mockResolvedValue({});
+    (prisma as any).systemLog.findFirst.mockResolvedValue(null);
+    (MLApiService.updateItem as any).mockResolvedValue({});
+    (MLApiService.updateItemStock as any).mockResolvedValue({});
+    (MLApiService.getItemDetails as any).mockResolvedValue({
+      id: "MLB111",
+      status: "active",
+      available_quantity: 3,
+    });
+  });
+
+  it("dois anuncios da mesma conta expirada: UMA renovacao, nunca duas", async () => {
+    (prisma as any).product.findUnique.mockResolvedValue(
+      produtoComDoisAnunciosDaMesmaConta(2),
+    );
+
+    // O banco e a fonte da verdade entre os dois listings: na 1a consulta o
+    // token ainda esta expirado; na 2a, ja foi renovado pelo listing anterior.
+    (prisma as any).marketplaceAccount = {
+      findUnique: vi
+        .fn()
+        .mockResolvedValueOnce({
+          accessToken: "tok-velho",
+          refreshToken: "refresh-velho",
+          expiresAt: new Date(Date.now() - 60_000),
+        })
+        .mockResolvedValueOnce({
+          accessToken: "tok-novo",
+          refreshToken: "refresh-novo",
+          expiresAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+        }),
+    };
+    (MLOAuthService.refreshAccessTokenForAccount as any).mockResolvedValue({
+      accessToken: "tok-novo",
+      refreshToken: "refresh-novo",
+      expiresIn: 21600,
+    });
+
+    await SyncUseCase.syncProductStock("prod-refresh");
+
+    // O segundo listing releu o banco, viu o token novo e NAO renovou de novo
+    // — renovar com o refresh_token rotacionado marcaria a conta como ERROR.
+    expect(
+      MLOAuthService.refreshAccessTokenForAccount,
+    ).toHaveBeenCalledTimes(1);
+    expect(MarketplaceRepository.updateTokens).toHaveBeenCalledTimes(1);
+
+    // E as chamadas de estoque do segundo anuncio usaram o token NOVO.
+    const tokensUsados = (MLApiService.getItemDetails as any).mock.calls.map(
+      (c: any[]) => c[0],
+    );
+    expect(tokensUsados).toContain("tok-novo");
+    expect(tokensUsados).not.toContain("tok-velho");
+  });
+
+  it("token dentro da validade: nenhuma consulta extra, nenhuma renovacao", async () => {
+    const produto = produtoComDoisAnunciosDaMesmaConta(2);
+    for (const l of produto.listings) {
+      l.marketplaceAccount.expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    }
+    (prisma as any).product.findUnique.mockResolvedValue(produto);
+    (prisma as any).marketplaceAccount = { findUnique: vi.fn() };
+
+    await SyncUseCase.syncProductStock("prod-refresh");
+
+    // O caminho comum nao pode pagar nada: sem releitura e sem renovacao.
+    expect((prisma as any).marketplaceAccount.findUnique).not.toHaveBeenCalled();
+    expect(MLOAuthService.refreshAccessTokenForAccount).not.toHaveBeenCalled();
+  });
+
+  it("renovacao que falha nao derruba o sync: segue com o token que tinha", async () => {
+    (prisma as any).product.findUnique.mockResolvedValue(
+      produtoComDoisAnunciosDaMesmaConta(2),
+    );
+    (prisma as any).marketplaceAccount = {
+      findUnique: vi.fn().mockResolvedValue({
+        accessToken: "tok-velho",
+        refreshToken: "refresh-velho",
+        expiresAt: new Date(Date.now() - 60_000),
+      }),
+    };
+    (MLOAuthService.refreshAccessTokenForAccount as any).mockRejectedValue(
+      new Error("network blip"),
+    );
+
+    const results = await SyncUseCase.syncProductStock("prod-refresh");
+
+    // A falha da renovacao vira log, nao excecao: a chamada seguinte decide o
+    // destino (401 -> a fila ADIA o job; sucesso -> nada perdido).
+    expect(results.length).toBeGreaterThan(0);
+    expect(MLApiService.getItemDetails).toHaveBeenCalled();
   });
 });
