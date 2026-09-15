@@ -44,6 +44,18 @@ interface Props {
    * comportamento atual (lotada bloqueada), inalterado.
    */
   allowFull?: boolean;
+  /**
+   * Mostra o item "Nenhuma" (= desvincular). **Default `true`**, que é o
+   * comportamento de sempre — os modais de criar/editar produto dependem dele
+   * para conseguir LIMPAR a localização de uma peça.
+   *
+   * Passe `false` só onde desvincular não pode ser um efeito colateral de
+   * escolher destino: o diálogo "Mover Produtos" da tela de Localizações abria
+   * com "Sem localização" já selecionado, e confirmar sem mexer no seletor
+   * desvinculava as peças exibindo um toast verde de sucesso (chamado MK2,
+   * 09/2026). Lá desvincular é botão próprio, com confirmação.
+   */
+  allowNone?: boolean;
 }
 
 /**
@@ -60,6 +72,11 @@ export function LocationCombobox({
   disabled,
   id,
   allowFull,
+  // Default AQUI, na desestruturação, e não com `allowNone && ...` cru no JSX:
+  // sem o default, `undefined` seria falsy e a opção "Nenhuma" sumiria dos
+  // modais de produto — quem não conseguisse mais limpar a localização de uma
+  // peça descobriria em produção. Não há teste de componente neste repo.
+  allowNone = true,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -136,19 +153,21 @@ export function LocationCombobox({
               hierárquico longo agora rola para o lado em vez de truncar. */}
           <CommandList className="overflow-x-auto max-h-[min(300px,60vh)]">
             <CommandEmpty>Nenhuma localização encontrada.</CommandEmpty>
-            <CommandItem
-              value="__none__"
-              className="min-w-full w-max"
-              onSelect={() => pick(null, "")}
-            >
-              <Check
-                className={cn(
-                  "mr-2 h-4 w-4 shrink-0",
-                  !value ? "opacity-100" : "opacity-0",
-                )}
-              />
-              <span className="text-sm text-muted-foreground">Nenhuma</span>
-            </CommandItem>
+            {allowNone && (
+              <CommandItem
+                value="__none__"
+                className="min-w-full w-max"
+                onSelect={() => pick(null, "")}
+              >
+                <Check
+                  className={cn(
+                    "mr-2 h-4 w-4 shrink-0",
+                    !value ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                <span className="text-sm text-muted-foreground">Nenhuma</span>
+              </CommandItem>
+            )}
             {filtered.map((loc) => {
               // Lotada e NÃO é a já selecionada → bloqueada (isenção do editar).
               // `allowFull` libera o bloqueio para quem escolhe uma mãe.

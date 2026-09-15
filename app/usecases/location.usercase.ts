@@ -9,6 +9,10 @@ import {
 } from "../interfaces/location.interface";
 import prisma from "../lib/prisma";
 import { LocationRepositoryPrisma } from "../repositories/location.repository";
+import {
+  summarizeMoveOrigins,
+  type ResumoOrigens,
+} from "../localizacoes/lib/move-products-origins";
 
 export class CapacityExceededError extends Error {
   detail: CapacityExceededDetail;
@@ -368,7 +372,19 @@ export class LocationUseCase {
     userId: string,
     options?: { search?: string; page?: number; limit?: number },
   ) {
-    const existing = await this.locationRepository.findById(locationId, userId);
+    // Checagem de EXISTÊNCIA, e só. O `findById` do repositório traz `parent`,
+    // TODAS as filhas e `_count` de produtos e filhas — com o Prisma 6 isso são
+    // ~3 statements, incluindo COUNT sobre `Product` da caixa (que pode ter
+    // milhares de linhas) e de cada filha. Nada disso era usado: o resultado
+    // servia apenas ao `if (!existing)`.
+    //
+    // Passou a doer porque a gaveta agora pagina: o custo que antes acontecia
+    // 1× por abertura passaria a acontecer 1× por "Carregar mais".
+    // Semântica preservada byte a byte: mesmo 404, mesmo escopo de tenant.
+    const existing = await prisma.location.findFirst({
+      where: { id: locationId, userId },
+      select: { id: true },
+    });
     if (!existing) throw new Error("Localização não encontrada");
 
     return this.locationRepository.getProductsByLocationId(
@@ -378,11 +394,49 @@ export class LocationUseCase {
     );
   }
 
+  /**
+   * Fotografa a ORIGEM das peças ANTES do update que a sobrescreve.
+   *
+   * Best-effort de propósito: é dado de trilha de auditoria e NUNCA pode
+   * derrubar o movimento do operador. Quando falha, o chamador registra
+   * `origemIndisponivel: true` — o buraco fica auditável em vez de silencioso.
+   *
+   * `groupBy` e não `findMany`: com a paginação da gaveta corrigida a seleção
+   * pode ter milhares de ids, e o resultado aqui é do tamanho do número de
+   * origens distintas, não do número de peças. Agrupar por `locationId` E pelo
+   * texto `location` dá o caminho legível de cada origem sem nenhum join.
+   *
+   * Sem transação: a escrita é um `updateMany` único (já atômico), e segurar
+   * conexão do pool para proteger dado de auditoria de uma corrida entre dois
+   * operadores no mesmo instante não se paga. É uma FOTO, com o que isso implica.
+   */
+  private async snapshotOrigens(
+    productIds: string[],
+    targetLocationId: string | null,
+    userId: string,
+  ): Promise<ResumoOrigens | null> {
+    try {
+      const grupos = await prisma.product.groupBy({
+        by: ["locationId", "location"],
+        where: { id: { in: productIds }, userId },
+        _count: { _all: true },
+      });
+      return summarizeMoveOrigins(grupos, targetLocationId, productIds);
+    } catch {
+      return null;
+    }
+  }
+
   async moveProducts(
     productIds: string[],
     targetLocationId: string | null,
     userId: string,
-  ): Promise<{ count: number; targetLocation?: string }> {
+  ): Promise<{
+    count: number;
+    targetLocation?: string;
+    targetPath?: string;
+    resumo?: ResumoOrigens | null;
+  }> {
     if (!productIds.length) throw new Error("Nenhum produto selecionado");
 
     // If moving to a location, validate it exists and check capacity
@@ -405,23 +459,36 @@ export class LocationUseCase {
 
       const fullPath = await this.buildFullPath(target, userId);
 
+      const resumo = await this.snapshotOrigens(
+        productIds,
+        targetLocationId,
+        userId,
+      );
+
       const count = await this.locationRepository.moveProducts(
         productIds,
         targetLocationId,
         userId,
         fullPath,
       );
-      return { count, targetLocation: target.code };
+      return {
+        count,
+        targetLocation: target.code,
+        targetPath: fullPath,
+        resumo,
+      };
     }
 
     // Unbinding (set to null)
+    const resumo = await this.snapshotOrigens(productIds, null, userId);
+
     const count = await this.locationRepository.moveProducts(
       productIds,
       null,
       userId,
       null,
     );
-    return { count };
+    return { count, resumo };
   }
 
   /**

@@ -30,6 +30,7 @@
     "audit:products": "tsx scripts/prod-audit/audit-products-integrity.ts",
     "audit:tokens": "tsx scripts/prod-audit/audit-tokens.ts",
     "audit:logs": "tsx scripts/prod-audit/audit-system-logs.ts",
+    "audit:location-moves": "tsx scripts/prod-audit/audit-location-moves.ts",
     "cleanup:orphan-originals": "tsx scripts/cleanup-orphan-originals.ts",
     "shopee:sync-attrs": "tsx scripts/sync-shopee-attributes.ts",
     "shopee:debug-cats": "tsx scripts/debug-shopee-categories.ts",

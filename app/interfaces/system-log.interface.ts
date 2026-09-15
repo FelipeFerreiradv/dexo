@@ -26,6 +26,19 @@ export type LogAction =
   | "CREATE_LOCATION"
   | "UPDATE_LOCATION"
   | "DELETE_LOCATION"
+  // Peças movidas de uma localização para outra pela tela de Localizações ou
+  // pelo scan. Até 09/2026 esta operação NÃO tinha registro próprio: o
+  // `loggingMiddleware` a gravava como CREATE_LOCATION (mesmo ramo genérico que
+  // pegou o `bulk-delete` do Portal Eco Peças) e o `targetLocationId` do corpo
+  // saía "[REDACTED]", porque a regra de redação casa "rg" por substring dentro
+  // de "ta-RG-etLocationId". Sobrava quem/quando/quais peças e sumia PARA ONDE.
+  // O registro próprio carrega origem e destino — a origem só existe se for lida
+  // ANTES do updateMany, que a sobrescreve (não há tabela de histórico).
+  | "MOVE_PRODUCTS_LOCATION"
+  // Peças deixadas SEM localização. Valor separado de propósito: "quem
+  // desvinculou estas peças" é exatamente a pergunta que se faz depois de um
+  // incidente, e com um único valor ela exigiria varrer o `details`.
+  | "UNBIND_PRODUCTS_LOCATION"
   | "CREATE_SCRAP"
   | "UPDATE_SCRAP"
   | "DELETE_SCRAP"

@@ -97,6 +97,8 @@ const ACTION_LABELS: Record<string, string> = {
   CREATE_LOCATION: "Criar localização",
   UPDATE_LOCATION: "Atualizar localização",
   DELETE_LOCATION: "Excluir localização",
+  MOVE_PRODUCTS_LOCATION: "Mover peças de localização",
+  UNBIND_PRODUCTS_LOCATION: "Desvincular peças da localização",
   CREATE_SCRAP: "Criar sucata",
   UPDATE_SCRAP: "Atualizar sucata",
   DELETE_SCRAP: "Excluir sucata",
