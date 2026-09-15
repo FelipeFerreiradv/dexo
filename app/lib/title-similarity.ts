@@ -65,6 +65,13 @@ const STOPWORDS = new Set([
  *   batia e deixa de bater ............: 19   — todos pares que so dividiam
  *                                              o nome do carro
  */
+// CUSTO MEDIDO sobre 5.000 nomes reais de produto, 100.000 chamadas:
+//   antes  1,66 us/chamada
+//   depois 2,93 us/chamada   (+1,27 us, +77%)
+// O percentual assusta e o absoluto não: uma importação de 8.360 anúncios paga
+// ~21 ms no total. Tentei hoistear os 12 padrões para constantes de módulo e o
+// ganho foi ZERO (2,93 us antes e depois) — o V8 já cacheia literais de regex.
+// Como não houve ganho medido, ficou a forma simples.
 function canonicalizeSideAndAxis(value: string): string {
   let s = value;
   s = s.replace(/\bt[/.\-]e\b/g, " tras esq ");
