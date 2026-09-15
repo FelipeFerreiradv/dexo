@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -178,6 +178,24 @@ export function NfeList() {
     return Array.from({ length: 5 }, (_, i) => String(atual - i));
   })();
 
+  // Janela em datas civis (YYYY-MM-DD) derivada dos seletores que já existiam.
+  // Antes eles alimentavam SÓ o botão do relatório e nem entravam nas deps de
+  // fetchNotas — trocar o mês não mexia em nada, que é o que o lojista relatou.
+  // O backend converte para as bordas de Brasília, as mesmas do relatório
+  // mensal, para que lista e relatório do mesmo mês nunca divirjam.
+  // "TODOS" preserva o comportamento anterior: histórico inteiro.
+  const periodo = useMemo(() => {
+    if (reportMes === "TODOS") return null;
+    const ano = Number(reportAno);
+    const mes = Number(reportMes);
+    const ultimoDia = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+    const p2 = (v: number) => String(v).padStart(2, "0");
+    return {
+      dataInicio: ano + "-" + p2(mes) + "-01",
+      dataFim: ano + "-" + p2(mes) + "-" + p2(ultimoDia),
+    };
+  }, [reportMes, reportAno]);
+
   // Debounce search
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
@@ -187,7 +205,7 @@ export function NfeList() {
   // Reset page on filter change
   useEffect(() => {
     setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
-  }, [debouncedSearch, statusFilter, modeloFilter]);
+  }, [debouncedSearch, statusFilter, modeloFilter, periodo]);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -216,6 +234,10 @@ export function NfeList() {
       }
       if (modeloFilter !== "ALL") {
         params.set("modelo", modeloFilter);
+      }
+      if (periodo) {
+        params.set("dataInicio", periodo.dataInicio);
+        params.set("dataFim", periodo.dataFim);
       }
 
       const apiBase = getApiBaseUrl();
@@ -247,6 +269,7 @@ export function NfeList() {
     pagination.page,
     statusFilter,
     modeloFilter,
+    periodo,
     session?.user?.email,
     showToast,
   ]);
@@ -254,19 +277,30 @@ export function NfeList() {
   const fetchStats = useCallback(async () => {
     if (!session?.user?.email) return;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/fiscal/nfe/stats`, {
-        headers: {
-          "Content-Type": "application/json",
-          email: session.user.email,
+      // Os cards acompanham o periodo escolhido — antes eram sempre o total
+      // do historico, o que fazia o valor nao bater com a tabela na tela.
+      const params = new URLSearchParams();
+      if (periodo) {
+        params.set("dataInicio", periodo.dataInicio);
+        params.set("dataFim", periodo.dataFim);
+      }
+      const qs = params.toString();
+      const response = await fetch(
+        `${getApiBaseUrl()}/fiscal/nfe/stats${qs ? `?${qs}` : ""}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
         },
-      });
+      );
       if (!response.ok) throw new Error("Erro ao buscar estatisticas");
       const data = await response.json();
       setStats(data.stats);
     } catch (error) {
       console.error("Erro ao buscar estatisticas:", error);
     }
-  }, [session?.user?.email]);
+  }, [session?.user?.email, periodo]);
 
   const handleExport = async (format: "xlsx" | "pdf") => {
     if (!session?.user?.email) return;
@@ -274,6 +308,11 @@ export function NfeList() {
       const params = new URLSearchParams({ format });
       if (statusFilter && statusFilter !== "ALL") {
         params.set("status", statusFilter);
+      }
+      // O export seguia o historico inteiro, ignorando o que estava na tela.
+      if (periodo) {
+        params.set("dataInicio", periodo.dataInicio);
+        params.set("dataFim", periodo.dataFim);
       }
       const response = await fetch(
         `${getApiBaseUrl()}/fiscal/nfe/export?${params}`,
@@ -516,6 +555,7 @@ export function NfeList() {
               <SelectValue placeholder="Mês" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="TODOS">Todo o período</SelectItem>
               {MESES_LABELS.map((label, i) => (
                 <SelectItem key={label} value={String(i + 1)}>
                   {label}
@@ -535,9 +575,19 @@ export function NfeList() {
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={handleMonthlyReport}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleMonthlyReport}
+            disabled={!periodo}
+            title={
+              periodo
+                ? "Baixa UM único arquivo .xml com todas as notas autorizadas do mês, com o XML completo de cada uma dentro"
+                : "Escolha um mês para gerar o arquivo"
+            }
+          >
             <Download className="size-4 mr-1" />
-            Relatório mensal (XML)
+            XML do mês (arquivo único)
           </Button>
           <Button
             variant="outline"

@@ -999,7 +999,13 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const stats = await nfeListing.stats(userId);
+        const q = request.query as any;
+        // Os cards seguem o mesmo recorte da tabela. Sem periodo, continuam
+        // sendo o total do historico (comportamento anterior preservado).
+        const stats = await nfeListing.stats(userId, {
+          dataInicio: q.dataInicio,
+          dataFim: q.dataFim,
+        });
         return reply.status(200).send({ stats });
       } catch (error) {
         return reply.status(500).send({

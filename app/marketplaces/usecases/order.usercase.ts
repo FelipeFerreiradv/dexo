@@ -9,6 +9,7 @@
  */
 
 import prisma from "@/app/lib/prisma";
+import { areTitlesSimilar } from "@/app/lib/title-similarity";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
@@ -2361,8 +2362,13 @@ export class OrderUseCase {
         continue;
       }
 
-      // Buscar produto pelo SKU
-      const product = await this.findProductByFallbackSku(sku, userId);
+      // Buscar produto pelo SKU — resolvedor do ML, que recusa SKU ambíguo e
+      // título que não bate (ver resolverProdutoMlPorSku).
+      const product = await this.resolverProdutoMlPorSku(
+        sku,
+        mlItem.item.title ?? "",
+        userId,
+      );
 
       if (!product) {
         console.log(`[OrderUseCase] Produto com SKU "${sku}" não encontrado`);
@@ -2403,6 +2409,87 @@ export class OrderUseCase {
     }
 
     return null;
+  }
+
+  /**
+   * Resolucao por SKU do caminho do MERCADO LIVRE.
+   *
+   * ⚠️ POR QUE UM RESOLVEDOR SEPARADO, e nao uma mudanca no compartilhado:
+   * `findProductByFallbackSku` serve ML, Shopee e Magalu. O dano medido em
+   * 14/09/2026 (90 vendas baixadas em produto diferente do dono do anuncio,
+   * em 10.081 pedidos auditados contra a API) esta no ML, e a Shopee JA tem
+   * guarda propria (`findProductByPartNumberUnique`). Mexer no compartilhado
+   * mudaria o comportamento de tres plataformas para corrigir uma.
+   *
+   * Duas recusas, as duas com causa medida:
+   *
+   * 1) SKU AMBIGUO. A unique do catalogo e sobre o `sku` CRU
+   *    (@@unique([userId, sku])) e a busca roda sobre `skuNormalized`, entao
+   *    "ABC" e "abc" coexistem no mesmo dono e ambos casam. O `findFirst` sem
+   *    `orderBy` devolvia qualquer um. Pior: o acerto GRAVA o vinculo
+   *    (`upsertFallbackListing`), entao o casamento errado colava e passava a
+   *    ser confirmado pela via do `externalListingId`.
+   *
+   * 2) TITULO QUE NAO BATE. Um cliente tem UM produto com SKU "1" e 7.328
+   *    anuncios carregando "1" no `seller_sku`: o casamento e univoco e esta
+   *    errado — 39 vendas de pecas distintas foram lancadas numa unica bobina
+   *    de ignicao em duas semanas. Sem titulo dos dois lados, vale o
+   *    comportamento antigo.
+   *
+   * Entre baixar do produto errado e nao baixar, nao baixar e o mal menor: a
+   * baixa errada tira do estoque uma peca que continua na prateleira E deixa a
+   * vendida anunciada.
+   *
+   * EGRESS: mesmo idioma da guarda da Shopee — `select` enxuto (`id` + `name`,
+   * que a conferencia de titulo exige) e `take: 2`, o minimo para detectar
+   * ambiguidade. So roda quando o anuncio NAO tem vinculo.
+   */
+  private static async resolverProdutoMlPorSku(
+    sku: string | null,
+    tituloAnuncio: string,
+    userId?: string,
+  ): Promise<{ id: string } | null> {
+    const normalizedSku = normalizeSku(sku);
+    if (!normalizedSku) return null;
+
+    const candidatos = await prisma.product.findMany({
+      where: userId
+        ? { skuNormalized: normalizedSku, userId }
+        : { skuNormalized: normalizedSku },
+      select: { id: true, name: true },
+      orderBy: { id: "asc" },
+      take: 2,
+    });
+
+    if (candidatos.length === 0) return null;
+    if (candidatos.length > 1) {
+      console.log(
+        JSON.stringify({
+          event: "ml.order_import.sku_ambiguous",
+          sku: normalizedSku,
+          candidatos: candidatos.length,
+        }),
+      );
+      return null;
+    }
+
+    const unico = candidatos[0];
+    if (
+      tituloAnuncio &&
+      unico.name &&
+      !areTitlesSimilar(tituloAnuncio, unico.name)
+    ) {
+      console.log(
+        JSON.stringify({
+          event: "ml.order_import.sku_title_mismatch",
+          sku: normalizedSku,
+          produto: unico.name,
+          anuncio: tituloAnuncio,
+        }),
+      );
+      return null;
+    }
+    return { id: unico.id };
   }
 
   private static async findProductByFallbackSku(

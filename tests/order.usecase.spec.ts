@@ -126,12 +126,15 @@ describe("OrderUseCase.processOrder - Mercado Livre", () => {
     vi.spyOn(orderRepository, "exists").mockResolvedValue(false);
     vi.spyOn(prisma.productListing, "findUnique").mockResolvedValue(null);
     const fallbackListing = { id: "listing-fallback-ml-1" };
-    const findFirstSpy = vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
-      id: "prod-1",
-      sku: "ML-SKU-1",
-      skuNormalized: "ml-sku-1",
-      userId: "user-ml-1",
-    } as any);
+    // A resolução por SKU passou a usar findMany + take:2 para poder RECUSAR
+    // quando o SKU casa com mais de um produto do mesmo dono, e traz `name`
+    // para conferir o título do anúncio. O `select` continua enxuto.
+    const findFirstSpy = vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "prod-1",
+        name: "Cubo De Roda Dianteiro",
+      },
+    ] as any);
     const upsertFallbackSpy = vi
       .spyOn(ListingRepository, "upsertFromOrderFallback")
       .mockResolvedValue(fallbackListing as any);
@@ -181,9 +184,12 @@ describe("OrderUseCase.processOrder - Mercado Livre", () => {
         skuNormalized: "ml-sku-1",
         userId: "user-ml-1",
       },
-      // EGRESS: só o id é usado pelo chamador. O `where` — que é a regra de
-      // vínculo — segue idêntico.
-      select: { id: true },
+      // EGRESS: o chamador usa o id e o name (conferência de título). O `where`
+      // — que é a regra de vínculo — segue idêntico, e `take: 2` é o mínimo
+      // para detectar ambiguidade sem trocar 1 linha por N.
+      select: { id: true, name: true },
+      orderBy: { id: "asc" },
+      take: 2,
     });
     expect(upsertFallbackSpy).toHaveBeenCalledWith({
       productId: "prod-1",

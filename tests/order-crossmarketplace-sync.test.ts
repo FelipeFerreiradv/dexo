@@ -197,12 +197,16 @@ describe("OrderUseCase fallback SKU normalization", () => {
 
   it("faz fallback case-insensitive e cria ProductListing para Mercado Livre", async () => {
     vi.spyOn(prisma.productListing, "findUnique").mockResolvedValue(null);
-    const findFirstSpy = vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
-      id: "prod-abc",
-      sku: "ABC-001",
-      skuNormalized: "abc-001",
-      userId: "user-1",
-    } as any);
+    // O caminho do ML passou a usar findMany + take:2 (resolverProdutoMlPorSku)
+    // para poder RECUSAR SKU ambiguo e titulo que nao bate. Shopee e Magalu
+    // seguem no findProductByFallbackSku compartilhado, inalterado.
+    const findFirstSpy = vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "prod-abc",
+        // sem titulo no anuncio deste caso, a conferencia de titulo nao bloqueia
+        name: "Peca ABC",
+      },
+    ] as any);
     const fallbackListing = { id: "listing-abc-1" };
     const upsertSpy = vi
       .spyOn(ListingRepository, "upsertFromOrderFallback")
@@ -229,9 +233,12 @@ describe("OrderUseCase fallback SKU normalization", () => {
         skuNormalized: "abc-001",
         userId: "user-1",
       },
-      // EGRESS: só o id é usado pelo chamador. O `where` — que é a regra de
-      // vínculo — segue idêntico.
-      select: { id: true },
+      // EGRESS: o `where` — que é a regra de vínculo — segue idêntico. O
+      // `select` continua enxuto; `name` entrou porque a conferência de título
+      // precisa dele, e `take: 2` é o mínimo para detectar ambiguidade.
+      select: { id: true, name: true },
+      orderBy: { id: "asc" },
+      take: 2,
     });
     expect(upsertSpy).toHaveBeenCalledWith({
       productId: "prod-abc",
