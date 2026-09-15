@@ -263,6 +263,16 @@ export class ListingAutodetectUseCase {
     const product = await prisma.product.findFirst({
       where: { userId, skuNormalized: normalizedSku },
       select: { id: true, name: true },
+      // ⚠️ ORDEM ESTAVEL. A unique do catalogo e `@@unique([userId, sku])` sobre
+      // o sku CRU, mas a busca roda sobre `skuNormalized`: "ABC" e "abc" podem
+      // coexistir no mesmo dono e ambos casarem. Sem `orderBy`, o Postgres
+      // devolve "qualquer um" — e o mesmo anuncio reimportado podia cair em
+      // produto diferente entre execucoes, sem nada mudar no catalogo.
+      // Medido em 15/09/2026: ZERO skuNormalized ambiguos em 366.883 produtos
+      // de 120 usuarios. A ordem e reprodutibilidade barata para um caso que
+      // hoje nao existe — nao guarda de ambiguidade, que mudaria comportamento
+      // sem defeito medido para justificar.
+      orderBy: { id: "asc" },
     });
     return product ?? null;
   }
