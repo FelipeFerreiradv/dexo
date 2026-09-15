@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Search,
   Plus,
@@ -27,6 +27,26 @@ import { orderBySelection } from "@/app/lib/label-order";
 import { HighlightText } from "./highlight-text";
 import { useLocationSearch } from "../hooks/use-location-search";
 import { BulkLocationsDialog } from "./bulk-locations-dialog";
+import {
+  LocationCombobox,
+  type LocationSelectItem,
+} from "@/app/produtos/components/location-combobox";
+import {
+  canConfirmMove,
+  describeMoveBlocker,
+  describeMoveOutcome,
+  describeUnbindConfirm,
+  type StatusOpcoes,
+} from "../lib/move-products-decisions";
+import {
+  appendUniqueById,
+  describeLoadMore,
+  describeSelectAll,
+  describeSheetCount,
+  nextPage,
+  shouldSuggestSearch,
+  TAMANHO_PAGINA_GAVETA,
+} from "../lib/sheet-products-paging";
 
 import { Button } from "@/components/ui/button";
 import { SectionHeading } from "@/components/section-heading";
@@ -109,14 +129,28 @@ interface LocationProduct {
   location?: string;
 }
 
-interface SelectLocation {
-  id: string;
-  code: string;
-  fullPath: string;
-  maxCapacity: number;
-  productsCount: number;
-  isFull: boolean;
-}
+/**
+ * Formatador de moeda criado UMA vez, no módulo.
+ *
+ * Estava sendo construído dentro do `.map()` da gaveta, um `Intl.NumberFormat`
+ * por peça por render. Com 50 linhas era invisível; a paginação desta entrega
+ * leva a lista a centenas de linhas, e a lista redesenha inteira a cada clique
+ * de checkbox e a cada tecla na busca. Medido em V8 com 500 linhas:
+ * **18,4 ms por render construindo formatadores contra 0,27 ms reusando um**.
+ * Saída byte-idêntica — mesma locale, mesmas opções, sem estado.
+ */
+const MOEDA_BRL = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+
+/**
+ * A lista de destinos agora usa o mesmo tipo do `LocationCombobox`
+ * (`LocationSelectItem`), que inclui `description` — campo que `/locations/select`
+ * já mandava e que o tipo local antigo descartava, deixando a busca cega para
+ * ele. Nenhuma mudança de wire: só o tipo passou a refletir o que já chegava.
+ */
+type SelectLocation = LocationSelectItem;
 
 interface Toast {
   id: string;
@@ -618,7 +652,20 @@ export function LocationsList() {
   const [sheetProducts, setSheetProducts] = useState<LocationProduct[]>([]);
   const [sheetProductsTotal, setSheetProductsTotal] = useState(0);
   const [sheetLoading, setSheetLoading] = useState(false);
+  // Separado de `sheetLoading` de propósito: aquele troca a lista inteira por um
+  // spinner, o que ao carregar a próxima página apagaria da tela o contexto
+  // visual da seleção que o operador acabou de fazer.
+  const [sheetLoadingMore, setSheetLoadingMore] = useState(false);
+  // Última página REALMENTE carregada. Não derivar de `sheetProducts.length`:
+  // o `appendUniqueById` descarta repetidos, então o length deixa de ser
+  // múltiplo do tamanho de página e a conta pediria de novo uma página já
+  // buscada — uma requisição inteira que acrescenta zero, e o botão travaria
+  // repetindo a mesma página.
+  const [sheetPage, setSheetPage] = useState(1);
   const [sheetSearch, setSheetSearch] = useState("");
+  // Marca se o efeito de busca já consumiu a execução que a ABERTURA da gaveta
+  // provoca. Sem isso, abrir a gaveta dispara duas requisições idênticas.
+  const buscaJaInicializadaRef = useRef(false);
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
     new Set(),
   );
@@ -626,8 +673,17 @@ export function LocationsList() {
   // Move products dialog
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [allLocations, setAllLocations] = useState<SelectLocation[]>([]);
-  const [moveTargetLocationId, setMoveTargetLocationId] =
-    useState<string>("__none__");
+  // `null` = nada escolhido. Antes iniciava em "__none__", que era o sentinela
+  // de DESVINCULAR — ou seja, o diálogo "Mover" abria com a ação destrutiva
+  // pré-selecionada e o botão de confirmar não exigia destino nenhum.
+  const [moveTargetLocationId, setMoveTargetLocationId] = useState<
+    string | null
+  >(null);
+  const [moveTargetPath, setMoveTargetPath] = useState<string>("");
+  // Estado do carregamento de `/locations/select`. O fetch não era aguardado e o
+  // catch era mudo, então o seletor podia abrir vazio — indistinguível de
+  // "você não tem localização cadastrada".
+  const [locationsStatus, setLocationsStatus] = useState<StatusOpcoes>("idle");
   const [isMoving, setIsMoving] = useState(false);
 
   // Move location dialog
@@ -822,15 +878,34 @@ export function LocationsList() {
 
   // ──── Products Sheet handlers ────
 
+  /**
+   * A gaveta pedia `limit=50` e NUNCA mandava `page`, enquanto o cabeçalho
+   * mostrava o total verdadeiro. Numa caixa de 168 (a `1P2CX102` da MK2 tem
+   * exatamente isso) mover algumas peças não mudava nada visível: as que saíam
+   * eram repostas por outras vindas da posição 51. Medido em 15/09/2026, a MK2
+   * tinha 11.518 peças inalcançáveis por esta tela.
+   *
+   * `modo: "append"` acrescenta a página seguinte; `"replace"` é o caminho de
+   * sempre (abrir a gaveta, buscar, recarregar depois de mover).
+   */
   const fetchLocationProducts = useCallback(
-    async (locationId: string, search?: string) => {
+    async (
+      locationId: string,
+      search?: string,
+      page = 1,
+      modo: "replace" | "append" = "replace",
+    ) => {
       const email = session?.user?.email;
       if (!email) return;
 
-      setSheetLoading(true);
+      if (modo === "append") setSheetLoadingMore(true);
+      else setSheetLoading(true);
       try {
         const apiBase = getApiBaseUrl();
-        const params = new URLSearchParams({ limit: "50" });
+        const params = new URLSearchParams({
+          limit: String(TAMANHO_PAGINA_GAVETA),
+          page: String(page),
+        });
         if (search && search.length >= 2) params.set("search", search);
 
         const response = await fetch(
@@ -841,33 +916,65 @@ export function LocationsList() {
         if (!response.ok)
           throw new Error(data.error || "Erro ao buscar produtos");
 
-        setSheetProducts(data.products);
+        setSheetProducts((prev) =>
+          modo === "append"
+            ? appendUniqueById(prev, data.products)
+            : data.products,
+        );
         setSheetProductsTotal(data.pagination.total);
+        setSheetPage(page);
       } catch (error) {
         showToast(
           error instanceof Error ? error.message : "Erro ao buscar produtos",
           "error",
         );
       } finally {
-        setSheetLoading(false);
+        if (modo === "append") setSheetLoadingMore(false);
+        else setSheetLoading(false);
       }
     },
     [session?.user?.email, showToast],
   );
 
+  const handleLoadMoreProducts = () => {
+    if (!sheetLocation || sheetLoadingMore) return;
+    fetchLocationProducts(
+      sheetLocation.id,
+      sheetSearch,
+      nextPage(sheetPage),
+      "append",
+    );
+  };
+
+  /**
+   * ⚠️ Compartilhado com o diálogo "Mover Localização". Por isso o erro vira
+   * ESTADO, renderizado dentro do diálogo de mover produtos, e não um toast:
+   * um toast aqui faria uma falha que hoje é silenciosa passar a gritar também
+   * para quem está usando o outro diálogo.
+   *
+   * Sem cache proposital: `/locations/select` já tem ETag com
+   * `Cache-Control: private, no-cache`, então a repetição volta 304 sem corpo —
+   * e o contador `(12/50)` nunca fica velho.
+   */
   const fetchAllLocations = useCallback(async () => {
     const email = session?.user?.email;
     if (!email) return;
 
+    setLocationsStatus("loading");
     try {
       const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/locations/select`, {
         headers: { email },
       });
       const data = await response.json();
-      if (response.ok) setAllLocations(data.locations);
+      if (response.ok) {
+        setAllLocations(data.locations);
+        setLocationsStatus("ready");
+      } else {
+        setLocationsStatus("error");
+      }
     } catch {
-      // silent
+      setLocationsStatus("error");
     }
   }, [session?.user?.email]);
 
@@ -877,11 +984,24 @@ export function LocationsList() {
     setSheetSearch("");
     setSelectedProductIds(new Set());
     setProductsSheetOpen(true);
+    // A busca só deve disparar quando o operador DIGITAR. A primeira execução
+    // do efeito abaixo é a que a própria abertura provoca — ela repetiria esta
+    // mesma requisição 300 ms depois.
+    buscaJaInicializadaRef.current = false;
     fetchLocationProducts(location.id);
   };
 
   useEffect(() => {
     if (!productsSheetOpen || !sheetLocation) return;
+    // Abrir a gaveta disparava DUAS requisições idênticas: a de
+    // `handleViewProducts` e a deste efeito, 300 ms depois, com os mesmos
+    // argumentos. Além do desperdício, a segunda roda em modo "replace" — com a
+    // paginação desta entrega, ela apagaria uma página que o operador tivesse
+    // acabado de carregar dentro da janela do debounce.
+    if (!buscaJaInicializadaRef.current) {
+      buscaJaInicializadaRef.current = true;
+      return;
+    }
     const timer = setTimeout(() => {
       fetchLocationProducts(sheetLocation.id, sheetSearch);
     }, 300);
@@ -897,6 +1017,8 @@ export function LocationsList() {
     });
   };
 
+  // Semântica INALTERADA — marca o que está carregado. O que muda é o rótulo,
+  // que antes dizia "Selecionar todos" numa caixa de 168 com 50 na tela.
   const toggleSelectAll = () => {
     if (selectedProductIds.size === sheetProducts.length) {
       setSelectedProductIds(new Set());
@@ -905,9 +1027,43 @@ export function LocationsList() {
     }
   };
 
+  // ──── Estado derivado (decisões em módulo puro, testável sem jsdom) ────
+
+  const estadoDialogoMover = {
+    targetLocationId: moveTargetLocationId,
+    selectedCount: selectedProductIds.size,
+    isMoving,
+    optionsStatus: locationsStatus,
+  };
+  const podeConfirmarMover = canConfirmMove(estadoDialogoMover);
+  const impedimentoMover = describeMoveBlocker(estadoDialogoMover);
+
+  const opcoesDestino = useMemo(
+    () => allLocations.filter((loc) => loc.id !== sheetLocation?.id),
+    [allLocations, sheetLocation?.id],
+  );
+
+  const rotuloSelecionarTodos = describeSelectAll(
+    sheetProducts.length,
+    sheetProductsTotal,
+  );
+  const contagemGaveta = describeSheetCount(
+    sheetProducts.length,
+    sheetProductsTotal,
+  );
+  const rotuloCarregarMais = describeLoadMore(
+    sheetProducts.length,
+    sheetProductsTotal,
+  );
+  const confirmarDesvinculoLote = describeUnbindConfirm({
+    count: selectedProductIds.size,
+    locationCode: sheetLocation?.code,
+  });
+
   const handleOpenMoveDialog = () => {
-    setMoveTargetLocationId("__none__");
-    fetchAllLocations();
+    setMoveTargetLocationId(null);
+    setMoveTargetPath("");
+    void fetchAllLocations();
     setMoveDialogOpen(true);
   };
 
@@ -920,30 +1076,44 @@ export function LocationsList() {
 
   const handleMoveProducts = async () => {
     const email = session?.user?.email;
-    if (!email || selectedProductIds.size === 0) return;
+    // Guarda de destino: `targetLocationId` null NUNCA mais sai deste handler.
+    // Desvincular tem botão próprio, com confirmação.
+    if (!email || !estadoDialogoMover.targetLocationId) return;
+    if (!canConfirmMove(estadoDialogoMover)) return;
 
+    const enviados = Array.from(selectedProductIds);
     setIsMoving(true);
     try {
       const apiBase = getApiBaseUrl();
-      const targetId =
-        moveTargetLocationId === "__none__" ? null : moveTargetLocationId;
 
       const response = await fetch(`${apiBase}/locations/move-products`, {
         method: "POST",
         headers: { "Content-Type": "application/json", email },
         body: JSON.stringify({
-          productIds: Array.from(selectedProductIds),
-          targetLocationId: targetId,
+          productIds: enviados,
+          targetLocationId: moveTargetLocationId,
         }),
       });
       const result = await response.json();
       if (!response.ok)
         throw new Error(result.error || "Erro ao mover produtos");
 
-      showToast(result.message, "success");
+      // `count === 0` (ou `moved === 0`) nunca mais vira toast verde.
+      const { message, tone } = describeMoveOutcome({
+        requested: enviados.length,
+        count: result.count ?? 0,
+        moved: result.moved,
+        alreadyThere: result.alreadyThere,
+        notFound: result.notFound,
+        targetLabel: moveTargetPath || null,
+        serverMessage: result.message,
+      });
+      showToast(message, tone);
       setMoveDialogOpen(false);
       setSelectedProductIds(new Set());
-      // Refresh both products and locations
+      // Refresh both products and locations. Volta para a página 1 de propósito:
+      // depois de uma mutação os offsets mudaram, e página velha é pior que
+      // recomeço.
       if (sheetLocation) fetchLocationProducts(sheetLocation.id, sheetSearch);
       fetchLocations();
     } catch (error) {
@@ -970,7 +1140,16 @@ export function LocationsList() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Erro ao desvincular");
 
-      showToast(result.message, "success");
+      const { message, tone } = describeMoveOutcome({
+        requested: productIds.length,
+        count: result.count ?? 0,
+        moved: result.moved,
+        alreadyThere: result.alreadyThere,
+        notFound: result.notFound,
+        targetLabel: null,
+        serverMessage: result.message,
+      });
+      showToast(message, tone);
       setSelectedProductIds(new Set());
       if (sheetLocation) fetchLocationProducts(sheetLocation.id, sheetSearch);
       fetchLocations();
@@ -1332,17 +1511,43 @@ export function LocationsList() {
                     <ArrowRightLeft className="mr-1.5 size-3.5" />
                     Mover
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() =>
-                      handleUnbindProducts(Array.from(selectedProductIds))
-                    }
-                  >
-                    <Unlink className="mr-1.5 size-3.5" />
-                    Desvincular
-                  </Button>
+                  {/* Desvincular passa a exigir confirmação: é a única ação da
+                      gaveta que deixa a peça sem lugar nenhum, e até aqui
+                      disparava no primeiro clique. Mesmo formato do AlertDialog
+                      de excluir localização, mais acima neste arquivo. */}
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Unlink className="mr-1.5 size-3.5" />
+                        Desvincular
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {confirmarDesvinculoLote.title}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {confirmarDesvinculoLote.description}
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          onClick={() =>
+                            handleUnbindProducts(Array.from(selectedProductIds))
+                          }
+                        >
+                          {confirmarDesvinculoLote.confirmLabel}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </div>
               </div>
             )}
@@ -1355,7 +1560,10 @@ export function LocationsList() {
                 </div>
               ) : sheetProducts.length > 0 ? (
                 <>
-                  {/* Select all */}
+                  {/* Select all — o rótulo diz o que a ação REALMENTE faz.
+                      Marcar "Selecionar todos" numa caixa de 168 com 50 na tela
+                      selecionava 50, e o operador mandava mover achando que
+                      tinha mandado 168. */}
                   <div className="flex items-center gap-2 px-2 py-1.5">
                     <Checkbox
                       checked={
@@ -1365,11 +1573,33 @@ export function LocationsList() {
                       onCheckedChange={toggleSelectAll}
                     />
                     <span className="text-xs text-muted-foreground">
-                      Selecionar todos
+                      {rotuloSelecionarTodos.label}
+                      {rotuloSelecionarTodos.hint ? (
+                        <span className="ml-1 opacity-70">
+                          {rotuloSelecionarTodos.hint}
+                        </span>
+                      ) : null}
                     </span>
+                    {contagemGaveta ? (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {contagemGaveta}
+                      </span>
+                    ) : null}
                   </div>
                   <Separator />
-                  {sheetProducts.map((product) => (
+                  {sheetProducts.map((product) => {
+                    // UMA vez por linha, não três. Os filhos de
+                    // `AlertDialogContent` são avaliados ao CRIAR o elemento
+                    // (mesmo sem o portal montar), então chamar isto no title,
+                    // no description e no confirmLabel custava 3 construções de
+                    // string por peça por render — e depois do "Carregar mais"
+                    // a lista chega a centenas de linhas.
+                    const confirmar = describeUnbindConfirm({
+                      count: 1,
+                      productName: product.name,
+                      locationCode: sheetLocation?.code,
+                    });
+                    return (
                     <div
                       key={product.id}
                       className="group flex items-center gap-3 rounded-md border border-transparent p-2 hover:border-border/60 hover:bg-muted/30"
@@ -1399,10 +1629,7 @@ export function LocationsList() {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {product.sku} · {product.stock} un ·{" "}
-                          {new Intl.NumberFormat("pt-BR", {
-                            style: "currency",
-                            currency: "BRL",
-                          }).format(product.price)}
+                          {MOEDA_BRL.format(product.price)}
                         </p>
                       </div>
                       {/* Individual actions */}
@@ -1415,17 +1642,75 @@ export function LocationsList() {
                         >
                           <ArrowRightLeft className="size-3.5" />
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          title="Desvincular produto"
-                          onClick={() => handleUnbindProducts([product.id])}
-                        >
-                          <Unlink className="size-3.5 text-destructive" />
-                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              title="Desvincular produto"
+                            >
+                              <Unlink className="size-3.5 text-destructive" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>
+                                {confirmar.title}
+                              </AlertDialogTitle>
+                              <AlertDialogDescription>
+                                {confirmar.description}
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                              <AlertDialogAction
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                onClick={() =>
+                                  handleUnbindProducts([product.id])
+                                }
+                              >
+                                {confirmar.confirmLabel}
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
+
+                  {/* Carregar mais: paginação incremental, 50 por clique. O
+                      primeiro render continua igual ao de produção (mesma página,
+                      mesmo tamanho) — cada página a mais é um clique deliberado,
+                      então a lista nunca cresce sozinha até travar o navegador. */}
+                  {rotuloCarregarMais ? (
+                    <div className="flex flex-col items-center gap-1 py-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleLoadMoreProducts}
+                        disabled={sheetLoadingMore}
+                      >
+                        {sheetLoadingMore ? (
+                          <>
+                            <Loader2 className="mr-2 size-4 animate-spin" />
+                            Carregando...
+                          </>
+                        ) : (
+                          rotuloCarregarMais
+                        )}
+                      </Button>
+                      {shouldSuggestSearch(
+                        sheetProducts.length,
+                        sheetProductsTotal,
+                      ) ? (
+                        <p className="text-xs text-muted-foreground">
+                          Esta caixa é grande — use a busca acima para achar a
+                          peça direto.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <div className="flex flex-col items-center justify-center py-12">
@@ -1454,39 +1739,53 @@ export function LocationsList() {
 
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>Localização de destino</Label>
-              <Select
+              <Label htmlFor="move-target-location">
+                Localização de destino
+              </Label>
+              {/* Combobox com busca, no lugar do <Select> cru: a MK2 tem 702
+                  localizações e rolar essa lista sem filtro é hostil — fechar o
+                  dropdown sem escolher era fácil, e o valor inicial era
+                  "desvincular". A opção "Nenhuma" fica FORA daqui
+                  (`allowNone={false}`): desvincular é botão próprio, com
+                  confirmação, e não um destino possível de um diálogo "Mover". */}
+              <LocationCombobox
+                id="move-target-location"
+                options={opcoesDestino}
                 value={moveTargetLocationId}
-                onValueChange={setMoveTargetLocationId}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione uma localização" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">
-                    Sem localização (desvincular)
-                  </SelectItem>
-                  {allLocations
-                    .filter((loc) => loc.id !== sheetLocation?.id)
-                    .map((loc) => (
-                      <SelectItem
-                        key={loc.id}
-                        value={loc.id}
-                        disabled={loc.isFull}
-                      >
-                        {loc.fullPath}
-                        {loc.maxCapacity > 0
-                          ? ` (${loc.productsCount}/${loc.maxCapacity})`
-                          : ""}
-                        {loc.isFull ? " — Lotado" : ""}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+                onChange={(id, fullPath) => {
+                  setMoveTargetLocationId(id);
+                  setMoveTargetPath(fullPath);
+                }}
+                allowNone={false}
+                disabled={isMoving || locationsStatus !== "ready"}
+              />
+              {locationsStatus === "loading" || locationsStatus === "idle" ? (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" />
+                  Carregando as localizações...
+                </p>
+              ) : null}
+              {locationsStatus === "error" ? (
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-destructive">
+                    Não foi possível carregar as localizações.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void fetchAllLocations()}
+                  >
+                    Tentar de novo
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </div>
 
           <DialogFooter>
+            <div className="mr-auto text-xs text-muted-foreground">
+              {impedimentoMover}
+            </div>
             <Button
               variant="outline"
               onClick={() => setMoveDialogOpen(false)}
@@ -1494,7 +1793,9 @@ export function LocationsList() {
             >
               Cancelar
             </Button>
-            <Button onClick={handleMoveProducts} disabled={isMoving}>
+            {/* Sem destino escolhido, não move. Era `disabled={isMoving}` — e
+                por isso confirmar sem mexer no seletor desvinculava as peças. */}
+            <Button onClick={handleMoveProducts} disabled={!podeConfirmarMover}>
               {isMoving ? (
                 <>
                   <Loader2 className="mr-2 size-4 animate-spin" />

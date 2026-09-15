@@ -361,7 +361,14 @@ export class LocationRepositoryPrisma implements LocationRepository {
         where,
         skip,
         take: limit,
-        orderBy: { name: "asc" },
+        // Desempate por `id` é o que torna a PAGINAÇÃO correta. Dentro de um
+        // grupo de nomes iguais a ordem era indefinida — o Postgres pode
+        // devolver uma ordem para OFFSET 0 e outra para OFFSET 50 — e num
+        // desmonte nome repetido com SKU diferente é o caso normal (a MK2 tem
+        // caixas com dezenas). Sem isto, a mesma peça pode aparecer em duas
+        // páginas e outra sumir das duas. Não quebra contrato: não havia ordem
+        // a quebrar dentro do grupo, só ordem a DEFINIR.
+        orderBy: [{ name: "asc" }, { id: "asc" }],
         select: {
           id: true,
           sku: true,

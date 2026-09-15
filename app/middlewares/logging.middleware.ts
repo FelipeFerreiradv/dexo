@@ -210,6 +210,25 @@ export function determineActionType(
 
   // Locations
   if (cleanUrl.startsWith("/locations")) {
+    // A movimentação de peças é POST, mas NÃO é criação de localização. Sem esta
+    // exceção ela cai no ramo genérico abaixo e é auditada como CREATE_LOCATION
+    // — e ainda por cima o `targetLocationId` do corpo sai "[REDACTED]", porque
+    // `isSensitiveKey` casa "rg" por substring dentro de "ta-RG-etLocationId".
+    // Quem varre o SystemLog atrás de "para onde a peça foi" não acha nem a
+    // requisição nem o destino. Mesma família de defeito do `bulk-delete`.
+    //
+    // Devolve `null` (e não uma action nova) porque a rota grava um registro
+    // PRÓPRIO, com origem, destino e ids sem redação — ver
+    // app/localizacoes/lib/move-products-audit.ts. Mesmo padrão do PATCH de
+    // /scraps abaixo: evita log duplicado.
+    //
+    // ⚠️ Isto só é correto porque a rota loga OS DOIS caminhos, sucesso e erro.
+    // Se o log do `catch` de POST /locations/move-products for removido, este
+    // `null` passa a APAGAR o rastro das falhas — que hoje o middleware grava
+    // com level ERROR. Ver tests/location-move-products-audit.integration.spec.ts.
+    if (cleanUrl === "/locations/move-products" && method === "POST") {
+      return null;
+    }
     if (method === "POST") {
       return { action: "CREATE_LOCATION", resource: "Location" };
     }

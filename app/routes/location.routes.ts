@@ -12,6 +12,7 @@ import {
   validateBulkLocationRows,
   type BulkLocationRow,
 } from "../localizacoes/lib/bulk-locations";
+import { buildMoveProductsAudit } from "../localizacoes/lib/move-products-audit";
 
 export const locationRoutes = async (fastify: FastifyInstance) => {
   const locationUseCase = new LocationUseCase();
@@ -226,11 +227,62 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
           userId,
         );
 
+        // Rastro PRÓPRIO da movimentação. Até 09/2026 esta rota não gravava nada:
+        // o middleware global registrava a requisição como CREATE_LOCATION e com
+        // o destino redigido.
+        //
+        // ⚠️ O `.catch()` é obrigatório e NÃO é redundante com o try/catch de
+        // `SystemLogService.log`. A escrita no banco JÁ ACONTECEU aqui: se o log
+        // rejeitasse, a rejeição cairia no `catch` externo e devolveria 500 para
+        // um movimento que deu certo — o operador repetiria a operação. A
+        // proteção tem de estar no ponto de chamada, não depender de uma
+        // promessa interna de outro módulo. (Coberto por
+        // tests/location-move-products-audit.integration.spec.ts.)
+        const trilha = buildMoveProductsAudit({
+          targetLocationId: targetLocationId ?? null,
+          targetCode: result.targetLocation ?? null,
+          targetPath: result.targetPath ?? null,
+          productIds,
+          count: result.count,
+          resumo: result.resumo ?? null,
+          outcome: "ok",
+          statusCode: 200,
+        });
+        // `Promise.resolve(...)` e não `.catch()` direto: o retorno pode não ser
+        // uma promessa (é o caso quando o serviço está mockado), e um
+        // `undefined.catch` estouraria dentro do `try` — devolvendo 500 para um
+        // movimento que deu certo. Mesmo formato do POST /locations/bulk.
+        await Promise.resolve(
+          SystemLogService.logInfo(trilha.action, trilha.message, {
+            userId,
+            resource: "Location",
+            resourceId: targetLocationId ?? undefined,
+            details: trilha.details,
+            ipAddress: request.ip,
+            userAgent: request.headers["user-agent"],
+          }),
+        ).catch(() => {
+          // Auditoria nunca muda a resposta ao operador.
+        });
+
         return reply.status(200).send({
+          // Contrato INALTERADO: `message` e `count` seguem exatamente como antes
+          // (o desfazer do scan lê só `res.ok`/`body.error`, mas a tela de
+          // localizações e os testes existentes leem estes dois).
           message: targetLocationId
             ? `${result.count} produto(s) movido(s) para "${result.targetLocation}"`
             : `${result.count} produto(s) desvinculado(s)`,
           count: result.count,
+          // Campos NOVOS e opcionais: `count` diz quantas linhas casaram, não
+          // quantas mudaram de lugar — o `updateMany` não tem predicado de
+          // origem. Sem isto a tela não consegue distinguir no-op de sucesso.
+          ...(result.resumo
+            ? {
+                moved: result.resumo.movidos,
+                alreadyThere: result.resumo.jaNoDestino,
+                notFound: result.resumo.naoEncontrados,
+              }
+            : {}),
         });
       } catch (error) {
         const message =
@@ -240,6 +292,44 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
           : message.includes("capacidade")
             ? 422
             : 500;
+
+        // O caminho de FALHA também deixa rastro. Isto não é simetria estética:
+        // `determineActionType` passou a devolver `null` para esta rota, então o
+        // middleware não grava mais o ERROR que gravava antes. Sem este bloco,
+        // a correção trocaria um rastro mal rotulado por NENHUM rastro de falha.
+        try {
+          const { productIds, targetLocationId } = request.body as {
+            productIds?: string[];
+            targetLocationId?: string | null;
+          };
+          const trilha = buildMoveProductsAudit({
+            targetLocationId: targetLocationId ?? null,
+            productIds: Array.isArray(productIds) ? productIds : [],
+            count: 0,
+            resumo: null,
+            outcome: "erro",
+            errorMessage: message,
+            statusCode: status,
+          });
+          // `logError`, não `logWarning`: o middleware gravava `level: ERROR`
+          // para qualquer statusCode >= 400 (logging.middleware.ts), e o
+          // audit-system-logs conta ERROR nas últimas 24h. Rebaixar para
+          // WARNING sumiria com falhas de movimentação de quem filtra por erro
+          // — seria mudança de comportamento observável, não melhoria.
+          await Promise.resolve(
+            SystemLogService.logError(trilha.action, trilha.message, {
+              userId: (request as any).user?.dataOwnerId as string,
+              resource: "Location",
+              resourceId: targetLocationId ?? undefined,
+              details: trilha.details,
+              ipAddress: request.ip,
+              userAgent: request.headers["user-agent"],
+            }),
+          );
+        } catch {
+          // Auditoria nunca muda a resposta ao operador.
+        }
+
         return reply.status(status).send({ error: message });
       }
     },

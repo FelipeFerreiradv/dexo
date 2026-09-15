@@ -206,6 +206,8 @@ export function LogsView() {
       CONNECT_MARKETPLACE: "Conectar Marketplace",
       DISCONNECT_MARKETPLACE: "Desconectar Marketplace",
       CREATE_LISTING: "Criar Anúncio",
+      MOVE_PRODUCTS_LOCATION: "Mover Peças de Localização",
+      UNBIND_PRODUCTS_LOCATION: "Desvincular Peças da Localização",
       USER_ACTIVITY: "Atividade do Usuário",
       SYSTEM_ERROR: "Erro do Sistema",
     };

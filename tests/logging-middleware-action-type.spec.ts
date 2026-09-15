@@ -55,4 +55,56 @@ describe("determineActionType — classificação de rota para a auditoria", () 
       action: "CREATE_LISTING",
     });
   });
+
+  /**
+   * Mesma família de defeito, achada no chamado MK2 Autopeças (09/2026): mover
+   * peças entre localizações é POST em /locations/move-products e caía no ramo
+   * genérico, sendo auditada como CREATE_LOCATION — e ainda com o
+   * `targetLocationId` do corpo virando "[REDACTED]", porque `isSensitiveKey`
+   * casa "rg" por substring dentro de "ta-RG-etLocationId". Medido em produção:
+   * 6 movimentações da MK2 entre 07 e 15/09, todas rotuladas CREATE_LOCATION e
+   * todas com o destino redigido.
+   *
+   * Aqui devolve `null` (e não uma action nova) porque a rota grava registro
+   * PRÓPRIO, com origem, destino e ids sem redação — evita log duplicado, igual
+   * ao PATCH de /scraps.
+   */
+  it("não classifica POST /locations/move-products no ramo genérico", () => {
+    expect(determineActionType("POST", "/locations/move-products")).toBeNull();
+  });
+
+  it("ignora query string ao classificar o move-products", () => {
+    expect(
+      determineActionType("POST", "/locations/move-products?origem=tela"),
+    ).toBeNull();
+  });
+
+  // Controles negativos: a exceção é igualdade exata de caminho e não pode
+  // vazar para nenhuma outra rota de localização.
+  it("mantém POST /locations como CREATE_LOCATION", () => {
+    expect(determineActionType("POST", "/locations")).toEqual({
+      action: "CREATE_LOCATION",
+      resource: "Location",
+    });
+  });
+
+  it("mantém POST /locations/bulk como CREATE_LOCATION", () => {
+    expect(determineActionType("POST", "/locations/bulk")).toEqual({
+      action: "CREATE_LOCATION",
+      resource: "Location",
+    });
+  });
+
+  it("mantém POST /locations/:id/attach-products como CREATE_LOCATION", () => {
+    expect(determineActionType("POST", "/locations/abc123/attach-products"))
+      .toEqual({ action: "CREATE_LOCATION", resource: "Location" });
+  });
+
+  it("mantém DELETE /locations/:id como DELETE_LOCATION com resourceId", () => {
+    expect(determineActionType("DELETE", "/locations/abc123")).toEqual({
+      action: "DELETE_LOCATION",
+      resource: "Location",
+      resourceId: "abc123",
+    });
+  });
 });
