@@ -125,6 +125,12 @@ async function main() {
   const falhas: Array<{ dupSku: string; dupId: string; donoSku: string; erro: string }> = [];
   const recusas: Array<{ sku: string; motivo: string }> = [];
 
+  // ⚠️ A MESMA DUPLICATA PODE APARECER EM VARIOS CLUSTERS. Um produto que
+  // compartilha foto com dois grupos distintos entra no plano duas ou tres
+  // vezes; o primeiro delete funciona e os seguintes falham com "Record to
+  // delete does not exist" — erro que ASSUSTA no resumo e nao e dano nenhum.
+  // Medido no Revive: o SKU 1901 estava em 3 clusters e gerou 2 "erros".
+  const jaPlanejada = new Set<string>();
   const alvo = limite ? clusters.slice(0, limite) : clusters;
   for (const c of alvo) {
     const dono = c.produtos.find((p) => p.sku === c.dono);
@@ -143,6 +149,11 @@ async function main() {
           _count: { select: { orderItems: true, stockLogs: true, nfeItens: true } } },
       });
       if (!dupAtual) { recusas.push({ sku: dupSku, motivo: "a duplicata não existe mais" }); continue; }
+      if (jaPlanejada.has(dupAtual.id)) {
+        recusas.push({ sku: dupSku, motivo: "duplicata ja planejada noutro grupo — ignorada aqui" });
+        continue;
+      }
+      jaPlanejada.add(dupAtual.id);
       const temLastro = dupAtual._count.orderItems > 0 || dupAtual._count.stockLogs > 0 || dupAtual._count.nfeItens > 0;
       planos.push({
         donoId: donoAtual.id, donoSku: donoAtual.sku, donoEstoque: donoAtual.stock,
