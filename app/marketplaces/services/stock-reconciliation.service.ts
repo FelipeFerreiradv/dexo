@@ -1,6 +1,8 @@
 import prisma from "@/app/lib/prisma";
 import { availableForSale } from "@/app/financeiro/lib/stock-reservation";
 import { MLApiService } from "./ml-api.service";
+import { ShopeeApiService } from "./shopee-api.service";
+import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 import { SystemLogService } from "@/app/services/system-log.service";
 
 const RECONCILE_WINDOW_MS = 60 * 60 * 1000;
@@ -41,6 +43,26 @@ const AVAILABILITY_WATCH_SLICES = 24;
 const AVAILABILITY_WATCH_MAX_PER_TICK = 900;
 /** Respiro entre chamadas: a vigília nunca deve competir com o sync do usuário. */
 const AVAILABILITY_WATCH_DELAY_MS = 150;
+
+/**
+ * SHOPEE NA VIGÍLIA — flag própria, e por que ela existe.
+ *
+ * A vigília nasceu olhando só o Mercado Livre, mas o buraco maior está do
+ * outro lado: medido em 15/09/2026, a Shopee tem **6.246 anúncios não
+ * encerrados sobre peça sem saldo** (4.331 produtos, 15 clientes) contra 1.729
+ * `active` no ML. E aqui a correção de fato funciona — o ML recusa zerar
+ * quantidade de anúncio fora do ar em ~91% dos casos, enquanto a Shopee
+ * aceita: na venda do SKU 34049, os três anúncios de Shopee zeraram em
+ * segundos e foram os dois do ML que recusaram.
+ *
+ * Por que uma flag separada e desligada por padrão: ligar isto põe milhares de
+ * anúncios de 15 lojistas na fila de zeragem de uma vez. Se o estoque local
+ * estiver errado para baixo em algum cliente (migração incompleta, por
+ * exemplo), a vigília tira do ar peça que existe. A flag permite ligar com o
+ * lojista avisado e desligar em um comando.
+ */
+const AVAILABILITY_WATCH_SHOPEE_ENABLED_KEY =
+  "AVAILABILITY_WATCH_SHOPEE_ENABLED";
 
 type DriftCandidate = {
   productId: string;
@@ -307,6 +329,14 @@ export class StockReconciliationService {
 
   private static async watchAvailabilityInner(agora: Date): Promise<void> {
     const fatia = this.sliceForClock(agora);
+
+    // A Shopee entra só com a flag. Sem ela, a lista fica com um elemento e a
+    // consulta é a mesma de antes — o ramo do Mercado Livre não muda.
+    const plataformas =
+      process.env[AVAILABILITY_WATCH_SHOPEE_ENABLED_KEY] === "1"
+        ? ["MERCADO_LIVRE", "SHOPEE"]
+        : ["MERCADO_LIVRE"];
+
     // `stock - reservedStock` compara DUAS COLUNAS, coisa que o `where` do
     // Prisma não faz — daí o raw. `closed` fica de fora: é terminal e o
     // anúncio não volta sozinho. Placeholders `PENDING_*` nunca existiram no
@@ -322,6 +352,8 @@ export class StockReconciliationService {
         accountId: string;
         accountName: string;
         accessToken: string | null;
+        platform: string;
+        shopId: bigint | number | null;
       }>
     >`
       SELECT pl.id                        AS "listingId",
@@ -332,11 +364,13 @@ export class StockReconciliationService {
              (p.stock - p."reservedStock") AS disponivel,
              ma.id                        AS "accountId",
              ma."accountName"             AS "accountName",
-             ma."accessToken"             AS "accessToken"
+             ma."accessToken"             AS "accessToken",
+             ma.platform::text            AS platform,
+             ma."shopId"                  AS "shopId"
       FROM "ProductListing" pl
       JOIN "Product" p ON p.id = pl."productId"
       JOIN "MarketplaceAccount" ma ON ma.id = pl."marketplaceAccountId"
-      WHERE ma.platform = 'MERCADO_LIVRE'
+      WHERE ma.platform::text = ANY(${plataformas})
         AND ma.status = 'ACTIVE'
         AND (p.stock - p."reservedStock") <= 0
         AND pl.status NOT IN ('closed', 'CLOSED')
@@ -371,18 +405,72 @@ export class StockReconciliationService {
     let contasComFalha = 0;
     let puladosPorFalhaDeConta = 0;
 
+    let comVariacaoSemModelo = 0;
+
     for (const [, lista] of porConta) {
       const token = lista[0].accessToken!;
-      let snapshot: Array<{
-        id: string;
-        status: string;
-        available_quantity: number;
-      }> = [];
+      const plataforma = lista[0].platform;
+
+      // `quantidadeAVenda` responde UMA pergunta por canal: "este anúncio pode
+      // ser comprado agora, e em que quantidade?". Zero ou ausente = sem risco.
+      let quantidadeAVenda = new Map<string, number>();
+
       try {
-        snapshot = await MLApiService.getItemsStockSnapshot(
-          token,
-          lista.map((c) => c.externalListingId),
-        );
+        if (plataforma === "SHOPEE") {
+          const shopId = Number(lista[0].shopId ?? 0);
+          if (!shopId) {
+            contasComFalha++;
+            puladosPorFalhaDeConta += lista.length;
+            continue;
+          }
+
+          // O identificador da Shopee pode vir como `item_id:model_id` quando o
+          // anúncio tem variações. Nos candidatos de hoje não há um único caso
+          // assim (medido: 6.246 de 6.246 sem modelo), mas o tratamento fica
+          // porque um anúncio com variação responde estoque POR MODELO e usar
+          // o total do item daria falso positivo.
+          const itemIds = [
+            ...new Set(
+              lista.map((c) => parseInt(c.externalListingId.split(":")[0], 10)),
+            ),
+          ].filter((n) => Number.isFinite(n) && n > 0);
+
+          const itens = await ShopeeApiService.getItemsBaseInfo(
+            token,
+            shopId,
+            itemIds,
+          );
+
+          for (const item of itens as any[]) {
+            const id = String(item?.item_id ?? "");
+            if (!id) continue;
+            // Item com variação e listing sem modelo: não dá para decidir pelo
+            // total. Fica de fora e é contado — silêncio aqui seria o mesmo
+            // erro de cobertura que este bloco existe para evitar.
+            if (item?.has_model) {
+              comVariacaoSemModelo++;
+              continue;
+            }
+            // `item_status` é o campo que a Shopee realmente devolve; NORMAL é
+            // o único estado em que a peça pode ser comprada.
+            const aVenda =
+              (item?.item_status ?? item?.status) === "NORMAL"
+                ? SyncUseCase.getShopeeItemAvailableStock(item)
+                : 0;
+            quantidadeAVenda.set(id, aVenda);
+          }
+        } else {
+          const snapshot = await MLApiService.getItemsStockSnapshot(
+            token,
+            lista.map((c) => c.externalListingId),
+          );
+          for (const s of snapshot) {
+            quantidadeAVenda.set(
+              s.id,
+              s.status === "active" ? s.available_quantity : 0,
+            );
+          }
+        }
       } catch {
         // Token expirado, conta instável: a vigília nunca derruba o laço nem
         // renova token por conta própria — refresh a partir do processo errado
@@ -392,24 +480,27 @@ export class StockReconciliationService {
         continue;
       }
 
-      const porItem = new Map(snapshot.map((s) => [s.id, s]));
-      verificados += snapshot.length;
+      verificados += quantidadeAVenda.size;
 
       for (const c of lista) {
-        const item = porItem.get(c.externalListingId);
-        if (!item) continue; // item removido/inacessível: o multiget omite
-        if (item.status !== "active" || item.available_quantity <= 0) continue;
+        const chave =
+          plataforma === "SHOPEE"
+            ? c.externalListingId.split(":")[0]
+            : c.externalListingId;
+        const aVenda = quantidadeAVenda.get(chave);
+        if (aVenda === undefined) continue; // item removido/inacessível
+        if (aVenda <= 0) continue;
 
         // ACHOU: anúncio no ar vendendo peça que não existe. É o estado que
         // precede a venda dupla.
         reabertos++;
-        await this.alertBackOnlineWithoutStock(c, item.available_quantity);
+        await this.alertBackOnlineWithoutStock(c, aVenda, plataforma);
         await this.enqueue({
           productId: c.productId,
           stock: Math.max(0, c.disponivel),
           listingId: c.listingId,
           marketplaceAccountId: c.accountId,
-          platform: "MERCADO_LIVRE",
+          platform: plataforma,
         });
       }
 
@@ -434,6 +525,8 @@ export class StockReconciliationService {
         puladosPorFalhaDeConta,
         contas: porConta.size,
         contasComFalha,
+        comVariacaoSemModelo,
+        plataformas,
         reabertosSemEstoque: reabertos,
       }),
     );
@@ -448,7 +541,14 @@ export class StockReconciliationService {
     }
   }
 
-  /** Dedupe de 24h, mesmo padrão de `alertMLReactivationRisk`. Nunca lança. */
+  /**
+   * Dedupe de 24h, mesmo padrão de `alertMLReactivationRisk`. Nunca lança.
+   *
+   * O rótulo é por canal de propósito. `ML_BACK_ONLINE_WITHOUT_STOCK` já é
+   * consultado em painel e em script de auditoria; emitir Shopee sob esse nome
+   * faria o rótulo mentir e contaminaria série histórica. O canal novo ganha o
+   * seu, e quem quiser o total soma os dois.
+   */
   private static async alertBackOnlineWithoutStock(
     c: {
       listingId: string;
@@ -460,12 +560,19 @@ export class StockReconciliationService {
       accountName: string;
     },
     remoteQuantity: number,
+    plataforma = "MERCADO_LIVRE",
   ): Promise<void> {
+    const rotulo =
+      plataforma === "SHOPEE"
+        ? "SHOPEE_BACK_ONLINE_WITHOUT_STOCK"
+        : "ML_BACK_ONLINE_WITHOUT_STOCK";
+    const canal = plataforma === "SHOPEE" ? "na Shopee" : "no Mercado Livre";
+
     try {
       const desde = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const existe = await prisma.systemLog.findFirst({
         where: {
-          action: "ML_BACK_ONLINE_WITHOUT_STOCK",
+          action: rotulo,
           resourceId: c.listingId,
           createdAt: { gte: desde },
         },
@@ -474,13 +581,13 @@ export class StockReconciliationService {
       if (existe) return;
 
       await SystemLogService.logError(
-        "ML_BACK_ONLINE_WITHOUT_STOCK",
-        `Anúncio ${c.externalListingId} (SKU ${c.sku ?? "?"} — ${c.productName}) voltou ao ar no Mercado Livre com quantidade=${remoteQuantity}, mas a peça não está disponível no estoque. Pausa enfileirada automaticamente.`,
+        rotulo,
+        `Anúncio ${c.externalListingId} (SKU ${c.sku ?? "?"} — ${c.productName}) está à venda ${canal} com quantidade=${remoteQuantity}, mas a peça não está disponível no estoque. Pausa enfileirada automaticamente.`,
         {
           resource: "Listing",
           resourceId: c.listingId,
           details: {
-            platform: "MERCADO_LIVRE",
+            platform: plataforma,
             accountId: c.accountId,
             accountName: c.accountName,
             externalListingId: c.externalListingId,
@@ -516,8 +623,10 @@ export class StockReconciliationService {
           console.error("[availability_watch] tick failed:", err);
         });
       }, AVAILABILITY_WATCH_INTERVAL_MS);
+      const comShopee =
+        process.env[AVAILABILITY_WATCH_SHOPEE_ENABLED_KEY] === "1";
       console.log(
-        `[availability_watch] started (interval=${AVAILABILITY_WATCH_INTERVAL_MS}ms, slices=${AVAILABILITY_WATCH_SLICES}, maxPorTick=${AVAILABILITY_WATCH_MAX_PER_TICK})`,
+        `[availability_watch] started (interval=${AVAILABILITY_WATCH_INTERVAL_MS}ms, slices=${AVAILABILITY_WATCH_SLICES}, maxPorTick=${AVAILABILITY_WATCH_MAX_PER_TICK}, canais=${comShopee ? "ML+SHOPEE" : "ML"})`,
       );
     } else {
       // Sem esta linha, vigília ligada e vigília desligada produzem o MESMO

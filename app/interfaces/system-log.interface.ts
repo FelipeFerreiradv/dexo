@@ -77,6 +77,11 @@ export type LogAction =
   // (`available_quantity is not modifiable`), então ver a volta e pausar é a
   // única defesa. Ver StockReconciliationService.watchAvailabilityOnce.
   | "ML_BACK_ONLINE_WITHOUT_STOCK"
+  // Mesmo estado, canal Shopee. Rótulo próprio de propósito: o do ML já é
+  // consultado em painel e auditoria, e emitir Shopee sob aquele nome faria o
+  // rótulo mentir e misturaria série histórica. Quem quiser o total soma os
+  // dois. Só nasce com AVAILABILITY_WATCH_SHOPEE_ENABLED=1.
+  | "SHOPEE_BACK_ONLINE_WITHOUT_STOCK"
   // Listing que apontava para a conta errada e foi reapontado para a conta
   // correta do mesmo tenant. Já era emitido por
   // SystemLogService.logListingOwnershipRepaired, mas faltava no union — o
