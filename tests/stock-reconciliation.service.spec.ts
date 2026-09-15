@@ -442,3 +442,106 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
     });
   });
 });
+
+/**
+ * COBERTURA DA VIGÍLIA — o defeito que estes testes travam.
+ *
+ * Até 15/09/2026 a varredura usava OFFSET com a posição guardada em memória.
+ * O processo reinicia de tempos em tempos e a posição zerava: medido em
+ * produção, o deslocamento NUNCA passou de 4.000 de 10.698 candidatos, 62,6%
+ * da base jamais foi verificada uma única vez, e 27 das 29 contas de Mercado
+ * Livre estavam inteiras nessa zona cega. O anúncio que vendeu a peça do SKU
+ * 34049 pela segunda vez estava na posição ~7.921 — a vigília estava LIGADA e
+ * mesmo assim nunca chegou nele.
+ *
+ * O invariante que estes testes travam não é "existe um cursor certo": é que
+ * NENHUM anúncio pode ficar preso fora do alcance da varredura, e que
+ * reiniciar o processo não reposiciona nada.
+ */
+describe("StockReconciliationService — cobertura da vigília", () => {
+  const HORA_MS = 60 * 60 * 1000;
+
+  it("24 horas consecutivas visitam as 24 fatias, sem repetir nenhuma", () => {
+    const base = new Date("2026-09-15T00:00:00.000Z").getTime();
+    const visitadas = new Set<number>();
+
+    for (let h = 0; h < 24; h++) {
+      visitadas.add(
+        StockReconciliationService.sliceForClock(new Date(base + h * HORA_MS)),
+      );
+    }
+
+    // Se alguma fatia faltasse, os anúncios dela ficariam invisíveis — que é
+    // exatamente o defeito de produção que motivou a mudança.
+    expect(visitadas.size).toBe(24);
+  });
+
+  it("a fatia não depende de estado: reiniciar o processo não reposiciona", () => {
+    const momento = new Date("2026-09-15T13:00:00.000Z");
+
+    const antes = StockReconciliationService.sliceForClock(momento);
+    StockReconciliationService.stop(); // simula o reinício do processo
+    const depois = StockReconciliationService.sliceForClock(momento);
+
+    expect(depois).toBe(antes);
+  });
+
+  it("horas diferentes varrem fatias diferentes — a varredura avança sozinha", () => {
+    const base = new Date("2026-09-15T05:00:00.000Z").getTime();
+
+    const agora = StockReconciliationService.sliceForClock(new Date(base));
+    const daquiUmaHora = StockReconciliationService.sliceForClock(
+      new Date(base + HORA_MS),
+    );
+
+    expect(daquiUmaHora).not.toBe(agora);
+  });
+
+  it("a fatia entra na consulta, e o deslocamento não existe mais", async () => {
+    const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
+    process.env.AVAILABILITY_WATCH_ENABLED = "1";
+    try {
+      vi.clearAllMocks();
+      (prisma as any).$queryRaw.mockResolvedValue([]);
+      const momento = new Date("2026-09-15T13:00:00.000Z");
+
+      await StockReconciliationService.watchAvailabilityOnce(momento);
+
+      const [fragmentos, ...valores] = (prisma as any).$queryRaw.mock.calls[0];
+      const sql: string = fragmentos.join("?");
+
+      expect(sql).toContain("hashtext");
+      expect(sql).not.toContain("OFFSET");
+      // A fatia da hora é o último parâmetro interpolado no WHERE.
+      expect(valores).toContain(
+        StockReconciliationService.sliceForClock(momento),
+      );
+    } finally {
+      if (anterior === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+      else process.env.AVAILABILITY_WATCH_ENABLED = anterior;
+    }
+  });
+
+  it("duas passadas na mesma hora não pulam nada — a fatia é a mesma", async () => {
+    const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
+    process.env.AVAILABILITY_WATCH_ENABLED = "1";
+    try {
+      vi.clearAllMocks();
+      (prisma as any).$queryRaw.mockResolvedValue([]);
+      const momento = new Date("2026-09-15T09:30:00.000Z");
+
+      await StockReconciliationService.watchAvailabilityOnce(momento);
+      await StockReconciliationService.watchAvailabilityOnce(momento);
+
+      const fatiaDaPrimeira = (prisma as any).$queryRaw.mock.calls[0].slice(1);
+      const fatiaDaSegunda = (prisma as any).$queryRaw.mock.calls[1].slice(1);
+
+      // Antes, a segunda passada saltava 400 posições à frente. Agora as duas
+      // olham o mesmo conjunto — nada escapa entre uma e outra.
+      expect(fatiaDaSegunda).toEqual(fatiaDaPrimeira);
+    } finally {
+      if (anterior === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+      else process.env.AVAILABILITY_WATCH_ENABLED = anterior;
+    }
+  });
+});

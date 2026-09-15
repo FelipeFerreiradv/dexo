@@ -16,7 +16,29 @@ const BATCH_LIMIT = 500;
  * porque o evento vigiado — um anúncio voltar ao ar — é raro.
  */
 const AVAILABILITY_WATCH_INTERVAL_MS = 60 * 60 * 1000;
-const AVAILABILITY_WATCH_BATCH = 400;
+
+/**
+ * FATIAMENTO DETERMINÍSTICO — por que não existe mais cursor.
+ *
+ * A versão anterior varria com OFFSET e guardava a posição em memória. Como o
+ * processo reinicia de tempos em tempos, a posição zerava e a varredura
+ * recomeçava do início: medido em 15/09/2026, o deslocamento NUNCA passou de
+ * 4.000 de 10.698 candidatos — 62,6% da base jamais foi verificada uma única
+ * vez, e 27 das 29 contas de ML estavam inteiras nessa zona cega. O anúncio
+ * que causou a venda dupla do SKU 34049 estava na posição ~7.921.
+ *
+ * Agora cada anúncio cai numa fatia fixa pelo hash do próprio id, e a fatia
+ * visitada sai da HORA DO RELÓGIO. Três consequências: reiniciar o processo
+ * não reposiciona nada; nenhum anúncio fica preso no fim de uma fila; e a base
+ * inteira é coberta a cada 24 horas por construção, não por sorte.
+ */
+const AVAILABILITY_WATCH_SLICES = 24;
+/**
+ * Teto por passada. Com a base de 15/09/2026 (10.698 candidatos) uma fatia tem
+ * ~446 anúncios, bem abaixo disto. Se o teto chegar a cortar, a varredura
+ * perde cobertura — por isso o corte é LOGADO como aviso, nunca silencioso.
+ */
+const AVAILABILITY_WATCH_MAX_PER_TICK = 900;
 /** Respiro entre chamadas: a vigília nunca deve competir com o sync do usuário. */
 const AVAILABILITY_WATCH_DELAY_MS = 150;
 
@@ -246,26 +268,45 @@ export class StockReconciliationService {
   // job. Quem pausa é o pipeline de sempre — nenhuma escrita nova de
   // marketplace nasce aqui.
   //
-  // Default DESLIGADA. AVAILABILITY_WATCH_ENABLED=1 liga.
+  // COBERTURA (corrigido em 15/09/2026): a varredura não tem mais cursor — a
+  // fatia vem do relógio, e em 24 horas a base inteira passa. A versão com
+  // OFFSET em memória nunca passou de 4.000 de 10.698 porque o processo
+  // reinicia; ver o bloco de constantes no topo do arquivo.
+  //
+  // Default DESLIGADA. AVAILABILITY_WATCH_ENABLED=1 liga. O boot agora diz em
+  // qual dos dois estados subiu — antes os dois eram silenciosos e iguais.
   // ───────────────────────────────────────────────────────────────────────────
 
-  /** Cursor em memória: roda a base em fatias, sem escrever nada para marcar. */
-  private static watchCursor = 0;
   private static watchIntervalId: NodeJS.Timeout | null = null;
   private static watchInProgress = false;
 
-  static async watchAvailabilityOnce(): Promise<void> {
+  /**
+   * Qual fatia a hora do relógio manda varrer. Determinístico e sem estado:
+   * duas passadas na mesma hora visitam a mesma fatia, e 24 horas visitam
+   * todas. Recebe a data para que o teste não dependa do relógio real.
+   */
+  static sliceForClock(agora: Date): number {
+    const horasDesdeEpoch = Math.floor(agora.getTime() / (60 * 60 * 1000));
+    return (
+      ((horasDesdeEpoch % AVAILABILITY_WATCH_SLICES) +
+        AVAILABILITY_WATCH_SLICES) %
+      AVAILABILITY_WATCH_SLICES
+    );
+  }
+
+  static async watchAvailabilityOnce(agora = new Date()): Promise<void> {
     if (process.env.AVAILABILITY_WATCH_ENABLED !== "1") return;
     if (this.watchInProgress) return;
     this.watchInProgress = true;
     try {
-      await this.watchAvailabilityInner();
+      await this.watchAvailabilityInner(agora);
     } finally {
       this.watchInProgress = false;
     }
   }
 
-  private static async watchAvailabilityInner(): Promise<void> {
+  private static async watchAvailabilityInner(agora: Date): Promise<void> {
+    const fatia = this.sliceForClock(agora);
     // `stock - reservedStock` compara DUAS COLUNAS, coisa que o `where` do
     // Prisma não faz — daí o raw. `closed` fica de fora: é terminal e o
     // anúncio não volta sozinho. Placeholders `PENDING_*` nunca existiram no
@@ -300,18 +341,12 @@ export class StockReconciliationService {
         AND (p.stock - p."reservedStock") <= 0
         AND pl.status NOT IN ('closed', 'CLOSED')
         AND pl."externalListingId" NOT LIKE 'PENDING_%'
+        AND ((hashtext(pl.id) % ${AVAILABILITY_WATCH_SLICES}) + ${AVAILABILITY_WATCH_SLICES}) % ${AVAILABILITY_WATCH_SLICES} = ${fatia}
       ORDER BY pl.id
-      OFFSET ${this.watchCursor}
-      LIMIT ${AVAILABILITY_WATCH_BATCH}
+      LIMIT ${AVAILABILITY_WATCH_MAX_PER_TICK}
     `;
 
-    // Fim da base: volta ao começo na próxima passada.
-    if (candidatos.length === 0) {
-      this.watchCursor = 0;
-      return;
-    }
-    this.watchCursor += candidatos.length;
-    if (candidatos.length < AVAILABILITY_WATCH_BATCH) this.watchCursor = 0;
+    if (candidatos.length === 0) return;
 
     // MULTIGET POR CONTA, nunca item a item. Uma passada com `getItemDetails`
     // custaria uma chamada e ~12 KB por anúncio — 566 chamadas e ~6,8 MB com o
@@ -320,8 +355,12 @@ export class StockReconciliationService {
     // pré-carga em lote no lugar de consulta dentro de laço, e nada de ler a
     // linha inteira em caminho recorrente.
     const porConta = new Map<string, typeof candidatos>();
+    let semToken = 0;
     for (const c of candidatos) {
-      if (!c.accessToken) continue;
+      if (!c.accessToken) {
+        semToken++;
+        continue;
+      }
       const atual = porConta.get(c.accountId) ?? [];
       atual.push(c);
       porConta.set(c.accountId, atual);
@@ -329,6 +368,8 @@ export class StockReconciliationService {
 
     let verificados = 0;
     let reabertos = 0;
+    let contasComFalha = 0;
+    let puladosPorFalhaDeConta = 0;
 
     for (const [, lista] of porConta) {
       const token = lista[0].accessToken!;
@@ -346,6 +387,8 @@ export class StockReconciliationService {
         // Token expirado, conta instável: a vigília nunca derruba o laço nem
         // renova token por conta própria — refresh a partir do processo errado
         // marca a conta como ERROR e para o lojista inteiro. Próxima conta.
+        contasComFalha++;
+        puladosPorFalhaDeConta += lista.length;
         continue;
       }
 
@@ -375,16 +418,34 @@ export class StockReconciliationService {
       await new Promise((r) => setTimeout(r, AVAILABILITY_WATCH_DELAY_MS));
     }
 
+    // Telemetria HONESTA: antes só saíam `candidatos` e `verificados`, e a
+    // diferença entre os dois — 57% da base em 15/09/2026 — não tinha nome
+    // nem causa no log. Quem não é verificado agora aparece com o motivo.
+    const naoVerificados = candidatos.length - verificados;
     console.log(
       JSON.stringify({
         event: "availability_watch.tick",
+        fatia,
+        deTotalDeFatias: AVAILABILITY_WATCH_SLICES,
         candidatos: candidatos.length,
         verificados,
+        naoVerificados,
+        semToken,
+        puladosPorFalhaDeConta,
         contas: porConta.size,
+        contasComFalha,
         reabertosSemEstoque: reabertos,
-        proximoOffset: this.watchCursor,
       }),
     );
+
+    // Corte pelo teto = fatia maior que o orçamento da passada. Parte dela não
+    // foi olhada, e silêncio aqui reproduziria exatamente o defeito que este
+    // PR corrige — por isso o aviso é ruidoso.
+    if (candidatos.length >= AVAILABILITY_WATCH_MAX_PER_TICK) {
+      console.warn(
+        `[availability_watch] fatia ${fatia} atingiu o teto de ${AVAILABILITY_WATCH_MAX_PER_TICK} candidatos — parte da fatia NÃO foi verificada. Aumentar AVAILABILITY_WATCH_SLICES.`,
+      );
+    }
   }
 
   /** Dedupe de 24h, mesmo padrão de `alertMLReactivationRisk`. Nunca lança. */
@@ -456,7 +517,14 @@ export class StockReconciliationService {
         });
       }, AVAILABILITY_WATCH_INTERVAL_MS);
       console.log(
-        `[availability_watch] started (interval=${AVAILABILITY_WATCH_INTERVAL_MS}ms, batch=${AVAILABILITY_WATCH_BATCH})`,
+        `[availability_watch] started (interval=${AVAILABILITY_WATCH_INTERVAL_MS}ms, slices=${AVAILABILITY_WATCH_SLICES}, maxPorTick=${AVAILABILITY_WATCH_MAX_PER_TICK})`,
+      );
+    } else {
+      // Sem esta linha, vigília ligada e vigília desligada produzem o MESMO
+      // log de boot — e foi assim que ela passou semanas desligada sem
+      // ninguém notar. O estado agora é legível no log do processo.
+      console.log(
+        "[availability_watch] DESLIGADA (AVAILABILITY_WATCH_ENABLED != '1') — nenhum anúncio será vigiado",
       );
     }
   }
@@ -466,7 +534,6 @@ export class StockReconciliationService {
     this.intervalId = null;
     if (this.watchIntervalId) clearInterval(this.watchIntervalId);
     this.watchIntervalId = null;
-    this.watchCursor = 0;
     this.running = false;
   }
 }
