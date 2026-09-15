@@ -40,13 +40,57 @@ import {
 const ESQ = "Amortecedor Tampa Do Porta Malas L/e Volkswagen Gol 2021";
 const DIR = "Amortecedor Tampa Do Porta Malas L/d Volkswagen Gol 2021";
 
-describe("a causa: o tokenizador apaga o lado", () => {
-  it("dois titulos que so diferem em L/e x L/d dao semelhanca 1,00", () => {
-    // Este teste documenta o DEFEITO de origem, nao um comportamento desejado.
-    // Se um dia `titleTokens` passar a preservar tokens de 1 caractere, ele
-    // falha — e ai a guarda abaixo vira redundante, o que e uma boa noticia.
-    expect(titleSimilarity(ESQ, DIR)).toBe(1);
+describe("a causa: o tokenizador apagava o lado (corrigido, mas nao basta)", () => {
+  it("L/e x L/d ja NAO da mais 1,00 — o tokenizador canoniza o lado", () => {
+    // Antes da canonizacao, `L/e` e `L/d` viravam tokens de 1 caractere e eram
+    // descartados: os dois titulos ficavam IDENTICOS (1,00). Hoje cada um
+    // carrega seu sentinela (`esq` / `dir`) e a semelhanca fica honesta.
+    expect(titleSimilarity(ESQ, DIR)).toBeLessThan(1);
+    expect(titleSimilarity(ESQ, DIR)).toBeCloseTo(0.78, 2);
+  });
+
+  it("⚠️ mas 0,78 ainda passa no limiar de 0,4 — por isso a guarda de lado continua necessaria", () => {
+    // Este e o ponto: canonizar torna o NUMERO honesto, nao o VEREDITO seguro.
+    // O lado e 1 token entre 8; nenhum limiar razoavel separa peca espelhada
+    // de peca reanunciada. Quem separa e `isOppositeSideOrAxis`.
     expect(areTitlesSimilar(ESQ, DIR)).toBe(true);
+    expect(isOppositeSideOrAxis(ESQ, DIR)).toBe(true);
+  });
+
+  it("e a MESMA peca escrita de dois jeitos ficou mais proxima", () => {
+    // O outro lado da moeda da canonizacao, e o ganho maior: 274 pares reais
+    // passaram a ser reconhecidos como a mesma peca.
+    const porExtenso = "Chicote Porta Dianteira Esquerda Gm Onix 1.4 2017";
+    const abreviado = "Chicote Porta Diant Esq Gm Onix 1.4 2017";
+    expect(areTitlesSimilar(porExtenso, abreviado)).toBe(true);
+    expect(titleSimilarity(porExtenso, abreviado)).toBeGreaterThan(0.9);
+  });
+
+  it("genero e abreviacao caem no MESMO sentinela", () => {
+    // "Traseira Direita" x "Traseira L/D" caia de 0,42 para 0,38 quando o alvo
+    // era a palavra por extenso ("direito" != "direita"). Com sentinela, nao.
+    expect(
+      areTitlesSimilar(
+        "Acabamento Coluna Traseira Direita Corsa Hatch",
+        "Acabamento Coluna Traseira L/D Corsa Hatch",
+      ),
+    ).toBe(true);
+    expect(
+      titleSimilarity("Lanterna Traseira Esq Corsa", "Lanterna Traseira L/E Corsa"),
+    ).toBe(1);
+  });
+
+  it("⚠️⚠️ a preposicao 'de' NAO pode virar lado/eixo", () => {
+    // Com separador opcional, /\bd[/.\-]?e\b/ casa com "de" e reescreve
+    // "Ponta DE Eixo Traseiro" como "Ponta diant esq Eixo Traseiro".
+    // Seria corrupcao silenciosa de metade do catalogo.
+    expect(
+      titleSimilarity(
+        "Ponta Eixo Traseiro Volkswagen Gol 1997",
+        "Ponta De Eixo Traseiro Vw Gol 1997",
+      ),
+    ).toBeGreaterThan(0.6);
+    expect(titleSide("Ponta De Eixo Traseiro Gol")).toBeNull();
   });
 
   it("escrito por extenso o Jaccard tambem aprova, porque o lado e 1 token entre 7", () => {
@@ -68,10 +112,34 @@ describe("titleSide / titleAxis", () => {
   });
 
   it("⚠️ a borda de palavra segura o 'le' de 'Lente'", () => {
-    // Sem `\b`, /[ltd][/.\s-]?e/ casaria dentro de "Lente" e o titulo inteiro
+    // Sem `\b`, /[ltd][/.\-]e/ casaria dentro de "Lente" e o titulo inteiro
     // viraria "lado esquerdo".
     expect(titleSide("Lente Do Farol Gol G4")).toBeNull();
     expect(titleSide("Cilindro Mestre Etios")).toBeNull();
+  });
+
+  it("⚠️⚠️ a preposicao 'de' NAO e lado esquerdo", () => {
+    // Com o separador opcional, /\b[ltd][/.\s-]?e\b/ casava com "de" e QUALQUER
+    // titulo que a contivesse virava lado esquerdo. Bastava o outro lado do par
+    // dizer "direita" para a guarda acusar oposicao inexistente.
+    expect(titleSide("Ponta De Eixo Traseiro Volkswagen Gol 1997")).toBeNull();
+    expect(titleSide("Caixa De Direcao Fiat Mobi 2017")).toBeNull();
+    expect(titleSide("Bomba De Combustivel Ford Fiesta")).toBeNull();
+    // E o par que isso teria quebrado:
+    expect(
+      isOppositeSideOrAxis(
+        "Ponta De Eixo Traseiro Vw Gol 1997",
+        "Ponta Eixo Traseiro Direito Vw Gol 1997",
+      ),
+    ).toBe(false);
+  });
+
+  it("le as formas compactas COM separador, e as nuas inequivocas", () => {
+    expect(titleSide("Farol L/e Gol")).toBe("E");
+    expect(titleSide("Farol L.D Gol")).toBe("D");
+    expect(titleSide("Lanterna T-E Gol")).toBe("E");
+    expect(titleSide("Moldura Interruptor Duplo Le Strada")).toBe("E");
+    expect(titleSide("Acabamento Coluna Ld Corolla")).toBe("D");
   });
 
   it("devolve null quando o titulo declara os DOIS lados", () => {
