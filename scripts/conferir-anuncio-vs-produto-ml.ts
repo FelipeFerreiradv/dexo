@@ -39,6 +39,7 @@ import * as XLSX from "xlsx";
 import prisma from "../app/lib/prisma";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
 import { areTitlesSimilar, titleSimilarity } from "../app/lib/title-similarity";
+import { motivoOposicao } from "./lib/lado-e-eixo";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -278,6 +279,7 @@ async function analisar() {
   const divergentes: Record<string, string | number>[] = [];
   let conferidos = 0;
   let batem = 0;
+  let opostos = 0;
   let semCache = 0;
   let sumiuDoMl = 0;
   let semNome = 0;
@@ -301,10 +303,18 @@ async function analisar() {
       continue;
     }
     conferidos++;
-    if (areTitlesSimilar(a.title, l.product.name)) {
+    // ⚠️⚠️ O JACCARD SOZINHO ERA CEGO AO QUE MAIS IMPORTA NUM DESMANCHE.
+    // "Pinca Freio Dianteira Esquerda Gol G5" x "...Direita Gol G5" da 0,82 e
+    // passava como "titulo bate". Medido em 15/09/2026 sobre os caches de 9
+    // clientes: 879 vinculos tem lado/eixo OPOSTO e 542 deles estavam acima do
+    // limiar de 0,4 — reportados como saudaveis por todas as varreduras.
+    // Agora a oposicao DERRUBA a semelhanca, nunca o contrario.
+    const oposicao = motivoOposicao(a.title, l.product.name);
+    if (!oposicao && areTitlesSimilar(a.title, l.product.name)) {
       batem++;
       continue;
     }
+    if (oposicao) opostos++;
     divergentes.push({
       Anuncio: l.externalListingId,
       Conta: l.marketplaceAccount.accountName,
@@ -313,6 +323,7 @@ async function analisar() {
       "SKU do produto": l.product.sku,
       "SKU do anuncio": l.externalSku ?? a.sellerSku ?? "",
       Semelhanca: Number(titleSimilarity(a.title, l.product.name).toFixed(3)),
+      "Lado/eixo oposto": oposicao || "",
       "Status no ML": a.status ?? "",
       "Ja vendeu": a.vendidos ?? 0,
       "Estoque do produto": l.product.stock,
@@ -332,6 +343,7 @@ async function analisar() {
       (conferidos ? `  (${((divergentes.length / conferidos) * 100).toFixed(1)}%)` : ""),
   );
   console.log(`  destes, ja venderam      ${vendidosErrados.length}  <- baixa na peca errada`);
+  console.log(`  destes, LADO/EIXO oposto ${opostos}  <- peca espelhada, o Jaccard nao pegava`);
   console.log(`anuncio sumiu do ML (404)     ${sumiuDoMl}`);
   console.log(`produto sem nome           ${semNome}`);
   console.log(`sem cache (nao varridos)   ${semCache}`);
@@ -342,7 +354,7 @@ async function analisar() {
   fs.writeFileSync(
     jsonOut,
     JSON.stringify(
-      { conferidos, batem, divergentes: divergentes.length, vendidosErrados: vendidosErrados.length, semCache, itens: divergentes },
+      { conferidos, batem, divergentes: divergentes.length, opostos, vendidosErrados: vendidosErrados.length, semCache, itens: divergentes },
       null,
       1,
     ),
@@ -355,6 +367,7 @@ async function analisar() {
       { Campo: "Vinculos conferidos", Valor: conferidos },
       { Campo: "Titulo bate", Valor: batem },
       { Campo: "Titulo NAO bate", Valor: divergentes.length },
+      { Campo: "Lado/eixo oposto", Valor: opostos },
       { Campo: "Desses, ja venderam", Valor: vendidosErrados.length },
       { Campo: "Anuncio sumiu do ML (404)", Valor: sumiuDoMl },
       { Campo: "Produto sem nome", Valor: semNome },
