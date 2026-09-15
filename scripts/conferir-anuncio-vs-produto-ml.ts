@@ -37,7 +37,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as XLSX from "xlsx";
 import prisma from "../app/lib/prisma";
+import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
 import { areTitlesSimilar, titleSimilarity } from "../app/lib/title-similarity";
+import { motivoOposicao } from "./lib/lado-e-eixo";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -100,12 +102,59 @@ async function varrer() {
 
   const contas = await prisma.marketplaceAccount.findMany({
     where: { userId: user.id, platform: "MERCADO_LIVRE" },
-    select: { id: true, accountName: true, accessToken: true, expiresAt: true },
+    select: {
+      id: true,
+      accountName: true,
+      accessToken: true,
+      refreshToken: true,
+      expiresAt: true,
+    },
   });
   for (const c of contas) {
     const venc = c.expiresAt < new Date() ? "VENCIDO" : "ok";
     console.log(`[varrer] conta ${c.accountName} token ${venc}`);
   }
+
+  /**
+   * ⚠️ `expiresAt` NAO E GARANTIA. Na Agua Rasa a conta AGUARASAONLINE tinha
+   * `expiresAt` no futuro ("token ok") e a API respondeu 401 — a varredura
+   * interrompeu a conta e pulou 12.322 anuncios EM SILENCIO, com o resumo
+   * dizendo "falhas 20" como se fosse ruido de rede. So a leitura do log
+   * revelou. Agora o 401 dispara um refresh e a conta e retomada.
+   *
+   * ⚠️⚠️ ISTO SO PODE RODAR DA VPS. Refresh de token do ML a partir da
+   * maquina local usa outro `client_id` e marca a conta como ERROR — o
+   * lojista para de receber pedidos, em falha silenciosa.
+   */
+  const renovar = async (conta: {
+    id: string;
+    accountName: string;
+    refreshToken: string | null;
+  }): Promise<string | null> => {
+    if (!conta.refreshToken) {
+      console.error(`[varrer] ${conta.accountName} sem refreshToken — nao da para renovar`);
+      return null;
+    }
+    try {
+      console.log(`[varrer] renovando token de ${conta.accountName}...`);
+      const r = await MLOAuthService.refreshAccessTokenForAccount(
+        conta.id,
+        conta.refreshToken,
+      );
+      await prisma.marketplaceAccount.update({
+        where: { id: conta.id },
+        data: {
+          accessToken: r.accessToken,
+          refreshToken: r.refreshToken,
+          expiresAt: new Date(Date.now() + r.expiresIn * 1000),
+        },
+      });
+      return r.accessToken;
+    } catch (e) {
+      console.error(`[varrer] falha ao renovar ${conta.accountName}: ${(e as Error).message}`);
+      return null;
+    }
+  };
 
   let novos = 0;
   let falhas = 0;
@@ -122,6 +171,8 @@ async function varrer() {
       `[varrer] ${conta.accountName}: ${listings.length} anuncios, ${pendentes.length} a buscar`,
     );
 
+    let tokenAtual = conta.accessToken;
+    let jaRenovou = false;
     for (let i = 0; i < pendentes.length; i += LOTE) {
       const ids = pendentes.slice(i, i + LOTE);
       try {
@@ -129,13 +180,25 @@ async function varrer() {
           `https://api.mercadolibre.com/items?ids=${ids.join(",")}` +
           `&attributes=id,title,status,sub_status,seller_custom_field,available_quantity,sold_quantity,seller_id,pictures,attributes`;
         const r = await fetch(url, {
-          headers: { Authorization: `Bearer ${conta.accessToken}` },
+          headers: { Authorization: `Bearer ${tokenAtual}` },
         });
         if (!r.ok) {
+          // 401/403: tenta UMA renovacao e repete o lote. So desiste da conta
+          // se a renovacao tambem falhar — antes o script abandonava a conta
+          // inteira no primeiro 401.
+          if ((r.status === 401 || r.status === 403) && !jaRenovou) {
+            jaRenovou = true;
+            const novo = await renovar(conta);
+            if (novo) {
+              tokenAtual = novo;
+              i -= LOTE; // refaz este lote com o token novo
+              continue;
+            }
+          }
           falhas += ids.length;
           if (r.status === 401 || r.status === 403) {
             console.error(
-              `[varrer] ${r.status} na conta ${conta.accountName} — token sem permissao. Interrompendo esta conta.`,
+              `[varrer] ${r.status} na conta ${conta.accountName} mesmo apos renovar — interrompendo esta conta.`,
             );
             break;
           }
@@ -216,6 +279,7 @@ async function analisar() {
   const divergentes: Record<string, string | number>[] = [];
   let conferidos = 0;
   let batem = 0;
+  let opostos = 0;
   let semCache = 0;
   let sumiuDoMl = 0;
   let semNome = 0;
@@ -239,10 +303,18 @@ async function analisar() {
       continue;
     }
     conferidos++;
-    if (areTitlesSimilar(a.title, l.product.name)) {
+    // ⚠️⚠️ O JACCARD SOZINHO ERA CEGO AO QUE MAIS IMPORTA NUM DESMANCHE.
+    // "Pinca Freio Dianteira Esquerda Gol G5" x "...Direita Gol G5" da 0,82 e
+    // passava como "titulo bate". Medido em 15/09/2026 sobre os caches de 9
+    // clientes: 879 vinculos tem lado/eixo OPOSTO e 542 deles estavam acima do
+    // limiar de 0,4 — reportados como saudaveis por todas as varreduras.
+    // Agora a oposicao DERRUBA a semelhanca, nunca o contrario.
+    const oposicao = motivoOposicao(a.title, l.product.name);
+    if (!oposicao && areTitlesSimilar(a.title, l.product.name)) {
       batem++;
       continue;
     }
+    if (oposicao) opostos++;
     divergentes.push({
       Anuncio: l.externalListingId,
       Conta: l.marketplaceAccount.accountName,
@@ -251,6 +323,7 @@ async function analisar() {
       "SKU do produto": l.product.sku,
       "SKU do anuncio": l.externalSku ?? a.sellerSku ?? "",
       Semelhanca: Number(titleSimilarity(a.title, l.product.name).toFixed(3)),
+      "Lado/eixo oposto": oposicao || "",
       "Status no ML": a.status ?? "",
       "Ja vendeu": a.vendidos ?? 0,
       "Estoque do produto": l.product.stock,
@@ -270,6 +343,7 @@ async function analisar() {
       (conferidos ? `  (${((divergentes.length / conferidos) * 100).toFixed(1)}%)` : ""),
   );
   console.log(`  destes, ja venderam      ${vendidosErrados.length}  <- baixa na peca errada`);
+  console.log(`  destes, LADO/EIXO oposto ${opostos}  <- peca espelhada, o Jaccard nao pegava`);
   console.log(`anuncio sumiu do ML (404)     ${sumiuDoMl}`);
   console.log(`produto sem nome           ${semNome}`);
   console.log(`sem cache (nao varridos)   ${semCache}`);
@@ -280,7 +354,7 @@ async function analisar() {
   fs.writeFileSync(
     jsonOut,
     JSON.stringify(
-      { conferidos, batem, divergentes: divergentes.length, vendidosErrados: vendidosErrados.length, semCache, itens: divergentes },
+      { conferidos, batem, divergentes: divergentes.length, opostos, vendidosErrados: vendidosErrados.length, semCache, itens: divergentes },
       null,
       1,
     ),
@@ -293,6 +367,7 @@ async function analisar() {
       { Campo: "Vinculos conferidos", Valor: conferidos },
       { Campo: "Titulo bate", Valor: batem },
       { Campo: "Titulo NAO bate", Valor: divergentes.length },
+      { Campo: "Lado/eixo oposto", Valor: opostos },
       { Campo: "Desses, ja venderam", Valor: vendidosErrados.length },
       { Campo: "Anuncio sumiu do ML (404)", Valor: sumiuDoMl },
       { Campo: "Produto sem nome", Valor: semNome },

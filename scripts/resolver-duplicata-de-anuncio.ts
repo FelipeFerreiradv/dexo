@@ -132,22 +132,47 @@ async function main() {
   // Medido no Revive: o SKU 1901 estava em 3 clusters e gerou 2 "erros".
   const jaPlanejada = new Set<string>();
   const alvo = limite ? clusters.slice(0, limite) : clusters;
+
+  // ⚠️ PRE-CARGA EM LOTE, NAO UMA CONSULTA POR CLUSTER.
+  // A versao anterior fazia 2 consultas por grupo. Na Agua Rasa, com 4.098
+  // grupos, isso virou ~8.200 idas sequenciais ao pooler do Supabase e a
+  // conexao caiu no meio (P1017) — o script morreu ANTES de qualquer escrita,
+  // sem dano, mas sem entregar nada. Agora tudo que o veredito cita e lido em
+  // blocos de 500 ids e o plano e montado em memoria, com as MESMAS decisoes.
+  const idsCitados = [
+    ...new Set(alvo.flatMap((c) => c.produtos.map((p) => p.id))),
+  ];
+  const noBanco = new Map<
+    string,
+    {
+      id: string; sku: string; name: string; stock: number;
+      listings: Array<{ id: string; externalListingId: string | null }>;
+      _count: { orderItems: number; stockLogs: number; nfeItens: number };
+    }
+  >();
+  for (let i = 0; i < idsCitados.length; i += 500) {
+    const bloco = idsCitados.slice(i, i + 500);
+    const linhas = await prisma.product.findMany({
+      where: { id: { in: bloco }, userId: user.id },
+      select: { id: true, sku: true, name: true, stock: true,
+        listings: { select: { id: true, externalListingId: true } },
+        _count: { select: { orderItems: true, stockLogs: true, nfeItens: true } } },
+    });
+    for (const l of linhas) noBanco.set(l.id, l as never);
+  }
+  console.log(`[dados] ${idsCitados.length} produtos citados no veredito, ${noBanco.size} ainda existem`);
+
   for (const c of alvo) {
     const dono = c.produtos.find((p) => p.sku === c.dono);
     if (!dono) { recusas.push({ sku: c.dono, motivo: "dono não encontrado no grupo" }); continue; }
     // reconfere no banco: o veredito pode ter envelhecido
-    const donoAtual = await prisma.product.findFirst({ where: { id: dono.id, userId: user.id }, select: { id: true, sku: true, stock: true } });
+    const donoAtual = noBanco.get(dono.id);
     if (!donoAtual) { recusas.push({ sku: c.dono, motivo: "o produto dono não existe mais" }); continue; }
 
     for (const dupSku of c.duplicatas) {
       const dup = c.produtos.find((p) => p.sku === dupSku);
       if (!dup) continue;
-      const dupAtual = await prisma.product.findFirst({
-        where: { id: dup.id, userId: user.id },
-        select: { id: true, sku: true, name: true, stock: true,
-          listings: { select: { id: true, externalListingId: true } },
-          _count: { select: { orderItems: true, stockLogs: true, nfeItens: true } } },
-      });
+      const dupAtual = noBanco.get(dup.id);
       if (!dupAtual) { recusas.push({ sku: dupSku, motivo: "a duplicata não existe mais" }); continue; }
       if (jaPlanejada.has(dupAtual.id)) {
         recusas.push({ sku: dupSku, motivo: "duplicata ja planejada noutro grupo — ignorada aqui" });
