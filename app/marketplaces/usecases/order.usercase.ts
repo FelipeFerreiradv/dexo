@@ -9,7 +9,11 @@
  */
 
 import prisma from "@/app/lib/prisma";
-import { areTitlesSimilar } from "@/app/lib/title-similarity";
+import {
+  areTitlesSimilar,
+  isOppositeSideOrAxis,
+  oppositionReason,
+} from "@/app/lib/title-similarity";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
@@ -2485,6 +2489,27 @@ export class OrderUseCase {
           sku: normalizedSku,
           produto: unico.name,
           anuncio: tituloAnuncio,
+        }),
+      );
+      return null;
+    }
+    // ⚠️⚠️ A GUARDA ACIMA NAO PEGA A PECA ESPELHADA. `titleTokens` descarta
+    // tokens de 1 caractere, entao "Amortecedor ... L/e" x "Amortecedor ...
+    // L/d" da semelhanca 1,00 e passa direto — e a venda baixa o lado errado,
+    // deixando a peca vendida na prateleira e a outra anunciada.
+    // Mesma decisao do resto deste caminho: na duvida NAO baixa.
+    if (
+      tituloAnuncio &&
+      unico.name &&
+      isOppositeSideOrAxis(tituloAnuncio, unico.name)
+    ) {
+      console.log(
+        JSON.stringify({
+          event: "ml.order_import.sku_mirrored_part",
+          sku: normalizedSku,
+          produto: unico.name,
+          anuncio: tituloAnuncio,
+          motivo: oppositionReason(tituloAnuncio, unico.name),
         }),
       );
       return null;

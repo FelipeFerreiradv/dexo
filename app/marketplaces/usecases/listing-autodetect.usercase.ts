@@ -1,7 +1,11 @@
 import { Platform } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { normalizeSku } from "@/app/lib/sku";
-import { areTitlesSimilar } from "@/app/lib/title-similarity";
+import {
+  areTitlesSimilar,
+  isOppositeSideOrAxis,
+  oppositionReason,
+} from "@/app/lib/title-similarity";
 import { toFullSizeMLImage, toFullSizeMLImages } from "@/app/lib/ml-image";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
@@ -140,10 +144,40 @@ export class ListingAutodetectUseCase {
           )) &&
       !areTitlesSimilar(item.title, matched.name);
 
+    // ⚠️⚠️ PEÇA ESPELHADA: o Jaccard aprova lado/eixo OPOSTO, então a guarda de
+    // caixa acima nunca dispara nesses casos — "Amortecedor ... L/e" casa com
+    // "Amortecedor ... L/d" em 1,00 porque `titleTokens` descarta tokens de 1
+    // caractere. Medido em 292.014 pares de 9 clientes: 758 vínculos têm lado ou
+    // eixo oposto e 485 deles (0,166%) hoje são aprovados pelo Jaccard.
+    //
+    // Diferente da guarda de caixa, esta NÃO exige que o produto já tenha
+    // anúncio nesta conta: ligar um anúncio de peça esquerda na peça direita é
+    // errado mesmo na primeira vez, e o pedido vai baixar a peça errada.
+    //
+    // A saída é a MESMA do box label — produto próprio com SKU sintético — o que
+    // mantém o caminho de código já exercitado e reversível.
+    const isMirroredPart =
+      matched != null && isOppositeSideOrAxis(item.title, matched.name);
+    if (isMirroredPart) {
+      console.log(
+        JSON.stringify({
+          event: "autodetect.mirrored_part_not_linked",
+          accountId: account.id,
+          externalListingId,
+          sku: normalizedSku,
+          anuncio: item.title,
+          produto: matched?.name,
+          motivo: oppositionReason(item.title, matched!.name),
+        }),
+      );
+    }
+
+    const naoPodeLigar = isBoxLabel || isMirroredPart;
+
     let productId: string;
     let action: AutodetectAction;
 
-    if (matchedId && !isBoxLabel) {
+    if (matchedId && !naoPodeLigar) {
       productId = matchedId;
       action = "linked_existing_product";
     } else {
@@ -152,7 +186,7 @@ export class ListingAutodetectUseCase {
       const created = await this.createProductFromItem(
         item,
         normalizedSku,
-        isBoxLabel,
+        naoPodeLigar,
         cache,
       );
       productId = created.productId;
@@ -229,6 +263,16 @@ export class ListingAutodetectUseCase {
     const product = await prisma.product.findFirst({
       where: { userId, skuNormalized: normalizedSku },
       select: { id: true, name: true },
+      // ⚠️ ORDEM ESTAVEL. A unique do catalogo e `@@unique([userId, sku])` sobre
+      // o sku CRU, mas a busca roda sobre `skuNormalized`: "ABC" e "abc" podem
+      // coexistir no mesmo dono e ambos casarem. Sem `orderBy`, o Postgres
+      // devolve "qualquer um" — e o mesmo anuncio reimportado podia cair em
+      // produto diferente entre execucoes, sem nada mudar no catalogo.
+      // Medido em 15/09/2026: ZERO skuNormalized ambiguos em 366.883 produtos
+      // de 120 usuarios. A ordem e reprodutibilidade barata para um caso que
+      // hoje nao existe — nao guarda de ambiguidade, que mudaria comportamento
+      // sem defeito medido para justificar.
+      orderBy: { id: "asc" },
     });
     return product ?? null;
   }
