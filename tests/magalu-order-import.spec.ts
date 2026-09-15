@@ -453,9 +453,12 @@ describe("shape REAL da API (pedidos do cliente Ribeiro)", () => {
       magaluOrders: [PEDIDO_REAL_4085],
       listings: [],
     });
-    vi.spyOn(OrderUseCase as any, "findProductByFallbackSku").mockResolvedValue({
-      id: "p-4085",
-    });
+    // O resolvedor por SKU do caminho de pedido é um só para ML, Shopee e
+    // Magalu: `findMany` com `take: 2` (SKU ambíguo) e `name` (conferência de
+    // título). Aqui o nome bate com o `info.name` do item.
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      { id: "p-4085", name: "Bomba Combustível Ford Fiesta Flex 2004 A 2007" },
+    ] as any);
     vi.spyOn(OrderUseCase as any, "upsertFallbackListing").mockResolvedValue({
       id: "l-novo",
     });
@@ -470,6 +473,72 @@ describe("shape REAL da API (pedidos do cliente Ribeiro)", () => {
     expect((createSpy.mock.calls[0][0] as any).items[0].productId).toBe(
       "p-4085",
     );
+  });
+
+  it("NÃO vincula quando o SKU casa mas o produto é outra peça", async () => {
+    // Antes a Magalu resolvia por SKU sem NENHUMA conferência: um `findFirst`
+    // cru sobre `skuNormalized`. Com SKU de etiqueta reaproveitado, a venda de
+    // uma bomba de combustível baixava estoque de qualquer coisa.
+    const { createSpy } = setup({
+      magaluOrders: [PEDIDO_REAL_4085],
+      listings: [],
+    });
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      { id: "p-outro", name: "Lanterna Traseira Direita Gol G4 2008" },
+    ] as any);
+    const upsert = vi
+      .spyOn(OrderUseCase as any, "upsertFallbackListing")
+      .mockResolvedValue({ id: "l-novo" });
+
+    await OrderUseCase.importRecentMagaluOrdersForAccount("acc-mg", 30, true);
+
+    // Nada vinculado e nada gravado: não baixar é o mal menor.
+    expect(upsert).not.toHaveBeenCalled();
+    const itens = (createSpy.mock.calls[0]?.[0] as any)?.items ?? [];
+    expect(itens).toHaveLength(0);
+  });
+
+  it("NÃO vincula quando o SKU casa com o LADO OPOSTO da peça", async () => {
+    // "L/e" e "L/d" dão semelhança 1,00 no Jaccard (o tokenizador descarta
+    // tokens de 1 caractere), então só a guarda de lado separa.
+    const pedidoEsquerdo = {
+      ...PEDIDO_REAL_4085,
+      deliveries: [
+        {
+          id: "d-1",
+          items: [
+            {
+              sequencial: 1,
+              info: {
+                sku: "4085",
+                name: "Amortecedor Tampa Porta Malas L/e Volkswagen Gol 2021",
+              },
+              unit_price: { currency: "BRL", normalizer: 100, value: 19999 },
+              quantity: 1,
+            },
+          ],
+        },
+      ],
+    };
+    const { createSpy } = setup({
+      magaluOrders: [pedidoEsquerdo],
+      listings: [],
+    });
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "p-lado-direito",
+        name: "Amortecedor Tampa Porta Malas L/d Volkswagen Gol 2021",
+      },
+    ] as any);
+    const upsert = vi
+      .spyOn(OrderUseCase as any, "upsertFallbackListing")
+      .mockResolvedValue({ id: "l-novo" });
+
+    await OrderUseCase.importRecentMagaluOrdersForAccount("acc-mg", 30, true);
+
+    expect(upsert).not.toHaveBeenCalled();
+    const itens = (createSpy.mock.calls[0]?.[0] as any)?.items ?? [];
+    expect(itens).toHaveLength(0);
   });
 
   it("pedido cancelado real (SKU 8374) continua sendo descartado", async () => {
