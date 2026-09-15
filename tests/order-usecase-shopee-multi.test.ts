@@ -315,12 +315,16 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
     vi.spyOn(prisma.productListing, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
     const fallbackListing = { id: "listing-fallback-shp-1" };
-    const findFirstSpy = vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
-      id: "prod-22534",
-      sku: "22534",
-      skuNormalized: "22534",
-      userId: "user-1",
-    } as any);
+    // O resolvedor por SKU do caminho de pedido usa `findMany` com `take: 2`
+    // (para detectar SKU ambiguo) e traz `name` (para conferir o titulo).
+    const buscaPorSku = vi
+      .spyOn(prisma.product, "findMany")
+      .mockResolvedValue([
+        {
+          id: "prod-22534",
+          name: "Farol Dianteiro Esquerdo Onix 2016",
+        },
+      ] as any);
     const upsertFallbackSpy = vi
       .spyOn(ListingRepository, "upsertFromOrderFallback")
       .mockResolvedValue(fallbackListing as any);
@@ -343,14 +347,18 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
       true,
     );
 
-    expect(findFirstSpy).toHaveBeenCalledWith({
+    expect(buscaPorSku).toHaveBeenCalledWith({
       where: {
         skuNormalized: "22534",
         userId: "user-1",
       },
-      // EGRESS: só o id é usado pelo chamador. O `where` — que é a regra de
-      // vínculo — segue idêntico.
-      select: { id: true },
+      // EGRESS: o `select` segue enxuto — `name` entrou porque a conferencia
+      // de titulo precisa dele. O `where`, que e a regra de vinculo, e o mesmo.
+      select: { id: true, name: true },
+      // Ordem estavel + take 2: o minimo para detectar SKU ambiguo sem trazer
+      // o catalogo inteiro.
+      orderBy: { id: "asc" },
+      take: 2,
     });
     expect(upsertFallbackSpy).toHaveBeenCalledWith({
       productId: "prod-22534",

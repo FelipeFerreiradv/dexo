@@ -2366,13 +2366,13 @@ export class OrderUseCase {
         continue;
       }
 
-      // Buscar produto pelo SKU — resolvedor do ML, que recusa SKU ambíguo e
-      // título que não bate (ver resolverProdutoMlPorSku).
-      const product = await this.resolverProdutoMlPorSku(
-        sku,
-        mlItem.item.title ?? "",
+      // Buscar produto pelo SKU — resolvedor único do caminho de pedido, que
+      // recusa SKU ambíguo, título que não bate e peça espelhada.
+      const product = await this.resolverProdutoPorSkuDoPedido(sku, {
+        plataforma: "ml",
         userId,
-      );
+        tituloAnuncio: mlItem.item.title ?? "",
+      });
 
       if (!product) {
         console.log(`[OrderUseCase] Produto com SKU "${sku}" não encontrado`);
@@ -2416,16 +2416,18 @@ export class OrderUseCase {
   }
 
   /**
-   * Resolucao por SKU do caminho do MERCADO LIVRE.
+   * ⚠️ ESTE E O UNICO RESOLVEDOR POR SKU DO CAMINHO DE PEDIDO — ML, Shopee e
+   * Magalu. Antes eram dois, com regras diferentes: o do ML tinha as guardas e
+   * o compartilhado (`findProductByFallbackSku`) nao tinha NENHUMA — um
+   * `findFirst` cru sobre `skuNormalized`. Duas plataformas resolviam a venda
+   * sem qualquer conferencia.
    *
-   * ⚠️ POR QUE UM RESOLVEDOR SEPARADO, e nao uma mudanca no compartilhado:
-   * `findProductByFallbackSku` serve ML, Shopee e Magalu. O dano medido em
-   * 14/09/2026 (90 vendas baixadas em produto diferente do dono do anuncio,
-   * em 10.081 pedidos auditados contra a API) esta no ML, e a Shopee JA tem
-   * guarda propria (`findProductByPartNumberUnique`). Mexer no compartilhado
-   * mudaria o comportamento de tres plataformas para corrigir uma.
+   * A separacao nasceu por prudencia (mexer no compartilhado derrubou 3 specs
+   * de cross-marketplace), mas o preco foi este: a correcao so valia para uma
+   * plataforma, e a proxima pessoa teria de lembrar de replicar. Agora as
+   * guardas moram em UM lugar e `plataforma` so decide o prefixo do log.
    *
-   * Duas recusas, as duas com causa medida:
+   * Tres recusas, todas com causa medida:
    *
    * 1) SKU AMBIGUO. A unique do catalogo e sobre o `sku` CRU
    *    (@@unique([userId, sku])) e a busca roda sobre `skuNormalized`, entao
@@ -2437,30 +2439,44 @@ export class OrderUseCase {
    * 2) TITULO QUE NAO BATE. Um cliente tem UM produto com SKU "1" e 7.328
    *    anuncios carregando "1" no `seller_sku`: o casamento e univoco e esta
    *    errado — 39 vendas de pecas distintas foram lancadas numa unica bobina
-   *    de ignicao em duas semanas. Sem titulo dos dois lados, vale o
-   *    comportamento antigo.
+   *    de ignicao em duas semanas.
+   *
+   * 3) PECA ESPELHADA. `titleTokens` descarta tokens de 1 caractere, entao
+   *    "Amortecedor ... L/e" x "Amortecedor ... L/d" da semelhanca 1,00 e a
+   *    guarda (2) aprova. Sao lados opostos — pecas fisicas distintas.
+   *
+   * ⚠️ SEM TITULO DOS DOIS LADOS, (2) e (3) nao opinam. Silencio nao e
+   * evidencia: um chamador que nao tem titulo mantem o comportamento de antes.
    *
    * Entre baixar do produto errado e nao baixar, nao baixar e o mal menor: a
    * baixa errada tira do estoque uma peca que continua na prateleira E deixa a
    * vendida anunciada.
    *
-   * EGRESS: mesmo idioma da guarda da Shopee — `select` enxuto (`id` + `name`,
-   * que a conferencia de titulo exige) e `take: 2`, o minimo para detectar
-   * ambiguidade. So roda quando o anuncio NAO tem vinculo.
+   * EGRESS: `select` enxuto (`id` + `name`, que a conferencia de titulo exige)
+   * e `take: 2`, o minimo para detectar ambiguidade. So roda quando o anuncio
+   * NAO tem vinculo — o caminho feliz nao paga nada.
    */
-  private static async resolverProdutoMlPorSku(
+  private static async resolverProdutoPorSkuDoPedido(
     sku: string | null,
-    tituloAnuncio: string,
-    userId?: string,
+    opts: {
+      plataforma: "ml" | "shopee" | "magalu";
+      userId?: string;
+      /** Titulo do anuncio na plataforma. Ausente ⇒ guardas 2 e 3 nao opinam. */
+      tituloAnuncio?: string | null;
+    },
   ): Promise<{ id: string } | null> {
     const normalizedSku = normalizeSku(sku);
     if (!normalizedSku) return null;
+    const { plataforma, userId } = opts;
+    const tituloAnuncio = (opts.tituloAnuncio ?? "").trim();
 
     const candidatos = await prisma.product.findMany({
       where: userId
         ? { skuNormalized: normalizedSku, userId }
         : { skuNormalized: normalizedSku },
       select: { id: true, name: true },
+      // Ordem estavel: sem ela o "qualquer um" do findFirst mudava entre
+      // execucoes e o mesmo pedido reimportado podia cair noutro produto.
       orderBy: { id: "asc" },
       take: 2,
     });
@@ -2469,7 +2485,7 @@ export class OrderUseCase {
     if (candidatos.length > 1) {
       console.log(
         JSON.stringify({
-          event: "ml.order_import.sku_ambiguous",
+          event: `${plataforma}.order_import.sku_ambiguous`,
           sku: normalizedSku,
           candidatos: candidatos.length,
         }),
@@ -2478,14 +2494,12 @@ export class OrderUseCase {
     }
 
     const unico = candidatos[0];
-    if (
-      tituloAnuncio &&
-      unico.name &&
-      !areTitlesSimilar(tituloAnuncio, unico.name)
-    ) {
+    if (!tituloAnuncio || !unico.name) return { id: unico.id };
+
+    if (!areTitlesSimilar(tituloAnuncio, unico.name)) {
       console.log(
         JSON.stringify({
-          event: "ml.order_import.sku_title_mismatch",
+          event: `${plataforma}.order_import.sku_title_mismatch`,
           sku: normalizedSku,
           produto: unico.name,
           anuncio: tituloAnuncio,
@@ -2493,19 +2507,10 @@ export class OrderUseCase {
       );
       return null;
     }
-    // ⚠️⚠️ A GUARDA ACIMA NAO PEGA A PECA ESPELHADA. `titleTokens` descarta
-    // tokens de 1 caractere, entao "Amortecedor ... L/e" x "Amortecedor ...
-    // L/d" da semelhanca 1,00 e passa direto — e a venda baixa o lado errado,
-    // deixando a peca vendida na prateleira e a outra anunciada.
-    // Mesma decisao do resto deste caminho: na duvida NAO baixa.
-    if (
-      tituloAnuncio &&
-      unico.name &&
-      isOppositeSideOrAxis(tituloAnuncio, unico.name)
-    ) {
+    if (isOppositeSideOrAxis(tituloAnuncio, unico.name)) {
       console.log(
         JSON.stringify({
-          event: "ml.order_import.sku_mirrored_part",
+          event: `${plataforma}.order_import.sku_mirrored_part`,
           sku: normalizedSku,
           produto: unico.name,
           anuncio: tituloAnuncio,
@@ -2515,28 +2520,6 @@ export class OrderUseCase {
       return null;
     }
     return { id: unico.id };
-  }
-
-  private static async findProductByFallbackSku(
-    sku: string | null,
-    userId?: string,
-  ) {
-    const normalizedSku = normalizeSku(sku);
-    if (!normalizedSku) {
-      return null;
-    }
-
-    // EGRESS: os três chamadores (ML, Shopee e Magalu) usam SÓ `product.id`.
-    // Sem o select, cada item de pedido sem vínculo trazia a linha inteira do
-    // Product — ~50 colunas, incluindo `description`, o array `imageUrls` e o
-    // Json `attributes`. Este caminho roda por item, a cada ciclo de
-    // importação, nas três plataformas.
-    return prisma.product.findFirst({
-      where: userId
-        ? { skuNormalized: normalizedSku, userId }
-        : { skuNormalized: normalizedSku },
-      select: { id: true },
-    });
   }
 
   private static async upsertFallbackListing(data: {
@@ -3297,7 +3280,15 @@ export class OrderUseCase {
         continue;
       }
 
-      const product = await this.findProductByFallbackSku(sku, userId);
+      // O nome do produto na Magalu vem em `info.name` — é o título do anúncio
+      // do lado deles, e é o que permite conferir se o SKU levou à peça certa.
+      // Quando a Magalu não manda o nome, as guardas de título ficam mudas e o
+      // comportamento é o de antes.
+      const product = await this.resolverProdutoPorSkuDoPedido(sku, {
+        plataforma: "magalu",
+        userId,
+        tituloAnuncio: (item.info?.name as string) ?? null,
+      });
       if (!product) {
         console.log(
           `[OrderUseCase] Produto com SKU "${sku}" (Magalu) não encontrado`,
@@ -3599,10 +3590,13 @@ export class OrderUseCase {
       // DADOS. Antes usava `account.userId` cru: se a conta Shopee tivesse sido
       // conectada por um colaborador, o produto existia e mesmo assim não era
       // encontrado — a venda não baixava estoque.
-      let product = await this.findProductByFallbackSku(
-        sku,
-        matchFallbackAtivo ? await ownerId() : userId,
-      );
+      // `item_name` é o título do anúncio na Shopee — mesma testemunha que o
+      // `title` do ML. Sem ele as guardas de título ficam mudas.
+      let product = await this.resolverProdutoPorSkuDoPedido(sku, {
+        plataforma: "shopee",
+        userId: matchFallbackAtivo ? await ownerId() : userId,
+        tituloAnuncio: item.item_name ?? null,
+      });
 
       // 4) Último recurso: o mesmo texto contra o part number, e SOMENTE se o
       // resultado for único. Mais de um candidato ⇒ não vincula: baixar no
