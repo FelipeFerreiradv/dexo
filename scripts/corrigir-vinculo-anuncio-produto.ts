@@ -92,13 +92,27 @@ async function main() {
   console.log(`[corrigir] cliente ${user.name} (${user.id})`);
   console.log(`[corrigir] min=${MIN_SIM} margem=${MARGEM} corrigirVendas=${CORRIGIR_VENDAS}`);
 
-  const cacheFile = path.join(OUT_DIR, `anuncios-ml-cache-${user.id}.json`);
+  // ADITIVO: `--plataforma` e `--cache` permitem rodar o mesmo corretor na
+  // Shopee. Sem as flags, o comportamento e byte a byte o de sempre (ML).
+  // O cache da Shopee usa `titulo` onde o do ML usa `title`; o leitor abaixo
+  // aceita os dois para nao duplicar codigo.
+  const plataforma = (arg("plataforma") ?? "MERCADO_LIVRE").toUpperCase();
+  const cacheFile =
+    arg("cache") ?? path.join(OUT_DIR, `anuncios-ml-cache-${user.id}.json`);
   if (!fs.existsSync(cacheFile))
     throw new Error(`Cache ausente: ${cacheFile}. Rode a varredura primeiro.`);
-  const cache = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as Record<
-    string,
-    { title: string | null; vendidos: number | null }
-  >;
+  const cacheBruto = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as
+    | Record<string, { title?: string | null; titulo?: string | null; vendidos?: number | null }>
+    | Array<{ id: string; title?: string | null; titulo?: string | null; vendidos?: number | null }>;
+  const cache: Record<string, { title: string | null; vendidos: number | null }> = {};
+  for (const [chave, v] of Array.isArray(cacheBruto)
+    ? cacheBruto.map((x) => [x.id, x] as const)
+    : Object.entries(cacheBruto)) {
+    cache[chave] = {
+      title: v.title ?? v.titulo ?? null,
+      vendidos: v.vendidos ?? null,
+    };
+  }
 
   const produtos = (await prisma.product.findMany({
     where: { userId: user.id },
@@ -118,7 +132,7 @@ async function main() {
   }
 
   const listings = await prisma.productListing.findMany({
-    where: { marketplaceAccount: { userId: user.id, platform: "MERCADO_LIVRE" } },
+    where: { marketplaceAccount: { userId: user.id, platform: plataforma as never } },
     select: {
       id: true,
       externalListingId: true,
@@ -224,7 +238,7 @@ async function main() {
   // prova de que a venda lancada no produto errado veio deste anuncio.
   if (args.includes("--conferir-vendas")) {
     const contas = await prisma.marketplaceAccount.findMany({
-      where: { userId: user.id, platform: "MERCADO_LIVRE" },
+      where: { userId: user.id, platform: plataforma as never },
       select: { id: true, accessToken: true },
     });
     const alvo = planos.filter((p) => p.vendidos > 0);
