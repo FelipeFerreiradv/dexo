@@ -30,12 +30,72 @@ const STOPWORDS = new Set([
   "the",
 ]);
 
+/**
+ * ⚠️ O LADO E O EIXO SOMEM SE NAO FOREM CANONIZADOS ANTES DE TOKENIZAR.
+ *
+ * O filtro `w.length >= 2` existe para descartar ruido, mas o ramo escreve lado
+ * e eixo em forma COMPACTA — `L/e`, `L/d`, `T/e`, `T/d`, `D/e`, `D/d` — que
+ * vira dois tokens de 1 caractere e desaparece inteira. Dois efeitos medidos:
+ *
+ *   a) pecas OPOSTAS ficavam identicas:
+ *      "Amortecedor Tampa Porta Malas L/e Gol 2021"
+ *      "Amortecedor Tampa Porta Malas L/d Gol 2021"   ->  1,00
+ *
+ *   b) a MESMA peca escrita de dois jeitos ficava distante:
+ *      "Chicote Porta Dianteira Esquerda Onix"
+ *      "Chicote Porta Diant Esq Onix"                 ->  0,31
+ *
+ * A cura NAO e preservar token de 1 caractere (encheria de ruido): e reduzir
+ * toda grafia do mesmo conceito a UM sentinela, antes de tokenizar.
+ *
+ * ⚠️⚠️ O SENTINELA E NEUTRO DE PROPOSITO. A primeira versao emitia a palavra
+ * por extenso ("esquerdo") e NAO unificava com "Esq" nem com "Esquerda" — e
+ * chegava a AFASTAR: "Traseira Direita" x "Traseira L/D" caia de 0,42 para
+ * 0,38, porque "direita" e "direito" sao tokens distintos.
+ *
+ * ⚠️⚠️ O SEPARADOR E OBRIGATORIO nas formas de 2 letras. Com ele opcional,
+ * /\bd[/.\-]?e\b/ casa com a PREPOSICAO "de" e reescreve "Ponta DE Eixo" como
+ * "Ponta diant esq Eixo" — a medicao acusou 565 vereditos mudando, quase todos
+ * por esse motivo. Das formas nuas so entram "le" e "ld", que nao sao palavras
+ * em portugues; "de", "da", "do" e "te" ficam de fora.
+ *
+ * IMPACTO MEDIDO em 292.014 pares reais (anuncio x produto) de 9 clientes:
+ *   vereditos que mudam ...............: 293 (0,10%)
+ *   nao batia e passa a bater .........: 274  — 246 com o mesmo substantivo
+ *   batia e deixa de bater ............: 19   — todos pares que so dividiam
+ *                                              o nome do carro
+ */
+// CUSTO MEDIDO sobre 5.000 nomes reais de produto, 100.000 chamadas:
+//   antes  1,66 us/chamada
+//   depois 2,93 us/chamada   (+1,27 us, +77%)
+// O percentual assusta e o absoluto não: uma importação de 8.360 anúncios paga
+// ~21 ms no total. Tentei hoistear os 12 padrões para constantes de módulo e o
+// ganho foi ZERO (2,93 us antes e depois) — o V8 já cacheia literais de regex.
+// Como não houve ganho medido, ficou a forma simples.
+function canonicalizeSideAndAxis(value: string): string {
+  let s = value;
+  s = s.replace(/\bt[/.\-]e\b/g, " tras esq ");
+  s = s.replace(/\bt[/.\-]d\b/g, " tras dir ");
+  s = s.replace(/\bd[/.\-]e\b/g, " diant esq ");
+  s = s.replace(/\bd[/.\-]d\b/g, " diant dir ");
+  s = s.replace(/\bl[/.\-]e\b/g, " esq ");
+  s = s.replace(/\bl[/.\-]d\b/g, " dir ");
+  s = s.replace(/\ble\b/g, " esq ");
+  s = s.replace(/\bld\b/g, " dir ");
+  s = s.replace(/\besquerd[ao]s?\b/g, " esq ");
+  s = s.replace(/\bdireit[ao]s?\b/g, " dir ");
+  s = s.replace(/\bdianteir[ao]s?\b/g, " diant ");
+  s = s.replace(/\btraseir[ao]s?\b/g, " tras ");
+  return s;
+}
+
 export function titleTokens(value: string): Set<string> {
+  const semAcento = (value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
   return new Set(
-    (value || "")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "")
+    canonicalizeSideAndAxis(semAcento)
       .replace(/[^a-z0-9]+/g, " ")
       .split(" ")
       .filter((w) => w.length >= 2 && !STOPWORDS.has(w)),
@@ -113,10 +173,21 @@ function withoutAccents(value: string): string {
  */
 export function titleSide(title: string): TitleSide | null {
   const s = withoutAccents(title);
-  // Além de "esquerda/esquerdo": l/e (lado esq), t/e (traseira esq) e
-  // d/e (dianteira esq) — com separador opcional, como o ramo escreve.
-  const left = /\besquerd[ao]\b/.test(s) || /\b[ltd][/.\s-]?e\b/.test(s);
-  const right = /\bdireit[ao]\b/.test(s) || /\b[ltd][/.\s-]?d\b/.test(s);
+  // ⚠️⚠️ SEPARADOR OBRIGATORIO nas formas de duas letras.
+  // Com ele opcional (e aceitando espaco), /\b[ltd][/.\s-]?e\b/ casa com a
+  // PREPOSICAO "de": `titleSide("Ponta De Eixo Traseiro Gol")` devolvia "E".
+  // Qualquer titulo com "de" era lido como lado esquerdo — e bastava o outro
+  // lado do par declarar "direita" para a guarda acusar oposicao que nao
+  // existe. Pego por um teste que so nasceu quando a mesma armadilha apareceu
+  // no tokenizador.
+  //
+  // Formas cobertas: l/e, l.e, l-e, t/e, d/e (e as de direita), mais as nuas
+  // "le" e "ld", que nao sao palavras em portugues. "de", "da", "do" e "te"
+  // ficam de fora de proposito.
+  const left =
+    /\besquerd[ao]s?\b/.test(s) || /\b[ltd][/.\-]e\b/.test(s) || /\ble\b/.test(s);
+  const right =
+    /\bdireit[ao]s?\b/.test(s) || /\b[ltd][/.\-]d\b/.test(s) || /\bld\b/.test(s);
   if (left && !right) return "E";
   if (right && !left) return "D";
   return null;
