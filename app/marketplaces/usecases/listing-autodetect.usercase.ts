@@ -44,7 +44,11 @@ export type AutodetectAction =
   | "listing_exists"
   | "linked_existing_product"
   | "created_product"
-  | "raced";
+  | "raced"
+  // O anúncio está em ListingIngestionIgnore: uma limpeza de catálogo decidiu
+  // que ele NÃO pertence a este tenant (ex.: peças do pai no caso Ducelo). A
+  // ingestão não cria nada — nem produto, nem listing — em nenhum caminho.
+  | "ignored_by_list";
 
 export interface UpsertAutodetectResult {
   action: AutodetectAction;
@@ -79,6 +83,13 @@ export interface AutodetectImportCache {
    * ProductUseCase.create como `preloadedUser`. undefined = ainda não resolvido.
    */
   owner?: User | null;
+  /**
+   * externalListingIds em ListingIngestionIgnore para (userId, platform) —
+   * pré-carregado UMA vez por conta (regra R5: nunca uma query por item).
+   * OPCIONAL: chamador legado sem o campo mantém o comportamento de sempre no
+   * lote; o caminho sem cache (webhook, item único) consulta pontualmente.
+   */
+  ignoredExternalIds?: Set<string>;
 }
 
 /**
@@ -116,6 +127,42 @@ export class ListingAutodetectUseCase {
           );
     if (existing) {
       return { action: "listing_exists", productId: existing.productId };
+    }
+
+    // 1.5. Lista de ignorados: uma limpeza de catálogo decidiu que este
+    // anúncio NÃO pertence a este tenant (caso Ducelo: peças do pai vendidas
+    // pela mesma conta ML). Sem este gate, a limpeza era inútil — o MK2 limpou
+    // 998 produtos e a varredura seguinte recriou 1.934 em um dia. O check
+    // vem DEPOIS da idempotência de propósito: listing vivo não é afetado; a
+    // lista só impede RE-CRIAÇÃO. Com cache: Set pré-carregado por conta
+    // (zero query por item). Sem cache (webhook, item único): uma consulta
+    // pontual na unique. Falha da consulta NUNCA bloqueia a ingestão — a
+    // lista é um filtro, não um ponto único de falha.
+    const ignorado = cache
+      ? // Em LOTE a resposta vem SEMPRE do preload — cache legado sem o campo
+        // vale "sem lista" (fail-open), nunca uma query por item (regra R5).
+        (cache.ignoredExternalIds?.has(externalListingId) ?? false)
+      : await (async () => {
+          try {
+            const hit = await (
+              prisma as any
+            ).listingIngestionIgnore.findUnique({
+              where: {
+                userId_platform_externalListingId: {
+                  userId: account.userId,
+                  platform: item.platform,
+                  externalListingId,
+                },
+              },
+              select: { id: true },
+            });
+            return Boolean(hit);
+          } catch {
+            return false;
+          }
+        })();
+    if (ignorado) {
+      return { action: "ignored_by_list", productId: null };
     }
 
     // 2. Casa por SKU dentro do dono (mesmo critério do importMLItems). Com

@@ -3,6 +3,7 @@ import { Platform } from "@prisma/client";
 
 import prisma from "@/app/lib/prisma";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
+import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import {
   ListingAutodetectUseCase,
@@ -352,5 +353,145 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     expect(res.action).toBe("raced");
     expect(res.productId).toBe("p-winner");
     expect(del).toHaveBeenCalledWith({ where: { id: "p-orphan" } });
+  });
+});
+
+/**
+ * LISTA DE IGNORADOS DA INGESTAO (ListingIngestionIgnore).
+ *
+ * A limpeza de catalogo de terceiro (caso Ducelo) apaga o Product local SEM
+ * encerrar o anuncio no marketplace — o anuncio continua vendendo para o dono
+ * real. Sem este gate, a varredura seguinte recriava tudo: no MK2, 998
+ * produtos limpos voltaram como 1.934 em UM dia. O invariante: anuncio na
+ * lista NUNCA vira produto de novo, em nenhum caminho — e a lista e um
+ * filtro, jamais um ponto de falha da ingestao.
+ */
+describe("gate de ignorados (ListingIngestionIgnore)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (prisma as any).listingIngestionIgnore;
+  });
+
+  const semListingExistente = () =>
+    vi
+      .spyOn(ListingRepository, "findProductIdByExternalListingId")
+      .mockResolvedValue(null as any);
+
+  it("LOTE: id no Set pre-carregado → ignored_by_list, nada e criado nem consultado por item", async () => {
+    semListingExistente();
+    const create = vi.spyOn(ProductUseCase.prototype, "create");
+    const upsert = vi.spyOn(ListingRepository, "upsertAutodetectedListing");
+    const pontual = vi.fn();
+    (prisma as any).listingIngestionIgnore = { findUnique: pontual };
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ externalListingId: "MLB999", rawSku: "6121" }),
+      {
+        productsBySku: new Map(),
+        productIdsWithListing: new Set(),
+        knownExternalListingIds: new Set(),
+        ignoredExternalIds: new Set(["MLB999"]),
+      },
+    );
+
+    expect(res).toEqual({ action: "ignored_by_list", productId: null });
+    expect(create).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+    // R5: em lote a resposta vem do preload — zero consulta por item.
+    expect(pontual).not.toHaveBeenCalled();
+  });
+
+  it("WEBHOOK (sem cache): consulta pontual acha o id → ignored_by_list", async () => {
+    semListingExistente();
+    const create = vi.spyOn(ProductUseCase.prototype, "create");
+    (prisma as any).listingIngestionIgnore = {
+      findUnique: vi.fn().mockResolvedValue({ id: "ign-1" }),
+    };
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ externalListingId: "MLB999" }),
+    );
+
+    expect(res.action).toBe("ignored_by_list");
+    expect(create).not.toHaveBeenCalled();
+    const args = (prisma as any).listingIngestionIgnore.findUnique.mock
+      .calls[0][0];
+    expect(args.where.userId_platform_externalListingId).toEqual({
+      userId: "u1",
+      platform: Platform.MERCADO_LIVRE,
+      externalListingId: "MLB999",
+    });
+  });
+
+  it("idempotencia VENCE a lista: listing vivo continua respondendo listing_exists", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue({ productId: "p1" } as any);
+    (prisma as any).listingIngestionIgnore = {
+      findUnique: vi.fn().mockResolvedValue({ id: "ign-1" }),
+    };
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item(),
+    );
+
+    // A lista impede RE-CRIACAO; vinculo existente nao e tocado por ela.
+    expect(res).toEqual({ action: "listing_exists", productId: "p1" });
+    expect(
+      (prisma as any).listingIngestionIgnore.findUnique,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("fail-open: consulta indisponivel (client sem o modelo) NUNCA bloqueia a ingestao", async () => {
+    semListingExistente();
+    // Sem o modelo no client: (prisma as any).listingIngestionIgnore e
+    // undefined e o acesso lanca — o catch devolve false e o fluxo segue.
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue(null);
+    vi.spyOn(ProductUseCase.prototype, "create").mockResolvedValue({
+      id: "p-novo",
+    } as any);
+    const upsert = vi
+      .spyOn(ListingRepository, "upsertAutodetectedListing")
+      .mockResolvedValue({ id: "l-novo", productId: "p-novo" } as any);
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ externalListingId: "MLB777" }),
+    );
+
+    expect(res.action).toBe("created_product");
+    expect(upsert).toHaveBeenCalled();
+  });
+
+  it("LOTE legado (cache sem o campo): nao consulta por item e nao bloqueia", async () => {
+    semListingExistente();
+    const pontual = vi.fn();
+    (prisma as any).listingIngestionIgnore = { findUnique: pontual };
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue(null);
+    // O caminho COM cache resolve o dono do lote (owner lazy) — mocka o
+    // repositorio para o teste nao tocar banco.
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue({
+      id: "u1",
+    } as any);
+    vi.spyOn(ProductUseCase.prototype, "create").mockResolvedValue({
+      id: "p-novo",
+    } as any);
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue({
+      id: "l-novo",
+      productId: "p-novo",
+    } as any);
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ externalListingId: "MLB555" }),
+      {
+        productsBySku: new Map(),
+        productIdsWithListing: new Set(),
+        knownExternalListingIds: new Set(),
+        // sem ignoredExternalIds — chamador de lote anterior a esta entrega
+      },
+    );
+
+    expect(res.action).toBe("created_product");
+    expect(pontual).not.toHaveBeenCalled();
   });
 });

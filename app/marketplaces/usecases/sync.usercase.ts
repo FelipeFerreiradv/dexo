@@ -119,6 +119,8 @@ export interface ImportResult {
   alreadyLinked?: number;
   /** Anúncios religados após perder corrida de criação concorrente (raced). */
   skippedDuplicates?: number;
+  /** Anúncios pulados por estarem em ListingIngestionIgnore (limpeza de catálogo). */
+  ignoredByList?: number;
   /** Quantidade de contas ACTIVE processadas (importação multi-conta). */
   accountsProcessed?: number;
   itemsPreviewTruncated?: boolean;
@@ -333,13 +335,36 @@ export class SyncUseCase {
    * do ImportResult. `linked_existing_product` não incrementa aqui — é contado
    * como `linkedItems` pelo chamador (o produto já existia e foi só vinculado).
    */
+  /**
+   * Preload da lista de ignorados da ingestao (ListingIngestionIgnore) para
+   * UMA conta — 1 query por lote, nunca por item (regra R5). Vive aqui, e nao
+   * no autodetect, para nao criar ciclo de import (o autodetect ja importa
+   * SyncUseCase). Falha (client sem o modelo, tabela ausente) devolve Set
+   * vazio: a lista e um filtro, nunca um ponto unico de falha da ingestao.
+   */
+  private static async loadIgnoredExternalIds(
+    userId: string,
+    platform: Platform,
+  ): Promise<Set<string>> {
+    try {
+      const rows = await (prisma as any).listingIngestionIgnore.findMany({
+        where: { userId, platform },
+        select: { externalListingId: true },
+      });
+      return new Set<string>(rows.map((r: any) => r.externalListingId));
+    } catch {
+      return new Set<string>();
+    }
+  }
+
   private static tallyAutodetect(
     result: ImportResult,
     action:
       | "listing_exists"
       | "linked_existing_product"
       | "created_product"
-      | "raced",
+      | "raced"
+      | "ignored_by_list",
   ): void {
     if (action === "created_product") {
       result.createdProducts = (result.createdProducts ?? 0) + 1;
@@ -347,6 +372,8 @@ export class SyncUseCase {
       result.alreadyLinked = (result.alreadyLinked ?? 0) + 1;
     } else if (action === "raced") {
       result.skippedDuplicates = (result.skippedDuplicates ?? 0) + 1;
+    } else if (action === "ignored_by_list") {
+      result.ignoredByList = (result.ignoredByList ?? 0) + 1;
     }
   }
 
@@ -516,6 +543,10 @@ export class SyncUseCase {
       productIdsWithListing: withListing,
       knownExternalListingIds: new Set(
         existingListings.map((l) => l.externalListingId),
+      ),
+      ignoredExternalIds: await this.loadIgnoredExternalIds(
+        account.userId,
+        Platform.MERCADO_LIVRE,
       ),
     };
 
@@ -813,6 +844,10 @@ export class SyncUseCase {
       productIdsWithListing: withListing,
       knownExternalListingIds: new Set(
         existingListings.map((l) => l.externalListingId),
+      ),
+      ignoredExternalIds: await this.loadIgnoredExternalIds(
+        account.userId,
+        Platform.MAGALU,
       ),
     };
 
@@ -1146,6 +1181,10 @@ export class SyncUseCase {
       productIdsWithListing: withListing,
       knownExternalListingIds: new Set(
         existingListings.map((l) => l.externalListingId),
+      ),
+      ignoredExternalIds: await this.loadIgnoredExternalIds(
+        account.userId,
+        Platform.FACEBOOK,
       ),
     };
 
@@ -1740,6 +1779,10 @@ export class SyncUseCase {
       productIdsWithListing: withListing,
       knownExternalListingIds: new Set(
         existingListings.map((l) => l.externalListingId),
+      ),
+      ignoredExternalIds: await this.loadIgnoredExternalIds(
+        account.userId,
+        Platform.SHOPEE,
       ),
     };
 

@@ -659,6 +659,32 @@ model ProductListing {
   // arquivo de ddl/.
 }
 
+// Anúncios que a INGESTÃO deve ignorar — nunca criar Product/ProductListing
+// para eles, em nenhum caminho (botão "Importar anúncios", pollings, webhook).
+//
+// Por que existe: a limpeza de catálogo de terceiro (caso Ducelo, 15/09/2026)
+// apaga o Product local SEM encerrar o anúncio no marketplace — o anúncio
+// continua vendendo para o dono real (o pai do cliente, na mesma conta ML).
+// Sem esta lista, a varredura seguinte recriava tudo: no MK2, 998 produtos
+// limpos voltaram como 1.934 em UM dia. A lista é a memória de "este anúncio
+// não é deste catálogo".
+//
+// TABELA CRIADA POR DDL MANUAL (prisma/ddl/2026-09-15-listing-ingestion-ignore.sql)
+// — migrações congeladas desde 26/05. Rodar o DDL ANTES do deploy do código.
+model ListingIngestionIgnore {
+  id                String   @id @default(cuid())
+  userId            String
+  platform          Platform
+  externalListingId String
+  /** Auditável: qual limpeza/decisão pôs o anúncio aqui (ex.: "pai-celao-2026-09"). */
+  reason            String
+  createdByUserId   String?
+  createdAt         DateTime @default(now())
+
+  @@unique([userId, platform, externalListingId])
+  @@index([userId, platform])
+}
+
 model MarketplaceCategory {
   id               String          @id @default(cuid())
   externalId       String          @unique
