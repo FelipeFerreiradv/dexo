@@ -413,7 +413,7 @@ export class StockReconciliationService {
 
       // `quantidadeAVenda` responde UMA pergunta por canal: "este anúncio pode
       // ser comprado agora, e em que quantidade?". Zero ou ausente = sem risco.
-      let quantidadeAVenda = new Map<string, number>();
+      const quantidadeAVenda = new Map<string, number>();
 
       try {
         if (plataforma === "SHOPEE") {
