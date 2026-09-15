@@ -38,10 +38,21 @@ const syncDays = envInt("SYNC_LOOP_DAYS", 7, 1);
 // fim as métricas de todos. O import de pedidos da última conta esperava a
 // varredura de catálogo de todas as anteriores.
 //
-// Como a Shopee não recebe push (zero registros em WebhookEventLog com
-// source SHOPEE), esse poll é o ÚNICO caminho de ingestão de venda dela: uma
-// venda podia ficar até ~3 dias sem virar Order e sem baixar estoque, deixando
-// a peça vendável nos outros canais (oversell cross-canal).
+// Este poll já foi o ÚNICO caminho de ingestão de venda da Shopee, e nessa
+// época uma venda podia ficar até ~3 dias sem virar Order e sem baixar
+// estoque, deixando a peça vendável nos outros canais (oversell cross-canal).
+//
+// ATUALIZADO EM 15/09/2026 — a frase acima dizia "a Shopee não recebe push
+// (zero registros em WebhookEventLog com source SHOPEE)" e isso deixou de ser
+// verdade em 30/07/2026, quando o push foi cadastrado no portal do parceiro.
+// Medido: 5.216 eventos SHOPEE em WebhookEventLog, ~100 por dia, o mais
+// recente de hoje. O poll agora é a REDE, não o caminho principal — mas segue
+// necessário, porque push perdido não se recupera sozinho.
+//
+// (O comentário obsoleto custou caro: ao diagnosticar a venda dupla do SKU
+// 34049 ele me levou a propor "cadastrar o webhook da Shopee" como correção
+// de algo que já estava feito havia seis semanas. Aquela venda é de 19/07,
+// anterior ao push — daí a peça ter dependido só do poll.)
 //
 // Agora: `runOrdersPass` cuida SÓ de pedidos, com pool de concorrência, na
 // cadência de SYNC_FULL_INTERVAL_MINUTES; `runCatalogPass` cuida de catálogo,
