@@ -6,6 +6,8 @@ import { areTitlesSimilar } from "../app/lib/title-similarity";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
 
+import { ladoOuEixoOposto } from "./lib/lado-e-eixo";
+
 /**
  * Encontra produtos DUPLICADOS provando pela FOTO DO ANÚNCIO.
  *
@@ -299,7 +301,11 @@ async function main() {
     if (dono && donoProduto) {
       for (const p of produtos) {
         if (p.sku === dono) continue;
-        if (areTitlesSimilar(p.nome, donoProduto.nome)) duplicatas.push(p.sku);
+        if (
+          areTitlesSimilar(p.nome, donoProduto.nome) &&
+          !ladoOuEixoOposto(p.nome, donoProduto.nome)
+        )
+          duplicatas.push(p.sku);
         else recusadasPorTitulo.push(p.sku);
       }
     }
