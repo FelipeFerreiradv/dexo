@@ -22,8 +22,11 @@ export class NfeListingUseCase {
     return this.repo.findEmitted(userId, { ...query, page, limit });
   }
 
-  async stats(userId: string): Promise<NfeStats> {
-    return this.repo.getStats(userId);
+  async stats(
+    userId: string,
+    filtros?: { dataInicio?: string; dataFim?: string },
+  ): Promise<NfeStats> {
+    return this.repo.getStats(userId, filtros);
   }
 
   async exportData(

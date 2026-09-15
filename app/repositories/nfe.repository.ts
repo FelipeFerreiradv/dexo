@@ -16,6 +16,43 @@ import type {
   NfeStats,
 } from "../interfaces/nfe.interface";
 
+/**
+ * Recorte de período das notas emitidas.
+ *
+ * ⚠️ A data de referência é `dataEmissao`, NÃO `createdAt`. A tabela sempre
+ * exibiu `dataEmissao`, mas o filtro usava `createdAt` — numa base migrada as
+ * duas divergem em meses (nota emitida em 2024, criada na Dexo hoje), e o
+ * lojista via uma data e filtrava por outra.
+ *
+ * `dataEmissao` é nullable: quando for nula cai em `createdAt`, senão a nota
+ * simplesmente desaparece de qualquer período.
+ *
+ * As bordas são 00:00 e 23:59:59.999 do horário de Brasília (UTC-3), a mesma
+ * convenção do relatório mensal (`nfe-listing.usecase.ts`), para que a lista e
+ * o relatório do mesmo mês nunca devolvam conjuntos diferentes.
+ *
+ * EGRESS: é só a montagem do `where`. Não acrescenta consulta nem coluna —
+ * troca o campo comparado e mantém o mesmo `select` da listagem.
+ */
+export function buildPeriodoWhere(dataInicio?: string, dataFim?: string): any {
+  const gte = dataInicio ? new Date(`${dataInicio}T03:00:00.000Z`) : undefined;
+  // Fim exclusivo: 00:00 de Brasília do dia SEGUINTE ao dataFim.
+  const lt = dataFim
+    ? new Date(new Date(`${dataFim}T03:00:00.000Z`).getTime() + 86_400_000)
+    : undefined;
+
+  const faixa: Record<string, Date> = {};
+  if (gte) faixa.gte = gte;
+  if (lt) faixa.lt = lt;
+
+  return {
+    OR: [
+      { dataEmissao: faixa },
+      { AND: [{ dataEmissao: null }, { createdAt: faixa }] },
+    ],
+  };
+}
+
 function toDraftResponse(row: any): NfeDraftResponse {
   return {
     id: row.id,
@@ -621,10 +658,9 @@ export class NfeRepository {
       where.modelo = query.modelo;
     }
     if (query.dataInicio || query.dataFim) {
-      where.createdAt = {};
-      if (query.dataInicio) where.createdAt.gte = new Date(query.dataInicio);
-      if (query.dataFim)
-        where.createdAt.lte = new Date(query.dataFim + "T23:59:59.999Z");
+      // O período vai em AND para não disputar a chave `OR` com a busca textual
+      // logo abaixo — as duas cláusulas precisam valer ao mesmo tempo.
+      where.AND = [buildPeriodoWhere(query.dataInicio, query.dataFim)];
     }
     if (query.search && query.search.trim().length >= 2) {
       const term = query.search.trim();
@@ -731,22 +767,46 @@ export class NfeRepository {
     };
   }
 
-  async getStats(userId: string): Promise<NfeStats> {
+  async getStats(
+    userId: string,
+    filtros?: { dataInicio?: string; dataFim?: string },
+  ): Promise<NfeStats> {
+    // Os cards precisam responder ao MESMO recorte da tabela. Sem período eles
+    // continuam sendo o total do histórico — comportamento anterior preservado
+    // byte a byte para quem não manda as datas.
+    const where: any = { userId, status: { not: "DRAFT" } };
+    if (filtros?.dataInicio || filtros?.dataFim) {
+      where.AND = [buildPeriodoWhere(filtros.dataInicio, filtros.dataFim)];
+    }
+    // Mesmas bordas do buildPeriodoWhere, para o SQL cru da soma.
+    const ini = filtros?.dataInicio
+      ? new Date(`${filtros.dataInicio}T03:00:00.000Z`)
+      : null;
+    const fim = filtros?.dataFim
+      ? new Date(
+          new Date(`${filtros.dataFim}T03:00:00.000Z`).getTime() + 86_400_000,
+        )
+      : null;
+
     // Single groupBy replaces 4 count() queries — Postgres resolves it from the
     // (userId, status) composite index in one pass.
     const [groups, sumRows] = await Promise.all([
       (prisma as any).nfeEmitida.groupBy({
         by: ["status"],
-        where: { userId, status: { not: "DRAFT" } },
+        where,
         _count: { _all: true },
       }),
       // EGRESS: soma o totalNota no Postgres em vez de puxar 1 linha por nota
       // autorizada só para reduzir em JS. totaisJson é JSONB — extrai e soma
       // direto (COALESCE p/ 0 quando não há notas). Usa o índice [userId,status].
+      // O período entra como predicado opcional: com os dois parâmetros nulos o
+      // plano é o mesmo de antes, sem consulta extra.
       prisma.$queryRaw<Array<{ valorTotal: number }>>`
         SELECT COALESCE(SUM(("totaisJson"->>'totalNota')::numeric), 0)::float8 AS "valorTotal"
         FROM "NfeEmitida"
         WHERE "userId" = ${userId} AND "status" = 'AUTHORIZED'
+          AND (${ini}::timestamp IS NULL OR COALESCE("dataEmissao", "createdAt") >= ${ini}::timestamp)
+          AND (${fim}::timestamp IS NULL OR COALESCE("dataEmissao", "createdAt") <  ${fim}::timestamp)
       `,
     ]);
 
@@ -776,12 +836,11 @@ export class NfeRepository {
   ): Promise<any[]> {
     const where: any = { userId, status: { not: "DRAFT" } };
     if (filters.status) where.status = filters.status;
+    // Mesmo recorte da listagem: `dataEmissao` com fallback, bordas em -03:00.
+    // Sem isso o Excel/PDF saía com o histórico inteiro enquanto a tela
+    // mostrava um mês.
     if (filters.dataInicio || filters.dataFim) {
-      where.createdAt = {};
-      if (filters.dataInicio)
-        where.createdAt.gte = new Date(filters.dataInicio);
-      if (filters.dataFim)
-        where.createdAt.lte = new Date(filters.dataFim + "T23:59:59.999Z");
+      where.AND = [buildPeriodoWhere(filters.dataInicio, filters.dataFim)];
     }
 
     // EGRESS: o export (XLSX/PDF em nfe-listing.usecase) lê só estes campos —
