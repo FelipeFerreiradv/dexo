@@ -210,6 +210,14 @@ export function LogsView() {
       UNBIND_PRODUCTS_LOCATION: "Desvincular Peças da Localização",
       USER_ACTIVITY: "Atividade do Usuário",
       SYSTEM_ERROR: "Erro do Sistema",
+      // Vigília de disponibilidade e fila de estoque — sem estes rótulos, o
+      // cliente via o código técnico cru na tela de Logs e o suporte não
+      // tinha nome para citar ao orientá-lo.
+      ML_BACK_ONLINE_WITHOUT_STOCK: "Anúncio no ar sem estoque (Mercado Livre)",
+      SHOPEE_BACK_ONLINE_WITHOUT_STOCK: "Anúncio no ar sem estoque (Shopee)",
+      STOCK_SYNC_FAILED: "Falha na sincronização de estoque",
+      STOCK_SYNC_DEFERRED_TOO_LONG: "Baixa de estoque aguardando reconexão",
+      OVERSELL_DETECTED: "Possível venda sem estoque",
     };
     return actionLabels[action] || action;
   };

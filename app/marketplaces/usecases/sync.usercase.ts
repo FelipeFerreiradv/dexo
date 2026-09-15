@@ -3713,6 +3713,89 @@ export class SyncUseCase {
   ): Promise<SyncResult> {
     const account = listing.marketplaceAccount;
 
+    // RENOVAÇÃO DE TOKEN — o caminho do ML não tinha nenhuma, e a Shopee tem
+    // desde sempre (`refreshIfNeeded`, mais abaixo neste arquivo). A assimetria
+    // custou caro: medido em 15/09/2026, 140 falhas de autenticação em ~97
+    // anúncios nos últimos 60 dias, e o job de baixa foi APAGADO em todos —
+    // 38 desses anúncios seguem no ar vendendo peça sem saldo.
+    //
+    // OPT-IN POR AMBIENTE (ML_STOCK_TOKEN_REFRESH_ENABLED=1, só no .env da
+    // VPS). A revisão adversarial derrubou a versão sem flag: este método é
+    // alcançável por scripts avulsos (scripts/sync-product.ts,
+    // scripts/backfill-shopee-stock.ts), e renovar token do ML a partir de uma
+    // máquina cujo ML_CLIENT_ID difere do de produção termina em
+    // client_id_mismatch → conta marcada ERROR → o lojista para de sincronizar.
+    // Já aconteceu (conta WENHENRIQUE2012, 03/09/2026). Com a flag ausente,
+    // este bloco é inerte e o comportamento é o anterior à entrega.
+    const tokenExpirado = account.expiresAt
+      ? new Date(account.expiresAt).getTime() <= Date.now()
+      : false;
+
+    if (
+      process.env.ML_STOCK_TOKEN_REFRESH_ENABLED === "1" &&
+      tokenExpirado &&
+      account.refreshToken
+    ) {
+      try {
+        // CLAIM ATÔMICO NO BANCO — quem vence o UPDATE condicional renova;
+        // todos os outros (outros listings deste ciclo E o outro processo:
+        // dexo-api × dexo-sync-orders) releem e seguem sem renovar.
+        //
+        // Por que não basta reler antes de renovar: o refresh_token do ML é de
+        // USO ÚNICO. Entre a releitura e a persistência do vencedor existe o
+        // POST de refresh inteiro; um perdedor que renovasse nessa janela
+        // levaria invalid_grant e a conta viraria ERROR. O claim empurra
+        // `expiresAt` 90s para frente SÓ se ele ainda estiver no passado —
+        // um comando, atômico no Postgres, válido entre processos. Se o
+        // vencedor morrer no meio, o lease de 90s expira sozinho e a próxima
+        // passada tenta de novo. O perdedor segue com o token que houver no
+        // banco; se ainda for o velho, a chamada devolve 401 e a fila ADIA o
+        // job (StockSyncRetryService, motivo "auth") — nada é perdido.
+        const lease = await (prisma as any).marketplaceAccount.updateMany({
+          where: { id: account.id, expiresAt: { lte: new Date() } },
+          data: { expiresAt: new Date(Date.now() + 90_000) },
+        });
+
+        if (lease.count === 1) {
+          const renovado = await MLOAuthService.refreshAccessTokenForAccount(
+            account.id,
+            account.refreshToken,
+          );
+          const novoExpiresAt = new Date(
+            Date.now() + renovado.expiresIn * 1000,
+          );
+          await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: renovado.accessToken,
+            refreshToken: renovado.refreshToken,
+            expiresAt: novoExpiresAt,
+          });
+          account.accessToken = renovado.accessToken;
+          account.refreshToken = renovado.refreshToken;
+          account.expiresAt = novoExpiresAt;
+        } else {
+          const fresco = await (prisma as any).marketplaceAccount.findUnique({
+            where: { id: account.id },
+            select: { accessToken: true, refreshToken: true, expiresAt: true },
+          });
+          if (fresco?.accessToken) {
+            account.accessToken = fresco.accessToken;
+            account.refreshToken = fresco.refreshToken;
+            account.expiresAt = fresco.expiresAt;
+          }
+        }
+      } catch (err) {
+        // Só a MENSAGEM, nunca o objeto: o erro embrulhado pelo serviço de
+        // OAuth carrega o AxiosError cru em `cause`, cujo config.data contém
+        // client_secret e refresh_token — logar o objeto imprimiria os dois
+        // segredos no log do processo.
+        console.error(
+          `[SyncUseCase] Falha ao renovar token do ML da conta ${account.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     if (!account.accessToken) {
       return {
         success: false,

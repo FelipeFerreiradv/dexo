@@ -29,13 +29,61 @@ const errMsg = (err: unknown) =>
 // OLX, mas não significa nada no ML, e classificar por engano faz o job morrer
 // sem nunca ter sido tentado de verdade.
 const TERMINAL_PATTERNS_COMUNS = [
-  /invalid_token/i,
+  // `token revoked` fica: o lojista revogou o acesso de propósito e renovar
+  // não traz o token de volta. As demais formas de falha de AUTENTICAÇÃO
+  // saíram daqui — ver AUTH_PATTERNS logo abaixo.
   /token revoked/i,
   /item does not exist/i,
   /item_not_found/i,
   /listing not found/i,
-  /unauthorized/i,
 ];
+
+/**
+ * FALHA DE AUTENTICAÇÃO NÃO É DESTINO — é espera.
+ *
+ * Token expirado, 401, "invalid access token": nada disso diz que a baixa de
+ * estoque é impossível. Diz que ela não pode ser feita AGORA, com ESTE token.
+ * Tratar como terminal apagava o job e a baixa sumia; tratar como falha comum
+ * queimava as seis tentativas em poucos minutos e terminava no mesmo lugar.
+ *
+ * O que isso custou, medido em 15/09/2026 (60 dias): 140 falhas de
+ * autenticação em ~97 anúncios, e ZERO jobs sobreviventes — todos apagados.
+ * Dos anúncios atingidos, 38 seguem no ar hoje vendendo peça sem saldo (20 no
+ * Mercado Livre, 12 na Magalu, 6 na Shopee), em 15 lojistas. A correção do
+ * estoque deles não está atrasada: ela foi apagada.
+ *
+ * O destino certo já existia no arquivo, escrito para o kill-switch: adiar sem
+ * consumir tentativa, nunca apagar, e alertar se a espera passar de 24h. Falha
+ * de autenticação entra pelo mesmo caminho.
+ */
+const AUTH_PATTERNS = [
+  /unauthorized/i,
+  /invalid_token/i,
+  /invalid access token/i,
+  /access_token/i,
+  /\b401\b/,
+  /\b403\b/,
+];
+
+/**
+ * O CUSTO ACEITO, para quem for mexer nisto depois.
+ *
+ * Adiar em vez de apagar significa que o job de uma conta que nunca mais
+ * reconectar fica na fila indefinidamente, sendo reagendado a cada meia hora.
+ * Isso é deliberado — o alerta de 24h existe justamente para essa conta
+ * aparecer para o operador — e o risco de entupir a fila é pequeno por dois
+ * motivos medidos em 15/09/2026: a fila inteira tinha 12 linhas, e os jobs
+ * nascem só de contas ACTIVE (o reconciliador e a vigília filtram por status,
+ * e a baixa de pedido só toca os anúncios da peça vendida).
+ *
+ * Starvation também não acontece: a leitura ordena por `nextRunAt` crescente,
+ * então job pronto agora sempre vem antes de job adiado para daqui a meia
+ * hora. O que um job represado consome é uma linha na tabela, não a vez de
+ * outro.
+ */
+
+const isAuthError = (message: string) =>
+  AUTH_PATTERNS.some((re) => re.test(message));
 
 // Espelha classifyOlxRemoveError (listing-removal.helpers.ts): sem isto uma
 // recusa definitiva da OLX (preço suspeito, sem slot, imagem pequena) era
@@ -215,18 +263,28 @@ export class StockSyncRetryService {
   }
 
   /**
-   * Reagenda um job cuja plataforma está com o kill-switch ligado: empurra o
-   * nextRunAt e mantém `attempts` intacto (o adiamento não é uma tentativa
-   * falha). O job sobrevive até o operador religar a integração.
+   * Reagenda um job que não pode ser executado AGORA, mas cuja baixa continua
+   * necessária: empurra o `nextRunAt` e mantém `attempts` intacto (adiar não é
+   * tentar e falhar). O job sobrevive até a condição passar.
+   *
+   * Dois motivos usam este caminho:
+   *  - `kill-switch`: o operador desligou a integração da plataforma;
+   *  - `auth`: o token da conta expirou, foi rejeitado ou voltou 401/403.
+   *
+   * Em ambos, apagar o job devolveria o oversell que ele existe para evitar.
    */
-  private static async deferJob(job: {
-    id: string;
-    listingId: string;
-    productId?: string;
-    platform?: string;
-    createdAt?: Date | string | null;
-    lastError?: string | null;
-  }): Promise<void> {
+  private static async deferJob(
+    job: {
+      id: string;
+      listingId: string;
+      productId?: string;
+      platform?: string;
+      createdAt?: Date | string | null;
+      lastError?: string | null;
+    },
+    motivo: "kill-switch" | "auth" = "kill-switch",
+    detalhe?: string,
+  ): Promise<void> {
     const nextRunAt = new Date(Date.now() + DISABLED_DEFER_SECONDS * 1000);
 
     // Teto por idade: só muda a VISIBILIDADE do problema, nunca o destino do
@@ -241,26 +299,36 @@ export class StockSyncRetryService {
     const deveAlertar =
       deferredForMs > DISABLED_DEFER_ALERT_AFTER_MS && !jaAlertado;
 
+    const base =
+      motivo === "auth"
+        ? `auth_pendente: reagendado (token da conta rejeitado)${
+            detalhe ? ` — ${detalhe.slice(0, 300)}` : ""
+          }`
+        : "integration_disabled: reagendado (kill-switch ligado)";
+
     await (prisma as any).stockSyncJob.updateMany({
       where: { id: job.id },
       data: {
         nextRunAt,
         lastError:
-          deveAlertar || jaAlertado
-            ? `integration_disabled: reagendado (kill-switch ligado) ${DEFER_ALERT_MARK}`
-            : "integration_disabled: reagendado (kill-switch ligado)",
+          deveAlertar || jaAlertado ? `${base} ${DEFER_ALERT_MARK}` : base,
       },
     });
 
     if (!deveAlertar) return;
 
+    const causa =
+      motivo === "auth"
+        ? `o token da conta ${job.platform ?? ""} está sendo rejeitado pelo canal. ` +
+          `O job NÃO foi perdido e será processado assim que a conta for reconectada.`
+        : `a integração ${job.platform ?? ""} segue desligada por kill-switch. ` +
+          `O job NÃO foi perdido e será processado assim que a integração religar.`;
+
     const horas = Math.floor(deferredForMs / (60 * 60 * 1000));
     try {
       await SystemLogService.logError(
         "STOCK_SYNC_DEFERRED_TOO_LONG",
-        `Baixa de estoque do listing ${job.listingId} está represada há ${horas}h: ` +
-          `a integração ${job.platform ?? ""} segue desligada por kill-switch. ` +
-          `O job NÃO foi perdido e será processado assim que a integração religar.`,
+        `Baixa de estoque do listing ${job.listingId} está represada há ${horas}h: ${causa}`,
         {
           resource: "ProductListing",
           resourceId: job.listingId,
@@ -268,6 +336,7 @@ export class StockSyncRetryService {
             productId: job.productId,
             platform: job.platform,
             deferredForHours: horas,
+            motivo,
           },
         },
       );
@@ -289,8 +358,18 @@ export class StockSyncRetryService {
     },
     message: string,
   ): Promise<void> {
+    // ORDEM IMPORTA, e o teste de `token revoked` prova por quê: a mensagem
+    // real do canal é "invalid_token: token revoked", que carrega os DOIS
+    // vocabulários. Revogação é definitiva — renovar não traz o acesso de
+    // volta —, então o terminal decide primeiro. Só o que sobra vai para a
+    // espera por autenticação.
     if (isTerminalError(message, job.platform)) {
       await this.markFailed(job, message);
+      return;
+    }
+
+    if (isAuthError(message)) {
+      await this.deferJob(job, "auth", message);
       return;
     }
 

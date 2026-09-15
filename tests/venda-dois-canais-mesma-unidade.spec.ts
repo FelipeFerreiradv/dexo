@@ -48,8 +48,18 @@ vi.mock("@/app/marketplaces/services/shopee-api.service", () => ({
   },
 }));
 
+vi.mock("@/app/marketplaces/services/ml-oauth.service", () => ({
+  MLOAuthService: { refreshAccessTokenForAccount: vi.fn() },
+}));
+
+vi.mock("@/app/marketplaces/repositories/marketplace.repository", () => ({
+  MarketplaceRepository: { updateTokens: vi.fn().mockResolvedValue({}) },
+}));
+
 import prisma from "@/app/lib/prisma";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
+import { MLOAuthService } from "@/app/marketplaces/services/ml-oauth.service";
+import { MarketplaceRepository } from "@/app/marketplaces/repositories/marketplace.repository";
 
 import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 
@@ -319,5 +329,197 @@ describe("Recusa do ML: as tres formas", () => {
     // Recusa NAO vira FAILURE: nada de retry eterno, nada de STOCK_SYNC_FAILED.
     expect(results[0].success).toBe(true);
     expect((results[0] as any).skipped).toBe(true);
+  });
+});
+
+/**
+ * RENOVACAO DE TOKEN NO CAMINHO DO ML — flag de ambiente e claim atomico.
+ *
+ * A revisao adversarial derrubou a primeira versao duas vezes: (a) o caminho e
+ * alcancavel por scripts avulsos, e renovar da maquina errada marca a conta
+ * como ERROR (incidente WENHENRIQUE2012, 03/09/2026) — por isso a flag
+ * ML_STOCK_TOKEN_REFRESH_ENABLED, default OFF; (b) reler o banco antes de
+ * renovar so fecha a corrida DENTRO de um processo — entre dexo-api e
+ * dexo-sync-orders a janela era o POST de refresh inteiro. O claim atomico
+ * (UPDATE condicional que empurra expiresAt 90s, valido entre processos)
+ * fecha as duas: so quem vence o UPDATE renova; todo perdedor rele e segue.
+ */
+describe("Renovacao de token do ML no sync de estoque", () => {
+  const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+    const ant = process.env.ML_STOCK_TOKEN_REFRESH_ENABLED;
+    if (valor === undefined) delete process.env.ML_STOCK_TOKEN_REFRESH_ENABLED;
+    else process.env.ML_STOCK_TOKEN_REFRESH_ENABLED = valor;
+    try { await fn(); } finally {
+      if (ant === undefined) delete process.env.ML_STOCK_TOKEN_REFRESH_ENABLED;
+      else process.env.ML_STOCK_TOKEN_REFRESH_ENABLED = ant;
+    }
+  };
+
+  const contaExpirada = () => ({
+    id: "acc-ml-unica",
+    platform: Platform.MERCADO_LIVRE,
+    accessToken: "tok-velho",
+    refreshToken: "refresh-velho",
+    expiresAt: new Date(Date.now() - 60_000),
+    status: "ACTIVE",
+  });
+
+  const produtoComDoisAnunciosDaMesmaConta = (stock: number) => ({
+    id: "prod-refresh",
+    name: "Alternador Gol G5",
+    sku: "77001",
+    stock,
+    reservedStock: 0,
+    price: 250,
+    listings: [
+      { id: "lst-a", externalListingId: "MLB111", status: "active", marketplaceAccount: contaExpirada() },
+      { id: "lst-b", externalListingId: "MLB222", status: "active", marketplaceAccount: contaExpirada() },
+    ],
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (prisma as any).syncLog.create.mockResolvedValue({});
+    (prisma as any).systemLog.findFirst.mockResolvedValue(null);
+    (MLApiService.updateItem as any).mockResolvedValue({});
+    (MLApiService.updateItemStock as any).mockResolvedValue({});
+    (MLApiService.getItemDetails as any).mockResolvedValue({
+      id: "MLB111",
+      status: "active",
+      available_quantity: 3,
+    });
+  });
+
+  it("SEM a flag, token expirado nao dispara renovacao nenhuma — comportamento anterior", async () => {
+    await comFlag(undefined, async () => {
+      (prisma as any).product.findUnique.mockResolvedValue(
+        produtoComDoisAnunciosDaMesmaConta(2),
+      );
+      (prisma as any).marketplaceAccount = {
+        updateMany: vi.fn(),
+        findUnique: vi.fn(),
+      };
+
+      await SyncUseCase.syncProductStock("prod-refresh");
+
+      // A protecao contra rodar de maquina errada: flag ausente = bloco inerte.
+      expect((prisma as any).marketplaceAccount.updateMany).not.toHaveBeenCalled();
+      expect(MLOAuthService.refreshAccessTokenForAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  it("dois anuncios da mesma conta expirada: UM claim vence, UMA renovacao", async () => {
+    await comFlag("1", async () => {
+      (prisma as any).product.findUnique.mockResolvedValue(
+        produtoComDoisAnunciosDaMesmaConta(2),
+      );
+      // 1o listing vence o UPDATE condicional (count=1); o 2o perde (count=0)
+      // porque o lease ja empurrou expiresAt para o futuro.
+      (prisma as any).marketplaceAccount = {
+        updateMany: vi
+          .fn()
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 }),
+        findUnique: vi.fn().mockResolvedValue({
+          accessToken: "tok-novo",
+          refreshToken: "refresh-novo",
+          expiresAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+        }),
+      };
+      (MLOAuthService.refreshAccessTokenForAccount as any).mockResolvedValue({
+        accessToken: "tok-novo",
+        refreshToken: "refresh-novo",
+        expiresIn: 21600,
+      });
+
+      await SyncUseCase.syncProductStock("prod-refresh");
+
+      // O refresh_token do ML e de uso unico: uma segunda renovacao daria
+      // invalid_grant e a conta viraria ERROR. So o vencedor renova.
+      expect(MLOAuthService.refreshAccessTokenForAccount).toHaveBeenCalledTimes(1);
+      expect(MarketplaceRepository.updateTokens).toHaveBeenCalledTimes(1);
+
+      const tokensUsados = (MLApiService.getItemDetails as any).mock.calls.map(
+        (c: any[]) => c[0],
+      );
+      expect(tokensUsados).toContain("tok-novo");
+      expect(tokensUsados).not.toContain("tok-velho");
+    });
+  });
+
+  it("perdedor do claim (outro PROCESSO renovando agora): rele o banco e NUNCA renova", async () => {
+    await comFlag("1", async () => {
+      const produto = produtoComDoisAnunciosDaMesmaConta(2);
+      produto.listings = [produto.listings[0]];
+      (prisma as any).product.findUnique.mockResolvedValue(produto);
+      // count=0: o lease ja pertence ao outro processo (dexo-sync-orders).
+      (prisma as any).marketplaceAccount = {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        findUnique: vi.fn().mockResolvedValue({
+          accessToken: "tok-do-outro-processo",
+          refreshToken: "refresh-do-outro-processo",
+          expiresAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+        }),
+      };
+
+      await SyncUseCase.syncProductStock("prod-refresh");
+
+      // Renovar aqui seria o segundo uso do refresh_token rotacionado:
+      // invalid_grant, conta ERROR, lojista parado. O perdedor NAO renova.
+      expect(MLOAuthService.refreshAccessTokenForAccount).not.toHaveBeenCalled();
+      expect(
+        (MLApiService.getItemDetails as any).mock.calls[0][0],
+      ).toBe("tok-do-outro-processo");
+    });
+  });
+
+  it("token dentro da validade: nenhum claim, nenhuma consulta extra", async () => {
+    await comFlag("1", async () => {
+      const produto = produtoComDoisAnunciosDaMesmaConta(2);
+      for (const l of produto.listings) {
+        l.marketplaceAccount.expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+      }
+      (prisma as any).product.findUnique.mockResolvedValue(produto);
+      (prisma as any).marketplaceAccount = {
+        updateMany: vi.fn(),
+        findUnique: vi.fn(),
+      };
+
+      await SyncUseCase.syncProductStock("prod-refresh");
+
+      expect((prisma as any).marketplaceAccount.updateMany).not.toHaveBeenCalled();
+      expect(MLOAuthService.refreshAccessTokenForAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  it("renovacao que falha nao derruba o sync nem vaza o objeto de erro no log", async () => {
+    await comFlag("1", async () => {
+      const produto = produtoComDoisAnunciosDaMesmaConta(2);
+      produto.listings = [produto.listings[0]];
+      (prisma as any).product.findUnique.mockResolvedValue(produto);
+      (prisma as any).marketplaceAccount = {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn(),
+      };
+      // O erro real carrega o AxiosError cru em `cause` (config.data contem
+      // client_secret e refresh_token) — logar o OBJETO imprimiria os dois.
+      const erroComSegredo: any = new Error("refresh falhou");
+      erroComSegredo.cause = {
+        config: { data: "client_secret=SEGREDO&refresh_token=SEGREDO2" },
+      };
+      (MLOAuthService.refreshAccessTokenForAccount as any).mockRejectedValue(
+        erroComSegredo,
+      );
+      const spyErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const results = await SyncUseCase.syncProductStock("prod-refresh");
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(MLApiService.getItemDetails).toHaveBeenCalled();
+      const logado = spyErr.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logado).toContain("refresh falhou");
+      expect(logado).not.toContain("SEGREDO");
+      spyErr.mockRestore();
+    });
   });
 });

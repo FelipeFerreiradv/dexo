@@ -21,12 +21,30 @@ vi.mock("@/app/marketplaces/services/ml-api.service", () => ({
   MLApiService: { getItemDetails: vi.fn(), getItemsStockSnapshot: vi.fn() },
 }));
 
+vi.mock("@/app/marketplaces/services/shopee-api.service", () => ({
+  ShopeeApiService: { getItemsBaseInfo: vi.fn() },
+}));
+
+vi.mock("@/app/marketplaces/usecases/sync.usercase", () => ({
+  SyncUseCase: {
+    // Delega ao formato real da Shopee: estoque vem de stock_info_v2 e, na
+    // falta dele, do primeiro stock_info.
+    getShopeeItemAvailableStock: vi.fn((item: any) => {
+      const v2 = item?.stock_info_v2?.summary_info?.total_available_stock;
+      if (typeof v2 === "number") return v2;
+      const legado = item?.stock_info?.[0]?.stock_quantity;
+      return typeof legado === "number" ? legado : 0;
+    }),
+  },
+}));
+
 vi.mock("@/app/services/system-log.service", () => ({
   SystemLogService: { logError: vi.fn().mockResolvedValue(undefined) },
 }));
 
 import prisma from "@/app/lib/prisma";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
+import { ShopeeApiService } from "@/app/marketplaces/services/shopee-api.service";
 import { SystemLogService } from "@/app/services/system-log.service";
 import { StockReconciliationService } from "@/app/marketplaces/services/stock-reconciliation.service";
 
@@ -440,5 +458,349 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
       // O alerta é deduplicado, mas a pausa continua sendo enfileirada.
       expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+/**
+ * COBERTURA DA VIGÍLIA — o defeito que estes testes travam.
+ *
+ * Até 15/09/2026 a varredura usava OFFSET com a posição guardada em memória.
+ * O processo reinicia de tempos em tempos e a posição zerava: medido em
+ * produção, o deslocamento NUNCA passou de 4.000 de 10.698 candidatos, 62,6%
+ * da base jamais foi verificada uma única vez, e 27 das 29 contas de Mercado
+ * Livre estavam inteiras nessa zona cega. O anúncio que vendeu a peça do SKU
+ * 34049 pela segunda vez estava na posição ~7.921 — a vigília estava LIGADA e
+ * mesmo assim nunca chegou nele.
+ *
+ * O invariante que estes testes travam não é "existe um cursor certo": é que
+ * NENHUM anúncio pode ficar preso fora do alcance da varredura, e que
+ * reiniciar o processo não reposiciona nada.
+ */
+describe("StockReconciliationService — cobertura da vigília", () => {
+  const HORA_MS = 60 * 60 * 1000;
+
+  it("24 horas consecutivas visitam as 24 fatias, sem repetir nenhuma", () => {
+    const base = new Date("2026-09-15T00:00:00.000Z").getTime();
+    const visitadas = new Set<number>();
+
+    for (let h = 0; h < 24; h++) {
+      visitadas.add(
+        StockReconciliationService.sliceForClock(new Date(base + h * HORA_MS)),
+      );
+    }
+
+    // Se alguma fatia faltasse, os anúncios dela ficariam invisíveis — que é
+    // exatamente o defeito de produção que motivou a mudança.
+    expect(visitadas.size).toBe(24);
+  });
+
+  it("a fatia não depende de estado: reiniciar o processo não reposiciona", () => {
+    const momento = new Date("2026-09-15T13:00:00.000Z");
+
+    const antes = StockReconciliationService.sliceForClock(momento);
+    StockReconciliationService.stop(); // simula o reinício do processo
+    const depois = StockReconciliationService.sliceForClock(momento);
+
+    expect(depois).toBe(antes);
+  });
+
+  it("horas diferentes varrem fatias diferentes — a varredura avança sozinha", () => {
+    const base = new Date("2026-09-15T05:00:00.000Z").getTime();
+
+    const agora = StockReconciliationService.sliceForClock(new Date(base));
+    const daquiUmaHora = StockReconciliationService.sliceForClock(
+      new Date(base + HORA_MS),
+    );
+
+    expect(daquiUmaHora).not.toBe(agora);
+  });
+
+  it("a fatia entra na consulta, e o deslocamento não existe mais", async () => {
+    const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
+    process.env.AVAILABILITY_WATCH_ENABLED = "1";
+    try {
+      vi.clearAllMocks();
+      (prisma as any).$queryRaw.mockResolvedValue([]);
+      const momento = new Date("2026-09-15T13:00:00.000Z");
+
+      await StockReconciliationService.watchAvailabilityOnce(momento);
+
+      const [fragmentos, ...valores] = (prisma as any).$queryRaw.mock.calls[0];
+      const sql: string = fragmentos.join("?");
+
+      expect(sql).toContain("hashtext");
+      expect(sql).not.toContain("OFFSET");
+      // A fatia da hora é o último parâmetro interpolado no WHERE.
+      expect(valores).toContain(
+        StockReconciliationService.sliceForClock(momento),
+      );
+    } finally {
+      if (anterior === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+      else process.env.AVAILABILITY_WATCH_ENABLED = anterior;
+    }
+  });
+
+  it("duas passadas na mesma hora não pulam nada — a fatia é a mesma", async () => {
+    const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
+    process.env.AVAILABILITY_WATCH_ENABLED = "1";
+    try {
+      vi.clearAllMocks();
+      (prisma as any).$queryRaw.mockResolvedValue([]);
+      const momento = new Date("2026-09-15T09:30:00.000Z");
+
+      await StockReconciliationService.watchAvailabilityOnce(momento);
+      await StockReconciliationService.watchAvailabilityOnce(momento);
+
+      const fatiaDaPrimeira = (prisma as any).$queryRaw.mock.calls[0].slice(1);
+      const fatiaDaSegunda = (prisma as any).$queryRaw.mock.calls[1].slice(1);
+
+      // Antes, a segunda passada saltava 400 posições à frente. Agora as duas
+      // olham o mesmo conjunto — nada escapa entre uma e outra.
+      expect(fatiaDaSegunda).toEqual(fatiaDaPrimeira);
+    } finally {
+      if (anterior === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
+      else process.env.AVAILABILITY_WATCH_ENABLED = anterior;
+    }
+  });
+});
+
+/**
+ * SHOPEE NA VIGÍLIA — o canal maior, que estava fora por construção.
+ *
+ * Medido em 15/09/2026: 6.246 anúncios de Shopee não encerrados sobre peça sem
+ * saldo (4.331 produtos, 15 clientes), contra 1.729 `active` no ML. E aqui a
+ * correção funciona de verdade: na venda do SKU 34049 os três anúncios de
+ * Shopee zeraram em segundos, enquanto os dois do ML recusaram.
+ *
+ * O invariante mais importante desta seção não é o que a Shopee passa a fazer:
+ * é que **sem a flag, o Mercado Livre continua exatamente como estava**.
+ */
+describe("StockReconciliationService — vigília na Shopee", () => {
+  const comFlags = async (
+    valores: Record<string, string | undefined>,
+    fn: () => Promise<void>,
+  ) => {
+    const anteriores: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(valores)) {
+      anteriores[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      await fn();
+    } finally {
+      for (const [k, v] of Object.entries(anteriores)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  const candidatoShopee = (over: Partial<any> = {}) => ({
+    listingId: "lst-shp",
+    externalListingId: "58263970741",
+    productId: "prod-34049",
+    productName: "Gargalo tanque combustível Fiat Palio 2000",
+    sku: "34049",
+    disponivel: 0,
+    accountId: "acc-shp",
+    accountName: "SHOPEE Jotabê Auto-Peças",
+    accessToken: "tok-shp",
+    platform: "SHOPEE",
+    shopId: 1547916297,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (prisma as any).$transaction.mockImplementation(async (cb: any) =>
+      cb(prisma),
+    );
+    (prisma as any).systemLog.findFirst.mockResolvedValue(null);
+    (prisma as any).stockSyncJob.upsert.mockResolvedValue({});
+  });
+
+  it("sem a flag, a Shopee nem entra na consulta", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: undefined,
+      },
+      async () => {
+        (prisma as any).$queryRaw.mockResolvedValue([]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        const valores = (prisma as any).$queryRaw.mock.calls[0].slice(1);
+        // A lista de plataformas é o primeiro parâmetro interpolado.
+        expect(valores).toContainEqual(["MERCADO_LIVRE"]);
+        expect(ShopeeApiService.getItemsBaseInfo).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("com a flag, anúncio à venda na Shopee sobre peça zerada vira alerta e job", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        (prisma as any).$queryRaw.mockResolvedValue([candidatoShopee()]);
+        (ShopeeApiService.getItemsBaseInfo as any).mockResolvedValue([
+          {
+            item_id: 58263970741,
+            item_status: "NORMAL",
+            stock_info_v2: { summary_info: { total_available_stock: 1 } },
+          },
+        ]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        expect(SystemLogService.logError).toHaveBeenCalledTimes(1);
+        const [rotulo, , opcoes] = (SystemLogService.logError as any).mock
+          .calls[0];
+        // Rótulo próprio: não contamina a série do Mercado Livre.
+        expect(rotulo).toBe("SHOPEE_BACK_ONLINE_WITHOUT_STOCK");
+        expect(opcoes.details.platform).toBe("SHOPEE");
+
+        expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+        const job = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+        expect(job.create.platform).toBe("SHOPEE");
+        expect(job.create.targetStock).toBe(0);
+      },
+    );
+  });
+
+  it("anúncio fora do ar na Shopee (UNLIST) não é risco, mesmo com estoque remoto", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        (prisma as any).$queryRaw.mockResolvedValue([candidatoShopee()]);
+        (ShopeeApiService.getItemsBaseInfo as any).mockResolvedValue([
+          {
+            item_id: 58263970741,
+            item_status: "UNLIST",
+            stock_info_v2: { summary_info: { total_available_stock: 5 } },
+          },
+        ]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        expect(SystemLogService.logError).not.toHaveBeenCalled();
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("item com variação é pulado: o total do item não responde pelo modelo", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        (prisma as any).$queryRaw.mockResolvedValue([candidatoShopee()]);
+        (ShopeeApiService.getItemsBaseInfo as any).mockResolvedValue([
+          {
+            item_id: 58263970741,
+            item_status: "NORMAL",
+            has_model: true,
+            stock_info_v2: { summary_info: { total_available_stock: 3 } },
+          },
+        ]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        // Decidir pelo total do item daria falso positivo: o estoque de uma
+        // variação não diz nada sobre a outra.
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("mais de 50 anúncios na mesma conta: a consulta é fatiada no teto da Shopee", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        // 60 anúncios da mesma conta — acima do teto de 50 ids por chamada
+        // que a Shopee impõe (o mesmo que getOrderDetails já respeita).
+        const candidatos = Array.from({ length: 60 }, (_, i) =>
+          candidatoShopee({
+            listingId: `lst-shp-${i}`,
+            externalListingId: String(58263970000 + i),
+          }),
+        );
+        (prisma as any).$queryRaw.mockResolvedValue(candidatos);
+        (ShopeeApiService.getItemsBaseInfo as any).mockResolvedValue([]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        // Uma chamada única com 60 ids falharia no canal e a conta inteira
+        // cairia como "não verificada" — o defeito de cobertura de novo.
+        const chamadas = (ShopeeApiService.getItemsBaseInfo as any).mock.calls;
+        expect(chamadas).toHaveLength(2);
+        expect(chamadas[0][2]).toHaveLength(50);
+        expect(chamadas[1][2]).toHaveLength(10);
+      },
+    );
+  });
+
+  it("conta de Shopee sem shopId é pulada sem chamar a API", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        (prisma as any).$queryRaw.mockResolvedValue([
+          candidatoShopee({ shopId: null }),
+        ]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        expect(ShopeeApiService.getItemsBaseInfo).not.toHaveBeenCalled();
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("com a flag, o Mercado Livre continua sendo tratado como antes", async () => {
+    await comFlags(
+      {
+        AVAILABILITY_WATCH_ENABLED: "1",
+        AVAILABILITY_WATCH_SHOPEE_ENABLED: "1",
+      },
+      async () => {
+        (prisma as any).$queryRaw.mockResolvedValue([
+          {
+            ...candidatoShopee(),
+            listingId: "lst-ml",
+            externalListingId: "MLB4862135565",
+            accountId: "acc-ml",
+            accountName: "DESMONTE-JOTABE",
+            platform: "MERCADO_LIVRE",
+            shopId: null,
+          },
+        ]);
+        (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+          { id: "MLB4862135565", status: "active", available_quantity: 1 },
+        ]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        const [rotulo] = (SystemLogService.logError as any).mock.calls[0];
+        expect(rotulo).toBe("ML_BACK_ONLINE_WITHOUT_STOCK");
+        expect(ShopeeApiService.getItemsBaseInfo).not.toHaveBeenCalled();
+        const job = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+        expect(job.create.platform).toBe("MERCADO_LIVRE");
+      },
+    );
   });
 });
