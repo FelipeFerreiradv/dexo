@@ -64,3 +64,92 @@ export function areTitlesSimilar(
 ): boolean {
   return titleSimilarity(a, b) >= threshold;
 }
+
+// ===========================================================================
+// LADO E EIXO — o ponto cego do Jaccard num desmanche
+// ===========================================================================
+//
+// `titleTokens` descarta tokens de 1 caractere (`w.length >= 2`). A notação
+// compacta do ramo — `L/e`, `L/d`, `T/e`, `T/d` — vira `["l","e"]` e `["l","d"]`
+// e os QUATRO tokens são jogados fora. Resultado medido em produção:
+//
+//   "Amortecedor Tampa Do Porta Malas L/e Volkswagen Gol 2021"
+//   "Amortecedor Tampa Do Porta Malas L/d Volkswagen Gol 2021"
+//   titleSimilarity = 1,00
+//
+// Peças OPOSTAS com semelhança PERFEITA. Mesmo escrito por extenso o Jaccard
+// aprova, porque o lado é 1 token entre 7:
+//
+//   "Pinça Freio Dianteira Esquerda Gol G5" x "...Direita Gol G5"  -> 0,82
+//   "Alça Teto Traseiro Jetta 2011..."      x "...Dianteiro..."    -> 0,83
+//
+// Num desmanche lado e eixo são justamente o que separa duas peças físicas
+// distintas, e o tokenizador apaga exatamente esse sinal.
+//
+// ⚠️ USAR JUNTO de `areTitlesSimilar`, NUNCA no lugar dela: esta função
+// responde "são peças opostas?", não "são a mesma peça?".
+//
+// A regra é assimétrica de propósito: só acusa quando os DOIS títulos declaram
+// e eles divergem. Título omisso não acusa nada — silêncio não é evidência.
+// Isso mantém o falso positivo em zero no caso comum ("Farol Esquerdo Gol" x
+// "Farol Gol"), e é o que permite ligar a guarda sem regressão.
+
+export type TitleSide = "E" | "D";
+export type TitleAxis = "DIANT" | "TRAS";
+
+function withoutAccents(value: string): string {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * Lado declarado pelo título, ou `null` quando omisso ou ambíguo (os dois lados
+ * no mesmo título, como em "Par Lanterna Esquerda e Direita").
+ *
+ * ⚠️ As bordas `\b` das formas compactas são obrigatórias: sem elas o "le" de
+ * "Lente Do Farol" casaria como lado esquerdo.
+ */
+export function titleSide(title: string): TitleSide | null {
+  const s = withoutAccents(title);
+  // Além de "esquerda/esquerdo": l/e (lado esq), t/e (traseira esq) e
+  // d/e (dianteira esq) — com separador opcional, como o ramo escreve.
+  const left = /\besquerd[ao]\b/.test(s) || /\b[ltd][/.\s-]?e\b/.test(s);
+  const right = /\bdireit[ao]\b/.test(s) || /\b[ltd][/.\s-]?d\b/.test(s);
+  if (left && !right) return "E";
+  if (right && !left) return "D";
+  return null;
+}
+
+/** Eixo declarado pelo título, ou `null` quando omisso ou ambíguo. */
+export function titleAxis(title: string): TitleAxis | null {
+  const s = withoutAccents(title);
+  const front = /\bdianteir[ao]s?\b/.test(s);
+  const rear = /\btraseir[ao]s?\b/.test(s);
+  if (front && !rear) return "DIANT";
+  if (rear && !front) return "TRAS";
+  return null;
+}
+
+/** `true` quando os dois títulos declaram lado ou eixo e se contradizem. */
+export function isOppositeSideOrAxis(a: string, b: string): boolean {
+  const sideA = titleSide(a);
+  const sideB = titleSide(b);
+  if (sideA && sideB && sideA !== sideB) return true;
+  const axisA = titleAxis(a);
+  const axisB = titleAxis(b);
+  return Boolean(axisA && axisB && axisA !== axisB);
+}
+
+/** Texto curto para log: "lado ExD", "eixo DIANTxTRAS", ou "" quando não há. */
+export function oppositionReason(a: string, b: string): string {
+  const parts: string[] = [];
+  const sideA = titleSide(a);
+  const sideB = titleSide(b);
+  if (sideA && sideB && sideA !== sideB) parts.push(`lado ${sideA}x${sideB}`);
+  const axisA = titleAxis(a);
+  const axisB = titleAxis(b);
+  if (axisA && axisB && axisA !== axisB) parts.push(`eixo ${axisA}x${axisB}`);
+  return parts.join(" + ");
+}
