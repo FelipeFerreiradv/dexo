@@ -34,6 +34,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as XLSX from "xlsx";
 import prisma from "../app/lib/prisma";
+import { titleSimilarity } from "../app/lib/title-similarity";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -164,6 +165,29 @@ async function main() {
       if (erradoId && erradoId === certo.id) {
         pula("o produto baixado ja e o dono certo hoje");
         continue;
+      }
+
+      // ⚠️⚠️ GUARDA DE DIREÇÃO — a correção pode PIORAR.
+      // "Dono do anúncio hoje" não é sinônimo de "peça certa": um
+      // reapontamento anterior pode ter movido o anúncio para um produto PIOR
+      // que o registrado no pedido. Medido no Revive: de 56 vendas marcadas
+      // como baixa errada, 3 tinham o produto JÁ BAIXADO casando melhor com o
+      // título do anúncio que o dono atual — corrigir moveria a baixa de uma
+      // "Porta Traseira Esquerda Palio" (certa) para um "Paralama".
+      // Só corrige quando o dono atual casa MELHOR com o anúncio vendido.
+      const tituloVendido =
+        (String(a["O ML vendeu"]).match(/"([^"]+)"/) ?? [])[1] ?? "";
+      const tituloBaixado =
+        (String(a["A Dexo baixou"]).match(/"([^"]+)"/) ?? [])[1] ?? "";
+      if (tituloVendido && tituloBaixado && certo.name) {
+        const simDono = titleSimilarity(tituloVendido, certo.name);
+        const simBaixado = titleSimilarity(tituloVendido, tituloBaixado);
+        if (simDono <= simBaixado) {
+          pula(
+            "o produto ja baixado casa igual ou melhor com o anuncio — corrigir pioraria",
+          );
+          continue;
+        }
       }
 
       planos.push({
