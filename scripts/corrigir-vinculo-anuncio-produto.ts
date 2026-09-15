@@ -40,6 +40,7 @@ import * as path from "path";
 import * as XLSX from "xlsx";
 import prisma from "../app/lib/prisma";
 import { titleSimilarity, titleTokens } from "../app/lib/title-similarity";
+import { ladoOuEixoOposto } from "./lib/lado-e-eixo";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -157,9 +158,12 @@ async function main() {
     vendidos: number;
     decisao: "REAPONTAR" | "BLOQUEADO";
     motivo?: string;
+    /** candidatos descartados por declararem lado/eixo oposto ao do anuncio */
+    opostosDescartados?: number;
   };
 
   const planos: Plano[] = [];
+  let totalOpostosDescartados = 0;
   const motivos = new Map<string, number>();
   const conta = (m: string) => motivos.set(m, (motivos.get(m) ?? 0) + 1);
 
@@ -169,7 +173,13 @@ async function main() {
     if (!a?.title || !atual?.name) continue;
 
     const simAtual = titleSimilarity(a.title, atual.name);
-    if (simAtual >= 0.4) continue; // bate com o produto atual, nada a fazer
+    // ⚠️⚠️ O `>= 0,4` SOZINHO ESCONDIA A PECA ESPELHADA.
+    // "Pinca Freio Dianteira Esquerda Gol G5" ligada ao produto "...Direita Gol
+    // G5" da 0,82: este `continue` a declarava saudavel e o corretor nunca a
+    // via. Medido em 15/09/2026 sobre os caches de 9 clientes: 879 vinculos com
+    // lado/eixo oposto, 542 deles acima de 0,4 — invisiveis para todas as
+    // varreduras anteriores. Agora a oposicao vence a semelhanca.
+    if (simAtual >= 0.4 && !ladoOuEixoOposto(a.title, atual.name)) continue;
 
     const base: Plano = {
       listingId: l.id,
@@ -190,12 +200,26 @@ async function main() {
       for (const id of indice.get(t) ?? []) vistos.add(id);
     vistos.delete(atual.id);
 
+    // ⚠️⚠️ NUNCA REAPONTAR PARA A PECA ESPELHADA.
+    // A escolha e por semelhanca, e o Jaccard nao ve lado nem eixo: "Pinca
+    // Freio Dianteira Esquerda Gol G5" x "...Direita Gol G5" da 0,82 e seria
+    // eleito o "melhor candidato". Trocar um vinculo errado por outro errado e
+    // pior que nao mexer, porque some com a evidencia. Candidato com lado ou
+    // eixo OPOSTO ao do anuncio e descartado antes do ranking.
+    const opostosDescartados: string[] = [];
     const ranked = [...vistos]
-      .map((id) => {
-        const p = porId.get(id) as Produto;
-        return { p, s: titleSimilarity(a.title as string, p.name) };
+      .map((id) => porId.get(id) as Produto)
+      .filter((p) => {
+        if (!ladoOuEixoOposto(a.title as string, p.name)) return true;
+        opostosDescartados.push(p.sku);
+        return false;
       })
+      .map((p) => ({ p, s: titleSimilarity(a.title as string, p.name) }))
       .sort((x, y) => y.s - x.s);
+    if (opostosDescartados.length) {
+      base.opostosDescartados = opostosDescartados.length;
+      totalOpostosDescartados += opostosDescartados.length;
+    }
 
     const top = ranked[0];
     const segundo = ranked[1];

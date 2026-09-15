@@ -40,6 +40,7 @@ import * as path from "path";
 import * as XLSX from "xlsx";
 import prisma from "../app/lib/prisma";
 import { areTitlesSimilar, titleSimilarity } from "../app/lib/title-similarity";
+import { motivoOposicao } from "./lib/lado-e-eixo";
 import { ShopeeApiService } from "../app/marketplaces/services/shopee-api.service";
 import { ShopeeOAuthService } from "../app/marketplaces/services/shopee-oauth.service";
 import { MarketplaceRepository } from "../app/marketplaces/repositories/marketplace.repository";
@@ -254,6 +255,7 @@ async function analisar() {
   const divergentes: Record<string, string | number>[] = [];
   let conferidos = 0;
   let batem = 0;
+  let opostos = 0;
   let semCache = 0;
   let semTitulo = 0;
 
@@ -269,10 +271,15 @@ async function analisar() {
     }
     if (!l.product?.name) continue;
     conferidos++;
-    if (areTitlesSimilar(a.titulo, l.product.name)) {
+    // ⚠️⚠️ Mesma guarda do ML: lado e eixo sao EXCLUDENTES e o Jaccard nao os
+    // ve. "Pinca Freio Dianteira Esquerda" x "...Direita" da 0,82 e passava
+    // como "titulo bate". Ver scripts/lib/lado-e-eixo.ts para a medicao.
+    const oposicao = motivoOposicao(a.titulo, l.product.name);
+    if (!oposicao && areTitlesSimilar(a.titulo, l.product.name)) {
       batem++;
       continue;
     }
+    if (oposicao) opostos++;
     divergentes.push({
       Anuncio: l.externalListingId,
       Conta: l.marketplaceAccount.accountName,
@@ -281,6 +288,7 @@ async function analisar() {
       "SKU do produto": l.product.sku,
       "SKU do anuncio": l.externalSku ?? a.sellerSku ?? "",
       Semelhanca: Number(titleSimilarity(a.titulo, l.product.name).toFixed(3)),
+      "Lado/eixo oposto": oposicao || "",
       "Status na Shopee": a.status,
       "Qtd na Shopee": a.quantidade ?? "",
       "Estoque do produto": l.product.stock,
@@ -296,6 +304,7 @@ async function analisar() {
         ? `  (${((divergentes.length / conferidos) * 100).toFixed(1)}%)`
         : ""),
   );
+  console.log(`  destes, LADO/EIXO oposto ${opostos}  <- peca espelhada, o Jaccard nao pegava`);
   console.log(`anuncio sem titulo na API  ${semTitulo}`);
   console.log(`sem cache (nao varridos)   ${semCache}`);
 
