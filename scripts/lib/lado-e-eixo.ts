@@ -43,10 +43,22 @@ export type Eixo = "DIANT" | "TRAS";
 /** Lado declarado pelo titulo, ou `null` quando omisso/ambiguo. */
 export function ladoDe(titulo: string): Lado | null {
   const s = semAcento(titulo);
-  // Alem de "esquerda/esquerdo", as formas compactas usadas no ramo:
-  // l/e (lado esq), t/e (traseira esq), d/e (dianteira esq) — e as de direita.
-  const e = /\besquerd[ao]\b/.test(s) || /\b[ltd][/.\s-]?e\b/.test(s);
-  const d = /\bdireit[ao]\b/.test(s) || /\b[ltd][/.\s-]?d\b/.test(s);
+  // ⚠️⚠️ SEPARADOR OBRIGATORIO nas formas de duas letras.
+  // Com ele opcional (e aceitando espaco), /\b[ltd][/.\s-]?e\b/ casa com a
+  // PREPOSICAO "de": `ladoDe("Ponta De Eixo Traseiro Gol")` devolvia "E".
+  // Qualquer titulo com "de" virava lado esquerdo, e bastava o outro lado do
+  // par dizer "direita" para acusar oposicao inexistente. Isso INFLOU a
+  // medicao que este arquivo documenta: eram 879 vinculos com lado/eixo
+  // oposto, sao **648**; acima do limiar de 0,4, eram 542, sao **455**.
+  // O Tijuco Preto caiu de 176 para 52 — os titulos dele usam muito "De".
+  //
+  // Formas cobertas: l/e, l.e, l-e, t/e, d/e (e as de direita), mais as nuas
+  // "le" e "ld", que nao sao palavras em portugues. "de", "da", "do" e "te"
+  // ficam de fora de proposito.
+  const e =
+    /\besquerd[ao]s?\b/.test(s) || /\b[ltd][/.\-]e\b/.test(s) || /\ble\b/.test(s);
+  const d =
+    /\bdireit[ao]s?\b/.test(s) || /\b[ltd][/.\-]d\b/.test(s) || /\bld\b/.test(s);
   if (e && !d) return "E";
   if (d && !e) return "D";
   return null;
