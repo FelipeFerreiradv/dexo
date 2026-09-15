@@ -541,12 +541,15 @@ export class StockReconciliationService {
       }),
     );
 
-    // Corte pelo teto = fatia maior que o orçamento da passada. Parte dela não
-    // foi olhada, e silêncio aqui reproduziria exatamente o defeito que este
-    // PR corrige — por isso o aviso é ruidoso.
+    // Corte pelo teto = fatia maior que o orçamento da passada. E o corte NÃO
+    // é rotativo: com ORDER BY pl.id determinístico, é sempre o MESMO rabo da
+    // fatia que fica de fora, em toda passada, até alguém subir
+    // AVAILABILITY_WATCH_SLICES — uma reprodução em miniatura da zona cega que
+    // esta rotina existe para eliminar. Por isso o aviso diz "os mesmos", não
+    // "alguns", e é ruidoso.
     if (candidatos.length >= AVAILABILITY_WATCH_MAX_PER_TICK) {
       console.warn(
-        `[availability_watch] fatia ${fatia} atingiu o teto de ${AVAILABILITY_WATCH_MAX_PER_TICK} candidatos — parte da fatia NÃO foi verificada. Aumentar AVAILABILITY_WATCH_SLICES.`,
+        `[availability_watch] fatia ${fatia} atingiu o teto de ${AVAILABILITY_WATCH_MAX_PER_TICK} candidatos — os MESMOS anúncios do fim desta fatia ficarão sem verificação em TODAS as passadas até AVAILABILITY_WATCH_SLICES ser aumentado.`,
       );
     }
   }
