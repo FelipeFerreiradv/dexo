@@ -3713,6 +3713,46 @@ export class SyncUseCase {
   ): Promise<SyncResult> {
     const account = listing.marketplaceAccount;
 
+    // RENOVAÇÃO DE TOKEN — o caminho do ML não tinha nenhuma, e a Shopee tem
+    // desde sempre (`refreshIfNeeded`, mais abaixo neste arquivo). A assimetria
+    // custou caro: medido em 15/09/2026, 140 falhas de autenticação em ~97
+    // anúncios nos últimos 60 dias, e o job de baixa foi APAGADO em todos —
+    // 38 desses anúncios seguem no ar vendendo peça sem saldo.
+    //
+    // Renova só quando o token JÁ EXPIROU, nunca por precaução: cada renovação
+    // rotaciona o refresh_token no ML, e gastar um sem necessidade é criar
+    // problema. Falha aqui não interrompe nada — se o token seguir inválido, a
+    // chamada abaixo devolve 401 e a fila ADIA o job em vez de apagá-lo
+    // (StockSyncRetryService.deferJob, motivo "auth"), que é a defesa em
+    // profundidade desta mesma entrega.
+    //
+    // ⚠️ Renovar a partir do ambiente errado marca a conta como ERROR e para o
+    // lojista inteiro — por isso isto vive no caminho de produção
+    // (dexo-api / dexo-sync-orders) e nunca em script avulso.
+    const tokenExpirado = account.expiresAt
+      ? new Date(account.expiresAt).getTime() <= Date.now()
+      : false;
+
+    if (tokenExpirado && account.refreshToken) {
+      try {
+        const renovado = await MLOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken,
+        );
+        await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: renovado.accessToken,
+          refreshToken: renovado.refreshToken,
+          expiresAt: new Date(Date.now() + renovado.expiresIn * 1000),
+        });
+        account.accessToken = renovado.accessToken;
+      } catch (err) {
+        console.error(
+          `[SyncUseCase] Falha ao renovar token do ML da conta ${account.id}:`,
+          err,
+        );
+      }
+    }
+
     if (!account.accessToken) {
       return {
         success: false,

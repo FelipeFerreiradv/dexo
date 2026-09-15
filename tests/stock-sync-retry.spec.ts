@@ -241,4 +241,111 @@ describe("StockSyncRetryService.runOnce", () => {
     expect(SyncUseCase.syncProductStock).not.toHaveBeenCalled();
     expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
   });
+
+  /**
+   * FALHA DE AUTENTICAÇÃO NÃO PODE APAGAR A BAIXA.
+   *
+   * Token expirado não diz que a baixa é impossível — diz que não pode ser
+   * feita agora. Antes desta entrega, `unauthorized` estava no vocabulário
+   * terminal e o job era APAGADO na primeira ocorrência; as outras formas
+   * ("invalid access token", "401") queimavam as seis tentativas e terminavam
+   * no mesmo lugar.
+   *
+   * Medido em produção em 15/09/2026, últimos 60 dias: 140 falhas de
+   * autenticação em ~97 anúncios e ZERO jobs sobreviventes. Dos anúncios
+   * atingidos, 38 seguem no ar vendendo peça sem saldo.
+   */
+  describe("falha de autenticação: adia, nunca apaga", () => {
+    const falhaComMensagem = async (message: string, platform = "MERCADO_LIVRE") => {
+      (prisma as any).stockSyncJob.findMany.mockResolvedValue([
+        makeJob({ platform }),
+      ]);
+      (prisma as any).productListing.findMany.mockResolvedValue([
+        { id: "lst-1", externalListingId: "ext-lst-1" },
+      ]);
+      (SyncUseCase.syncProductStock as any).mockResolvedValue([
+        {
+          success: false,
+          productId: "prod-1",
+          externalListingId: "ext-lst-1",
+          error: message,
+        },
+      ]);
+
+      await StockSyncRetryService.runOnce();
+    };
+
+    it.each([
+      ["unauthorized", "Request failed: unauthorized"],
+      ["invalid access token", "invalid access token"],
+      ["401", "Erro ao atualizar estoque: status 401"],
+      ["invalid_token", "invalid_token: expired"],
+    ])(
+      "%s não apaga o job — adia mantendo a tentativa",
+      async (_rotulo, message) => {
+        await falhaComMensagem(message);
+
+        // O ponto inteiro desta entrega: a baixa continua na fila.
+        expect((prisma as any).stockSyncJob.deleteMany).not.toHaveBeenCalled();
+        // E não queima tentativa: `update` é o caminho do backoff comum.
+        expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
+
+        const call = (prisma as any).stockSyncJob.updateMany.mock.calls[0][0];
+        expect(call.where).toEqual({ id: "job-1" });
+        expect(call.data.attempts).toBeUndefined();
+        expect(call.data.nextRunAt).toBeInstanceOf(Date);
+        expect(call.data.lastError).toContain("auth_pendente");
+      },
+    );
+
+    it("token revogado continua terminal: renovar não traz o acesso de volta", async () => {
+      await falhaComMensagem("token revoked by user");
+
+      expect((prisma as any).stockSyncJob.deleteMany).toHaveBeenCalledTimes(1);
+      expect(SystemLogService.logError).toHaveBeenCalledWith(
+        "STOCK_SYNC_FAILED",
+        expect.any(String),
+        expect.any(Object),
+      );
+    });
+
+    it("mensagem com os DOIS vocabulários: revogação vence a espera", async () => {
+      // O canal manda "invalid_token: token revoked" — carrega o vocabulário
+      // de autenticação E o de revogação. Se a espera decidisse primeiro, uma
+      // conta revogada de propósito ficaria com job imortal na fila.
+      await falhaComMensagem("invalid_token: token revoked");
+
+      expect((prisma as any).stockSyncJob.deleteMany).toHaveBeenCalledTimes(1);
+      expect((prisma as any).stockSyncJob.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("anúncio inexistente continua terminal: não há o que reprocessar", async () => {
+      await falhaComMensagem("item_not_found");
+
+      expect((prisma as any).stockSyncJob.deleteMany).toHaveBeenCalledTimes(1);
+    });
+
+    it("o kill-switch segue funcionando como antes, com a mensagem dele", async () => {
+      (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
+      (prisma as any).productListing.findMany.mockResolvedValue([
+        { id: "lst-1", externalListingId: "ext-lst-1" },
+      ]);
+      (SyncUseCase.syncProductStock as any).mockResolvedValue([
+        {
+          success: true,
+          productId: "prod-1",
+          externalListingId: "ext-lst-1",
+          platform: "OLX",
+          skipped: true,
+          skipReason: "integration_disabled",
+        },
+      ]);
+
+      await StockSyncRetryService.runOnce();
+
+      const call = (prisma as any).stockSyncJob.updateMany.mock.calls[0][0];
+      expect(call.data.lastError).toContain("integration_disabled");
+      expect(call.data.lastError).not.toContain("auth_pendente");
+    });
+  });
 });
