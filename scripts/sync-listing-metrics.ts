@@ -2,10 +2,35 @@ import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { ShopeeApiService } from "../app/marketplaces/services/shopee-api.service";
+import {
+  describeHttpError,
+  isAuthHttpError,
+} from "../app/lib/http-error-summary";
+
+/**
+ * Métricas de anúncio (visitas, avaliações).
+ *
+ * Só contas ACTIVE. Antes a rotina varria TODAS as contas — inclusive ERROR e
+ * INACTIVE, com token morto — e fazia 2 chamadas por anúncio que voltavam 401,
+ * uma a uma. Medido em 16/09/2026: 24 contas nesse estado, ~108 mil anúncios,
+ * e o erro de cada chamada ia inteiro para o log (com o token no header).
+ *
+ * Quando o token de uma conta é recusado no meio do ciclo, relê a conta UMA vez
+ * (o ciclo de pedidos renova e grava o token novo no banco); se continuar
+ * recusado, a conta sai deste ciclo com uma linha de log só.
+ */
+
+async function freshAccessToken(accountId: string): Promise<string | null> {
+  const acc = await prisma.marketplaceAccount.findUnique({
+    where: { id: accountId },
+    select: { accessToken: true, status: true },
+  });
+  return acc?.status === "ACTIVE" ? acc.accessToken : null;
+}
 
 export async function syncMercadoLivre() {
   const accounts = await prisma.marketplaceAccount.findMany({
-    where: { platform: Platform.MERCADO_LIVRE },
+    where: { platform: Platform.MERCADO_LIVRE, status: "ACTIVE" },
     select: { id: true, accessToken: true, externalUserId: true, accountName: true },
   });
 
@@ -14,6 +39,8 @@ export async function syncMercadoLivre() {
       console.warn(`[sync] Conta ML ${account.accountName} sem accessToken, pulando`);
       continue;
     }
+    let accessToken = account.accessToken;
+    let tokenRelido = false;
 
     const listings = await prisma.productListing.findMany({
       where: {
@@ -30,26 +57,49 @@ export async function syncMercadoLivre() {
     const visitsMap: Record<string, number> = {};
     const ratingMap: Record<string, { reviews?: number; rating?: number }> = {};
 
+    // Token recusado: relê a conta uma vez; se não mudou, para a conta.
+    const tokenAindaServe = async (err: unknown): Promise<boolean> => {
+      if (!isAuthHttpError(err)) return true;
+      if (!tokenRelido) {
+        tokenRelido = true;
+        const novo = await freshAccessToken(account.id);
+        if (novo && novo !== accessToken) {
+          accessToken = novo;
+          return true;
+        }
+      }
+      console.warn(
+        `[sync] Conta ML ${account.accountName}: token recusado (${describeHttpError(err)}) — métricas puladas neste ciclo`,
+      );
+      return false;
+    };
+
+    let contaParada = false;
     for (const id of ids) {
-      if (id.startsWith("LEGACY-")) continue; // n�o h� visitas/reviews para placeholders
+      if (id.startsWith("LEGACY-")) continue; // não há visitas/reviews para placeholders
       try {
-        const visits = await MLApiService.getItemsVisits(account.accessToken, [id]);
+        const visits = await MLApiService.getItemsVisits(accessToken, [id]);
         Object.assign(visitsMap, visits);
       } catch (err) {
-        console.error(`[sync] Falha ao buscar visitas para ${id}`, err);
+        if (!(await tokenAindaServe(err))) {
+          contaParada = true;
+          break;
+        }
+        console.error(`[sync] Falha ao buscar visitas para ${id}:`, describeHttpError(err));
       }
 
       try {
-        const summary = await MLApiService.getItemReviewSummary(account.accessToken, id);
+        const summary = await MLApiService.getItemReviewSummary(accessToken, id);
         ratingMap[id] = {
           reviews: summary.totalReviews,
           rating: summary.ratingAverage,
         };
       } catch (err) {
-        console.warn(
-          `[sync] Reviews n�o dispon�veis para ${id}`,
-          err instanceof Error ? err.message : err,
-        );
+        if (!(await tokenAindaServe(err))) {
+          contaParada = true;
+          break;
+        }
+        console.warn(`[sync] Reviews não disponíveis para ${id}`, describeHttpError(err));
       }
 
       // pequena pausa para evitar rate limit
@@ -74,13 +124,15 @@ export async function syncMercadoLivre() {
       updated++;
     }
 
-    console.log(`[sync] Conta ML ${account.accountName}: ${updated} listings atualizados`);
+    console.log(
+      `[sync] Conta ML ${account.accountName}: ${updated} listings atualizados${contaParada ? " (interrompida: token recusado)" : ""}`,
+    );
   }
 }
 
 export async function syncShopee() {
   const accounts = await prisma.marketplaceAccount.findMany({
-    where: { platform: Platform.SHOPEE },
+    where: { platform: Platform.SHOPEE, status: "ACTIVE" },
     select: { id: true, accessToken: true, shopId: true, accountName: true },
   });
 
@@ -105,7 +157,7 @@ export async function syncShopee() {
       const externalId = listing.externalListingId;
       if (!externalId || externalId.startsWith("LEGACY-")) continue;
       if (!/^[0-9]+$/.test(externalId)) {
-        console.warn(`[sync] Shopee listing ${externalId} n�o � num�rico, pulando`);
+        console.warn(`[sync] Shopee listing ${externalId} não é numérico, pulando`);
         continue;
       }
 
@@ -138,8 +190,8 @@ export async function syncShopee() {
         updated++;
       } catch (err) {
         console.error(
-          `[sync] Falha ao buscar m�tricas Shopee para ${externalId}:`,
-          err instanceof Error ? err.message : err,
+          `[sync] Falha ao buscar métricas Shopee para ${externalId}:`,
+          describeHttpError(err),
         );
       }
 

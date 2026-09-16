@@ -32,6 +32,7 @@ import {
   inspectRestrictionsEcho,
   resolveCompatPositions,
 } from "../lib/ml-compat-position.logic";
+import { describeHttpError, isAuthHttpError } from "../../lib/http-error-summary";
 
 export const ML_COMPAT_DOMAIN_ID = "MLB-CARS_AND_VANS";
 
@@ -574,7 +575,10 @@ export class MLApiService {
         return token;
       }
     } catch (err) {
-      console.warn("[ML API] Não foi possível obter app access token:", err);
+      console.warn(
+        "[ML API] Não foi possível obter app access token:",
+        describeHttpError(err),
+      );
     }
 
     return null;
@@ -652,7 +656,7 @@ export class MLApiService {
     } catch (error) {
       console.error(
         `[ML API] Error fetching IDs (scroll_id=${scrollId ?? "start"}):`,
-        error,
+        describeHttpError(error),
       );
       if (axios.isAxiosError(error)) {
         throw new Error(
@@ -735,7 +739,10 @@ export class MLApiService {
               await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
               continue;
             }
-            console.error(`[ML API] Error fetching item details chunk ${current}:`, error);
+            console.error(
+              `[ML API] Error fetching item details chunk ${current}:`,
+              describeHttpError(error),
+            );
             if (axios.isAxiosError(error)) {
               throw new Error(
                 `Erro ao obter detalhes dos items: ${error.response?.data?.message || error.message}`,
@@ -935,7 +942,7 @@ export class MLApiService {
 
       console.error(
         `[ML API] Error fetching site categories for ${siteId}:`,
-        error,
+        describeHttpError(error),
       );
       if (axios.isAxiosError(error)) {
         throw new Error(
@@ -982,7 +989,10 @@ export class MLApiService {
         }
       }
 
-      console.error(`[ML API] Error fetching category ${categoryId}:`, error);
+      console.error(
+        `[ML API] Error fetching category ${categoryId}:`,
+        describeHttpError(error),
+      );
       if (axios.isAxiosError(error)) {
         throw new Error(
           `Erro ao obter dados da categoria: ${error.response?.data?.message || error.message}`,
@@ -1054,7 +1064,14 @@ export class MLApiService {
         const total = entry?.total_visits ?? entry?.total ?? entry?.visits ?? 0;
         result[id] = Number(total) || 0;
       } catch (error) {
-        console.error(`[ML API] Error fetching visits for ${id}:`, error);
+        // Token recusado vale para TODOS os ids da conta: relança para o
+        // chamador parar a conta, em vez de repetir o 401 anúncio por anúncio
+        // (era o que enchia o log). Único chamador: scripts/sync-listing-metrics.ts.
+        if (isAuthHttpError(error)) throw error;
+        console.error(
+          `[ML API] Error fetching visits for ${id}:`,
+          describeHttpError(error),
+        );
         // segue para o prÃ³ximo ID
       }
       // Pausa leve para evitar rate limiting
@@ -1484,7 +1501,10 @@ export class MLApiService {
 
       return response.data;
     } catch (error) {
-      console.error("[ML API] Error fetching orders:", error);
+      console.error(
+        "[ML API] Error fetching orders:",
+        describeHttpError(error),
+      );
       if (axios.isAxiosError(error)) {
         throw new Error(
           `Erro ao buscar pedidos: ${error.response?.data?.message || error.message}`,
@@ -1540,7 +1560,10 @@ export class MLApiService {
       // Limitar ao mÃ¡ximo especificado
       return allOrders.slice(0, maxOrders);
     } catch (error) {
-      console.error("[ML API] Error fetching all orders:", error);
+      console.error(
+        "[ML API] Error fetching all orders:",
+        describeHttpError(error),
+      );
       throw error;
     }
   }
