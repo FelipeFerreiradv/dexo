@@ -324,6 +324,17 @@ export class ListingAutodetectUseCase {
     return product ?? null;
   }
 
+  /**
+   * Prefixo do SKU sintético de anúncio SEM código de vendedor, por plataforma
+   * (usado só com AUTODETECT_SKU_PREFIXADO=true). Curto de propósito: aparece
+   * na etiqueta e na busca do lojista. Plataforma nova cai no genérico "MP".
+   */
+  private static readonly SEM_SKU_PREFIXO: Record<string, string> = {
+    [Platform.MERCADO_LIVRE]: "ML",
+    [Platform.SHOPEE]: "SHP",
+    [Platform.MAGALU]: "MGL",
+  };
+
   private static async createProductFromItem(
     item: NormalizedMarketplaceItem,
     normalizedSku: string | null,
@@ -361,8 +372,37 @@ export class ListingAutodetectUseCase {
     //    único por anúncio (VAAPT-<id>), para não colidir com o produto casado
     //    nem re-agrupar via o mesmo SKU;
     //  - anúncio com SKU próprio: usa o SKU do vendedor;
-    //  - sem SKU: autoSku (contador sequencial).
+    //  - sem SKU: autoSku (contador sequencial) — ou, com
+    //    AUTODETECT_SKU_PREFIXADO=true, sintético prefixado (ver abaixo).
     const syntheticSku = `VAAPT-${item.externalListingId}`;
+
+    // SKU sintético para anúncio SEM código de vendedor (OPT-IN, desligado por
+    // padrão).
+    //
+    // POR QUE. O `autoSku` gera `n.toString().padStart(3, "0")` — NÚMERO PURO,
+    // exatamente o formato da etiqueta física do galpão. O anúncio sem SKU
+    // nasce então ocupando um número que pertence a outra peça, e a peça real
+    // (vinda da migração) fica sem poder usar o próprio código. Medido na MK2
+    // em 03/09/2026: uma varredura da Shopee criou 1.934 produtos com SKU
+    // numérico em UM dia; o caso concreto foi a etiqueta `MK2-6036` aparecer no
+    // sistema como `37156`, com quatro fichas para a mesma peça. Reconfirmado
+    // em 16/09/2026 pelo próprio cliente: 91% dos anúncios dele (22.387 de
+    // 24.660) não têm código de vendedor, e o SKU 9662 que a Dexo emitiu para
+    // um coxim é, na planilha dele, a etiqueta de um Sensor ABS.
+    //
+    // O prefixo torna o SKU inconfundível com etiqueta e, por ser derivado do
+    // anúncio, DETERMINÍSTICO: reimportar o mesmo anúncio reencontra o mesmo
+    // produto em vez de criar outro. É o mesmo princípio do `VAAPT-<id>` acima,
+    // que já roda em produção — inclusive no destino de publicação
+    // (`seller_custom_field` no ML, `item_sku` na Shopee), onde SKU
+    // alfanumérico é aceito.
+    //
+    // ⚠️ Esta flag lê "true", não "1" como as demais do projeto — é o contrato
+    // do spec que veio junto. Flag ausente ⇒ caminho de hoje, byte a byte.
+    const semSkuPrefixado =
+      process.env.AUTODETECT_SKU_PREFIXADO === "true"
+        ? `${ListingAutodetectUseCase.SEM_SKU_PREFIXO[item.platform] ?? "MP"}-${item.externalListingId}`
+        : null;
     try {
       let product;
       if (isBoxLabel) {
@@ -377,6 +417,12 @@ export class ListingAutodetectUseCase {
           sku: item.rawSku,
           autoSku: false,
         });
+      } else if (semSkuPrefixado) {
+        product = await productUseCase.create({
+          ...base,
+          sku: semSkuPrefixado,
+          autoSku: false,
+        });
       } else {
         product = await productUseCase.create({ ...base, sku: "", autoSku: true });
       }
@@ -386,7 +432,14 @@ export class ListingAutodetectUseCase {
         // Corrida de SKU: re-resolve pelo SKU efetivamente usado e vincula.
         // Box label re-resolve pelo sintético (único por anúncio); demais pelo
         // SKU do vendedor. Sem duplicar produto.
-        const resolveKey = isBoxLabel ? normalizeSku(syntheticSku) : normalizedSku;
+        // Box label re-resolve pelo sintético (único por anúncio); anúncio sem
+        // SKU, pelo sintético prefixado quando a flag está ligada — sem ela não
+        // há chave nenhuma e a corrida relança, como hoje; demais pelo SKU do
+        // vendedor. Sem duplicar produto.
+        const resolveKey = isBoxLabel
+          ? normalizeSku(syntheticSku)
+          : (normalizedSku ??
+            (semSkuPrefixado ? normalizeSku(semSkuPrefixado) : null));
         if (resolveKey) {
           const raced = await this.findProductBySku(
             item.account.userId,
