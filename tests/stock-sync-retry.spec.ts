@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/app/lib/prisma", () => ({
   default: {
+    $queryRaw: vi.fn(),
     stockSyncJob: {
       findMany: vi.fn(),
       update: vi.fn(),
@@ -53,7 +54,7 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("deleta o job quando syncProductStock retorna success", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
+    (prisma as any).$queryRaw.mockResolvedValue([makeJob()]);
     (prisma as any).productListing.findMany.mockResolvedValue([
       { id: "lst-1", externalListingId: "ext-lst-1" },
     ]);
@@ -77,7 +78,7 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("incrementa attempts e aplica backoff em falha transitória", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([
+    (prisma as any).$queryRaw.mockResolvedValue([
       makeJob({ attempts: 1 }),
     ]);
     (prisma as any).productListing.findMany.mockResolvedValue([
@@ -103,7 +104,7 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("deleta o job e dispara logError em erro terminal (token revoked)", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
+    (prisma as any).$queryRaw.mockResolvedValue([makeJob()]);
     (prisma as any).productListing.findMany.mockResolvedValue([
       { id: "lst-1", externalListingId: "ext-lst-1" },
     ]);
@@ -135,7 +136,7 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("erro terminal da OLX (REFUSED_*) ⇒ markFailed, NÃO queima as 6 tentativas", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([
+    (prisma as any).$queryRaw.mockResolvedValue([
       makeJob({ platform: "OLX" }),
     ]);
     (prisma as any).productListing.findMany.mockResolvedValue([
@@ -162,7 +163,7 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("agrupa jobs por productId e chama syncProductStock uma vez por produto", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([
+    (prisma as any).$queryRaw.mockResolvedValue([
       makeJob({ id: "job-a", listingId: "lst-a" }),
       makeJob({ id: "job-b", listingId: "lst-b" }),
       makeJob({ id: "job-c", productId: "prod-2", listingId: "lst-c" }),
@@ -206,7 +207,7 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("kill-switch (integration_disabled): reagenda sem apagar nem consumir tentativa", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
+    (prisma as any).$queryRaw.mockResolvedValue([makeJob()]);
     (prisma as any).productListing.findMany.mockResolvedValue([
       { id: "lst-1", externalListingId: "ext-lst-1" },
     ]);
@@ -234,12 +235,27 @@ describe("StockSyncRetryService.runOnce", () => {
   });
 
   it("retorna cedo quando não há jobs pendentes", async () => {
-    (prisma as any).stockSyncJob.findMany.mockResolvedValue([]);
+    (prisma as any).$queryRaw.mockResolvedValue([]);
 
     await StockSyncRetryService.runOnce();
 
     expect(SyncUseCase.syncProductStock).not.toHaveBeenCalled();
     expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
+  });
+
+  it("a leitura da fila é um CLAIM atômico: SKIP LOCKED + lease, nunca findMany", async () => {
+    (prisma as any).$queryRaw.mockResolvedValue([]);
+
+    await StockSyncRetryService.runOnce();
+
+    // Dois processos rodam esta fila (dexo-api e dexo-sync-orders) e a trava
+    // em memória é por processo. Sem o claim no banco, o MESMO job podia ser
+    // pego duas vezes e escrever em dobro no marketplace.
+    const sql = (prisma as any).$queryRaw.mock.calls[0][0].join("?");
+    expect(sql).toContain("FOR UPDATE SKIP LOCKED");
+    expect(sql).toContain("RETURNING");
+    expect(sql).toContain("interval '90 seconds'");
+    expect((prisma as any).stockSyncJob.findMany).not.toHaveBeenCalled();
   });
 
   /**
@@ -257,7 +273,7 @@ describe("StockSyncRetryService.runOnce", () => {
    */
   describe("falha de autenticação: adia, nunca apaga", () => {
     const falhaComMensagem = async (message: string, platform = "MERCADO_LIVRE") => {
-      (prisma as any).stockSyncJob.findMany.mockResolvedValue([
+      (prisma as any).$queryRaw.mockResolvedValue([
         makeJob({ platform }),
       ]);
       (prisma as any).productListing.findMany.mockResolvedValue([
@@ -326,7 +342,7 @@ describe("StockSyncRetryService.runOnce", () => {
     });
 
     it("o kill-switch segue funcionando como antes, com a mensagem dele", async () => {
-      (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
+      (prisma as any).$queryRaw.mockResolvedValue([makeJob()]);
       (prisma as any).productListing.findMany.mockResolvedValue([
         { id: "lst-1", externalListingId: "ext-lst-1" },
       ]);
