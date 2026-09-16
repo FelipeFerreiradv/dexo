@@ -448,10 +448,11 @@ export function OrdersList() {
           `${getApiBaseUrl()}/orders/ingestion-issues/${issueId}/retry`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              email: session.user.email,
-            },
+            // SEM Content-Type: a rota não tem corpo. Com "application/json" e
+            // corpo vazio o Fastify recusa ANTES da rota (400 "Body cannot be
+            // empty…") — em produção as 22 tentativas desde maio voltaram 400,
+            // o botão nunca funcionou.
+            headers: { email: session.user.email },
           },
         );
         const data = await response.json();
