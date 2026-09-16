@@ -1,4 +1,5 @@
 import axios from "axios";
+import { safeHttpCause } from "../../lib/http-error-summary";
 import { randomBytes } from "crypto";
 import { MAGALU_CONSTANTS, validateMagaluConfig } from "../magalu/magalu-constants";
 
@@ -308,7 +309,7 @@ export class MagaluOAuthService {
         );
 
         const wrapped = new Error(`Erro ao renovar token (Magalu): ${rawMessage}`);
-        (wrapped as any).cause = error;
+        (wrapped as any).cause = safeHttpCause(error);
         (wrapped as any).errorCode = errorCode;
         throw wrapped;
       }

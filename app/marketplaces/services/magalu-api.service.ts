@@ -1,4 +1,5 @@
 import axios from "axios";
+import { safeHttpCause } from "../../lib/http-error-summary";
 import { MAGALU_CONSTANTS } from "../magalu/magalu-constants";
 import type {
   MagaluSku,
@@ -47,7 +48,7 @@ export class MagaluApiService {
       const wrapped = new Error(`${prefix}: ${apiMessage}`);
       (wrapped as any).status = error.response?.status;
       (wrapped as any).responseData = error.response?.data;
-      (wrapped as any).cause = error;
+      (wrapped as any).cause = safeHttpCause(error);
       return wrapped;
     }
     return error instanceof Error ? error : new Error(String(error));

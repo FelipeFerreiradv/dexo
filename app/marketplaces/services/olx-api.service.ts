@@ -1,4 +1,5 @@
 import axios from "axios";
+import { safeHttpCause } from "../../lib/http-error-summary";
 import { OLX_CONSTANTS } from "../olx/olx-constants";
 import type {
   OlxAd,
@@ -32,7 +33,7 @@ export class OlxApiService {
       const wrapped = new Error(`${prefix}: ${apiMessage}`);
       (wrapped as any).status = error.response?.status;
       (wrapped as any).responseData = error.response?.data;
-      (wrapped as any).cause = error;
+      (wrapped as any).cause = safeHttpCause(error);
       return wrapped;
     }
     return error instanceof Error ? error : new Error(String(error));

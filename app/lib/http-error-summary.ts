@@ -54,6 +54,29 @@ export function describeHttpError(err: unknown): string {
 }
 
 /**
+ * Substituto seguro para `wrapped.cause = axiosError`.
+ *
+ * Os serviços de marketplace embrulham o erro do axios num `Error` com mensagem
+ * legível e penduravam o AxiosError ORIGINAL em `cause`. Qualquer
+ * `console.error("…", err)` desse erro imprime a causa inteira — inclusive
+ * `config.data` da renovação de token, que carrega `client_secret` e
+ * `refresh_token`. Medido em 16/09/2026: o `client_secret` do app Magalu (e o
+ * do ML) aparecia em todos os arquivos do `dexo-sync-orders-error`.
+ *
+ * Nenhum código lê `wrapped.cause` (conferido por grep), então a causa passa a
+ * ser um `Error` com o resumo seguro, preservando status e código.
+ */
+export function safeHttpCause(err: unknown): Error {
+  const cause = new Error(describeHttpError(err));
+  cause.name = "HttpErrorCause";
+  if (axios.isAxiosError(err)) {
+    (cause as any).status = err.response?.status;
+    (cause as any).code = err.code;
+  }
+  return cause;
+}
+
+/**
  * O token foi recusado? Aceita tanto o AxiosError cru (401) quanto o `Error`
  * que os serviços relançam só com a mensagem do ML ("invalid access token"),
  * que é como `getItemReviewSummary` devolve.

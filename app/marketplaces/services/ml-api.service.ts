@@ -32,7 +32,11 @@ import {
   inspectRestrictionsEcho,
   resolveCompatPositions,
 } from "../lib/ml-compat-position.logic";
-import { describeHttpError, isAuthHttpError } from "../../lib/http-error-summary";
+import {
+  describeHttpError,
+  isAuthHttpError,
+  safeHttpCause,
+} from "../../lib/http-error-summary";
 
 export const ML_COMPAT_DOMAIN_ID = "MLB-CARS_AND_VANS";
 
@@ -875,7 +879,7 @@ export class MLApiService {
         (wrapped as any).status = error.response?.status;
         (wrapped as any).responseData = error.response?.data;
         (wrapped as any).code = error.code;
-        (wrapped as any).cause = error;
+        (wrapped as any).cause = safeHttpCause(error);
         throw wrapped;
       }
       throw error;
@@ -1249,7 +1253,7 @@ export class MLApiService {
         (wrapped as any).status = error.response?.status;
         (wrapped as any).responseData = error.response?.data;
         (wrapped as any).code = error.code;
-        (wrapped as any).cause = error;
+        (wrapped as any).cause = safeHttpCause(error);
         throw wrapped;
       }
       throw error;
