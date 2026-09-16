@@ -455,7 +455,9 @@ export function FinanceDialog({
         `${getApiBaseUrl()}/finance/receivables/${initialData.id}/fiscal-draft`,
         {
           method: "POST",
-          headers: { email: userEmail, "content-type": "application/json" },
+          // SEM content-type, como o PDV: a rota não tem corpo, e JSON com
+          // corpo vazio é recusado pelo Fastify antes da rota (400).
+          headers: { email: userEmail },
         },
       );
       const result = await res.json();
