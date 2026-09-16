@@ -44,6 +44,7 @@ import { superadminRoutes } from "../routes/superadmin.routes";
 import { superadminImportRoutes } from "../routes/superadmin-import.routes";
 import { internalRoutes } from "../routes/internal.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
+import { createApiErrorHandler } from "./error-handler";
 
 // trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
 // para que request.ip seja o IP REAL do cliente (rate-limit + logs corretos).
@@ -332,44 +333,7 @@ api.get("/ready", async (_req, reply) => {
 // Handler global de erro do Fastify
 // -----------------------------------------------------------------
 
-api.setErrorHandler(async (error: any, request, reply) => {
-  const message: string = error?.message ?? String(error);
-  const statusCode: number =
-    typeof error?.statusCode === "number" ? error.statusCode : 500;
-  api.log.error(
-    { err: error, path: request.url, method: request.method },
-    "request error",
-  );
-  try {
-    await SystemLogService.logError(
-      "SYSTEM_ERROR",
-      `${request.method} ${request.url}: ${message}`,
-      {
-        resource: "Request",
-        resourceId: request.id,
-        details: {
-          method: request.method,
-          url: request.url,
-          statusCode,
-        },
-      },
-    );
-  } catch {
-    // swallow — não deixa falha de log derrubar o handler.
-  }
-  // SEGURANÇA: em produção, NÃO devolver a mensagem crua de erros 5xx ao cliente
-  // (pode vazar query de banco, caminho de arquivo, nome de função). 4xx (erros
-  // de validação) continuam informativos. O detalhe completo fica no log +
-  // SystemLog, correlacionável pelo requestId.
-  const isProd = process.env.NODE_ENV === "production";
-  const clientMessage =
-    statusCode >= 500 && isProd ? "Erro interno do servidor" : message;
-  reply.status(statusCode).send({
-    error: "Erro interno do servidor",
-    message: clientMessage,
-    requestId: request.id,
-  });
-});
+api.setErrorHandler(createApiErrorHandler(api.log));
 
 // -----------------------------------------------------------------
 // Handlers globais de processo
