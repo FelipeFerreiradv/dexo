@@ -40,7 +40,9 @@ function setup() {
 }
 
 describe("POST /orders/ingestion-issues/:id/retry sem corpo", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it("controle: Content-Type JSON com corpo vazio é recusado antes da rota (o defeito de produção)", async () => {
     const retry = setup();
