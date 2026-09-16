@@ -1232,7 +1232,7 @@ export class ListingUseCase {
             account = updated as any;
             acc = updated;
             console.debug(
-              `[ListingUseCase] Account tokens updated, using accessToken=${acc.accessToken}`,
+              `[ListingUseCase] Account tokens updated for account ${acc.id}`,
             );
           } else {
             console.warn(

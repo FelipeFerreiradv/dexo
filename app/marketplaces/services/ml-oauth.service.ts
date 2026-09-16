@@ -1,4 +1,5 @@
 import axios from "axios";
+import { safeHttpCause } from "../../lib/http-error-summary";
 import { randomBytes } from "crypto";
 import { ML_CONSTANTS } from "../mercado-livre/ml-constants";
 import { PKCEService } from "./pkce.service";
@@ -352,7 +353,7 @@ export class MLOAuthService {
         );
 
         const wrapped = new Error(`Erro ao renovar token: ${rawMessage}`);
-        (wrapped as any).cause = error;
+        (wrapped as any).cause = safeHttpCause(error);
         (wrapped as any).errorCode = errorCode;
         throw wrapped;
       }
