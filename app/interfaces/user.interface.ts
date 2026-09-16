@@ -40,6 +40,7 @@ export interface User {
   // specs que montam `User` à mão (tests/auth.authorize.is-active.spec.ts:44) e
   // um campo obrigatório os quebraria — o que a regra do projeto proíbe.
   reopenListingsOnSaleCancel?: boolean;
+  pauseListingsOnOrderZero?: boolean;
   // Efetivo: colaborador herda do admin pai. É o que a TELA deve exibir, senão
   // o colaborador veria a própria linha (sempre true) e o toggle mentiria sobre
   // o estado do tenant. Mesmo par de isActive/effectiveActive.
@@ -92,6 +93,7 @@ export interface UserUpdate {
   // colaborador (user.routes.ts), porque a escrita iria para a linha dele — que
   // nenhum dos dois motores de cancelamento lê.
   reopenListingsOnSaleCancel?: boolean;
+  pauseListingsOnOrderZero?: boolean;
 
   role?: Role;
 

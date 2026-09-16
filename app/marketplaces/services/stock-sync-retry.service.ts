@@ -167,16 +167,30 @@ export class StockSyncRetryService {
   }
 
   private static async runOnceInner(): Promise<void> {
-    const now = new Date();
-
-    const jobs: StockSyncJobRow[] = await (prisma as any).stockSyncJob.findMany({
-      where: {
-        status: "PENDING",
-        nextRunAt: { lte: now },
-      },
-      orderBy: { nextRunAt: "asc" },
-      take: BATCH_LIMIT,
-    });
+    // CLAIM ATÔMICO ENTRE PROCESSOS. Esta fila roda em DOIS lugares —
+    // dexo-api (tick de 30s) e dexo-sync-orders (firePostEffects) — e a
+    // versão anterior lia com findMany puro: a trava `runInProgress` é por
+    // processo, então os dois podiam pegar o MESMO job e escrever duas vezes
+    // no marketplace. O UPDATE abaixo é UMA statement (funciona no pooler em
+    // transaction-mode): reserva os jobs empurrando o nextRunAt 90s à frente,
+    // com SKIP LOCKED para dois ticks simultâneos nunca disputarem linha —
+    // cada job sai para exatamente um processo. Se o processo morrer com o
+    // job reservado, o lease de 90s expira sozinho e outro tick o pega; o
+    // caminho de sucesso deleta e o de falha reescreve o nextRunAt, então o
+    // lease nunca fica sujo.
+    const jobs: StockSyncJobRow[] = await (prisma as any).$queryRaw`
+      UPDATE "StockSyncJob"
+      SET "nextRunAt" = now() + interval '90 seconds'
+      WHERE id IN (
+        SELECT id FROM "StockSyncJob"
+        WHERE status = 'PENDING' AND "nextRunAt" <= now()
+        ORDER BY "nextRunAt" ASC
+        LIMIT ${BATCH_LIMIT}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING id, "productId", "listingId", platform, "targetStock",
+                attempts, status, "createdAt", "lastError"
+    `;
 
     if (jobs.length === 0) return;
 

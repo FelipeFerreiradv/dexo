@@ -4013,9 +4013,71 @@ export class OrderUseCase {
    * Comportamento preservado byte-idêntico: mesmos opts de tx
    * ({ timeout: 60_000, maxWait: 20_000 }), mesmo `logPrefix "[OrderUseCase]"`,
    * mesmo log de oversell ("Oversell detectado no pedido ${order.id}..."),
-   * mesmo retorno `OrderStockDeduction[]`. `pauseOnZero` NÃO é passado —
-   * Order não pausa anúncios ao zerar (opt-in apenas para venda balcão).
+   * mesmo retorno `OrderStockDeduction[]`. `pauseOnZero` passa a ser passado
+   * SOMENTE quando o tenant optou (ver pauseOnZeroSeTenantOptou abaixo);
+   * default continua o de sempre: pedido não pausa anúncio ao zerar.
    */
+  /**
+   * Decide se a baixa deste pedido deve PAUSAR os anúncios das peças que
+   * zeraram — a preferência é POR TENANT (User.pauseListingsOnOrderZero,
+   * default false = comportamento de sempre).
+   *
+   * Parte do `marketplaceAccountId` (coluna obrigatória do Order, sempre
+   * presente) e NÃO de `order.marketplaceAccount.userId`: o select do
+   * repositório projeta a relação só com (id, platform, accountName), então
+   * `userId` ali seria undefined em runtime e a preferência nunca dispararia.
+   *
+   * O dono resolvido segue o padrão do sistema (dataOwnerId = parentUserId
+   * ?? id): produtos pertencem ao DONO do tenant e `pauseListings` confere
+   * `product.userId` estrito; a preferência também mora na linha do dono —
+   * conta conectada por colaborador lê a preferência do admin pai.
+   *
+   * Custo no caminho quente: ZERO consulta quando nada zerou (o caso da
+   * imensa maioria dos pedidos) e UM select enxuto quando zerou (dois só no
+   * caso raro de conta pendurada em colaborador). Fail-safe: preferência
+   * ilegível (client antigo, coluna ausente, blip de banco) devolve
+   * undefined — o comportamento anterior — porque a baixa de pedido é o
+   * caminho mais sensível do sistema e uma preferência opcional jamais pode
+   * derrubá-lo.
+   */
+  private static async pauseOnZeroSeTenantOptou(
+    deductions: Array<{ newStock: number }>,
+    marketplaceAccountId: string | undefined | null,
+  ): Promise<{ userId: string } | undefined> {
+    if (!marketplaceAccountId) return undefined;
+    if (!deductions.some((d) => d.newStock === 0)) return undefined;
+    try {
+      const conta = await (prisma as any).marketplaceAccount.findUnique({
+        where: { id: marketplaceAccountId },
+        select: {
+          user: {
+            select: {
+              id: true,
+              parentUserId: true,
+              pauseListingsOnOrderZero: true,
+            },
+          },
+        },
+      });
+      const usuario = conta?.user;
+      if (!usuario) return undefined;
+      if (!usuario.parentUserId) {
+        return usuario.pauseListingsOnOrderZero
+          ? { userId: usuario.id }
+          : undefined;
+      }
+      const dono = await (prisma as any).user.findUnique({
+        where: { id: usuario.parentUserId },
+        select: { pauseListingsOnOrderZero: true },
+      });
+      return dono?.pauseListingsOnOrderZero
+        ? { userId: usuario.parentUserId }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private static async deductStockForOrder(
     order: Order,
     reason: string,
@@ -4149,7 +4211,17 @@ export class OrderUseCase {
       deductions,
       logPrefix: "[OrderUseCase]",
       reason,
-      // NÃO passamos pauseOnZero → Order não pausa anúncios ao zerar.
+      // Pausa-ao-zerar por PREFERÊNCIA DO TENANT (User.pauseListingsOnOrderZero,
+      // default false). O comentário que morava aqui — "NÃO passamos
+      // pauseOnZero" — nunca explicou o porquê, e o diagnóstico de 15/09/2026
+      // mostrou o custo: o ML RECUSA zerar quantidade de anúncio fora do ar,
+      // então a peça vendida ficava vendável no anúncio até a vigília passar.
+      // Pausar na hora fecha o caminho na origem — mas muda o comportamento
+      // visível do lojista, por isso é opt-in por tenant, nunca global.
+      pauseOnZero: await OrderUseCase.pauseOnZeroSeTenantOptou(
+        deductions,
+        order.marketplaceAccountId,
+      ),
     });
 
     // ── Reflexo no status do LOTE ao VENDER pelo marketplace (opt-in) ──

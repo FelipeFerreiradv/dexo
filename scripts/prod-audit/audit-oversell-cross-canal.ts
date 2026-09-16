@@ -296,11 +296,20 @@ export async function auditOversellCrossCanal(
   >(
     `
     WITH vendas AS (
-      SELECT oi."productId", o."soldAt", ma.platform::text AS canal, ma."userId"
+      -- COALESCE porque soldAt e NULO em 69,7% dos pedidos Shopee e 41% dos
+      -- do ML (medido 15/09/2026): filtrar por ele escondia a maioria dos
+      -- pares — inclusive o proprio caso que motivou esta auditoria (SKU
+      -- 34049, pedido Shopee sem soldAt). CANCELLED fora: pedido cancelado
+      -- nao e venda (1 dos 3 achados antigos era falso positivo por isso).
+      SELECT oi."productId",
+             COALESCE(o."soldAt", o."createdAt") AS "soldAt",
+             ma.platform::text AS canal, ma."userId"
       FROM "Order" o
       JOIN "OrderItem" oi ON oi."orderId" = o.id
       JOIN "MarketplaceAccount" ma ON ma.id = o."marketplaceAccountId"
-      WHERE o."soldAt" > now() - interval '120 days' AND oi."productId" IS NOT NULL
+      WHERE COALESCE(o."soldAt", o."createdAt") > now() - interval '120 days'
+        AND o.status <> 'CANCELLED'
+        AND oi."productId" IS NOT NULL
     ),
     pares AS (
       SELECT v1."productId", v1."soldAt" AS primeira, v2."soldAt" AS segunda,
@@ -332,6 +341,10 @@ export async function auditOversellCrossCanal(
     "mesma peca vendida em DOIS canais sem reposicao entre as vendas",
     duasVendas.length,
   );
+  // LIMITACAO CONHECIDA: o criterio olha `p.stock <= 0` HOJE, nao o estoque
+  // NA HORA da primeira venda — peca multi-unidade que vendeu o que tinha
+  // aparece aqui (conferencia manual de 15/09: 23 candidatos -> 14 reais).
+  // Tratar a lista como candidatos a conferir, nao como veredito.
   if (duasVendas.length > 0) {
     logFinding(
       outcome,
@@ -339,6 +352,50 @@ export async function auditOversellCrossCanal(
         " caso(s) do padrao exato do SKU 33996 (venda dupla cross-canal)",
     );
     printTable(duasVendas, 25);
+  }
+
+  // ─── BLOCO 6b — DANO CONSUMADO: venda que entrou com estoque ja zerado ────
+  // A assinatura DIRETA do oversell: a baixa registra change=0 sobre
+  // previousStock<=0 — a peca vendeu e nao havia o que baixar. Diferente de
+  // todos os blocos acima (risco POTENCIAL), isto e prejuizo ja realizado.
+  // Medido em 15/09/2026 quando o bloco nasceu: 1.402 casos em 18 tenants,
+  // R$ 210 mil em pedidos pagos, 33 nos ultimos 7 dias.
+  const danoConsumado = await prisma.$queryRawUnsafe<
+    { tenant: string; casos: bigint; produtos: bigint; ultimo: string }[]
+  >(
+    `
+    SELECT u.email AS tenant,
+           count(*)::bigint AS casos,
+           count(DISTINCT sl."productId")::bigint AS produtos,
+           max(sl."createdAt")::text AS ultimo
+    FROM "StockLog" sl
+    JOIN "Product" p ON p.id = sl."productId"
+    JOIN "User" u ON u.id = p."userId"
+    WHERE sl.change = 0
+      AND sl."previousStock" <= 0
+      AND sl.reason ILIKE 'venda%'
+      AND sl."createdAt" > now() - interval '1 day' * $2
+      AND ($1::text IS NULL OR p."userId" = $1::text)
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 20
+  `,
+    tenant,
+    dias,
+  );
+  const totalDano = danoConsumado.reduce((a, r) => a + Number(r.casos), 0);
+  sub(
+    "DANO CONSUMADO: vendas que entraram com estoque ja zerado (change=0)",
+    totalDano,
+  );
+  if (totalDano > 0) {
+    logFinding(
+      outcome,
+      totalDano +
+        " venda(s) sobre estoque zero na janela — oversell ja realizado, nao risco",
+    );
+    printTable(
+      danoConsumado.map((r) => ({ ...r, casos: Number(r.casos), produtos: Number(r.produtos) })),
+      12,
+    );
   }
 
   // ─── BLOCO 7 — falhas DURAS de propagacao (contexto, fora de escopo) ───────
