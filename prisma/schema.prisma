@@ -66,6 +66,13 @@ model User {
   // sempre o dataOwnerId), mesma regra de `whatsappEnabledAt`.
   // Migração: prisma/ddl/2026-08-17-user-reopen-listings-on-sale-cancel.sql
   reopenListingsOnSaleCancel Boolean @default(true)
+  // Pausar anúncios quando a baixa de um PEDIDO zera a peça (opt-in por
+  // tenant; default false = comportamento de sempre). O ML recusa zerar
+  // quantidade de anúncio fora do ar, então pausar é a única ação que fecha o
+  // caminho do oversell na origem — mas muda o comportamento visível do
+  // lojista, por isso nasce desligada e liga cliente a cliente.
+  // Coluna criada por DDL manual: prisma/ddl/2026-09-16-user-pause-on-order-zero.sql
+  pauseListingsOnOrderZero   Boolean @default(false)
 
   // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
   // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
