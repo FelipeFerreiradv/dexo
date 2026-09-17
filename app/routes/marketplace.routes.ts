@@ -12,6 +12,12 @@ import { isOlxDisabled, isFacebookDisabled } from "../lib/integration-flags";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+import {
+  BoundedWebhookQueue,
+  isMlWebhookQueueEnabled,
+  mlWebhookKey,
+  mlWebhookQueueConfig,
+} from "../marketplaces/services/ml-webhook-queue";
 import { MLAttributeCatalogService } from "../marketplaces/services/ml-attribute-catalog.service";
 import {
   parseMlRequiredCheckBody,
@@ -182,6 +188,99 @@ export function mexeNosAnunciosDoCanal(metodo: string, path: string): boolean {
   // no nosso banco e no vínculo da conta, nunca nos anúncios do vendedor.
   return false;
 }
+
+/**
+ * Processa UMA notificação do Mercado Livre (pergunta, item ou pedido).
+ * Mesmo código que rodava inline no `setImmediate` da rota — extraído para a
+ * fila (ML_WEBHOOK_QUEUE_ENABLED=1) e o caminho antigo chamarem o mesmo.
+ */
+async function processarNotificacaoML(body: Record<string, any>): Promise<void> {
+  try {
+    if (
+      body.topic === "questions" &&
+      WebhookUseCase.validateQuestionWebhookPayload(body)
+    ) {
+      const result = await WebhookUseCase.processQuestionWebhook(body);
+      if (result.success) {
+        console.log(
+          `[ML Webhook] Pergunta processada: ${result.action} (question: ${result.questionId ?? "?"})`,
+        );
+      } else {
+        console.warn(`[ML Webhook] Falha em pergunta: ${result.error}`);
+      }
+    } else if (
+      body.topic === "items" &&
+      WebhookUseCase.validateItemWebhookPayload(body)
+    ) {
+      const result = await WebhookUseCase.processItemWebhook(body);
+      if (result.success) {
+        console.log(
+          `[ML Webhook] Item processado: ${result.action} (item: ${result.itemId ?? "?"}${result.productId ? `, product: ${result.productId}` : ""})`,
+        );
+      } else {
+        console.warn(`[ML Webhook] Falha em item: ${result.error}`);
+      }
+    } else if (WebhookUseCase.validateWebhookPayload(body)) {
+      const result = await WebhookUseCase.processOrderWebhook(body);
+      if (result.success) {
+        console.log(
+          `[ML Webhook] Processado com sucesso: ${result.action} (order: ${result.orderId})`,
+        );
+      } else {
+        console.warn(
+          `[ML Webhook] Falha no processamento: ${result.error}`,
+        );
+      }
+    } else {
+      console.log(
+        `[ML Webhook] Payload ignorado (topic: ${body.topic || "unknown"})`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[ML Webhook] Erro no processamento em background:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/** A notificação tem processador? Tópicos sem processador (items_prices…) só são logados. */
+function notificacaoMLTemProcessador(body: Record<string, any>): boolean {
+  return (
+    (body.topic === "questions" &&
+      WebhookUseCase.validateQuestionWebhookPayload(body)) ||
+    (body.topic === "items" && WebhookUseCase.validateItemWebhookPayload(body)) ||
+    WebhookUseCase.validateWebhookPayload(body)
+  );
+}
+
+let filaWebhookML: BoundedWebhookQueue | null = null;
+let ultimoAvisoFilaCheia = 0;
+
+function getFilaWebhookML(): BoundedWebhookQueue {
+  if (!filaWebhookML) {
+    const cfg = mlWebhookQueueConfig();
+    filaWebhookML = new BoundedWebhookQueue({
+      concurrency: cfg.concurrency,
+      maxQueued: cfg.maxQueued,
+      onError: (key, err) =>
+        console.error(
+          `[ML Webhook] Erro no processamento em fila (${key}):`,
+          err instanceof Error ? err.message : err,
+        ),
+    });
+  }
+  return filaWebhookML;
+}
+
+/** Só para teste: zera a fila entre casos. */
+export const __mlWebhookQueueTesting = {
+  reset: () => {
+    filaWebhookML = null;
+    ultimoAvisoFilaCheia = 0;
+  },
+  get: () => filaWebhookML,
+};
 
 export async function marketplaceRoutes(app: FastifyInstance) {
   // Kill-switch de runtime: bloqueia todas as rotas /marketplace/olx/* e
@@ -394,66 +493,65 @@ small{color:#666}</style></head><body>
   });
 
   // POST /ml/callback — pode ser OAuth callback (code+state) OU webhook notification (resource+topic+user_id)
+  // Notificações do ML chegam de poucos IPs e em rajadas (pico medido: 5.113/min
+  // em 14/09/2026). O limite global de 300/min por IP recusava 346 mil por mês.
+  // Com a fila ligada, esta rota tem limite próprio; a proteção do banco passa a
+  // ser a fila (concorrência limitada + 503 quando cheia). Desligada: idêntico.
+  const filaWebhookMLAtiva = isMlWebhookQueueEnabled();
+  const callbackMLOpts = filaWebhookMLAtiva
+    ? {
+        config: {
+          rateLimit: {
+            max: mlWebhookQueueConfig().rateLimitPerMinute,
+            timeWindow: "1 minute",
+          },
+        },
+      }
+    : {};
   app.post(
     "/ml/callback",
+    callbackMLOpts,
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = (request.body || {}) as Record<string, any>;
       const query = (request.query || {}) as Record<string, any>;
 
       // --- Webhook notification do Mercado Livre (resource + topic + user_id) ---
       if (body.resource || body.topic || body.user_id) {
+        // Fila com concorrência limitada (ML_WEBHOOK_QUEUE_ENABLED=1, lida no boot).
+        // Fila cheia → 503: o ML REENVIA (medido: attempts 1..5), então a
+        // notificação volta mais tarde em vez de ser descartada com 200.
+        if (filaWebhookMLAtiva) {
+          if (!notificacaoMLTemProcessador(body)) {
+            reply.status(200).send({ received: true });
+            console.log(
+              `[ML Webhook] Payload ignorado (topic: ${body.topic || "unknown"})`,
+            );
+            return reply;
+          }
+          const fila = getFilaWebhookML();
+          const enfileirada = fila.enqueue(mlWebhookKey(body), () =>
+            processarNotificacaoML(body),
+          );
+          if (enfileirada === "full") {
+            const agora = Date.now();
+            if (agora - ultimoAvisoFilaCheia > 60_000) {
+              ultimoAvisoFilaCheia = agora;
+              console.warn(
+                JSON.stringify({ event: "ml.webhook.queue_full", ...fila.stats() }),
+              );
+            }
+            return reply.status(503).send({ received: false, retry: true });
+          }
+          reply.status(200).send({ received: true });
+          return reply;
+        }
+
         // Retornar 200 imediatamente (ML espera resposta rápida para parar de reenviar)
         reply.status(200).send({ received: true });
 
         // Processar webhook em background (fire-and-forget)
-        setImmediate(async () => {
-          try {
-            if (
-              body.topic === "questions" &&
-              WebhookUseCase.validateQuestionWebhookPayload(body)
-            ) {
-              const result = await WebhookUseCase.processQuestionWebhook(body);
-              if (result.success) {
-                console.log(
-                  `[ML Webhook] Pergunta processada: ${result.action} (question: ${result.questionId ?? "?"})`,
-                );
-              } else {
-                console.warn(`[ML Webhook] Falha em pergunta: ${result.error}`);
-              }
-            } else if (
-              body.topic === "items" &&
-              WebhookUseCase.validateItemWebhookPayload(body)
-            ) {
-              const result = await WebhookUseCase.processItemWebhook(body);
-              if (result.success) {
-                console.log(
-                  `[ML Webhook] Item processado: ${result.action} (item: ${result.itemId ?? "?"}${result.productId ? `, product: ${result.productId}` : ""})`,
-                );
-              } else {
-                console.warn(`[ML Webhook] Falha em item: ${result.error}`);
-              }
-            } else if (WebhookUseCase.validateWebhookPayload(body)) {
-              const result = await WebhookUseCase.processOrderWebhook(body);
-              if (result.success) {
-                console.log(
-                  `[ML Webhook] Processado com sucesso: ${result.action} (order: ${result.orderId})`,
-                );
-              } else {
-                console.warn(
-                  `[ML Webhook] Falha no processamento: ${result.error}`,
-                );
-              }
-            } else {
-              console.log(
-                `[ML Webhook] Payload ignorado (topic: ${body.topic || "unknown"})`,
-              );
-            }
-          } catch (err) {
-            console.error(
-              "[ML Webhook] Erro no processamento em background:",
-              err instanceof Error ? err.message : err,
-            );
-          }
+        setImmediate(() => {
+          void processarNotificacaoML(body);
         });
 
         return reply;
