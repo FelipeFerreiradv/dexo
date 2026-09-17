@@ -84,9 +84,9 @@ describe("renovação de token com falha não vaza segredo", () => {
     const err = await MagaluOAuthService.refreshAccessToken(REFRESH, "abc", CLIENT_SECRET).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain("Erro ao renovar token (Magalu)");
-    // classificação existente preservada (a mensagem "authorization grant is invalid"
-    // não casa o regex invalid_grant e cai em bad_request, como em produção)
-    expect(err.errorCode).toBe("bad_request");
+    // O código OAuth estruturado é a fonte de verdade, mesmo quando a
+    // descrição textual não contém o literal "invalid_grant".
+    expect(err.errorCode).toBe("invalid_grant");
     semSegredo(err);
   });
 

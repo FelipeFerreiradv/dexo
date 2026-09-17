@@ -287,11 +287,19 @@ export class MagaluOAuthService {
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const data: any = error.response?.data;
+        // A Magalu error response can include a human-readable
+        // error_description that omits the machine-readable OAuth code. Keep
+        // the exact code authoritative before falling back to text matching.
+        const apiError = typeof data?.error === "string" ? data.error : "";
         const rawMessage: string =
           data?.error_description || data?.message || data?.error || error.message;
 
         let errorCode = "unknown";
-        if (/invalid[_\s-]?grant/i.test(rawMessage)) {
+        if (apiError === "invalid_grant") {
+          errorCode = "invalid_grant";
+        } else if (/invalid[_\s-]?grant/i.test(rawMessage)) {
+          // Preserve the textual fallback for providers/proxies that do not
+          // return the OAuth error code in `data.error`.
           errorCode = "invalid_grant";
         } else if (error.response?.status === 401) {
           errorCode = "unauthorized";
