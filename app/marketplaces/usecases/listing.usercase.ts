@@ -1758,8 +1758,13 @@ export class ListingUseCase {
             );
           }
         } catch (refreshErr) {
-          // marcar conta como erro e informar usuÃ¡rio para reconectar
-          await MarketplaceRepository.updateStatus(acc.id, AccountStatus.ERROR);
+          // Informa o usuário. A conta só vira ERROR se a credencial morreu de
+          // fato (classificador central + MLOAuthService): falha passageira de
+          // renovação não pode tirar a conta do laço de pedidos.
+          await MarketplaceAccountService.handleAuthFailure(acc.id, refreshErr, {
+            userId,
+            context: "AUTH_REFRESH",
+          });
           console.warn(
             `[ListingUseCase] Failed to refresh token for account ${acc.id || "<no-account>"}:`,
             (refreshErr as any)?.message || refreshErr,
@@ -4420,9 +4425,11 @@ export class ListingUseCase {
           });
           if (updated) account = updated as any;
         } catch (refreshErr) {
-          await MarketplaceRepository.updateStatus(
+          // Só credencial morta vira ERROR (ver createMLListing).
+          await MarketplaceAccountService.handleAuthFailure(
             account.id,
-            AccountStatus.ERROR,
+            refreshErr,
+            { userId, context: "AUTH_REFRESH" },
           );
           console.warn(
             `[ListingUseCase] Failed to refresh Magalu token for account ${account.id}:`,
@@ -5083,9 +5090,11 @@ export class ListingUseCase {
             );
           }
         } catch (refreshErr) {
-          await MarketplaceRepository.updateStatus(
+          // Só credencial morta vira ERROR (ver createMLListing).
+          await MarketplaceAccountService.handleAuthFailure(
             account.id,
-            AccountStatus.ERROR,
+            refreshErr,
+            { userId, context: "AUTH_REFRESH" },
           );
           console.warn(
             `[ListingUseCase] Failed to refresh Shopee token for account ${account.id}:`,

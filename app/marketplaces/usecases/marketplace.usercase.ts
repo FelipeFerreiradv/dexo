@@ -636,10 +636,17 @@ export class MarketplaceUseCase {
             message: "Conta conectada e token renovado",
           };
         } catch (refreshError) {
-          // Se falhar ao renovar, marcar como erro
-          await MarketplaceRepository.updateStatus(
+          // Falha de renovação NÃO prova autorização morta. Marcar ERROR aqui
+          // em qualquer falha tirou 8 contas saudáveis do laço de pedidos, do
+          // webhook e da vigília durante a pane da partner key da Shopee
+          // (16/09/2026, ~11 h sem importar venda) — e nada as devolvia.
+          // Quem marca credencial morta é o classificador central (mesmo
+          // padrão de getAccountStatus do ML) e o próprio ShopeeOAuthService
+          // (códigos terminais da Shopee); falha passageira só é registrada.
+          await MarketplaceAccountService.handleAuthFailure(
             account.id,
-            AccountStatus.ERROR,
+            refreshError,
+            { userId, context: "AUTH_REFRESH" },
           );
 
           return {
