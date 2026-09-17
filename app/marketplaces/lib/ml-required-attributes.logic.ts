@@ -288,13 +288,52 @@ export function buildMLConditionalAttributeWarning(
   return `Esta categoria do Mercado Livre pode exigir o campo "${attributeName}", dependendo das outras informações do anúncio.`;
 }
 
-/** 0 → null; 1 → a mensagem; >1 → M9 (junção por espaço, na ordem recebida). */
+/**
+ * Campos que fazem sentido para praticamente qualquer autopeça. Quando a
+ * categoria cobra um campo FORA desta lista, a causa costuma ser a categoria
+ * errada, não um campo esquecido.
+ *
+ * Medido na prova de 17/09/2026: dos 16 produtos que hoje só publicavam porque
+ * o fallback trocava a categoria, 14 cobravam campos como "estilo de capota"
+ * num capô, "capacidade de peso" num botão de vidro ou "método de aplicação"
+ * numa luz de teto. Sem a dica, o operador tenta preencher o campo em vez de
+ * corrigir a categoria.
+ */
+const CAMPOS_TIPICOS_DE_PECA = new Set([
+  "PART_NUMBER",
+  "MPN",
+  "OEM",
+  "BRAND",
+  "MODEL",
+  "YEAR",
+  "VEHICLE_YEAR",
+  // Bomba, bico, filtro de combustível: pedir o combustível é legítimo.
+  "FUEL_TYPE",
+  ...SIDE_IDS,
+  ...POSICAO_IDS,
+]);
+
+/** Dica anexada quando algum campo cobrado não é típico de autopeça. */
+export const ML_REQUIRED_ATTRS_CATEGORY_HINT =
+  "Se o campo pedido não faz sentido para esta peça, a categoria escolhida provavelmente está errada: revise a categoria do anúncio.";
+
+/**
+ * 0 → null; 1 → a mensagem; >1 → M9 (junção por espaço, na ordem recebida).
+ * Com algum campo AUSENTE fora de CAMPOS_TIPICOS_DE_PECA, anexa a dica de
+ * categoria uma única vez no fim.
+ */
 export function summarizeMLRequiredAttributeIssues(
   blocking: ReadonlyArray<MLRequiredAttributeIssue>,
 ): string | null {
   if (!blocking || blocking.length === 0) return null;
-  if (blocking.length === 1) return blocking[0].message;
-  return blocking.map((b) => b.message).join(" ");
+  const base =
+    blocking.length === 1
+      ? blocking[0].message
+      : blocking.map((b) => b.message).join(" ");
+  const campoAtipico = blocking.some(
+    (b) => b.reason === "missing" && !CAMPOS_TIPICOS_DE_PECA.has(b.attributeId),
+  );
+  return campoAtipico ? `${base} ${ML_REQUIRED_ATTRS_CATEGORY_HINT}` : base;
 }
 
 /**

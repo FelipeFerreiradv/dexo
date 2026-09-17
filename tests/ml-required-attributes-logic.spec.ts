@@ -23,6 +23,7 @@ import {
   ML_SOFT_REQUIRED_ATTRIBUTE_IDS,
   ML_PAYLOAD_MANAGED_ATTRIBUTE_IDS,
   ML_REQUIRED_ATTRS_GENERIC_MESSAGE,
+  ML_REQUIRED_ATTRS_CATEGORY_HINT,
   type MLPayloadAttribute,
 } from "../app/marketplaces/lib/ml-required-attributes.logic";
 
@@ -411,5 +412,47 @@ describe("helpers puros", () => {
     expect(shouldSkipMlRequiredBlockForCatalog("MLB123", { ML_CATALOG_LISTING_ENABLED: "1" })).toBe(false);
     expect(shouldSkipMlRequiredBlockForCatalog("  ", { ML_CATALOG_LISTING_ENABLED: "true" })).toBe(false);
     expect(shouldSkipMlRequiredBlockForCatalog(undefined, { ML_CATALOG_LISTING_ENABLED: "true" })).toBe(false);
+  });
+});
+
+describe("dica de categoria errada (campo atípico para autopeça)", () => {
+  const issue = (attributeId: string, reason: "missing" | "invalid_value" = "missing") => ({
+    attributeId,
+    attributeName: attributeId,
+    reason,
+    message: `msg-${attributeId}-${reason}`,
+  });
+
+  it("campos típicos (Part Number, Marca, lado, posição, combustível) NÃO recebem a dica", () => {
+    for (const id of ["PART_NUMBER", "MPN", "OEM", "BRAND", "MODEL", "YEAR", "VEHICLE_YEAR", "SIDE", "VEHICLE_SIDE", "POSITION", "FUEL_TYPE"]) {
+      expect(summarizeMLRequiredAttributeIssues([issue(id)])).toBe(`msg-${id}-missing`);
+    }
+    expect(summarizeMLRequiredAttributeIssues([issue("PART_NUMBER"), issue("SIDE")])).toBe(
+      "msg-PART_NUMBER-missing msg-SIDE-missing",
+    );
+  });
+
+  it("campo atípico ausente recebe a dica UMA vez, no fim", () => {
+    expect(summarizeMLRequiredAttributeIssues([issue("BED_COVER_STYLE")])).toBe(
+      `msg-BED_COVER_STYLE-missing ${ML_REQUIRED_ATTRS_CATEGORY_HINT}`,
+    );
+    const msg = summarizeMLRequiredAttributeIssues([issue("PART_NUMBER"), issue("MATERIAL"), issue("WEIGHT_CAPACITY")])!;
+    expect(msg).toBe(
+      `msg-PART_NUMBER-missing msg-MATERIAL-missing msg-WEIGHT_CAPACITY-missing ${ML_REQUIRED_ATTRS_CATEGORY_HINT}`,
+    );
+    expect(msg.split(ML_REQUIRED_ATTRS_CATEGORY_HINT)).toHaveLength(2);
+  });
+
+  it("valor fora da lista não recebe a dica (o campo existe; o valor é que não serve)", () => {
+    expect(summarizeMLRequiredAttributeIssues([issue("MATERIAL", "invalid_value")])).toBe("msg-MATERIAL-invalid_value");
+  });
+
+  it("caso real da prova: capô em categoria de capota (MATERIAL + BED_COVER_STYLE) sai com a dica", () => {
+    const issues = issuesFromMissingAttributeIds(["MATERIAL", "BED_COVER_STYLE"]);
+    expect(summarizeMLRequiredAttributeIssues(issues)).toContain(ML_REQUIRED_ATTRS_CATEGORY_HINT);
+  });
+
+  it("sem bloqueio continua null", () => {
+    expect(summarizeMLRequiredAttributeIssues([])).toBeNull();
   });
 });
