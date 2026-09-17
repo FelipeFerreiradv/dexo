@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   pickActionableMLError,
   describeMissingAttributesCause,
+  findMissingRequiredAttributeIds,
+  isMissingRequiredAttrsForCategory,
+  parseMissingAttributes,
+  isMissingRequiredAttrs,
 } from "../ml-error-message.service";
 
 /**
@@ -82,6 +86,78 @@ describe("describeMissingAttributesCause", () => {
         message: "The attributes are required",
       }),
     ).toBeNull();
+  });
+});
+
+/**
+ * Ids da causa 147 para a regra de obrigatórios (ML_REQUIRED_ATTRS_BLOCK=1).
+ * As mensagens de pickActionableMLError não mudam (os testes abaixo seguem).
+ */
+describe("findMissingRequiredAttributeIds", () => {
+  it("M1: acha o PART_NUMBER da retentativa depois do family_name", () => {
+    expect(
+      findMissingRequiredAttributeIds([
+        [FAMILY_NAME_CAUSE],
+        [PART_NUMBER_CAUSE],
+      ]),
+    ).toEqual(["PART_NUMBER"]);
+  });
+
+  it("M2: a tentativa mais tardia com 147 vence", () => {
+    const outra = {
+      ...PART_NUMBER_CAUSE,
+      message:
+        "The attributes [BRAND, MODEL] are required for category MLB7863 and channel marketplace",
+    };
+    expect(
+      findMissingRequiredAttributeIds([[PART_NUMBER_CAUSE], [outra]]),
+    ).toEqual(["BRAND", "MODEL"]);
+  });
+
+  it("M3: sem 147 devolve []", () => {
+    expect(findMissingRequiredAttributeIds([[FAMILY_NAME_CAUSE], []])).toEqual(
+      [],
+    );
+    expect(findMissingRequiredAttributeIds([])).toEqual([]);
+  });
+
+  it("147 sem ids legíveis é pulado (a mensagem genérica fica com quem chama)", () => {
+    const semIds = { ...PART_NUMBER_CAUSE, message: "missing required" };
+    expect(findMissingRequiredAttributeIds([[semIds]])).toEqual([]);
+  });
+
+  it("D1: com categoria, 147 que cita OUTRA categoria não conta", () => {
+    expect(
+      findMissingRequiredAttributeIds([[PART_NUMBER_CAUSE]], "MLB1111"),
+    ).toEqual([]);
+    expect(
+      findMissingRequiredAttributeIds([[PART_NUMBER_CAUSE]], "MLB7863"),
+    ).toEqual(["PART_NUMBER"]);
+    expect(isMissingRequiredAttrsForCategory(PART_NUMBER_CAUSE, "mlb7863")).toBe(
+      true,
+    );
+    // Mensagem sem categoria citada: vale o contexto de quem chamou.
+    const semCategoria = {
+      ...PART_NUMBER_CAUSE,
+      message: "The attributes [PART_NUMBER] are required",
+    };
+    expect(isMissingRequiredAttrsForCategory(semCategoria, "MLB1111")).toBe(
+      true,
+    );
+    expect(isMissingRequiredAttrsForCategory(FAMILY_NAME_CAUSE, "MLB7863")).toBe(
+      false,
+    );
+  });
+
+  it("parseMissingAttributes e isMissingRequiredAttrs exportados sem mudar a lógica", () => {
+    expect(
+      parseMissingAttributes("The attributes [PART_NUMBER, BRAND] are required"),
+    ).toEqual(["PART_NUMBER", "BRAND"]);
+    expect(isMissingRequiredAttrs({ cause_id: 147 })).toBe(true);
+    expect(
+      isMissingRequiredAttrs({ code: "item.attributes.missing_required" }),
+    ).toBe(true);
+    expect(isMissingRequiredAttrs({ cause_id: 369 })).toBe(false);
   });
 });
 

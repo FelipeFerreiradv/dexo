@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Stub do prisma client para evitar conexão real ao DB durante import.
 vi.mock("@/app/lib/prisma", () => ({
@@ -238,5 +238,98 @@ describe("buildMLAttributes — posição dirigida pelo catálogo da categoria",
     expect(byId.get("PART_NUMBER")?.value_name).toBe("PN-POS");
     expect(byId.has("MODEL")).toBe(true);
     expect(byId.has("YEAR")).toBe(true);
+  });
+});
+
+// ─── Decisão 6 (ML_REQUIRED_ATTRS_BLOCK=1): o lado do operador vence ───
+// Hoje a inferência pelo nome entra PRIMEIRO no payload e o merge da ficha
+// pula o SIDE do operador (id já visto): ele escolhe "Direito" e o anúncio sai
+// "Esquerdo" — e o bloqueio de obrigatórios avaliaria o valor errado.
+describe("buildMLAttributes — lado do operador × inferência (flag de obrigatórios)", () => {
+  const SIDE_ATTR = attr({
+    id: "SIDE",
+    name: "Lado",
+    allowedValues: [
+      { id: "ESQ", name: "Esquerdo" },
+      { id: "DIR", name: "Direito" },
+    ],
+  });
+  const sides = (out: any[]) => out.filter((a: any) => a.id === "SIDE");
+  let antes: string | undefined;
+
+  beforeEach(() => {
+    antes = process.env.ML_REQUIRED_ATTRS_BLOCK;
+  });
+  afterEach(() => {
+    if (antes === undefined) delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    else process.env.ML_REQUIRED_ATTRS_BLOCK = antes;
+  });
+
+  const produtoComLado = (side: unknown) => ({
+    ...baseProduct,
+    name: "Farol dianteiro esquerdo",
+    attributes: side === undefined ? undefined : { SIDE: side },
+  });
+
+  it('S1: flag "1" — o SIDE do operador (DIR) vence a inferência (ESQ), sem duplicar', () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    const out = ListingUseCase.buildMLAttributes(
+      produtoComLado({ value_id: "DIR", value_name: "Direito" }),
+      OTHER_CATEGORY,
+      [SIDE_ATTR],
+    );
+    expect(sides(out)).toHaveLength(1);
+    expect(sides(out)[0].value_id).toBe("DIR");
+  });
+
+  it("S2: flag ausente — comportamento de hoje: a inferência (ESQ) entra e vence", () => {
+    delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    const out = ListingUseCase.buildMLAttributes(
+      produtoComLado({ value_id: "DIR", value_name: "Direito" }),
+      OTHER_CATEGORY,
+      [SIDE_ATTR],
+    );
+    expect(sides(out)).toHaveLength(1);
+    expect(sides(out)[0].value_id).toBe("ESQ");
+  });
+
+  it('S3: flag "1" sem valor do operador — a inferência continua', () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    const out = ListingUseCase.buildMLAttributes(
+      produtoComLado(undefined),
+      OTHER_CATEGORY,
+      [SIDE_ATTR],
+    );
+    expect(sides(out)).toHaveLength(1);
+    expect(sides(out)[0].value_id).toBe("ESQ");
+  });
+
+  it('S4: flag "1" com SIDE do operador em branco — a inferência continua', () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    const out = ListingUseCase.buildMLAttributes(
+      produtoComLado({ value_name: "  ", value_id: "" }),
+      OTHER_CATEGORY,
+      [SIDE_ATTR],
+    );
+    expect(sides(out)).toHaveLength(1);
+    expect(sides(out)[0].value_id).toBe("ESQ");
+  });
+
+  it('S5: flag "1" com operador em POSITION — mesmo resultado de sempre', () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    const product = {
+      ...baseProduct,
+      name: "Farol dianteiro esquerdo Gol",
+      attributes: {
+        POSITION: { value_id: "TD", value_name: "Traseira Direita" },
+      },
+    };
+    const out = ListingUseCase.buildMLAttributes(product, OTHER_CATEGORY, [
+      POSITION_ATTR,
+    ]);
+    const pos = positions(out);
+    expect(pos).toHaveLength(1);
+    expect(pos[0].value_id).toBe("TD");
+    expect(pos[0].value_name).toBe("Traseira Direita");
   });
 });

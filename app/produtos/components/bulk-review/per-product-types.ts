@@ -423,3 +423,40 @@ export function countEffectiveItems(
   }
   return total;
 }
+
+/**
+ * Tira do lote os pares (produto × conta ML) dos produtos que a checagem de
+ * atributos obrigatórios do ML bloqueou, pelo mecanismo que o dispatcher e a
+ * rota /listings/bulk JÁ entendem: `perProductOverrides[pid].disabledMlAccountIds`
+ * (a mesma poda do "excluir do ML" da Revisão individual). As demais
+ * plataformas do produto seguem.
+ *
+ * Sem bloqueado ou sem conta ML → devolve o MESMO `template` (inclusive null):
+ * com a checagem desligada, o corpo do POST /listings/bulk fica idêntico.
+ * Preserva tudo o que já havia na entrada (ml, shopee, skips anteriores) e
+ * une os ids sem duplicar.
+ */
+export function withDisabledMlAccounts(
+  template: Record<string, unknown> | null,
+  blockedProductIds: string[],
+  mlAccountIds: string[],
+): Record<string, unknown> | null {
+  if (blockedProductIds.length === 0 || mlAccountIds.length === 0) {
+    return template;
+  }
+  const atual = (template?.perProductOverrides ?? {}) as Record<
+    string,
+    PerProductOverrideEntry
+  >;
+  const novo: Record<string, PerProductOverrideEntry> = { ...atual };
+  for (const pid of blockedProductIds) {
+    const entry = atual[pid];
+    const ja = entry?.disabledMlAccountIds ?? [];
+    const uniao = [...ja];
+    for (const id of mlAccountIds) {
+      if (!uniao.includes(id)) uniao.push(id);
+    }
+    novo[pid] = { ...(entry ?? {}), disabledMlAccountIds: uniao };
+  }
+  return { ...(template ?? {}), perProductOverrides: novo };
+}

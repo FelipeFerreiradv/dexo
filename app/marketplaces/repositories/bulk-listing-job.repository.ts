@@ -133,6 +133,13 @@ export interface BulkListingItemResult {
   listingId?: string;
   externalListingId?: string;
   error?: string;
+  /**
+   * Classificação da falha, quando há. Hoje só
+   * "ML_REQUIRED_ATTRIBUTES_MISSING" (atributo obrigatório do ML em branco,
+   * definitivo): o relatório mostra a mensagem inteira e o retry-failed pula a
+   * linha. Opcional/aditivo — jobs antigos não têm.
+   */
+  code?: string;
   finishedAt: string;
 }
 

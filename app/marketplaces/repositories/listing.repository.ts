@@ -36,6 +36,11 @@ export class ListingRepository {
     // Autor real da criação (actorId = request.user.id). Ausente = fluxo de
     // sistema (autodetect/sync/retry) → NULL → UI exibe "—".
     createdByUserId?: string | null;
+    // Ficha técnica por anúncio. Só o create do ML com
+    // ML_REQUIRED_ATTRS_BLOCK=1 manda (ficha da Revisão individual guardada
+    // para a retentativa do cron). Ausente = a chave nem entra no `data`,
+    // idêntico ao de sempre.
+    attributesOverride?: unknown;
   }) {
     try {
       const listing = await prisma.productListing.create({
@@ -61,6 +66,9 @@ export class ListingRepository {
           localPickup: data.localPickup ?? null,
           manufacturingTime: data.manufacturingTime ?? null,
           createdByUserId: data.createdByUserId ?? null,
+          ...(data.attributesOverride !== undefined
+            ? { attributesOverride: campoJson(data.attributesOverride) }
+            : {}),
         },
       });
       return listing;

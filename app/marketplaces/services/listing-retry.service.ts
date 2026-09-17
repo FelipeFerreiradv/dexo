@@ -9,6 +9,7 @@ import {
   classifyFacebookRemoveError,
   classifyOlxRemoveError,
 } from "./listing-removal.helpers";
+import { isMlRequiredAttrsBlockEnabled } from "../lib/ml-required-attributes.logic";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -467,12 +468,35 @@ export class ListingRetryService {
         // createMLListing REUSA a linha existente (findByProductAndAccount),
         // entao o placeholder deste candidato e atualizado no lugar.
         const { ListingUseCase } = await import("../usecases/listing.usercase");
-        const result = await ListingUseCase.createMLListing(
-          account.userId,
-          cand.productId,
-          cand.requestedCategoryId || undefined,
-          account.id,
-        );
+        // Com ML_REQUIRED_ATTRS_BLOCK=1, a ficha que a criação original guardou
+        // no placeholder (lado/posição e obrigatórios preenchidos na Revisão
+        // individual) volta para esta retentativa. Sem ela, o bloqueio de
+        // obrigatórios avaliaria só o cadastro do produto e marcaria terminal
+        // por um campo que o operador preencheu. Flag desligada: a chamada
+        // continua com os mesmos 4 argumentos de sempre.
+        const fichaGuardada = (cand as { attributesOverride?: unknown })
+          .attributesOverride;
+        const result =
+          isMlRequiredAttrsBlockEnabled() &&
+          !!fichaGuardada &&
+          typeof fichaGuardada === "object" &&
+          !Array.isArray(fichaGuardada)
+            ? await ListingUseCase.createMLListing(
+                account.userId,
+                cand.productId,
+                cand.requestedCategoryId || undefined,
+                account.id,
+                undefined, // mlSettings
+                undefined, // titleOverride
+                undefined, // actorId
+                fichaGuardada as Record<string, unknown>,
+              )
+            : await ListingUseCase.createMLListing(
+                account.userId,
+                cand.productId,
+                cand.requestedCategoryId || undefined,
+                account.id,
+              );
 
         if (result.success) {
           console.log(
@@ -483,6 +507,23 @@ export class ListingRetryService {
             `Placeholder ${cand.id} successfully posted to ML (${(result as any).externalListingId})`,
             { resource: "ProductListing", resourceId: cand.id },
           );
+          continue;
+        }
+
+        // Falta de atributo obrigatório (só emitido com ML_REQUIRED_ATTRS_BLOCK=1)
+        // é definitiva. Marcamos AQUI, pelo id do candidato: o createMLListing
+        // grava na linha que findByProductAndAccount escolhe (prefere qualquer
+        // PENDING_ do par), que pode não ser esta — e a releitura abaixo não
+        // veria o terminal, reagendando o candidato em loop.
+        if (result.terminal === true) {
+          console.warn(
+            `[ListingRetryService] ML retry terminal (atributo obrigatório) for ${cand.id}: ${result.error}`,
+          );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            lastError: `[TERMINAL] ${(result.error || "").substring(0, 480)}`,
+            retryEnabled: false,
+            nextRetryAt: null,
+          });
           continue;
         }
 

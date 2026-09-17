@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Prisma } from "@prisma/client";
 import { ListingRetryService } from "../app/marketplaces/services/listing-retry.service";
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
@@ -204,5 +204,128 @@ describe("ListingRetryService — delega a criação ML ao createMLListing", () 
 
     expect(ListingUseCase.createShopeeListing).toHaveBeenCalled();
     expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Atributos obrigatórios do ML (ML_REQUIRED_ATTRS_BLOCK=1) ───────────────
+describe("ListingRetryService — terminal por atributo obrigatório", () => {
+  const M1 =
+    "Esta categoria do Mercado Livre exige o preenchimento do Part Number. Preencha esse campo antes de continuar.";
+  let antes: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    antes = process.env.ML_REQUIRED_ATTRS_BLOCK;
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(true);
+    (MLApiService.getSellerItemIds as any).mockResolvedValue([]);
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      makeCandidate(),
+    ]);
+    (ListingRepository.findRetryStateById as any).mockResolvedValue({
+      id: "pl-1",
+      retryEnabled: true,
+    });
+  });
+  afterEach(() => {
+    if (antes === undefined) delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    else process.env.ML_REQUIRED_ATTRS_BLOCK = antes;
+  });
+
+  it("R1: terminal=true → marca o CANDIDATO como terminal, sem reler a linha nem reagendar", async () => {
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      terminal: true,
+      code: "ML_REQUIRED_ATTRIBUTES_MISSING",
+      error: M1,
+    });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingRepository.incrementRetryAttempts).toHaveBeenCalledTimes(1);
+    expect(ListingRepository.incrementRetryAttempts).toHaveBeenCalledWith("pl-1", {
+      lastError: `[TERMINAL] ${M1}`,
+      retryEnabled: false,
+      nextRetryAt: null,
+    });
+    expect(ListingRepository.findRetryStateById).not.toHaveBeenCalled();
+  });
+
+  it("R1b: mensagem longa é cortada em 480 caracteres depois do prefixo", async () => {
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      terminal: true,
+      error: "x".repeat(900),
+    });
+    await ListingRetryService.runOnce();
+    const [, dados] = (ListingRepository.incrementRetryAttempts as any).mock
+      .calls[0];
+    expect(dados.lastError).toBe(`[TERMINAL] ${"x".repeat(480)}`);
+  });
+
+  it("R2: sem `terminal` → backoff de sempre", async () => {
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      error: "Erro ao criar item: family_name",
+    });
+    await ListingRetryService.runOnce();
+    expect(ListingRepository.findRetryStateById).toHaveBeenCalled();
+    const [, dados] = (ListingRepository.incrementRetryAttempts as any).mock
+      .calls[0];
+    expect(dados.retryEnabled).toBe(true);
+    expect(dados.nextRetryAt).toBeInstanceOf(Date);
+  });
+
+  it("D2: flag 1 + ficha guardada no placeholder → createMLListing recebe a ficha como attributeOverrides", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    const ficha = { SIDE: { value_id: "183554", value_name: "Dianteiro" } };
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      makeCandidate({ attributesOverride: ficha }),
+    ]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: true,
+      externalListingId: "MLB999",
+    });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).toHaveBeenCalledWith(
+      "user-1",
+      "prod-1",
+      "MLB1744",
+      "acct-1",
+      undefined,
+      undefined,
+      undefined,
+      ficha,
+    );
+  });
+
+  it("D2: flag desligada → a chamada continua com os 4 argumentos de sempre, mesmo com ficha na linha", async () => {
+    delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      makeCandidate({ attributesOverride: { SIDE: { value_id: "1" } } }),
+    ]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: true,
+      externalListingId: "MLB999",
+    });
+
+    await ListingRetryService.runOnce();
+
+    const args = (ListingUseCase.createMLListing as any).mock.calls[0];
+    expect(args).toEqual(["user-1", "prod-1", "MLB1744", "acct-1"]);
+  });
+
+  it("D2: flag 1 sem ficha (ou ficha inválida) → 4 argumentos", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      makeCandidate({ attributesOverride: [] }),
+    ]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: true,
+      externalListingId: "MLB999",
+    });
+    await ListingRetryService.runOnce();
+    expect((ListingUseCase.createMLListing as any).mock.calls[0]).toHaveLength(4);
   });
 });

@@ -44,7 +44,7 @@ const MISSING_ATTRS_RE = /attributes?\s*\[([^\]]+)\]/i;
 /** `...required for category MLB7863 and channel marketplace` */
 const CATEGORY_RE = /category\s+(ML[A-Z]?\d+)/i;
 
-const parseMissingAttributes = (message: string): string[] => {
+export const parseMissingAttributes = (message: string): string[] => {
   const match = MISSING_ATTRS_RE.exec(message);
   if (!match?.[1]) return [];
   return match[1]
@@ -53,9 +53,53 @@ const parseMissingAttributes = (message: string): string[] => {
     .filter(Boolean);
 };
 
-const isMissingRequiredAttrs = (cause: MLCause) =>
+export const isMissingRequiredAttrs = (cause: MLCause) =>
   cause?.code === "item.attributes.missing_required" ||
   cause?.cause_id === 147;
+
+/**
+ * Causa 147 que vale para a categoria PEDIDA pelo operador.
+ *
+ * A escada de criação também tenta OUTRAS categorias (a sugerida pelo
+ * domain_discovery, o desvio por condition.invalid). Um 147 vindo de lá fala
+ * de um campo que a categoria do operador talvez nem exija — contá-lo
+ * transformaria um erro passageiro (timeout, título) em terminal com a
+ * mensagem errada. Quando a mensagem cita a categoria
+ * (`...required for category MLB7863`), ela precisa ser a pedida; sem citação,
+ * vale o contexto de quem chamou (só as tentativas na mesma categoria).
+ */
+export const isMissingRequiredAttrsForCategory = (
+  cause: MLCause,
+  categoryId?: string | null,
+): boolean => {
+  if (!isMissingRequiredAttrs(cause)) return false;
+  if (!categoryId) return true;
+  const citada = CATEGORY_RE.exec(String(cause?.message || ""))?.[1];
+  return !citada || citada.toUpperCase() === String(categoryId).toUpperCase();
+};
+
+/**
+ * Ids que o ML disse faltar (causa 147), da tentativa MAIS TARDIA para a mais
+ * antiga — a mesma ordem de `pickActionableMLError`, porque o ML só chega aos
+ * atributos depois de aceitar o corpo. Em cada tentativa vale a primeira causa
+ * 147 que cite ids legíveis. `categoryId` aplica o mesmo filtro de
+ * `isMissingRequiredAttrsForCategory`. Nenhuma serve → [].
+ */
+export function findMissingRequiredAttributeIds(
+  attempts: MLCause[][],
+  categoryId?: string | null,
+): string[] {
+  for (let i = (attempts?.length ?? 0) - 1; i >= 0; i--) {
+    const causes = attempts[i];
+    if (!Array.isArray(causes)) continue;
+    for (const cause of causes) {
+      if (!isMissingRequiredAttrsForCategory(cause, categoryId)) continue;
+      const ids = parseMissingAttributes(String(cause?.message || ""));
+      if (ids.length > 0) return ids;
+    }
+  }
+  return [];
+}
 
 /**
  * Monta a mensagem acionável a partir de uma causa de atributo obrigatório.

@@ -61,9 +61,29 @@ import { usePerProductListing } from "./bulk-review/use-per-product-listing";
 import { PerProductReviewStep } from "./bulk-review/per-product-review-step";
 import {
   buildPerProductOverrides,
+  withDisabledMlAccounts,
   type GlobalListingDefaults,
   type ReviewCategoryOption,
 } from "./bulk-review/per-product-types";
+import {
+  fetchMlRequiredAttrsEnabled,
+  getKnownMlRequiredAttrsEnabled,
+  postMlRequiredAttributesCheck,
+  buildMlBlockedMap,
+  buildMlUnresolvedMap,
+  buildMlReviewCheckItems,
+  createMlCheckSequencer,
+  resolveMlExclusionsForSubmit,
+  mlLoteSemNadaParaEnviar,
+  countRetryableBulkFailures,
+  mlBlockedBannerMessage,
+  mlExcludedConfirmMessage,
+  ML_ALL_BLOCKED_MESSAGE,
+  ML_REQUIRED_ATTRS_ERROR_CODE_CLIENT,
+  ML_REQUIRED_UNRESOLVED_REVIEW_HEADER,
+  type MlBlockedEntry,
+  type MlRequiredCheckItem,
+} from "./ml-required-attributes-check.client";
 
 type Platform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
@@ -238,6 +258,29 @@ export function BulkListingWizard({
     }>
   >([]);
 
+  // --- Atributos obrigatórios do Mercado Livre ---
+  // Só agem com a checagem ligada no servidor (ML_REQUIRED_ATTRS_BLOCK=1).
+  // Desligada: nenhum POST, nenhum spinner, nenhuma exclusão — o lote sai
+  // idêntico ao de hoje.
+  const [mlCheckEnabled, setMlCheckEnabled] = useState(false);
+  const [mlCheckLoading, setMlCheckLoading] = useState(false);
+  // produto → bloqueio (mensagem + chave avaliada na revisão individual)
+  const [mlBlocked, setMlBlocked] = useState<Record<string, MlBlockedEntry>>(
+    {},
+  );
+  // Espelho síncrono para o envio (o state chega um render depois).
+  const mlBlockedRef = useRef<Record<string, MlBlockedEntry>>({});
+  // produto → aviso "sem categoria, não validado" (não bloqueia)
+  const [mlUnresolved, setMlUnresolved] = useState<Record<string, string>>({});
+  // Contador de requisição: resposta de checagem antiga não sobrescreve a nova.
+  const mlCheckSeqRef = useRef(createMlCheckSequencer());
+  // Categoria+ficha avaliadas na revisão individual (null = nada avaliado).
+  const mlEvaluatedKeysRef = useRef<Record<string, string> | null>(null);
+  // Linhas "Não enviado" do relatório, congeladas no disparo do job.
+  const [mlNotSent, setMlNotSent] = useState<
+    Array<{ productId: string; productName: string; message: string }>
+  >([]);
+
   // Modo do fluxo: "quick" (atual, default) ou "review" (Revisão individual).
   const [mode, setMode] = useState<WizardMode>("quick");
   // Opções de categoria (ML/Shopee), carregadas sob demanda no modo Revisão.
@@ -328,6 +371,13 @@ export function BulkListingWizard({
       setParentJobIdForRetry(null);
       setFinishedNotified(false);
       setPreflightIssues([]);
+      setMlCheckLoading(false);
+      setMlBlocked({});
+      mlBlockedRef.current = {};
+      setMlUnresolved({});
+      mlCheckSeqRef.current.invalidate();
+      mlEvaluatedKeysRef.current = null;
+      setMlNotSent([]);
       finalizeInFlightRef.current = false;
       jobStartedRef.current = false;
       setMlOptions([]);
@@ -335,6 +385,23 @@ export function BulkListingWizard({
       ppResetAll();
     }
   }, [open, ppResetAll]);
+
+  // Aquece (uma vez a cada 60 s, em cache de módulo) o "a checagem de
+  // obrigatórios do ML está ligada no servidor?". Só com conta ML selecionada:
+  // lote sem ML não faz chamada nenhuma. Depende do booleano (e não do Set)
+  // para trocar de conta ML não refazer a consulta. Falha = desligada.
+  // O envio (etapa 3, Finalizar) NÃO espera isto: lê o último valor conhecido.
+  const temContaMl = selectedMlIds.size > 0;
+  useEffect(() => {
+    if (!open || !email || !temContaMl) return;
+    let cancelled = false;
+    void fetchMlRequiredAttrsEnabled(getApiBaseUrl(), email).then((v) => {
+      if (!cancelled) setMlCheckEnabled(v);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, email, temContaMl]);
 
   // Carrega categorias ML/Shopee sob demanda só ao CHEGAR na etapa de Revisão
   // individual (etapa 3) — espelha o lazy-load por etapa do modal e evita o
@@ -647,6 +714,60 @@ export function BulkListingWizard({
     }
   };
 
+  /**
+   * Atributos obrigatórios do ML, pelo MESMO motor do create
+   * (POST /marketplace/ml/required-attributes/check). Grava o mapa de
+   * bloqueados e o devolve para o caller decidir sobre o resultado FRESCO.
+   *
+   * Fail-open: checagem desligada, ainda sem resposta do status, erro ou
+   * timeout → nada bloqueado (o backend ainda barra antes do POST ao ML).
+   * Nunca mexe em submitError. Resposta de uma checagem mais antiga que a
+   * última disparada é descartada.
+   *
+   * Sem rede com a checagem desligada: o status vem do último valor conhecido
+   * (aquecido ao selecionar conta ML), sem await — o Finalizar da revisão e a
+   * etapa 3 não esperam GET nenhum.
+   */
+  const runMlRequiredCheck = async (
+    items: MlRequiredCheckItem[],
+    keys?: Record<string, string>,
+  ): Promise<Record<string, MlBlockedEntry>> => {
+    const ultima = mlCheckSeqRef.current.next();
+    const aplicar = (
+      blocked: Record<string, MlBlockedEntry>,
+      unresolved: Record<string, string>,
+      evaluatedKeys: Record<string, string> | null,
+    ) => {
+      if (!ultima()) return;
+      mlBlockedRef.current = blocked;
+      mlEvaluatedKeysRef.current = evaluatedKeys;
+      setMlBlocked(blocked);
+      setMlUnresolved(unresolved);
+    };
+    if (selectedMlIds.size === 0 || items.length === 0 || !email) {
+      aplicar({}, {}, null);
+      if (ultima()) setMlCheckLoading(false);
+      return {};
+    }
+    const base = getApiBaseUrl();
+    // Desligada no servidor (ou status ainda sem resposta): sem POST, sem
+    // spinner e sem round-trip.
+    if (getKnownMlRequiredAttrsEnabled(base, email) !== true) {
+      aplicar({}, {}, null);
+      if (ultima()) setMlCheckLoading(false);
+      return {};
+    }
+    setMlCheckLoading(true);
+    try {
+      const res = await postMlRequiredAttributesCheck(base, email, items);
+      const blocked = buildMlBlockedMap(res, keys);
+      aplicar(blocked, buildMlUnresolvedMap(res), res && keys ? keys : null);
+      return blocked;
+    } finally {
+      if (ultima()) setMlCheckLoading(false);
+    }
+  };
+
   const handleNext = async () => {
     if (step === 1) {
       if (totalAccountsSelected === 0) {
@@ -669,6 +790,10 @@ export function BulkListingWizard({
       setStep(3);
       // Roda preflight ao entrar na revisão (categorias Shopee, etc.).
       void runPreflight();
+      // Obrigatórios do ML (no-op com a checagem desligada no servidor).
+      void runMlRequiredCheck(
+        selectedProducts.map((p) => ({ key: p.id, productId: p.id })),
+      );
       return;
     }
     if (step === 3) {
@@ -690,6 +815,24 @@ export function BulkListingWizard({
             ? "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML ou Magalu está selecionada. Corrija antes de prosseguir."
             : "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
         );
+        return;
+      }
+      // Checagem de obrigatórios do ML em voo (só com ela ligada): o rodapé já
+      // fica desabilitado; isto cobre clique que chegue antes do render.
+      if (mlCheckLoading) return;
+      if (
+        mlLoteSemNadaParaEnviar({
+          mlAccounts: selectedMlIds.size,
+          otherAccounts:
+            selectedShopeeIds.size +
+            selectedMagaluIds.size +
+            selectedOlxIds.size +
+            selectedFacebookIds.size,
+          productIds: selectedProducts.map((p) => p.id),
+          blocked: mlBlockedRef.current,
+        })
+      ) {
+        setSubmitError(ML_ALL_BLOCKED_MESSAGE);
         return;
       }
       setConfirmOpen(true);
@@ -768,7 +911,16 @@ export function BulkListingWizard({
         const cat = (cfg.shopeeCategory || "").trim();
         if (cat) categoryOverrides[productId] = cat;
       }
-      const freshIssues = await runPreflight(categoryOverrides);
+      // Obrigatórios do ML com a MESMA categoria e ficha que o dispatch envia
+      // (perProductOverrides), em paralelo ao preflight da Shopee.
+      const mlCheck = buildMlReviewCheckItems(
+        selectedProducts.map((p) => p.id),
+        map,
+      );
+      const [freshIssues, mlFresh] = await Promise.all([
+        runPreflight(categoryOverrides),
+        runMlRequiredCheck(mlCheck.items, mlCheck.keys),
+      ]);
       // Se um job já começou enquanto o preflight estava em voo, NUNCA reabrir
       // a confirmação (era o mecanismo do duplo-submit em servidor lento).
       if (jobStartedRef.current) return;
@@ -796,6 +948,21 @@ export function BulkListingWizard({
             ? "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML ou Magalu está selecionada. Corrija antes de prosseguir."
             : "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
         );
+        return;
+      }
+      if (
+        mlLoteSemNadaParaEnviar({
+          mlAccounts: selectedMlIds.size,
+          otherAccounts:
+            selectedShopeeIds.size +
+            selectedMagaluIds.size +
+            selectedOlxIds.size +
+            selectedFacebookIds.size,
+          productIds: mlCheck.items.map((i) => i.key),
+          blocked: mlFresh,
+        })
+      ) {
+        setSubmitError(ML_ALL_BLOCKED_MESSAGE);
         return;
       }
       setConfirmOpen(true);
@@ -829,8 +996,10 @@ export function BulkListingWizard({
       // por produto DENTRO do template (campo aditivo; backend ignora se ausente).
       let overrideTemplate: Record<string, unknown> | null =
         buildOverrideTemplate();
+      let reviewMap: ReturnType<typeof ppFinalizeFlush> | null = null;
       if (mode === "review") {
         const map = ppFinalizeFlush();
+        reviewMap = map;
         const ppo = buildPerProductOverrides(
           map,
           globalMlIdsArr,
@@ -846,6 +1015,30 @@ export function BulkListingWizard({
           };
         }
       }
+
+      // Produtos bloqueados por atributo obrigatório do ML saem do ML neste
+      // lote (as outras plataformas seguem). Com a checagem desligada o mapa
+      // está vazio e o template volta o MESMO — corpo idêntico ao de hoje.
+      //
+      // Revisão individual: só exclui o que foi avaliado com a categoria e a
+      // ficha que vão AGORA no envio (a sugestão automática ou uma edição podem
+      // ter mudado algo depois da checagem). Divergiu → reavalia antes.
+      const idsSelecionados = selectedProducts.map((p) => p.id);
+      const { excluded: excluidosDoMl, blocked: mlBloqueados } =
+        await resolveMlExclusionsForSubmit({
+          blocked: mlBlockedRef.current,
+          evaluatedKeys: mlEvaluatedKeysRef.current,
+          current: reviewMap
+            ? buildMlReviewCheckItems(idsSelecionados, reviewMap)
+            : null,
+          selectedIds: idsSelecionados,
+          recheck: runMlRequiredCheck,
+        });
+      overrideTemplate = withDisabledMlAccounts(
+        overrideTemplate,
+        excluidosDoMl,
+        globalMlIdsArr,
+      );
       const res = await fetch(`${getApiBaseUrl()}/listings/bulk`, {
         method: "POST",
         headers: {
@@ -866,6 +1059,16 @@ export function BulkListingWizard({
       }
       setJobId(data.jobId as string);
       setParentJobIdForRetry(null);
+      setMlNotSent(
+        globalMlIdsArr.length > 0
+          ? excluidosDoMl.map((pid) => ({
+              productId: pid,
+              productName:
+                selectedProducts.find((p) => p.id === pid)?.name ?? pid,
+              message: mlBloqueados[pid]?.message ?? "",
+            }))
+          : [],
+      );
       setStep(4);
       onJobStarted?.(data.jobId as string);
     } catch (e) {
@@ -1015,6 +1218,17 @@ export function BulkListingWizard({
     return found ? { code: found.code, message: found.message } : undefined;
   }, [currentReviewProductId, preflightIssues]);
 
+  // Pares produto×conta ML que não serão enviados por obrigatório faltando.
+  // Sem bloqueio (checagem desligada) = 0 → diálogo idêntico ao de hoje.
+  const mlBlockedIds = Object.keys(mlBlocked);
+  const mlExcludedPairs = mlBlockedIds.length * selectedMlIds.size;
+  const listingsToCreate = Math.max(0, totalListings - mlExcludedPairs);
+  // Não validados por falta de categoria (aviso, não exclui). Vazio com a
+  // checagem desligada.
+  const mlUnresolvedIds = Object.keys(mlUnresolved).filter(
+    (pid) => !mlBlocked[pid],
+  );
+
   return (
     <>
       <Dialog
@@ -1141,6 +1355,9 @@ export function BulkListingWizard({
                 hasShopee={selectedShopeeIds.size > 0}
                 preflightLoading={preflightLoading}
                 preflightIssues={preflightIssues}
+                mlBlocked={mlBlocked}
+                mlUnresolved={mlUnresolved}
+                mlCheckLoading={mlCheckLoading}
                 crossAccountMlAccounts={selectedMlAccountsOrdered}
                 crossAccountShopeeAccounts={selectedShopeeAccountsSel}
                 crossAccountMagaluAccounts={selectedMagaluAccountsSel}
@@ -1174,6 +1391,7 @@ export function BulkListingWizard({
                 parentJobIdForRetry={parentJobIdForRetry}
                 retrying={retrying}
                 onRetry={handleRetryFailed}
+                mlNotSent={mlNotSent}
               />
             )}
           </div>
@@ -1182,7 +1400,7 @@ export function BulkListingWizard({
             <StepperFooter
               currentStep={step}
               totalSteps={3}
-              isSubmitting={submitting}
+              isSubmitting={submitting || mlCheckLoading}
               onBack={handleBack}
               onNext={handleNext}
               onSubmit={handleNext}
@@ -1197,7 +1415,17 @@ export function BulkListingWizard({
               // preflightLoading: o Finalizar re-valida no servidor antes de
               // confirmar — desabilita o botão enquanto valida (servidor lento
               // + cliques repetidos geravam confirmações e jobs duplicados).
-              isSubmitting={submitting || preflightLoading}
+              //
+              // Com a checagem de obrigatórios do ML ligada, também enquanto ela
+              // valida e enquanto a sugestão automática da 1ª visita ainda pode
+              // trocar a categoria (senão a checagem avalia uma categoria e o
+              // lote sai com outra).
+              isSubmitting={
+                submitting ||
+                preflightLoading ||
+                mlCheckLoading ||
+                (mlCheckEnabled && pp.initializing)
+              }
               onBack={handleReviewBack}
               onNext={handleReviewNext}
               onSubmit={handleReviewNext}
@@ -1234,7 +1462,7 @@ export function BulkListingWizard({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Criar {totalListings} anúncio(s)?
+              Criar {listingsToCreate} anúncio(s)?
             </AlertDialogTitle>
             <AlertDialogDescription>
               {selectedProducts.length} produto(s) × {totalAccountsSelected}{" "}
@@ -1243,6 +1471,38 @@ export function BulkListingWizard({
               continuar.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {mlBlockedIds.length > 0 && (
+            <div className="space-y-1 text-sm">
+              <p className="font-medium text-amber-800 dark:text-amber-200">
+                {mlExcludedConfirmMessage(mlExcludedPairs)}
+              </p>
+              <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-muted-foreground">
+                {mlBlockedIds.map((pid) => (
+                  <li key={pid}>
+                    {productById.get(pid)?.name ?? pid} —{" "}
+                    {mlBlocked[pid]?.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {mode === "review" && mlUnresolvedIds.length > 0 && (
+            // D4 na Revisão individual: a tabela do modo rápido (StepReview)
+            // não existe aqui, então o aviso "sem categoria, não validado" vai
+            // para a confirmação. Não bloqueia nem entra na contagem acima.
+            <div className="space-y-1 text-sm">
+              <p className="font-medium text-amber-800 dark:text-amber-200">
+                {ML_REQUIRED_UNRESOLVED_REVIEW_HEADER}
+              </p>
+              <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-muted-foreground">
+                {mlUnresolvedIds.map((pid) => (
+                  <li key={pid}>
+                    {productById.get(pid)?.name ?? pid} — {mlUnresolved[pid]}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={submitting}>
               Cancelar
@@ -1253,7 +1513,7 @@ export function BulkListingWizard({
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {submitting && <Loader2 className="size-4 animate-spin mr-1" />}
-              Criar {totalListings}
+              Criar {listingsToCreate}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1701,6 +1961,9 @@ function StepReview({
   hasShopee,
   preflightLoading,
   preflightIssues,
+  mlBlocked,
+  mlUnresolved,
+  mlCheckLoading,
   crossAccountMlAccounts,
   crossAccountShopeeAccounts,
   crossAccountMagaluAccounts,
@@ -1719,6 +1982,11 @@ function StepReview({
     code: "shopee_category_missing" | "shopee_category_not_leaf";
     message: string;
   }>;
+  /** Obrigatórios do ML: produto → bloqueio. Vazio com a checagem desligada. */
+  mlBlocked?: Record<string, MlBlockedEntry>;
+  /** Produto → aviso de "sem categoria, não validado" (não bloqueia). */
+  mlUnresolved?: Record<string, string>;
+  mlCheckLoading?: boolean;
   crossAccountMlAccounts: MarketplaceAccountLite[];
   crossAccountShopeeAccounts: MarketplaceAccountLite[];
   crossAccountMagaluAccounts: MarketplaceAccountLite[];
@@ -1740,6 +2008,7 @@ function StepReview({
   const issueCount = issueByProduct.size;
   const allBlocked =
     hasShopee && issueCount > 0 && issueCount === products.length;
+  const mlBlockedCount = Object.keys(mlBlocked ?? {}).length;
 
   // Aumento escalonado: escadas INDEPENDENTES por marketplace — só entram no
   // preview as plataformas com ≥ 2 contas (com 1 conta não há o que escalonar).
@@ -1812,6 +2081,20 @@ function StepReview({
         </div>
       )}
 
+      {mlCheckLoading && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" />
+          Validando campos obrigatórios do Mercado Livre...
+        </div>
+      )}
+
+      {!mlCheckLoading && mlBlockedCount > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle className="inline size-3.5 mr-1" />
+          {mlBlockedBannerMessage(mlBlockedCount)}
+        </div>
+      )}
+
       {!preflightLoading && issueCount > 0 && (
         <div
           className={`rounded-md border px-3 py-2 text-xs ${
@@ -1873,6 +2156,8 @@ function StepReview({
                 { hasMl, hasShopee },
               );
               const issue = issueByProduct.get(p.id);
+              const mlBloqueio = mlBlocked?.[p.id]?.message;
+              const mlSemCategoria = mlUnresolved?.[p.id];
               const rowClass = issue ? "border-t bg-destructive/5" : "border-t";
               return (
                 <tr key={p.id} className={rowClass}>
@@ -1927,7 +2212,10 @@ function StepReview({
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    {warnings.length === 0 && !issue ? (
+                    {warnings.length === 0 &&
+                    !issue &&
+                    !mlBloqueio &&
+                    !mlSemCategoria ? (
                       <span className="text-muted-foreground">—</span>
                     ) : (
                       <ul className="space-y-0.5">
@@ -1935,6 +2223,18 @@ function StepReview({
                           <li className="text-destructive font-medium">
                             <XCircle className="inline size-3 mr-1" />
                             {issue.message}
+                          </li>
+                        )}
+                        {mlBloqueio && (
+                          <li className="text-destructive font-medium whitespace-normal">
+                            <XCircle className="inline size-3 mr-1" />
+                            Mercado Livre: {mlBloqueio}
+                          </li>
+                        )}
+                        {mlSemCategoria && (
+                          <li className="text-amber-700 dark:text-amber-400">
+                            <AlertTriangle className="inline size-3 mr-1" />
+                            {mlSemCategoria}
                           </li>
                         )}
                         {warnings.map((w, i) => (
@@ -1968,6 +2268,7 @@ function StepProgress({
   parentJobIdForRetry,
   retrying,
   onRetry,
+  mlNotSent,
 }: {
   snapshot: ReturnType<typeof useBulkListingJob>["snapshot"];
   pollError: string | null;
@@ -1976,6 +2277,8 @@ function StepProgress({
   parentJobIdForRetry: string | null;
   retrying: boolean;
   onRetry: () => void;
+  /** Produtos que o wizard tirou do ML por obrigatório faltando (não foram ao job). */
+  mlNotSent?: Array<{ productId: string; productName: string; message: string }>;
 }) {
   if (!snapshot) {
     return (
@@ -1997,6 +2300,15 @@ function StepProgress({
     snapshot.status === "COMPLETED" ||
     snapshot.status === "FAILED_PARTIAL" ||
     snapshot.status === "FAILED";
+
+  // Falta de atributo obrigatório do ML é definitiva: reprocessar repetiria o
+  // bloqueio (a rota de retry também pula essas linhas). Sem `code` nas linhas
+  // = conta como sempre.
+  const falhasReprocessaveis = countRetryableBulkFailures(
+    snapshot.results,
+    snapshot.failedItems,
+  );
+  const naoEnviados = mlNotSent ?? [];
 
   return (
     <div className="space-y-4">
@@ -2031,6 +2343,25 @@ function StepProgress({
             </tr>
           </thead>
           <tbody>
+            {naoEnviados.map((n) => (
+              <tr key={`ml-nao-enviado-${n.productId}`} className="border-t">
+                <td className="px-3 py-2 max-w-[280px] truncate">
+                  <span className="font-mono text-xs text-muted-foreground mr-1">
+                    {productById.get(n.productId)?.sku ??
+                      n.productId.slice(0, 6)}
+                  </span>
+                  {n.productName}
+                </td>
+                <td className="px-3 py-2 text-xs">
+                  <Badge variant="outline" className="font-normal">
+                    Mercado Livre
+                  </Badge>
+                </td>
+                <td className="px-3 py-2 text-xs text-destructive whitespace-normal">
+                  Não enviado: {n.message}
+                </td>
+              </tr>
+            ))}
             {snapshot.results.map((r, i) => {
               const p = productById.get(r.productId);
               return (
@@ -2063,6 +2394,14 @@ function StepProgress({
                         <CheckCircle2 className="size-3.5" />
                         Sucesso
                       </span>
+                    ) : r.code === ML_REQUIRED_ATTRS_ERROR_CODE_CLIENT ? (
+                      // Mensagem INTEIRA: as de obrigatório começam todas com
+                      // o mesmo texto, e o corte em 40 caracteres escondia
+                      // justamente o campo que falta.
+                      <span className="inline-flex items-start gap-1 text-destructive whitespace-normal text-xs">
+                        <XCircle className="size-3.5 shrink-0 mt-0.5" />
+                        {r.error || "Falhou"}
+                      </span>
                     ) : (
                       <span
                         className="inline-flex items-center gap-1 text-destructive"
@@ -2080,7 +2419,7 @@ function StepProgress({
                 </tr>
               );
             })}
-            {snapshot.results.length === 0 && (
+            {snapshot.results.length === 0 && naoEnviados.length === 0 && (
               <tr>
                 <td
                   colSpan={3}
@@ -2096,7 +2435,7 @@ function StepProgress({
         </table>
       </div>
 
-      {isTerminal && snapshot.failedItems > 0 && (
+      {isTerminal && falhasReprocessaveis > 0 && (
         <div className="flex justify-end">
           <Button
             type="button"
