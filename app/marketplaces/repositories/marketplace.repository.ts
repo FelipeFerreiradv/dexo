@@ -255,6 +255,41 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Persiste os tokens emitidos pelo fluxo OAuth padrão do Dexo.
+   *
+   * O authorization code desse fluxo sempre é trocado com
+   * ML_CLIENT_ID/ML_CLIENT_SECRET. Se a conta ainda carregar credenciais de
+   * outro aplicativo, o próximo refresh escolherá esse override e o Mercado
+   * Livre responderá client_id_mismatch. Tokens e remoção do override precisam
+   * ocorrer no mesmo UPDATE para não deixar a conta em um estado híbrido.
+   */
+  static async updateTokensFromEnvironmentOAuth(
+    id: string,
+    data: {
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: Date;
+    },
+  ) {
+    try {
+      return await prisma.marketplaceAccount.update({
+        where: { id },
+        data: {
+          accessToken: data.accessToken,
+          refreshToken: data.refreshToken,
+          expiresAt: data.expiresAt,
+          appClientId: null,
+          appClientSecret: null,
+        },
+      });
+    } catch (error) {
+      throw new Error(
+        `Erro ao atualizar tokens do OAuth padrão: ${error}`,
+      );
+    }
+  }
+
+  /**
    * Atualiza status da conta
    */
   static async updateStatus(id: string, status: AccountStatus) {

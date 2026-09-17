@@ -5,6 +5,7 @@ vi.mock("../app/lib/prisma", () => ({
   default: {
     marketplaceAccount: {
       findFirst: vi.fn(),
+      update: vi.fn(),
     },
   },
 }));
@@ -35,6 +36,36 @@ describe("MarketplaceRepository.findByShopId", () => {
         { expiresAt: "desc" },
         { createdAt: "desc" },
       ],
+    });
+  });
+});
+
+describe("MarketplaceRepository.updateTokensFromEnvironmentOAuth", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("grava tokens e limpa as duas credenciais especificas no mesmo update", async () => {
+    const expiresAt = new Date("2026-09-17T23:00:00.000Z");
+    const update = vi
+      .spyOn((prisma as any).marketplaceAccount, "update")
+      .mockResolvedValue({ id: "account-1" });
+
+    await MarketplaceRepository.updateTokensFromEnvironmentOAuth("account-1", {
+      accessToken: "access-new",
+      refreshToken: "refresh-new",
+      expiresAt,
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "account-1" },
+      data: {
+        accessToken: "access-new",
+        refreshToken: "refresh-new",
+        expiresAt,
+        appClientId: null,
+        appClientSecret: null,
+      },
     });
   });
 });

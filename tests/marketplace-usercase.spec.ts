@@ -12,6 +12,7 @@ vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
     findAllShopeeByShopId: vi.fn(),
     createAccount: vi.fn(),
     updateTokens: vi.fn(),
+    updateTokensFromEnvironmentOAuth: vi.fn(),
     updateStatus: vi.fn(),
     updateShopId: vi.fn(),
   },
@@ -119,6 +120,63 @@ describe("MarketplaceUseCase OAuth ownership guard", () => {
         state: "state-1",
       }),
     ).rejects.toThrow(/vinculad[ao].*outro usu/i);
+  });
+
+  it("substitui tokens e remove atomicamente o override de app no callback ML", async () => {
+    vi.spyOn(MLOAuthService, "validateState").mockReturnValue({
+      valid: true,
+      codeVerifier: "verifier",
+      userId: "user-1",
+    } as any);
+    vi.spyOn(MLOAuthService, "exchangeCodeForTokens").mockResolvedValue({
+      accessToken: "access-new",
+      refreshToken: "refresh-new",
+      externalUserId: "ml-seller-1",
+      expiresIn: 3600,
+    } as any);
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      nickname: "seller",
+    } as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findAllByExternalUserId",
+    ).mockResolvedValue([] as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findByUserAndExternalUserId",
+    ).mockResolvedValue({
+      id: "account-1",
+      userId: "user-1",
+      status: "ACTIVE",
+    } as any);
+    const update = vi
+      .spyOn(MarketplaceRepository, "updateTokensFromEnvironmentOAuth")
+      .mockResolvedValue({
+        id: "account-1",
+        userId: "user-1",
+        status: "ACTIVE",
+      } as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findAllByUserIdAndPlatform",
+    ).mockResolvedValue([] as any);
+    const clearBreaker = vi.spyOn(
+      MLOAuthService,
+      "clearAccountCircuitBreaker",
+    );
+
+    await MarketplaceUseCase.handleOAuthCallback({
+      code: "code-1",
+      state: "state-1",
+    });
+
+    expect(update).toHaveBeenCalledWith("account-1", {
+      accessToken: "access-new",
+      refreshToken: "refresh-new",
+      expiresAt: expect.any(Date),
+    });
+    expect(MarketplaceRepository.updateTokens).not.toHaveBeenCalled();
+    expect(clearBreaker).toHaveBeenCalledWith("account-1");
   });
 
   it("bloqueia callback Shopee quando o shopId ja pertence a outro usuario", async () => {
