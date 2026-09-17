@@ -31,11 +31,29 @@ import CategoryRepository from "../repositories/category.repository";
 import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
 import { ensureMLMinImageSize } from "../services/image-resize.service";
-import { ListingPreflightService } from "../services/listing-preflight.service";
+import {
+  ListingPreflightService,
+  type MLPreflightResult,
+} from "../services/listing-preflight.service";
 import {
   pickActionableMLError,
+  isMissingRequiredAttrsForCategory,
+  findMissingRequiredAttributeIds,
   type MLCause,
 } from "../services/ml-error-message.service";
+import {
+  isMlRequiredAttrsBlockEnabled,
+  evaluateMLRequiredAttributes,
+  issuesFromMissingAttributeIds,
+  summarizeMLRequiredAttributeIssues,
+  attributeHasValue,
+  attributeValueIsAllowed,
+  isClosedListAttribute,
+  shouldSkipMlRequiredBlockForCatalog,
+  ML_REQUIRED_ATTRS_ERROR_CODE,
+  ML_REQUIRED_ATTRS_GENERIC_MESSAGE,
+  type MLRequiredAttributesEvaluation,
+} from "../lib/ml-required-attributes.logic";
 import {
   classifyMLRemoveError,
   classifyShopeeRemoveError,
@@ -133,6 +151,18 @@ export interface CreateListingResult {
   errorStatus?: number;
   errorResponseData?: unknown;
   errorCode?: string;
+  // Falha DEFINITIVA por atributo obrigatório do ML (só emitida com
+  // ML_REQUIRED_ATTRS_BLOCK=1). `terminal` avisa o cron de retentativa para não
+  // reagendar — o create pode ter gravado em outra linha do par, e a releitura
+  // pelo id do candidato não veria. `code` e `missingAttributes` deixam o
+  // relatório da massa mostrar o campo exato. Opcionais e aditivos.
+  terminal?: boolean;
+  code?: "ML_REQUIRED_ATTRIBUTES_MISSING";
+  missingAttributes?: Array<{
+    id: string;
+    name: string;
+    reason: "missing" | "invalid_value";
+  }>;
 }
 
 export interface MLListingSettings {
@@ -553,6 +583,123 @@ export class ListingUseCase {
   }
 
   /**
+   * Categoria que o createMLListing usaria para este produto, pela MESMA
+   * cadeia: explícita → persistida no produto → sugestão do domain_discovery
+   * (API pública, sem token) → resolveMLCategory → folha local → sem sufixo.
+   *
+   * Existe para o endpoint de checagem e o script de prova avaliarem a mesma
+   * categoria que o create avalia antes do POST — sem isso, produto sem
+   * categoria passava como "não validado" no front e era barrado no back.
+   * Não lança: qualquer falha vira null ("não dá para validar").
+   */
+  static async resolveEffectiveMLCategory(i: {
+    product: any;
+    categoryId?: string;
+  }): Promise<{ resolvedCategoryId: string; categoryIdForML: string } | null> {
+    try {
+      let explicit = i.categoryId || undefined;
+      if (!explicit && !i.product?.mlCategoryId) {
+        const sugerida = await MLApiService.suggestCategoryId(
+          "MLB",
+          i.product?.name || "",
+        );
+        if (!sugerida) return null;
+        explicit = sugerida;
+      }
+      const resolved = await CategoryResolutionService.resolveMLCategory({
+        explicitCategoryId: explicit,
+        product: i.product,
+        validateWithMLAPI: false,
+      });
+      let resolvedCategoryId = resolved.externalId;
+      const leaf =
+        await CategoryResolutionService.ensureLeafLocalOnly(resolvedCategoryId);
+      if (leaf) resolvedCategoryId = leaf.externalId;
+      const categoryIdForML =
+        this.normalizeMLCategoryId(resolvedCategoryId) || resolvedCategoryId;
+      return { resolvedCategoryId, categoryIdForML };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Avalia os atributos obrigatórios do ML para um produto (salvo ou rascunho)
+   * com o MESMO motor do create: mesma categoria efetiva, mesmo catálogo, mesma
+   * montagem de atributos (buildMLCreateAttributes) e mesma regra.
+   *
+   * Não lê a flag para AVALIAR — quem decide pela flag são os chamadores
+   * (endpoint de checagem, script de prova). `buildMLCreateAttributes` lê a
+   * flag só para montar o payload igual ao do create.
+   *
+   * `categoryCache` é compartilhado entre itens de um lote: resolve a categoria
+   * uma vez por (categoria pedida, categoria do produto) — ou por NOME quando
+   * não há nenhuma das duas, porque aí a categoria vem da sugestão pelo nome.
+   */
+  static async evaluateMLRequiredAttributesForProduct(i: {
+    product: any;
+    categoryId?: string;
+    attributeOverrides?: Record<string, unknown> | null;
+    categoryCache?: Map<
+      string,
+      Promise<{ resolvedCategoryId: string; categoryIdForML: string } | null>
+    >;
+  }): Promise<
+    MLRequiredAttributesEvaluation & {
+      categoryId: string | null;
+      legacyMissingRequired: string[];
+    }
+  > {
+    const chave =
+      i.categoryId || i.product?.mlCategoryId
+        ? `cat:${i.categoryId ?? ""}|${i.product?.mlCategoryId ?? ""}`
+        : `nome:${i.product?.name ?? ""}`;
+    let pendente = i.categoryCache?.get(chave);
+    if (!pendente) {
+      pendente = this.resolveEffectiveMLCategory({
+        product: i.product,
+        categoryId: i.categoryId,
+      });
+      i.categoryCache?.set(chave, pendente);
+    }
+    const cat = await pendente;
+    if (!cat) {
+      return {
+        status: "unknown",
+        unknownReason: "category_unresolved",
+        blocking: [],
+        warnings: [],
+        message: null,
+        categoryId: null,
+        legacyMissingRequired: [],
+      };
+    }
+
+    // Igual ao create: falha do catálogo é engolida (fail-open).
+    const categoryAttrs = cat.categoryIdForML
+      ? await MLAttributeCatalogService.getAll(cat.categoryIdForML).catch(
+          () => undefined,
+        )
+      : undefined;
+    const built = await this.buildMLCreateAttributes({
+      product: i.product,
+      resolvedCategoryId: cat.resolvedCategoryId,
+      categoryIdForML: cat.categoryIdForML,
+      categoryAttrs,
+      attributeOverrides: i.attributeOverrides,
+    });
+    return {
+      ...evaluateMLRequiredAttributes({
+        categoryAttributes: categoryAttrs,
+        payloadAttributes: built.attributes,
+        catalogListing: false,
+      }),
+      categoryId: cat.categoryIdForML,
+      legacyMissingRequired: built.preflight.missingRequired,
+    };
+  }
+
+  /**
    * Título principal: exatamente o nome do produto, apenas higienizado.
    */
   private static buildMLTitle(product: any): string {
@@ -785,6 +932,356 @@ export class ListingUseCase {
   }
 
   /**
+   * Quais entradas da ficha da Revisão individual entram NA CRIAÇÃO com
+   * ML_REQUIRED_ATTRS_BLOCK=1. Devolve null quando nenhuma entra.
+   *
+   * Só o necessário para o bloqueio de obrigatórios não barrar o que o
+   * operador preencheu na revisão: atributos `required` (sem `fixed` e não
+   * ocultos), lado/posição e o OEM (como hoje). Todo o resto da ficha — GTIN,
+   * numéricos, a ficha inteira de um produto de catálogo aceito — continua indo
+   * SÓ pelo update pós-criação, cuja falha não derruba o anúncio. Levar tudo
+   * para o POST faria uma recusa a um atributo opcional derrubar a criação.
+   *
+   * Filtros: a categoria precisa expor o id; em lista fechada, value_id fora da
+   * lista é descartado. O valor do PRODUTO vence (o cadastro é a fonte) — exceto
+   * em lista fechada quando o do produto não é aceito pela categoria: aí entra o
+   * do override, se ele for aceito. Sem isso o operador corrigiria o lado na
+   * tela e continuaria bloqueado pelo valor antigo.
+   *
+   * Sem catálogo: só o OEM, exatamente como `withOemFromOverride`.
+   */
+  private static acceptedAttributeOverrides(
+    product: { attributes?: unknown },
+    attributeOverrides: Record<string, unknown> | null | undefined,
+    categoryAttrs: NormalizedMLAttribute[] | undefined,
+  ): Record<string, unknown> | null {
+    if (
+      !attributeOverrides ||
+      typeof attributeOverrides !== "object" ||
+      Array.isArray(attributeOverrides)
+    ) {
+      return null;
+    }
+
+    if (!categoryAttrs || categoryAttrs.length === 0) {
+      if (process.env.ML_OEM_ATTR_DISABLED === "1") return null;
+      const efetivo = this.withOemFromOverride(product, attributeOverrides);
+      if (efetivo === product) return null;
+      const attrs = (efetivo.attributes ?? {}) as Record<string, unknown>;
+      const soOem: Record<string, unknown> = {};
+      for (const id of ML_OEM_ATTRIBUTE_IDS) {
+        if (attrs[id] !== undefined && attrs[id] === attributeOverrides[id]) {
+          soOem[id] = attributeOverrides[id];
+        }
+      }
+      return Object.keys(soOem).length > 0 ? soOem : null;
+    }
+
+    const byId = new Map(categoryAttrs.map((a) => [a?.id, a] as const));
+    const atual =
+      product.attributes &&
+      typeof product.attributes === "object" &&
+      !Array.isArray(product.attributes)
+        ? (product.attributes as Record<string, unknown>)
+        : undefined;
+
+    const aceitos: Record<string, unknown> = {};
+    for (const [id, raw] of Object.entries(attributeOverrides)) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const v = raw as { value_id?: unknown; value_name?: unknown };
+      if (!attributeHasValue({ value_id: v.value_id, value_name: v.value_name }))
+        continue;
+      if (
+        ML_OEM_ATTRIBUTE_IDS.has(id) &&
+        process.env.ML_OEM_ATTR_DISABLED === "1"
+      ) {
+        continue;
+      }
+      const cat = byId.get(id);
+      if (!cat) continue;
+      const entraNaCriacao =
+        ML_OEM_ATTRIBUTE_IDS.has(id) ||
+        POSITION_ATTRIBUTE_IDS.has(id) ||
+        (cat.requiredTag === true &&
+          cat.fixedTag !== true &&
+          cat.hidden !== true);
+      if (!entraNaCriacao) continue;
+
+      const fechada = isClosedListAttribute(cat);
+      if (
+        fechada &&
+        typeof v.value_id === "string" &&
+        v.value_id.trim().length > 0 &&
+        !attributeValueIsAllowed(v, cat)
+      ) {
+        continue;
+      }
+
+      const doProduto = atual?.[id] as
+        | { value_id?: unknown; value_name?: unknown }
+        | undefined;
+      const produtoTemValor =
+        !!doProduto &&
+        typeof doProduto === "object" &&
+        attributeHasValue({
+          value_id: doProduto.value_id,
+          value_name: doProduto.value_name,
+        });
+      if (produtoTemValor) {
+        if (!fechada || attributeValueIsAllowed(doProduto!, cat)) continue;
+        if (!attributeValueIsAllowed(v, cat)) continue;
+      }
+      aceitos[id] = raw;
+    }
+    return Object.keys(aceitos).length > 0 ? aceitos : null;
+  }
+
+  /**
+   * Produto com as entradas aceitas da ficha da Revisão individual fundidas em
+   * `attributes` (ver `acceptedAttributeOverrides`). Nada aceito → o MESMO
+   * objeto. Só é chamado com ML_REQUIRED_ATTRS_BLOCK=1; com a flag desligada o
+   * create segue no `withOemFromOverride` de sempre.
+   */
+  private static withAttributesFromOverride<T extends { attributes?: unknown }>(
+    product: T,
+    attributeOverrides: Record<string, unknown> | null | undefined,
+    categoryAttrs: NormalizedMLAttribute[] | undefined,
+  ): T {
+    if (
+      !attributeOverrides ||
+      typeof attributeOverrides !== "object" ||
+      Array.isArray(attributeOverrides)
+    ) {
+      return product;
+    }
+    if (!categoryAttrs || categoryAttrs.length === 0) {
+      return process.env.ML_OEM_ATTR_DISABLED !== "1"
+        ? this.withOemFromOverride(product, attributeOverrides)
+        : product;
+    }
+    const aceitos = this.acceptedAttributeOverrides(
+      product,
+      attributeOverrides,
+      categoryAttrs,
+    );
+    if (!aceitos) return product;
+    return {
+      ...product,
+      attributes: mergeAttributeOverride(product.attributes, aceitos),
+    };
+  }
+
+  /**
+   * Monta os atributos do POST /items exatamente como o create: ficha do
+   * produto (+ override da revisão) → buildMLAttributes → enriquecimento do
+   * preflight. Um método só para o create, o endpoint de checagem e o script
+   * de prova avaliarem o MESMO payload — uma cópia desta montagem divergiria
+   * em silêncio (foi o que aconteceu com o cron de retentativa).
+   *
+   * `acceptedOverrides` (só com a flag): as entradas da ficha da revisão que
+   * entraram na criação.
+   *
+   * `retryOverrides` (só com a flag): o que o placeholder guarda para a
+   * retentativa do cron (ver `attributeOverridesForRetry`).
+   */
+  private static async buildMLCreateAttributes(input: {
+    product: any;
+    resolvedCategoryId: string;
+    categoryIdForML: string;
+    categoryAttrs: NormalizedMLAttribute[] | undefined;
+    attributeOverrides?: Record<string, unknown> | null;
+  }): Promise<{
+    attributes: Array<{ id: string; value_id?: string; value_name?: string }>;
+    preflight: MLPreflightResult;
+    acceptedOverrides: Record<string, unknown> | null;
+    retryOverrides: Record<string, unknown> | null;
+  }> {
+    const {
+      product,
+      resolvedCategoryId,
+      categoryIdForML,
+      categoryAttrs,
+      attributeOverrides,
+    } = input;
+    const bloqueioObrigatorios = isMlRequiredAttrsBlockEnabled();
+
+    // Código OEM vindo da Revisão individual do anúncio em massa. Ele NÃO
+    // chega por nenhum outro caminho: o wizard não grava em Product, e o
+    // update pós-criação descarta `OEM` porque o ML não aceita alterar esse
+    // atributo depois (IMMUTABLE_ATTRS em updateMLListingFields). Então ou
+    // entra aqui, na criação, ou não entra nunca.
+    //
+    // Escopo deliberadamente mínimo: só os ids de ML_OEM_ATTRIBUTE_IDS. Os
+    // demais atributos da ficha por produto continuam indo pelo update
+    // pós-criação, exatamente como hoje.
+    //
+    // Com ML_REQUIRED_ATTRS_BLOCK=1 entram também os obrigatórios e o
+    // lado/posição da ficha (ver acceptedAttributeOverrides): o bloqueio antes
+    // do POST não pode barrar o que o operador preencheu na revisão.
+    const productForAttrs = bloqueioObrigatorios
+      ? this.withAttributesFromOverride(
+          product,
+          attributeOverrides,
+          categoryAttrs,
+        )
+      : process.env.ML_OEM_ATTR_DISABLED !== "1"
+        ? this.withOemFromOverride(product, attributeOverrides)
+        : product;
+
+    const attributes = this.buildMLAttributes(
+      productForAttrs,
+      resolvedCategoryId,
+      categoryAttrs && categoryAttrs.length > 0 ? categoryAttrs : undefined,
+    );
+
+    // ─── Pré-flight: atributos obrigatórios da categoria ─────────────────
+    // Busca required attributes do catálogo ML (cache 24h) e verifica se
+    // todos estão preenchidos no payload. Auto-preenche a partir de campos
+    // do produto quando possível (PART_NUMBER←partNumber, etc). Bloqueia
+    // cedo com erro acionável se faltar algo crítico. Fail-open: se o
+    // catálogo estiver indisponível, segue o fluxo legado sem bloquear.
+    const preflight = await ListingPreflightService.checkML({
+      product: product as any,
+      categoryId: categoryIdForML,
+      currentAttributes: attributes,
+    });
+
+    const acceptedOverrides = bloqueioObrigatorios
+      ? this.acceptedAttributeOverrides(
+          product,
+          attributeOverrides,
+          categoryAttrs,
+        )
+      : null;
+    return {
+      attributes: preflight.enrichedAttributes,
+      preflight,
+      acceptedOverrides,
+      retryOverrides: bloqueioObrigatorios
+        ? this.attributeOverridesForRetry(
+            attributeOverrides,
+            categoryAttrs,
+            acceptedOverrides,
+          )
+        : null,
+    };
+  }
+
+  /**
+   * Ficha da Revisão individual que o placeholder guarda para a retentativa do
+   * cron (só com ML_REQUIRED_ATTRS_BLOCK=1). null = nada a guardar.
+   *
+   * Com catálogo: exatamente o que entrou na criação (`acceptedOverrides`).
+   * Sem catálogo (API fora e cache vencido): a criação só leva o OEM, mas o
+   * placeholder guarda TODAS as entradas preenchidas da ficha — senão o lado e
+   * os obrigatórios que o operador preencheu sumiriam da retentativa, e com o
+   * catálogo de volta o bloqueio antes do POST marcaria terminal por um campo
+   * preenchido. É seguro: a retentativa passa de novo por
+   * `acceptedAttributeOverrides` e refiltra com o catálogo daquele momento.
+   */
+  private static attributeOverridesForRetry(
+    attributeOverrides: Record<string, unknown> | null | undefined,
+    categoryAttrs: NormalizedMLAttribute[] | undefined,
+    acceptedOverrides: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (categoryAttrs && categoryAttrs.length > 0) return acceptedOverrides;
+    if (
+      !attributeOverrides ||
+      typeof attributeOverrides !== "object" ||
+      Array.isArray(attributeOverrides)
+    ) {
+      return null;
+    }
+    const guardar: Record<string, unknown> = {};
+    for (const [id, raw] of Object.entries(attributeOverrides)) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const v = raw as { value_id?: unknown; value_name?: unknown };
+      if (!attributeHasValue({ value_id: v.value_id, value_name: v.value_name }))
+        continue;
+      if (
+        ML_OEM_ATTRIBUTE_IDS.has(id) &&
+        process.env.ML_OEM_ATTR_DISABLED === "1"
+      ) {
+        continue;
+      }
+      guardar[id] = raw;
+    }
+    return Object.keys(guardar).length > 0 ? guardar : null;
+  }
+
+  /**
+   * Grava a falha TERMINAL por atributo obrigatório detectada ANTES do POST.
+   * Mesma linha em que a falha genérica grava hoje (findByProductAndAccount,
+   * que prefere o placeholder PENDING_); sem linha, cria um placeholder já em
+   * erro para o operador ver em GET /listings/status.
+   *
+   * Republicação (PENDING_REPUBLISH_) não é tocada: quem reverte é o sync.
+   * Nunca lança — falha aqui só vira log; o retorno do create já carrega o
+   * `terminal`.
+   */
+  private static async persistMlRequiredAttrsTerminal(i: {
+    productId: string;
+    accountId: string;
+    categoryIdForML: string;
+    message: string;
+    effectiveSettings: MLListingSettings;
+    externalSku?: string | null;
+    actorId?: string;
+  }): Promise<string | undefined> {
+    try {
+      const lastError = `[TERMINAL] ${i.message}`;
+      const row = await ListingRepository.findByProductAndAccount(
+        i.productId,
+        i.accountId,
+      );
+      if (row?.externalListingId?.startsWith("PENDING_REPUBLISH_")) {
+        return row.id;
+      }
+      if (row) {
+        await ListingRepository.updateListing(row.id, {
+          status: "error",
+          lastError,
+          retryEnabled: false,
+          nextRetryAt: null,
+          requestedCategoryId: i.categoryIdForML,
+        });
+        return row.id;
+      }
+      const s = i.effectiveSettings;
+      const criada = await ListingRepository.createListing({
+        productId: i.productId,
+        marketplaceAccountId: i.accountId,
+        externalListingId: `PENDING_${Date.now()}`,
+        externalSku: i.externalSku ?? null,
+        permalink: null,
+        status: "error",
+        retryAttempts: 0,
+        nextRetryAt: null,
+        lastError,
+        retryEnabled: false,
+        createdByUserId: i.actorId ?? null,
+        requestedCategoryId: i.categoryIdForML,
+        listingType: s.listingType ?? null,
+        itemCondition: s.itemCondition ?? null,
+        hasWarranty: s.hasWarranty ?? null,
+        warrantyUnit: s.warrantyUnit ?? null,
+        warrantyDuration: s.warrantyDuration ?? null,
+        shippingMode: s.shippingMode ?? null,
+        freeShipping: s.freeShipping ?? null,
+        localPickup: s.localPickup ?? null,
+        manufacturingTime: s.manufacturingTime ?? null,
+      });
+      return criada?.id;
+    } catch (err) {
+      console.warn(
+        "[ListingUseCase] falha ao gravar terminal por atributo obrigatório:",
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
+  /**
    * Converte o código OEM para a forma multivalorada do ML na hora de montar o
    * payload. O armazenamento não muda: `Product.attributes.OEM` continua
    * guardando a string separada por vírgula que o operador digitou.
@@ -847,7 +1344,28 @@ export class ListingUseCase {
         const posAttr = categoryAttrs.find((a) =>
           POSITION_ATTRIBUTE_IDS.has(a?.id ?? ""),
         );
-        if (posAttr) {
+        // Decisão 6 (atrás de ML_REQUIRED_ATTRS_BLOCK=1): o lado/posição que o
+        // operador preencheu no id que a categoria expõe (SIDE, VEHICLE_SIDE…)
+        // vence a inferência pelo nome. Sem isso a inferência entra primeiro e
+        // o merge da ficha pula o valor do operador (id já visto) — ele escolhe
+        // "Direito" e o anúncio sai "Esquerdo". O guard acima só olhava POSITION.
+        const opPosCategoria =
+          posAttr &&
+          product.attributes &&
+          typeof product.attributes === "object" &&
+          !Array.isArray(product.attributes)
+            ? (product.attributes as Record<string, any>)[posAttr.id]
+            : undefined;
+        const operadorPreencheuPosicao =
+          isMlRequiredAttrsBlockEnabled() &&
+          !!posAttr &&
+          !!opPosCategoria &&
+          typeof opPosCategoria === "object" &&
+          attributeHasValue({
+            value_id: opPosCategoria.value_id,
+            value_name: opPosCategoria.value_name,
+          });
+        if (posAttr && !operadorPreencheuPosicao) {
           const inferred = inferPositionFromName(product.name || "");
           const resolved = inferred
             ? resolvePositionValue(inferred, posAttr.allowedValues)
@@ -1811,40 +2329,19 @@ export class ListingUseCase {
           )
         : undefined;
 
-      // Código OEM vindo da Revisão individual do anúncio em massa. Ele NÃO
-      // chega por nenhum outro caminho: o wizard não grava em Product, e o
-      // update pós-criação descarta `OEM` porque o ML não aceita alterar esse
-      // atributo depois (IMMUTABLE_ATTRS em updateMLListingFields). Então ou
-      // entra aqui, na criação, ou não entra nunca.
-      //
-      // Escopo deliberadamente mínimo: só os ids de ML_OEM_ATTRIBUTE_IDS. Os
-      // demais atributos da ficha por produto continuam indo pelo update
-      // pós-criação, exatamente como hoje.
-      const productForAttrs =
-        process.env.ML_OEM_ATTR_DISABLED !== "1"
-          ? this.withOemFromOverride(product, attributeOverrides)
-          : product;
-
-      let attributes = this.buildMLAttributes(
-        productForAttrs,
+      // Ficha do produto (+ OEM da Revisão individual) → buildMLAttributes →
+      // enriquecimento do preflight. Extraído para buildMLCreateAttributes para
+      // o endpoint de checagem e o script de prova avaliarem EXATAMENTE este
+      // payload (os comentários de cada passo foram junto).
+      const built = await this.buildMLCreateAttributes({
+        product,
         resolvedCategoryId,
-        categoryAttrsForBuild && categoryAttrsForBuild.length > 0
-          ? categoryAttrsForBuild
-          : undefined,
-      );
-
-      // ─── Pré-flight: atributos obrigatórios da categoria ─────────────────
-      // Busca required attributes do catálogo ML (cache 24h) e verifica se
-      // todos estão preenchidos no payload. Auto-preenche a partir de campos
-      // do produto quando possível (PART_NUMBER←partNumber, etc). Bloqueia
-      // cedo com erro acionável se faltar algo crítico. Fail-open: se o
-      // catálogo estiver indisponível, segue o fluxo legado sem bloquear.
-      const preflight = await ListingPreflightService.checkML({
-        product: product as any,
-        categoryId: categoryIdForML,
-        currentAttributes: attributes,
+        categoryIdForML,
+        categoryAttrs: categoryAttrsForBuild,
+        attributeOverrides,
       });
-      attributes = preflight.enrichedAttributes;
+      const attributes = built.attributes;
+      const preflight = built.preflight;
       if (!preflight.ok) {
         const preflightMode = (
           process.env.LISTING_PREFLIGHT || "warn"
@@ -1859,7 +2356,10 @@ export class ListingUseCase {
             issueCodes: preflight.issues.map((i) => i.code),
           }),
         );
-        if (preflightMode === "strict") {
+        // Com ML_REQUIRED_ATTRS_BLOCK=1 quem bloqueia é a regra ESTRITA logo
+        // abaixo; a régua larga daqui (que barraria MOUNT_TYPE/VEHICLE_TYPE)
+        // vira só o log acima.
+        if (preflightMode === "strict" && !isMlRequiredAttrsBlockEnabled()) {
           return {
             success: false,
             error: ListingPreflightService.formatBlockMessage(preflight),
@@ -1868,6 +2368,88 @@ export class ListingUseCase {
         // Modo warn (default): loga divergência mas prossegue. A API do ML
         // é a fonte de verdade final — se ela aceitar, a blocklist do
         // preflight estava errada e precisa ser ajustada.
+      }
+
+      // ─── Atributos obrigatórios do ML (ML_REQUIRED_ATTRS_BLOCK=1) ─────────
+      // Regra ESTRITA (só tags.required sem tags.fixed) sobre o payload JÁ
+      // enriquecido — é o que vai ao ML. Fica antes do upload de imagens e do
+      // POST: falta de Part Number não gasta upload, nem a escada de
+      // retentativas, nem a troca de categoria que escondia o problema.
+      // Tags desconhecidas (cache antigo) ou catálogo indisponível NÃO
+      // bloqueiam; o que escapar é pego depois do POST pela causa 147.
+      //
+      // Exceção: anúncio de catálogo ligado e produto vinculado — a tentativa
+      // de catálogo não leva atributos e pode publicar; bloquear antes dela
+      // barraria o que publica hoje.
+      if (isMlRequiredAttrsBlockEnabled()) {
+        if (
+          shouldSkipMlRequiredBlockForCatalog((product as any).mlCatalogProductId)
+        ) {
+          console.log(
+            JSON.stringify({
+              event: "ml.required_attrs.evaluated",
+              productId: product.id,
+              categoryId: categoryIdForML,
+              status: "skipped_catalog_listing",
+            }),
+          );
+        } else {
+          // catalogListing=false: a tentativa de catálogo não leva atributos e,
+          // quando falha, cai no payload tradicional avaliado aqui.
+          const avaliacao = evaluateMLRequiredAttributes({
+            categoryAttributes: categoryAttrsForBuild,
+            payloadAttributes: attributes,
+            catalogListing: false,
+          });
+          if (avaliacao.status === "blocked") {
+            const msg = avaliacao.message ?? ML_REQUIRED_ATTRS_GENERIC_MESSAGE;
+            const listingIdTerminal = await this.persistMlRequiredAttrsTerminal({
+              productId,
+              accountId: acc.id,
+              categoryIdForML,
+              message: msg,
+              effectiveSettings,
+              externalSku: product.sku,
+              actorId,
+            });
+            console.warn(
+              JSON.stringify({
+                event: "ml.required_attrs.blocked",
+                phase: "pre_post",
+                productId: product.id,
+                accountId: acc.id,
+                categoryId: categoryIdForML,
+                blocking: avaliacao.blocking.map(
+                  (b) => `${b.attributeId}:${b.reason}`,
+                ),
+              }),
+            );
+            return {
+              success: false,
+              listingId: listingIdTerminal,
+              error: msg,
+              terminal: true,
+              code: ML_REQUIRED_ATTRS_ERROR_CODE,
+              missingAttributes: avaliacao.blocking.map((b) => ({
+                id: b.attributeId,
+                name: b.attributeName,
+                reason: b.reason,
+              })),
+            };
+          }
+          if (avaliacao.status === "unknown" || avaliacao.warnings.length > 0) {
+            console.log(
+              JSON.stringify({
+                event: "ml.required_attrs.evaluated",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                status: avaliacao.status,
+                unknownReason: avaliacao.unknownReason ?? null,
+                warnings: avaliacao.warnings.map((w) => w.attributeId),
+              }),
+            );
+          }
+        }
       }
 
       // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
@@ -2180,6 +2762,16 @@ export class ListingUseCase {
         acc.id,
       );
 
+      // Ficha da Revisão individual que ENTROU nesta criação (só com
+      // ML_REQUIRED_ATTRS_BLOCK=1). Fica guardada no placeholder porque o cron
+      // de retentativa recria sem a ficha do job: sem isto, um lado preenchido
+      // só na revisão sumiria na 2ª tentativa e o anúncio viraria terminal por
+      // "falta o lado" — com o operador tendo preenchido. Mesmo campo que o
+      // update pós-criação grava no sucesso.
+      const fichaParaRetentativa = isMlRequiredAttrsBlockEnabled()
+        ? built.retryOverrides
+        : null;
+
       if (!listing) {
         // retryEnabled=false: o fluxo primário é responsável pelo próprio
         // sucesso/erro. Só o catch habilita retry explicitamente se a
@@ -2207,6 +2799,9 @@ export class ListingUseCase {
           freeShipping: effectiveSettings.freeShipping ?? null,
           localPickup: effectiveSettings.localPickup ?? null,
           manufacturingTime: effectiveSettings.manufacturingTime ?? null,
+          ...(fichaParaRetentativa
+            ? { attributesOverride: fichaParaRetentativa }
+            : {}),
         });
       } else {
         await ListingRepository.updateListing(listing.id, {
@@ -2219,6 +2814,17 @@ export class ListingUseCase {
           freeShipping: effectiveSettings.freeShipping ?? null,
           localPickup: effectiveSettings.localPickup ?? null,
           manufacturingTime: effectiveSettings.manufacturingTime ?? null,
+          // Funde (não substitui): a linha reaproveitada pode já ter overrides
+          // de ficha editados pelo operador.
+          ...(fichaParaRetentativa
+            ? {
+                attributesOverride: mergeAttributeOverride(
+                  (listing as { attributesOverride?: unknown })
+                    .attributesOverride,
+                  fichaParaRetentativa,
+                ),
+              }
+            : {}),
         });
       }
 
@@ -2423,6 +3029,37 @@ export class ListingUseCase {
           if (Array.isArray(causes)) attemptCauses.push(causes);
         };
 
+        // ─── Obrigatórios do ML depois do POST (ML_REQUIRED_ATTRS_BLOCK=1) ───
+        // "Faltou obrigatório" só conta nas tentativas que mantêm a categoria
+        // PEDIDA: a 1ª e a escada family_name / sem título / título seguro /
+        // sem título dinâmico. As tentativas em OUTRA categoria (desvio por
+        // condition.invalid, folha re-resolvida, sugestão do domain_discovery)
+        // ficam de fora: um 147 de lá fala de um campo que a categoria do
+        // operador talvez nem exija, e transformaria um timeout ou um título
+        // recusado em terminal com a mensagem errada. `attemptCauses` e
+        // `pickActionableMLError` seguem intocados.
+        const bloqueioObrigatorios = isMlRequiredAttrsBlockEnabled();
+        const categoriaPedidaML = categoryIdForML;
+        const attemptCausesMesmaCategoria: MLCause[][] = [attemptCauses[0]];
+        let faltouObrigatorio =
+          bloqueioObrigatorios &&
+          attemptCauses[0].some((c) =>
+            isMissingRequiredAttrsForCategory(c, categoriaPedidaML),
+          );
+        const recordSameCategoryCause = (retryErr: any) => {
+          if (!bloqueioObrigatorios) return;
+          const causes = retryErr?.mlError?.cause;
+          if (!Array.isArray(causes)) return;
+          attemptCausesMesmaCategoria.push(causes);
+          if (
+            causes.some((c: MLCause) =>
+              isMissingRequiredAttrsForCategory(c, categoriaPedidaML),
+            )
+          ) {
+            faltouObrigatorio = true;
+          }
+        };
+
         const isCategoryInvalid = !!parsedMl?.cause?.some(
           (c: any) => c?.code === "item.category_id.invalid",
         );
@@ -2434,7 +3071,9 @@ export class ListingUseCase {
           (c: any) => c?.code === "item.condition.invalid",
         );
 
-        if (!mlItem && isConditionInvalid) {
+        // Com obrigatório faltando na categoria pedida, trocar de categoria só
+        // esconderia o campo em branco (e publicaria em categoria errada).
+        if (!mlItem && isConditionInvalid && !faltouObrigatorio) {
           try {
             const siteId = (categoryIdForML || "MLB").slice(0, 3);
             const suggestedId = await MLApiService.suggestCategoryId(
@@ -2563,6 +3202,7 @@ export class ListingUseCase {
               famErr instanceof Error ? famErr.message : String(famErr);
             const famMl = famErr?.mlError || null;
             recordAttemptCause(famErr);
+            recordSameCategoryCause(famErr);
             console.warn(
               JSON.stringify({
                 event: "ml.create_item.retry_failed",
@@ -2610,6 +3250,7 @@ export class ListingUseCase {
             // sumia antes de chegar ao `pickActionableMLError` — justo o
             // caminho em que ela é a única informação útil.
             recordAttemptCause(noTitleErr);
+            recordSameCategoryCause(noTitleErr);
             console.warn(
               "[ListingUseCase] Retentativa sem title falhou:",
               noTitleErr instanceof Error
@@ -2645,6 +3286,7 @@ export class ListingUseCase {
           } catch (retryTitleErr: any) {
             const stMl = retryTitleErr?.mlError || null;
             recordAttemptCause(retryTitleErr);
+            recordSameCategoryCause(retryTitleErr);
             console.warn(
               JSON.stringify({
                 event: "ml.create_item.retry_failed",
@@ -2685,6 +3327,7 @@ export class ListingUseCase {
           } catch (dynErr: any) {
             const dynMl = dynErr?.mlError || null;
             recordAttemptCause(dynErr);
+            recordSameCategoryCause(dynErr);
             console.warn(
               JSON.stringify({
                 event: "ml.create_item.retry_failed",
@@ -2707,7 +3350,20 @@ export class ListingUseCase {
         // aceitará o payload. Pedimos uma sugestão fresca a partir do título e retentamos
         // reconstruindo os campos do payload que dependem da categoria (attributes,
         // family_name, title/no-title).
-        if (!mlItem) {
+        //
+        // Pulada com ML_REQUIRED_ATTRS_BLOCK=1 quando a categoria pedida disse
+        // que falta atributo obrigatório: a sugerida ou exige o mesmo campo, ou
+        // publica em categoria que não é a do operador.
+        if (!mlItem && faltouObrigatorio) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.required_attrs.category_fallback_skipped",
+              productId: product.id,
+              categoryId: categoriaPedidaML,
+            }),
+          );
+        }
+        if (!mlItem && !faltouObrigatorio) {
           try {
             const siteId = (categoryIdForML || "MLB").slice(0, 3);
             const suggestedId = await MLApiService.suggestCategoryId(
@@ -2812,6 +3468,106 @@ export class ListingUseCase {
               suggErr instanceof Error ? suggErr.message : String(suggErr),
             );
           }
+        }
+
+        // Exceção ao terminal: catálogo indisponível NESTA tentativa e todos os
+        // campos cobrados pelo ML estão preenchidos na ficha da Revisão
+        // individual. Sem catálogo a criação só leva o OEM da ficha (não dá
+        // para saber se a categoria expõe o lado), então o 147 fala de um campo
+        // que o operador preencheu — "Selecione Direito ou Esquerdo" para quem
+        // selecionou. Segue o caminho de hoje (reagenda) e a retentativa do
+        // cron leva a ficha guardada no placeholder, refiltrada pelo catálogo.
+        // O desvio de categoria continua pulado (faltouObrigatorio).
+        let obrigatorioPreenchidoNaRevisao = false;
+        if (
+          !mlItem &&
+          faltouObrigatorio &&
+          !(categoryAttrsForBuild && categoryAttrsForBuild.length > 0)
+        ) {
+          const idsCobrados = findMissingRequiredAttributeIds(
+            attemptCausesMesmaCategoria,
+            categoriaPedidaML,
+          );
+          obrigatorioPreenchidoNaRevisao =
+            idsCobrados.length > 0 &&
+            idsCobrados.every((id) => {
+              const v = attributeOverrides?.[id];
+              return (
+                !!v &&
+                typeof v === "object" &&
+                !Array.isArray(v) &&
+                attributeHasValue(
+                  v as { value_id?: unknown; value_name?: unknown },
+                )
+              );
+            });
+          if (obrigatorioPreenchidoNaRevisao) {
+            console.warn(
+              JSON.stringify({
+                event: "ml.required_attrs.terminal_skipped_catalog_unavailable",
+                productId: product.id,
+                categoryId: categoriaPedidaML,
+                attributeIds: idsCobrados,
+              }),
+            );
+          }
+        }
+
+        // Falta de atributo obrigatório na categoria pedida é DEFINITIVA:
+        // nenhuma retentativa preenche o campo. Vem antes do ramo de título
+        // porque, quando os dois aparecem, reagendar pelo título só repetiria
+        // o 147. Republicação (PENDING_REPUBLISH_) não é gravada: o sync reverte.
+        if (!mlItem && faltouObrigatorio && !obrigatorioPreenchidoNaRevisao) {
+          const ids = findMissingRequiredAttributeIds(
+            attemptCausesMesmaCategoria,
+            categoriaPedidaML,
+          );
+          const issues = issuesFromMissingAttributeIds(
+            ids,
+            categoryAttrsForBuild,
+          );
+          const msg =
+            summarizeMLRequiredAttributeIssues(issues) ??
+            ML_REQUIRED_ATTRS_GENERIC_MESSAGE;
+          if (!listing.externalListingId?.startsWith("PENDING_REPUBLISH_")) {
+            try {
+              await ListingRepository.updateListing(listing.id, {
+                status: "error",
+                lastError: `[TERMINAL] ${msg}`,
+                retryEnabled: false,
+                nextRetryAt: null,
+                requestedCategoryId: payload.category_id || null,
+              });
+            } catch (markErr) {
+              console.error(
+                "[ListingUseCase] falha ao marcar terminal por atributo obrigatório:",
+                markErr,
+              );
+            }
+          }
+          console.warn(
+            JSON.stringify({
+              event: "ml.required_attrs.blocked",
+              phase: "post_post",
+              productId: product.id,
+              accountId: acc.id,
+              categoryId: categoriaPedidaML,
+              attributeIds: ids,
+            }),
+          );
+          return {
+            success: false,
+            listingId: listing.id,
+            error: msg,
+            mlError: errMsg,
+            terminal: true,
+            code: ML_REQUIRED_ATTRS_ERROR_CODE,
+            missingAttributes: issues.map((it) => ({
+              id: it.attributeId,
+              name: it.attributeName,
+              reason: it.reason,
+            })),
+          };
         }
 
         if (!mlItem && isTitleInvalid) {

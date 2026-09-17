@@ -76,6 +76,12 @@ import { CurrencyInput } from "@/components/ui/currency-input";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 import { StepPreview } from "./listing-preview/step-preview";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
+import {
+  checkMlRequiredAttributes,
+  fetchMlRequiredAttrsEnabled,
+  shouldBlockMlDraft,
+} from "./ml-required-attributes-check.client";
+import { mlAttributeFormField } from "@/app/marketplaces/lib/ml-required-attributes.logic";
 import { MLCatalogSuggestionPicker } from "./ml-catalog-suggestion-picker";
 import { InternalSuggestionPicker } from "./internal-suggestion-picker";
 import { ProductHistoryPicker } from "./product-history-picker";
@@ -1325,6 +1331,16 @@ export function CreateProductDialog({
       });
     }
   }, [open, source, initialValues, setValue]);
+
+  // Aquece o cache de "a checagem de obrigatórios do ML está ligada?" quando o
+  // modal abre com anúncio ML marcado (ou quando o operador marca). Uma
+  // consulta a cada 60 s; quem não anuncia no ML não consulta nada. O clique em
+  // "Criar Produto" NÃO espera isto: lê o último valor conhecido, sem rede —
+  // por mais tempo que o formulário fique aberto. Falha = desligada.
+  useEffect(() => {
+    if (!open || !watchCreateMLListing || !session?.user?.email) return;
+    void fetchMlRequiredAttrsEnabled(getApiBaseUrl(), session.user.email);
+  }, [open, watchCreateMLListing, session?.user?.email]);
 
   // Pré-seleciona a sucata TRAVADA (fluxo "Adicionar peça" do detalhe do lote).
   // ADITIVO: sem `lockedScrap`, não faz NADA — os fluxos manual e NF-e seguem
@@ -3044,6 +3060,51 @@ export function CreateProductDialog({
         );
         setIsSubmitting(false);
         return;
+      }
+
+      // Atributos obrigatórios da categoria do Mercado Livre — ANTES de criar o
+      // produto: barrar depois do POST /products deixaria o produto criado e o
+      // novo clique criaria um SEGUNDO (autoSku). Mesmo motor do backend (o
+      // endpoint avalia a categoria e o payload que o create montaria).
+      // Checagem desligada no servidor (último status conhecido, sem rede),
+      // status ainda sem resposta, erro ou timeout → `null` → segue exatamente
+      // como antes, sem round-trip. `ok`/`unknown` também seguem.
+      if (data.createMLListing) {
+        const catMl = data.mlCategory || autoDetectedRef.current?.mlCategory;
+        const checagem = await checkMlRequiredAttributes(
+          getApiBaseUrl(),
+          session?.user?.email || "",
+          [
+            {
+              key: "draft",
+              categoryId: catMl || undefined,
+              product: {
+                name: data.name,
+                sku: data.sku || undefined,
+                brand: data.brand || undefined,
+                model: data.model || undefined,
+                year: data.year || undefined,
+                partNumber: data.partNumber || undefined,
+                quality: data.quality || undefined,
+                attributes: data.attributes,
+                mlCatalogProductId: data.mlCatalogProductId || undefined,
+              },
+            },
+          ],
+        );
+        const obrigatorios = checagem?.get("draft");
+        if (obrigatorios && shouldBlockMlDraft(obrigatorios)) {
+          onToast(obrigatorios.message ?? "", "warning");
+          scrollToSection(
+            FIELD_TO_STEP[
+              mlAttributeFormField(obrigatorios.blocking[0]?.attributeId ?? "")
+            ] ||
+              FIELD_TO_STEP.attributes ||
+              1,
+          );
+          setIsSubmitting(false);
+          return;
+        }
       }
 
       const listingsPayload: Array<{

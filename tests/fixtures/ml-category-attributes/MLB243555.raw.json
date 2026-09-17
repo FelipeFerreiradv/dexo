@@ -1,0 +1,1165 @@
+{
+  "capturedAt": "2026-09-16T23:59:08.145Z",
+  "categoryId": "MLB243555",
+  "source": "curl -s https://api.mercadolibre.com/categories/MLB243555/attributes (publica, sem token)",
+  "attributes": [
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_type": "string",
+      "tags": {
+        "catalog_required": true,
+        "required": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "PART_NUMBER",
+      "name": "Número de peça",
+      "value_type": "string",
+      "tags": {
+        "catalog_required": true,
+        "required": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "COLOR",
+      "name": "Cor",
+      "value_type": "string",
+      "tags": {
+        "allow_variations": true,
+        "defines_picture": true
+      },
+      "values": [
+        {
+          "id": "283148",
+          "name": "Coral-claro"
+        },
+        {
+          "id": "283149",
+          "name": "Coral"
+        },
+        {
+          "id": "283150",
+          "name": "Laranja-claro"
+        },
+        {
+          "id": "283151",
+          "name": "Laranja-escuro"
+        },
+        {
+          "id": "283156",
+          "name": "Cáqui"
+        },
+        {
+          "id": "283157",
+          "name": "Verde-limão"
+        },
+        {
+          "id": "283158",
+          "name": "Verde-musgo"
+        },
+        {
+          "id": "283152",
+          "name": "Chocolate"
+        },
+        {
+          "id": "283153",
+          "name": "Palha"
+        },
+        {
+          "id": "283154",
+          "name": "Marrom-claro"
+        },
+        {
+          "id": "283155",
+          "name": "Marrom-escuro"
+        },
+        {
+          "id": "283164",
+          "name": "Dourado"
+        },
+        {
+          "id": "51993",
+          "name": "Vermelho"
+        },
+        {
+          "id": "283165",
+          "name": "Cinza"
+        },
+        {
+          "id": "51994",
+          "name": "Rosa"
+        },
+        {
+          "id": "283160",
+          "name": "Azul-turquesa"
+        },
+        {
+          "id": "51996",
+          "name": "Terracota"
+        },
+        {
+          "id": "283161",
+          "name": "Azul-marinho"
+        },
+        {
+          "id": "283162",
+          "name": "Índigo"
+        },
+        {
+          "id": "51998",
+          "name": "Bordô"
+        },
+        {
+          "id": "283163",
+          "name": "Rosa-chiclete"
+        },
+        {
+          "id": "52000",
+          "name": "Laranja"
+        },
+        {
+          "id": "52001",
+          "name": "Bege"
+        },
+        {
+          "id": "52003",
+          "name": "Nude"
+        },
+        {
+          "id": "52005",
+          "name": "Marrom"
+        },
+        {
+          "id": "52007",
+          "name": "Amarelo"
+        },
+        {
+          "id": "52008",
+          "name": "Creme"
+        },
+        {
+          "id": "52010",
+          "name": "Ocre"
+        },
+        {
+          "id": "52012",
+          "name": "Dourado-escuro"
+        },
+        {
+          "id": "52014",
+          "name": "Verde"
+        },
+        {
+          "id": "52015",
+          "name": "Verde-claro"
+        },
+        {
+          "id": "52019",
+          "name": "Verde-escuro"
+        },
+        {
+          "id": "52021",
+          "name": "Azul-celeste"
+        },
+        {
+          "id": "52022",
+          "name": "Água"
+        },
+        {
+          "id": "52024",
+          "name": "Azul-petróleo"
+        },
+        {
+          "id": "52028",
+          "name": "Azul"
+        },
+        {
+          "id": "52029",
+          "name": "Azul-claro"
+        },
+        {
+          "id": "52031",
+          "name": "Azul-aço"
+        },
+        {
+          "id": "52033",
+          "name": "Azul-escuro"
+        },
+        {
+          "id": "52035",
+          "name": "Violeta"
+        },
+        {
+          "id": "52036",
+          "name": "Lavanda"
+        },
+        {
+          "id": "52038",
+          "name": "Lilás"
+        },
+        {
+          "id": "52042",
+          "name": "Fúcsia"
+        },
+        {
+          "id": "52043",
+          "name": "Rosa-claro"
+        },
+        {
+          "id": "52045",
+          "name": "Rosa-pálido"
+        },
+        {
+          "id": "52047",
+          "name": "Violeta-escuro"
+        },
+        {
+          "id": "52049",
+          "name": "Preto"
+        },
+        {
+          "id": "52051",
+          "name": "Cinza-escuro"
+        },
+        {
+          "id": "52053",
+          "name": "Prateado"
+        },
+        {
+          "id": "52055",
+          "name": "Branco"
+        },
+        {
+          "id": "338779",
+          "name": "Ciano"
+        }
+      ],
+      "value_max_length": 255
+    },
+    {
+      "id": "POSITION",
+      "name": "Posição",
+      "value_type": "string",
+      "tags": {
+        "required": true
+      },
+      "values": [
+        {
+          "id": "13701104",
+          "name": "Dianteira"
+        },
+        {
+          "id": "13701105",
+          "name": "Traseira"
+        }
+      ],
+      "value_max_length": 255
+    },
+    {
+      "id": "SIDE_POSITION",
+      "name": "Lado",
+      "value_type": "string",
+      "tags": {},
+      "values": [
+        {
+          "id": "5365767",
+          "name": "Esquerdo/Direito"
+        },
+        {
+          "id": "364128",
+          "name": "Esquerdo"
+        },
+        {
+          "id": "364127",
+          "name": "Direito"
+        }
+      ],
+      "value_max_length": 255
+    },
+    {
+      "id": "PACKAGE_HEIGHT",
+      "name": "Altura da embalagem",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true,
+        "read_only": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "PACKAGE_WIDTH",
+      "name": "Largura da embalagem",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true,
+        "read_only": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "PACKAGE_LENGTH",
+      "name": "Comprimento da embalagem",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true,
+        "read_only": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "PACKAGE_WEIGHT",
+      "name": "Peso da embalagem",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true,
+        "read_only": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "GTIN",
+      "name": "Código universal de produto",
+      "value_type": "string",
+      "tags": {
+        "multivalued": true,
+        "variation_attribute": true,
+        "used_hidden": true,
+        "validate": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "OEM",
+      "name": "Código OEM",
+      "value_type": "string",
+      "tags": {
+        "multivalued": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "INMETRO_CERTIFICATION_REGISTRATION_NUMBER",
+      "name": "Número de registro/certificação INMETRO",
+      "value_type": "string",
+      "tags": {},
+      "value_max_length": 255
+    },
+    {
+      "id": "IMPORT_DECLARATION_NUMBER",
+      "name": "Número da DI",
+      "value_type": "number",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 18
+    },
+    {
+      "id": "INVOICE_PRODUCT_NAME",
+      "name": "Nome do produto na nota fiscal",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SAT_KEY",
+      "name": "Chave do produto",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "82021094",
+          "name": "Não existe no catálogo"
+        }
+      ],
+      "value_max_length": 255
+    },
+    {
+      "id": "MEASURE_UNIT_KEY",
+      "name": "Chave da unidade de medida",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "82021108",
+          "name": "Não existe no catálogo"
+        }
+      ],
+      "value_max_length": 255
+    },
+    {
+      "id": "MEASURE_UNIT_DESCRIPTION",
+      "name": "Unidade de medida",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "IVA_FOR_RESALE",
+      "name": "IVA para revenda",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "81861612",
+          "name": "Isento"
+        },
+        {
+          "id": "81861613",
+          "name": "0%"
+        },
+        {
+          "id": "81861614",
+          "name": "8%"
+        },
+        {
+          "id": "81861616",
+          "name": "16%"
+        }
+      ]
+    },
+    {
+      "id": "IEPS",
+      "name": "IEPS",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "82021095",
+          "name": "0%"
+        },
+        {
+          "id": "82021096",
+          "name": "3%"
+        },
+        {
+          "id": "82021097",
+          "name": "6%"
+        },
+        {
+          "id": "82021098",
+          "name": "7%"
+        },
+        {
+          "id": "82021099",
+          "name": "8%"
+        },
+        {
+          "id": "82021100",
+          "name": "9%"
+        },
+        {
+          "id": "82021101",
+          "name": "25%"
+        },
+        {
+          "id": "82021102",
+          "name": "26.5%"
+        },
+        {
+          "id": "82021103",
+          "name": "30%"
+        },
+        {
+          "id": "82021104",
+          "name": "30.4%"
+        },
+        {
+          "id": "82021105",
+          "name": "50%"
+        },
+        {
+          "id": "82021106",
+          "name": "53%"
+        },
+        {
+          "id": "82021107",
+          "name": "160%"
+        }
+      ]
+    },
+    {
+      "id": "MPN",
+      "name": "MPN",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "ITEM_CONDITION",
+      "name": "Condição do item",
+      "value_type": "list",
+      "tags": {
+        "hidden": true
+      },
+      "values": [
+        {
+          "id": "2230581",
+          "name": "Usado"
+        },
+        {
+          "id": "2230284",
+          "name": "Novo"
+        }
+      ]
+    },
+    {
+      "id": "MODEL",
+      "name": "Modelo",
+      "value_type": "string",
+      "tags": {
+        "hidden": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "VALUE_ADDED_TAX",
+      "name": "Imposto sobre o valor acrescentado",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "IMPORT_DUTY",
+      "name": "Imposto de importação",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "49553239",
+          "name": "0 %"
+        },
+        {
+          "id": "49553240",
+          "name": "1 %"
+        },
+        {
+          "id": "49553241",
+          "name": "2.5 %"
+        },
+        {
+          "id": "49553242",
+          "name": "4 %"
+        },
+        {
+          "id": "49553243",
+          "name": "5 %"
+        },
+        {
+          "id": "49553244",
+          "name": "8 %"
+        },
+        {
+          "id": "49553245",
+          "name": "9.5 %"
+        },
+        {
+          "id": "49553246",
+          "name": "10 %"
+        },
+        {
+          "id": "49553247",
+          "name": "14 %"
+        },
+        {
+          "id": "49553248",
+          "name": "15 %"
+        },
+        {
+          "id": "49553249",
+          "name": "18 %"
+        },
+        {
+          "id": "49553250",
+          "name": "19 %"
+        },
+        {
+          "id": "49553251",
+          "name": "20 %"
+        },
+        {
+          "id": "49553252",
+          "name": "23 %"
+        },
+        {
+          "id": "49553253",
+          "name": "25 %"
+        },
+        {
+          "id": "49553254",
+          "name": "26 %"
+        },
+        {
+          "id": "49553255",
+          "name": "70 %"
+        }
+      ]
+    },
+    {
+      "id": "SELLER_SKU",
+      "name": "SKU",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "variation_attribute": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SELLER_PACKAGE_DATA_SOURCE",
+      "name": "Origem do dado do pacote de envio",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SELLER_PACKAGE_WIDTH",
+      "name": "Largura da embalagem do vendor",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SELLER_PACKAGE_LENGTH",
+      "name": "Comprimento da embalagem do vendor",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SELLER_PACKAGE_HEIGHT",
+      "name": "Altura da embalagem do vendor",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SELLER_PACKAGE_WEIGHT",
+      "name": "Peso da embalagem do vendor",
+      "value_type": "number_unit",
+      "tags": {
+        "hidden": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "HAZMAT_TRANSPORTABILITY",
+      "name": "Transportabilidade Hazmat",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "13414677",
+          "name": "Livre"
+        },
+        {
+          "id": "13414678",
+          "name": "Limitado"
+        },
+        {
+          "id": "13414679",
+          "name": "Excedido"
+        },
+        {
+          "id": "13414680",
+          "name": "Indeterminado"
+        },
+        {
+          "id": "75989961",
+          "name": "Notificado"
+        }
+      ]
+    },
+    {
+      "id": "IS_KIT",
+      "name": "É kit",
+      "value_type": "boolean",
+      "tags": {
+        "hidden": true
+      },
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não"
+        },
+        {
+          "id": "242085",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "DESCRIPTIVE_TAGS",
+      "name": "Tags descritivos",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "PRODUCT_CHEMICAL_FEATURES",
+      "name": "Características químicas do produto",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7651070",
+          "name": "Inflamável"
+        },
+        {
+          "id": "7651071",
+          "name": "Aerosol"
+        },
+        {
+          "id": "7651072",
+          "name": "Oxidante"
+        },
+        {
+          "id": "7651073",
+          "name": "Corrosivo"
+        },
+        {
+          "id": "7651074",
+          "name": "Explosivo"
+        },
+        {
+          "id": "7651075",
+          "name": "Tóxico ou infeccioso"
+        }
+      ]
+    },
+    {
+      "id": "FOODS_AND_DRINKS",
+      "name": "Alimentos e bebidas",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7575926",
+          "name": "Para humanos"
+        },
+        {
+          "id": "7575927",
+          "name": "Para animais"
+        }
+      ]
+    },
+    {
+      "id": "MEDICINES",
+      "name": "Medicamentos",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7575930",
+          "name": "Para humanos com receita médica"
+        },
+        {
+          "id": "7575931",
+          "name": "Para humanos sem receita médica"
+        },
+        {
+          "id": "7575932",
+          "name": "Para animais com receita médica"
+        },
+        {
+          "id": "7575933",
+          "name": "Para animais sem receita médica"
+        }
+      ]
+    },
+    {
+      "id": "BATTERIES_FEATURES",
+      "name": "Características das baterias",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7575934",
+          "name": "Lítio stand-alone (separadas ou isolado)"
+        },
+        {
+          "id": "7575935",
+          "name": "De lítio instaladas"
+        },
+        {
+          "id": "7575936",
+          "name": "Para carros (ácido-chumbo)"
+        }
+      ]
+    },
+    {
+      "id": "SHIPMENT_PACKING",
+      "name": "Embalagem do envío",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7435891",
+          "name": "Flyer"
+        },
+        {
+          "id": "7435892",
+          "name": "Caixa"
+        },
+        {
+          "id": "7575937",
+          "name": "Envelope"
+        },
+        {
+          "id": "7575939",
+          "name": "Auto-expedível"
+        },
+        {
+          "id": "27037932",
+          "name": "BEX"
+        }
+      ]
+    },
+    {
+      "id": "ADDITIONAL_INFO_REQUIRED",
+      "name": "Informação adicional requerida",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7435893",
+          "name": "Possui código IMEI"
+        },
+        {
+          "id": "7435894",
+          "name": "Possui número de série"
+        }
+      ]
+    },
+    {
+      "id": "EXCLUDED_PLATFORMS",
+      "name": "Plataformas excluídas",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "9936777",
+          "name": "Android"
+        },
+        {
+          "id": "9936778",
+          "name": "iOS"
+        },
+        {
+          "id": "9936779",
+          "name": "Desktop"
+        },
+        {
+          "id": "9936780",
+          "name": "Mobile"
+        }
+      ]
+    },
+    {
+      "id": "IS_SUITABLE_FOR_SHIPMENT",
+      "name": "É adequado para envío",
+      "value_type": "boolean",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não"
+        },
+        {
+          "id": "242085",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "PRODUCT_DATA_SOURCE",
+      "name": "Fonte do produto",
+      "value_type": "string",
+      "tags": {
+        "hidden": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "LIMITED_MARKETPLACE_VISIBILITY_REASONS",
+      "name": "Razões de visibilidade limitada no Marketplace",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "24219544",
+          "name": "Pharma"
+        }
+      ],
+      "value_max_length": 255
+    },
+    {
+      "id": "HAS_COMPATIBILITIES",
+      "name": "Tem compatibilidades",
+      "value_type": "boolean",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não"
+        },
+        {
+          "id": "242085",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "CATALOG_TITLE",
+      "name": "Título de catálogo",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "SEARCH_ENHANCEMENT_FIELDS",
+      "name": "Campos de aprimoramento de pesquisa",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "PRODUCT_FEATURES",
+      "name": "Características do produto",
+      "value_type": "list",
+      "tags": {
+        "hidden": true,
+        "multivalued": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "7435885",
+          "name": "Contém líquido"
+        },
+        {
+          "id": "7435883",
+          "name": "Frágil"
+        },
+        {
+          "id": "7435888",
+          "name": "Com validade"
+        },
+        {
+          "id": "8847339",
+          "name": "Sem validade"
+        },
+        {
+          "id": "7575917",
+          "name": "Desinfetante e saneante"
+        },
+        {
+          "id": "7575924",
+          "name": "MAPA"
+        },
+        {
+          "id": "7575923",
+          "name": "Saúde e correlatos"
+        },
+        {
+          "id": "8721108",
+          "name": "Volumoso"
+        },
+        {
+          "id": "10490116",
+          "name": "Não voável"
+        },
+        {
+          "id": "12928414",
+          "name": "Não rotacionável"
+        },
+        {
+          "id": "41722098",
+          "name": "Dobrável"
+        },
+        {
+          "id": "52092586",
+          "name": "Magnético"
+        },
+        {
+          "id": "52233302",
+          "name": "Pode rolar"
+        }
+      ]
+    },
+    {
+      "id": "IS_NEW_OFFER",
+      "name": "É nova oferta",
+      "value_type": "boolean",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não"
+        },
+        {
+          "id": "242085",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "SYI_PYMES_ID",
+      "name": "syi pymes id",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    },
+    {
+      "id": "IS_FLAMMABLE",
+      "name": "É inflamável",
+      "value_type": "boolean",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não"
+        },
+        {
+          "id": "242085",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "WITH_POSITIVE_IMPACT",
+      "name": "Com impacto positivo",
+      "value_type": "boolean",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não"
+        },
+        {
+          "id": "242085",
+          "name": "Sim"
+        }
+      ]
+    },
+    {
+      "id": "PACKAGE_DATA_SOURCE",
+      "name": "Origem do dado do pacote de fábrica",
+      "value_type": "string",
+      "tags": {
+        "hidden": true,
+        "read_only": true
+      },
+      "value_max_length": 255
+    }
+  ]
+}

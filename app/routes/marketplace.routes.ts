@@ -13,6 +13,11 @@ import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import { MLAttributeCatalogService } from "../marketplaces/services/ml-attribute-catalog.service";
+import {
+  parseMlRequiredCheckBody,
+  runMlRequiredAttributesCheck,
+} from "../marketplaces/services/ml-required-attributes-check.service";
+import { isMlRequiredAttrsBlockEnabled } from "../marketplaces/lib/ml-required-attributes.logic";
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
 import { MLCatalogSuggestionUseCase } from "../marketplaces/usecases/ml-catalog-suggestion.usecase";
 import { InternalSuggestionUseCase } from "../marketplaces/usecases/internal-suggestion.usecase";
@@ -626,6 +631,62 @@ small{color:#666}</style></head><body>
       } catch (error) {
         // Service já é fail-open, mas garantimos contrato 200/{attributes:[]}
         return reply.send({ attributes: [] });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/required-attributes/status → { enabled }
+   *
+   * O front consulta ISTO antes de qualquer checagem de obrigatórios: com a
+   * flag desligada ele não faz o POST abaixo, não liga spinner e não atrasa o
+   * envio. GET não é gravado no SystemLog (e o POST abaixo tem exceção
+   * explícita em determineActionType para não gravar o corpo).
+   */
+  app.get(
+    "/ml/required-attributes/status",
+    { preHandler: [authMiddleware] },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      return reply.send({ enabled: isMlRequiredAttrsBlockEnabled() });
+    },
+  );
+
+  /**
+   * POST /marketplace/ml/required-attributes/check
+   * Corpo: { items: [{ key, productId? | product?, categoryId?, attributeOverrides? }] } (1..200)
+   * Resposta: { enabled, results: [{ key, status, unknownReason?, categoryId, blocking, warnings, message }] }
+   *
+   * Somente leitura, mesmo motor do create (ver
+   * ml-required-attributes-check.service). Sem blockCollaborator: colaborador
+   * cria produto. Com ML_REQUIRED_ATTRS_BLOCK desligada responde
+   * { enabled:false } ANTES de validar corpo ou tocar banco. Falha geral → 500,
+   * que o front trata como "não validar" (fail-open).
+   */
+  app.post(
+    "/ml/required-attributes/check",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!isMlRequiredAttrsBlockEnabled()) {
+        return reply.send({ enabled: false, results: [] });
+      }
+      try {
+        const parsed = parseMlRequiredCheckBody(request.body);
+        if ("error" in parsed) {
+          return reply
+            .status(400)
+            .send({ error: "Dados inválidos", message: parsed.error });
+        }
+        const results = await runMlRequiredAttributesCheck(
+          request.user!.dataOwnerId,
+          parsed.items,
+        );
+        return reply.send({ enabled: true, results });
+      } catch (error) {
+        console.error(
+          "[Marketplace Routes] Falha ao validar atributos obrigatórios do ML:",
+          error instanceof Error ? error.message : error,
+        );
+        return reply.status(500).send({ error: "Falha ao validar atributos" });
       }
     },
   );

@@ -306,6 +306,18 @@ export function determineActionType(
     }
   }
 
+  // Checagem de atributos obrigatórios do ML: POST SOMENTE LEITURA chamado a
+  // cada criação de produto e a cada finalização do anúncio em massa (lotes de
+  // até 200 itens, com a ficha da revisão no corpo). Cairia no ramo genérico
+  // abaixo e gravaria o corpo inteiro no SystemLog a cada clique — um INSERT
+  // por criação sem nada a auditar. Não altera dado; não loga.
+  if (
+    cleanUrl === "/marketplace/ml/required-attributes/check" &&
+    method === "POST"
+  ) {
+    return null;
+  }
+
   // Marketplace connect/disconnect (capturado mesmo quando bloqueado por
   // colaborador — registra a tentativa via 403)
   if (

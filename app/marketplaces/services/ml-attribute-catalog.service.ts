@@ -20,9 +20,23 @@ export interface NormalizedMLAttribute {
    * antigas sem o campo = undefined (falsy) = comportamento atual.
    */
   hidden?: boolean;
+  /**
+   * Tags CRUAS do ML, separadas. O `required` acima junta tudo
+   * (`required || catalog_required || fixed`) e continua assim — é o que o
+   * asterisco do formulário e o preflight antigo leem. A regra de bloqueio de
+   * obrigatórios (ml-required-attributes.logic) precisa distinguir: só
+   * `required` sem `fixed` bloqueia.
+   *
+   * Gravados SEMPRE como booleano (inclusive false). `undefined` = linha antiga
+   * do cache de 24h = tags desconhecidas = a regra nova não bloqueia.
+   */
+  requiredTag?: boolean;
+  catalogRequiredTag?: boolean;
+  conditionalRequiredTag?: boolean;
+  fixedTag?: boolean;
 }
 
-interface RawMLAttribute {
+export interface RawMLAttribute {
   id: string;
   name?: string;
   value_type?: string;
@@ -50,6 +64,10 @@ function normalize(raw: RawMLAttribute): NormalizedMLAttribute {
     required,
     variationRequired,
     hidden: Boolean(tags.hidden),
+    requiredTag: Boolean(tags.required),
+    catalogRequiredTag: Boolean(tags.catalog_required),
+    conditionalRequiredTag: Boolean(tags.conditional_required),
+    fixedTag: Boolean(tags.fixed),
     allowedValues: Array.isArray(raw.values)
       ? raw.values
           .filter((v) => v && v.id && v.name)
@@ -61,6 +79,13 @@ function normalize(raw: RawMLAttribute): NormalizedMLAttribute {
         : undefined,
   };
 }
+
+/**
+ * Exposto para o script de prova e para os testes normalizarem o JSON CRU de
+ * GET /categories/{id}/attributes (fixtures e snapshot) pelo MESMO caminho do
+ * cache — sem passar pelo getAll, que chamaria a API e gravaria no Postgres.
+ */
+export const normalizeMLCategoryAttribute = normalize;
 
 export class MLAttributeCatalogService {
   /**

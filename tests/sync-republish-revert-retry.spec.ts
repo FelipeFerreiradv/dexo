@@ -168,6 +168,32 @@ describe("republishUpListing — revert desliga o retry", () => {
     expect(call[3]).toBe("active");
   });
 
+  // ML_REQUIRED_ATTRS_BLOCK=1: o create não grava na linha PENDING_REPUBLISH_
+  // quando falta atributo obrigatório — quem restaura o anúncio antigo é o
+  // revert daqui, que precisa rodar igual e NÃO fechar o anúncio vivo.
+  it("Y1: create terminal por obrigatório → reverte, lança e não fecha o anúncio antigo", async () => {
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: false,
+      terminal: true,
+      code: "ML_REQUIRED_ATTRIBUTES_MISSING",
+      error:
+        "Esta categoria do Mercado Livre exige o preenchimento do Part Number. Preencha esse campo antes de continuar.",
+    } as any);
+    const fechar = vi
+      .spyOn(MLApiService, "updateItem")
+      .mockResolvedValue({ id: OLD_ID, status: "closed" } as any);
+
+    await expect(SyncUseCase.republishUpListing(args)).rejects.toThrow();
+
+    const call = revertCall();
+    expect(call).toBeTruthy();
+    expect(call[3]).toBe("active");
+    const fechou = fechar.mock.calls.find(
+      (c: any[]) => (c[2] as any)?.status === "closed",
+    );
+    expect(fechou).toBeFalsy();
+  });
+
   it("preserva o caminho feliz: republicação bem-sucedida não reverte", async () => {
     vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
       success: true,

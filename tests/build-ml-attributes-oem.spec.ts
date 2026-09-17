@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 // Stub do prisma client para evitar conexão real ao DB durante import.
 vi.mock("@/app/lib/prisma", () => ({
@@ -288,5 +288,295 @@ describe("buildMLAttributes — não regride o que já existia", () => {
     const pos = out.filter((a: any) => a.id === "POSITION");
     expect(pos).toHaveLength(1);
     expect(pos[0].value_id).toBe("VID-DIANT-ESQ");
+  });
+});
+
+// ─── ML_REQUIRED_ATTRS_BLOCK=1: o que da ficha da revisão entra na criação ───
+// Com o bloqueio de obrigatórios ligado, o lado/posição e os obrigatórios
+// preenchidos na Revisão individual precisam chegar ao POST — senão o bloqueio
+// barra o que o operador preencheu. Só ISSO entra: o resto da ficha continua
+// no update pós-criação (cuja falha não derruba o anúncio).
+describe("withAttributesFromOverride — ficha da revisão com a flag de obrigatórios", () => {
+  const tag = (
+    id: string,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id,
+    name: id,
+    valueType: "string",
+    required: false,
+    variationRequired: false,
+    hidden: false,
+    requiredTag: false,
+    catalogRequiredTag: false,
+    conditionalRequiredTag: false,
+    fixedTag: false,
+    ...extra,
+  });
+  const SIDE = tag("SIDE", {
+    valueType: "list",
+    allowedValues: [
+      { id: "ESQ", name: "Esquerdo" },
+      { id: "DIR", name: "Direito" },
+    ],
+  });
+  const CATALOGO = [
+    tag("PART_NUMBER", { required: true, requiredTag: true }),
+    tag("OEM"),
+    tag("MATERIAL"),
+    tag("GTIN", { hidden: true }),
+    tag("PACKAGE_WEIGHT", { valueType: "number_unit" }),
+    tag("VEHICLE_TYPE", { required: true, requiredTag: true, fixedTag: true }),
+    tag("HID_REQ", { required: true, requiredTag: true, hidden: true }),
+    tag("FUEL_TYPE", { required: true, requiredTag: true }),
+    SIDE,
+  ];
+  const chamar = (product: any, override: any, cat: any = CATALOGO) =>
+    ListingUseCase.withAttributesFromOverride(product, override, cat);
+  let antesFlag: string | undefined;
+
+  beforeEach(() => {
+    antesFlag = process.env.ML_REQUIRED_ATTRS_BLOCK;
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+  });
+  afterEach(() => {
+    if (antesFlag === undefined) delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    else process.env.ML_REQUIRED_ATTRS_BLOCK = antesFlag;
+  });
+
+  it("O2: SIDE do override (value_id permitido) entra", () => {
+    const out = chamar({ ...baseProduct }, { SIDE: { value_id: "DIR", value_name: "Direito" } });
+    expect((out.attributes as any).SIDE.value_id).toBe("DIR");
+  });
+
+  it("O3: id que a categoria não expõe é descartado — e exposto mas opcional também", () => {
+    const produto = { ...baseProduct };
+    expect(chamar(produto, { NAO_EXPOSTO: { value_name: "x" } })).toBe(produto);
+    expect(chamar(produto, { MATERIAL: { value_name: "Aço" } })).toBe(produto);
+  });
+
+  it("O4: value_id fora da lista fechada é descartado", () => {
+    const produto = { ...baseProduct };
+    expect(chamar(produto, { SIDE: { value_id: "XX", value_name: "Central" } })).toBe(produto);
+  });
+
+  it("O5: produto que já tem SIDE válido não é sobrescrito", () => {
+    const out = chamar(
+      { ...baseProduct, attributes: { SIDE: { value_id: "ESQ", value_name: "Esquerdo" } } },
+      { SIDE: { value_id: "DIR", value_name: "Direito" } },
+    );
+    expect((out.attributes as any).SIDE.value_id).toBe("ESQ");
+  });
+
+  it("O6: catálogo indisponível → só o OEM, idêntico a withOemFromOverride", () => {
+    const produto = { ...baseProduct, attributes: {} };
+    const override = {
+      OEM: { value_name: "OEM-1" },
+      SIDE: { value_id: "DIR" },
+      FUEL_TYPE: { value_name: "Diesel" },
+    };
+    // Chamada direta: o default do helper `chamar` trocaria undefined pelo catálogo.
+    const out = ListingUseCase.withAttributesFromOverride(
+      produto,
+      override,
+      undefined,
+    );
+    expect(out).toEqual(ListingUseCase.withOemFromOverride(produto, override));
+    expect((out.attributes as any).SIDE).toBeUndefined();
+    const vazio = chamar(produto, override, []);
+    expect((vazio.attributes as any).OEM.value_name).toBe("OEM-1");
+    expect((vazio.attributes as any).FUEL_TYPE).toBeUndefined();
+  });
+
+  it("O7: ML_OEM_ATTR_DISABLED=1 → OEM do override ignorado e SIDE entra", () => {
+    process.env.ML_OEM_ATTR_DISABLED = "1";
+    const out = chamar(
+      { ...baseProduct },
+      { OEM: { value_name: "OEM-1" }, SIDE: { value_id: "ESQ" } },
+    );
+    expect((out.attributes as any).OEM).toBeUndefined();
+    expect((out.attributes as any).SIDE.value_id).toBe("ESQ");
+  });
+
+  it("O8: sem override (ou override inválido) → mesma referência", () => {
+    const produto = { ...baseProduct };
+    expect(chamar(produto, undefined)).toBe(produto);
+    expect(chamar(produto, null)).toBe(produto);
+    expect(chamar(produto, {})).toBe(produto);
+    expect(chamar(produto, [] as any)).toBe(produto);
+    expect(chamar(produto, { SIDE: { value_name: "  " } })).toBe(produto);
+  });
+
+  it("O9: produto com SIDE fora da lista + override permitido → entra o do override e o motor dá ok", async () => {
+    const { evaluateMLRequiredAttributes } = await import(
+      "../app/marketplaces/lib/ml-required-attributes.logic"
+    );
+    const sideObrigatorio = { ...SIDE, required: true, requiredTag: true };
+    const cat = [sideObrigatorio];
+    const produto = {
+      ...baseProduct,
+      name: "Retrovisor",
+      attributes: { SIDE: { value_id: "VELHO", value_name: "Lado velho" } },
+    };
+    const out = chamar(produto, { SIDE: { value_id: "DIR", value_name: "Direito" } }, cat);
+    expect((out.attributes as any).SIDE.value_id).toBe("DIR");
+    const attrs = ListingUseCase.buildMLAttributes(out, CATEGORIA, cat);
+    expect(
+      evaluateMLRequiredAttributes({
+        categoryAttributes: cat as any,
+        payloadAttributes: attrs,
+        catalogListing: false,
+      }).status,
+    ).toBe("ok");
+    // Override também fora da lista: o do produto fica (e o motor bloqueia).
+    const out2 = chamar(produto, { SIDE: { value_name: "Central" } }, cat);
+    expect(out2).toBe(produto);
+  });
+
+  it("D6: ficha de catálogo com GTIN, number_unit, opcional e SIDE → só SIDE, obrigatório e OEM entram", () => {
+    const out = chamar(
+      { ...baseProduct, attributes: {} },
+      {
+        GTIN: { value_name: "7891234567890" },
+        PACKAGE_WEIGHT: { value_name: "2 kg" },
+        MATERIAL: { value_name: "Plástico" },
+        VEHICLE_TYPE: { value_name: "Carro" }, // required + fixed: fica de fora
+        HID_REQ: { value_name: "x" }, // required + hidden: fica de fora
+        FUEL_TYPE: { value_name: "Diesel" }, // required: entra
+        OEM: { value_name: "OEM-9" },
+        SIDE: { value_id: "ESQ", value_name: "Esquerdo" },
+      },
+    );
+    expect(Object.keys(out.attributes as any).sort()).toEqual([
+      "FUEL_TYPE",
+      "OEM",
+      "SIDE",
+    ]);
+  });
+
+  it("acceptedAttributeOverrides devolve exatamente o que entrou (para o placeholder)", () => {
+    const aceitos = ListingUseCase.acceptedAttributeOverrides(
+      { ...baseProduct },
+      {
+        MATERIAL: { value_name: "Aço" },
+        SIDE: { value_id: "DIR" },
+      },
+      CATALOGO,
+    );
+    expect(aceitos).toEqual({ SIDE: { value_id: "DIR" } });
+    expect(
+      ListingUseCase.acceptedAttributeOverrides(
+        { ...baseProduct },
+        { OEM: { value_name: "OEM-2" }, SIDE: { value_id: "DIR" } },
+        undefined,
+      ),
+    ).toEqual({ OEM: { value_name: "OEM-2" } });
+  });
+});
+
+describe("buildMLCreateAttributes — flag desligada segue o caminho só-OEM de hoje", () => {
+  afterEach(() => {
+    delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    vi.restoreAllMocks();
+  });
+
+  it("O1: sem a flag, o create lê só o OEM do override (withAttributesFromOverride não é chamado)", async () => {
+    delete process.env.ML_REQUIRED_ATTRS_BLOCK;
+    const { ListingPreflightService } = await import(
+      "../app/marketplaces/services/listing-preflight.service"
+    );
+    vi.spyOn(ListingPreflightService, "checkML").mockImplementation(
+      async (input: any) => ({
+        ok: true,
+        issues: [],
+        enrichedAttributes: input.currentAttributes,
+        missingRequired: [],
+      }),
+    );
+    const espiao = vi.spyOn(ListingUseCase, "withAttributesFromOverride");
+    const cat = [
+      { ...attr("OEM"), requiredTag: false, fixedTag: false },
+      { ...attr("SIDE"), valueType: "list", allowedValues: [{ id: "DIR", name: "Direito" }] },
+    ];
+    const built = await ListingUseCase.buildMLCreateAttributes({
+      product: { ...baseProduct, attributes: {} },
+      resolvedCategoryId: CATEGORIA,
+      categoryIdForML: CATEGORIA,
+      categoryAttrs: cat,
+      attributeOverrides: {
+        OEM: { value_name: "OEM-77" },
+        SIDE: { value_id: "DIR" },
+      },
+    });
+    expect(espiao).not.toHaveBeenCalled();
+    const ids = built.attributes.map((a: any) => a.id);
+    expect(ids).toContain("OEM");
+    expect(ids).not.toContain("SIDE");
+    expect(built.acceptedOverrides).toBeNull();
+    expect(built.retryOverrides).toBeNull();
+  });
+});
+
+describe("attributeOverridesForRetry — o que o placeholder guarda para o cron (D2)", () => {
+  afterEach(() => {
+    delete process.env.ML_OEM_ATTR_DISABLED;
+  });
+
+  const cat = [
+    { ...attr("OEM"), requiredTag: false, fixedTag: false },
+    {
+      ...attr("SIDE"),
+      valueType: "list",
+      allowedValues: [{ id: "DIR", name: "Direito" }],
+      requiredTag: true,
+      fixedTag: false,
+    },
+  ];
+
+  it("com catálogo: exatamente o que entrou na criação", () => {
+    const aceitos = { SIDE: { value_id: "DIR" } };
+    expect(
+      ListingUseCase.attributeOverridesForRetry(
+        { SIDE: { value_id: "DIR" }, MATERIAL: { value_name: "Aço" } },
+        cat,
+        aceitos,
+      ),
+    ).toBe(aceitos);
+  });
+
+  it("sem catálogo: todas as entradas PREENCHIDAS da ficha (a retentativa refiltra)", () => {
+    expect(
+      ListingUseCase.attributeOverridesForRetry(
+        {
+          SIDE: { value_id: "DIR" },
+          OEM: { value_name: "OEM-1" },
+          PART_NUMBER: { value_name: "PN-9" },
+          BRANCO: { value_name: "   " },
+          LIXO: "texto solto",
+          LISTA: [1, 2],
+        },
+        undefined,
+        { OEM: { value_name: "OEM-1" } },
+      ),
+    ).toEqual({
+      SIDE: { value_id: "DIR" },
+      OEM: { value_name: "OEM-1" },
+      PART_NUMBER: { value_name: "PN-9" },
+    });
+  });
+
+  it("sem catálogo com ML_OEM_ATTR_DISABLED=1: OEM fica de fora; nada preenchido → null", () => {
+    process.env.ML_OEM_ATTR_DISABLED = "1";
+    expect(
+      ListingUseCase.attributeOverridesForRetry(
+        { OEM: { value_name: "OEM-1" }, SIDE: { value_id: "DIR" } },
+        [],
+        null,
+      ),
+    ).toEqual({ SIDE: { value_id: "DIR" } });
+    expect(
+      ListingUseCase.attributeOverridesForRetry({ OEM: { value_name: "x" } }, [], null),
+    ).toBeNull();
+    expect(ListingUseCase.attributeOverridesForRetry(null, [], null)).toBeNull();
   });
 });

@@ -18,6 +18,9 @@ export interface BulkJobResultItem {
   listingId?: string;
   externalListingId?: string;
   error?: string;
+  // "ML_REQUIRED_ATTRIBUTES_MISSING" = atributo obrigatório do ML em branco
+  // (definitivo): o relatório mostra a mensagem inteira e não reprocessa.
+  code?: string;
   finishedAt?: string;
 }
 

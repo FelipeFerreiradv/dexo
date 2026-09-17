@@ -2,6 +2,7 @@ import {
   MLAttributeCatalogService,
   NormalizedMLAttribute,
 } from "./ml-attribute-catalog.service";
+import { ML_SOFT_REQUIRED_ATTRIBUTE_IDS as SOFT_REQUIRED } from "../lib/ml-required-attributes.logic";
 
 export type PreflightSeverity = "block" | "warn";
 
@@ -323,17 +324,11 @@ const ATTR_TO_FIELD: Record<string, (p: MLPreflightInput["product"]) => string |
  * Atributos cuja ausência no produto NÃO bloqueia — são universais
  * (marca genérica, tamanho, cor) e podem ser aceitos como "Não especificado"
  * pelo próprio ML sem rejeição.
+ *
+ * A lista mora em ../lib/ml-required-attributes.logic (importada no topo como
+ * SOFT_REQUIRED, mesmo conteúdo e ordem) para a regra nova de obrigatórios e
+ * este preflight lerem a MESMA fonte.
  */
-const SOFT_REQUIRED = new Set([
-  "UNIT_OF_LENGTH",
-  "COLOR",
-  "MAIN_COLOR",
-  "SIZE",
-  "LENGTH",
-  "WIDTH",
-  "HEIGHT",
-  "WEIGHT",
-]);
 
 /**
  * Para atributos enum (value_type=list) cujos obrigatórios não podem ser

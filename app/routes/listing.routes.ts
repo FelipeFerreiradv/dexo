@@ -24,6 +24,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { ML_REQUIRED_ATTRS_ERROR_CODE } from "../marketplaces/lib/ml-required-attributes.logic";
 
 /**
  * Enriquece a config de aumento percentual escalonado entre contas antes de
@@ -1552,9 +1553,15 @@ export async function listingRoutes(app: FastifyInstance) {
               platform: BulkListingPlatform;
               accountId: string;
               success: boolean;
+              code?: string;
             }>)
           : [];
-        const failed = results.filter((r) => !r.success);
+        // Falta de atributo obrigatório do ML é definitiva: reprocessar só
+        // repetiria o bloqueio. Essas linhas ficam fora do retry (o wizard
+        // também não as conta no botão). Jobs sem `code` = como sempre.
+        const failed = results.filter(
+          (r) => !r.success && r.code !== ML_REQUIRED_ATTRS_ERROR_CODE,
+        );
         if (failed.length === 0) {
           return reply.status(400).send({
             error: "Nada para reprocessar",

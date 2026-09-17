@@ -737,12 +737,17 @@ export class ListingDispatcher {
       }
 
       if (!createResult.success || !createResult.listingId) {
+        // `code` só existe na falha definitiva por atributo obrigatório do ML
+        // (ML_REQUIRED_ATTRS_BLOCK=1): o relatório mostra a mensagem inteira e
+        // não oferece "tentar de novo". Sem código, a linha fica como sempre.
+        const code = (createResult as { code?: string }).code;
         return {
           productId,
           platform: req.platform,
           accountId: req.accountId,
           success: false,
           error: createResult.error ?? "Falha desconhecida na criação",
+          ...(code ? { code } : {}),
           finishedAt: finishedAt(),
         };
       }

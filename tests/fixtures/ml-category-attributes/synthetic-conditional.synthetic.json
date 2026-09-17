@@ -1,0 +1,144 @@
+{
+  "capturedAt": "sintetico",
+  "categoryId": "MLB-SYNTHETIC-COND",
+  "source": "SINTETICO: montado a mao para cobrir conditional_required e VEHICLE_SIDE; NAO e resposta real da API",
+  "attributes": [
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_type": "string",
+      "tags": {
+        "required": true,
+        "catalog_required": true
+      }
+    },
+    {
+      "id": "PART_NUMBER",
+      "name": "Número de peça",
+      "value_type": "string",
+      "tags": {
+        "required": true,
+        "catalog_required": true
+      }
+    },
+    {
+      "id": "GTIN",
+      "name": "Código universal de produto",
+      "value_type": "string",
+      "tags": {
+        "conditional_required": true
+      }
+    },
+    {
+      "id": "VEHICLE_SIDE",
+      "name": "Lado do veículo",
+      "value_type": "list",
+      "tags": {
+        "required": true
+      },
+      "values": [
+        {
+          "id": "ESQ",
+          "name": "Esquerdo"
+        },
+        {
+          "id": "DIR",
+          "name": "Direito"
+        }
+      ]
+    },
+    {
+      "id": "MOUNTING_POSITION",
+      "name": "Posição de montagem",
+      "value_type": "list",
+      "tags": {},
+      "values": [
+        {
+          "id": "DIANT",
+          "name": "Dianteira"
+        },
+        {
+          "id": "TRAS",
+          "name": "Traseira"
+        }
+      ]
+    },
+    {
+      "id": "COLOR",
+      "name": "Cor",
+      "value_type": "string",
+      "tags": {
+        "required": true
+      }
+    },
+    {
+      "id": "HIDDEN_REQ",
+      "name": "Obrigatório oculto",
+      "value_type": "string",
+      "tags": {
+        "required": true,
+        "hidden": true
+      }
+    },
+    {
+      "id": "SELLER_PACKAGE_HEIGHT",
+      "name": "Altura do pacote",
+      "value_type": "number_unit",
+      "tags": {
+        "required": true
+      }
+    },
+    {
+      "id": "SELLER_PACKAGE_WEIGHT",
+      "name": "Peso do pacote",
+      "value_type": "number_unit",
+      "tags": {
+        "required": true
+      }
+    },
+    {
+      "id": "ITEM_CONDITION",
+      "name": "Condição do item",
+      "value_type": "list",
+      "tags": {
+        "required": true
+      },
+      "values": [
+        {
+          "id": "2230284",
+          "name": "Novo"
+        },
+        {
+          "id": "2230581",
+          "name": "Usado"
+        }
+      ]
+    },
+    {
+      "id": "SELLER_SKU",
+      "name": "SKU",
+      "value_type": "string",
+      "tags": {
+        "required": true
+      }
+    },
+    {
+      "id": "IS_KIT",
+      "name": "É kit",
+      "value_type": "boolean",
+      "tags": {
+        "required": true
+      },
+      "values": [
+        {
+          "id": "242085",
+          "name": "Sim"
+        },
+        {
+          "id": "242084",
+          "name": "Não"
+        }
+      ]
+    }
+  ]
+}

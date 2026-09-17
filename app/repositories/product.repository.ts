@@ -1814,6 +1814,66 @@ class ProductRepositoryPrisma implements ProductRepository {
     });
   }
 
+  /**
+   * O mínimo que a checagem de atributos obrigatórios do ML lê de cada produto
+   * (POST /marketplace/ml/required-attributes/check): os campos que alimentam
+   * a ficha (buildMLAttributes + preflight) e a categoria persistida. Uma query
+   * para o lote inteiro, sem compatibilidades nem imagens (egress-lean).
+   *
+   * `where.userId` garante o dono: produto de outro tenant simplesmente não
+   * volta. Nulos viram `undefined`, como no mapPrismaToProduct — o create lê o
+   * produto por aquele mapeamento, e `null` × `undefined` muda o payload.
+   */
+  async findMlRequiredAttrsInput(
+    ids: string[],
+    userId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      sku: string;
+      brand?: string;
+      model?: string;
+      year?: string;
+      partNumber?: string;
+      quality?: string;
+      attributes?: unknown;
+      mlCategoryId?: string;
+      mlCatalogProductId?: string;
+    }>
+  > {
+    if (ids.length === 0) return [];
+    const rows = await prisma.product.findMany({
+      where: { id: { in: ids }, userId },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        brand: true,
+        model: true,
+        year: true,
+        partNumber: true,
+        quality: true,
+        attributes: true,
+        mlCategoryId: true,
+        mlCatalogProductId: true,
+      },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      sku: r.sku,
+      brand: r.brand ?? undefined,
+      model: r.model ?? undefined,
+      year: r.year ?? undefined,
+      partNumber: r.partNumber ?? undefined,
+      quality: (r.quality as string | null) ?? undefined,
+      attributes: (r.attributes as unknown) ?? undefined,
+      mlCategoryId: r.mlCategoryId ?? undefined,
+      mlCatalogProductId: r.mlCatalogProductId ?? undefined,
+    }));
+  }
+
   async findByIdDetailed(id: string, userId: string) {
     // Run product + stock-log queries in parallel (independent reads)
     const [item, recentStockChanges] = await Promise.all([

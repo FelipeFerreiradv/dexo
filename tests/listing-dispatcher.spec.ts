@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { ListingDispatcher } from "@/app/marketplaces/services/listing-dispatcher.service";
 import { ListingUseCase } from "@/app/marketplaces/usecases/listing.usercase";
 import { ProductRepositoryPrisma } from "@/app/repositories/product.repository";
+import prisma from "@/app/lib/prisma";
 
 describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
@@ -561,6 +562,83 @@ describe("ListingDispatcher — preço por anúncio (perProductOverrides)", () =
       cacheFor(100),
     );
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  // ─── Atributos obrigatórios do ML ────────────────────────────────────────
+  // O wizard tira os bloqueados do ML só com `disabledMlAccountIds` — um
+  // template que não tem mais nada. Ele não pode gerar create nem update.
+  it("D1: template só com disabledMlAccountIds → par pulado, sem update, e o outro produto é criado", async () => {
+    const createSpy = vi
+      .spyOn(ListingUseCase, "createMLListing")
+      .mockResolvedValue({ success: true, listingId: "L-ml", externalListingId: "MLB1" } as any);
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      { id: "prod-1", name: "A", price: 100, costPrice: null },
+      { id: "prod-2", name: "B", price: 100, costPrice: null },
+    ] as any);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const itens: any[] = [];
+
+    const resumo = await ListingDispatcher.dispatchBatch({
+      userId: "user-1",
+      productIds: ["prod-1", "prod-2"],
+      requests: [{ platform: "MERCADO_LIVRE", accountId: "acc1" }],
+      overrideTemplate: {
+        perProductOverrides: { "prod-1": { disabledMlAccountIds: ["acc1"] } },
+      } as any,
+      onItemDone: (i) => {
+        itens.push(i);
+      },
+    });
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(createSpy.mock.calls[0][1]).toBe("prod-2");
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(resumo).toMatchObject({ success: 1, failed: 0 });
+    expect(itens.map((i) => i.productId)).toEqual(["prod-2"]);
+  });
+
+  it("D2: falha terminal por obrigatório → linha com a mensagem inteira e o `code`", async () => {
+    const M1 =
+      "Esta categoria do Mercado Livre exige o preenchimento do Part Number. Preencha esse campo antes de continuar.";
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: false,
+      terminal: true,
+      code: "ML_REQUIRED_ATTRIBUTES_MISSING",
+      error: M1,
+      listingId: "L-1",
+    } as any);
+    const linha = await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "MERCADO_LIVRE" as const, accountId: "acc1" } as any,
+      null,
+    );
+    expect(linha).toMatchObject({
+      productId: "prod-1",
+      platform: "MERCADO_LIVRE",
+      accountId: "acc1",
+      success: false,
+      error: M1,
+      code: "ML_REQUIRED_ATTRIBUTES_MISSING",
+    });
+  });
+
+  it("D2b: falha comum → a linha continua SEM a chave `code`", async () => {
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: false,
+      error: "Erro qualquer",
+    } as any);
+    const linha = await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "MERCADO_LIVRE" as const, accountId: "acc1" } as any,
+      null,
+    );
+    expect(Object.keys(linha)).not.toContain("code");
+    expect(linha.error).toBe("Erro qualquer");
   });
 });
 
