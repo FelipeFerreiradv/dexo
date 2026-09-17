@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
+import { AccountProblemsBlock } from "@/app/integracoes/components/account-problems-block";
 import {
   CheckCircle2,
   XCircle,
@@ -354,6 +355,8 @@ export function FacebookConnectionTab() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Conta parada ou desconectada some da lista acima (só lista ativa). */}
+        <AccountProblemsBlock platform="FACEBOOK" />
         {error && (
           <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
             {error}

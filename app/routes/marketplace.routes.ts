@@ -11,6 +11,7 @@ import { Platform } from "@prisma/client";
 import { isOlxDisabled, isFacebookDisabled } from "../lib/integration-flags";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
+import { AccountHealthService } from "../marketplaces/services/account-health.service";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import {
   BoundedWebhookQueue,
@@ -646,6 +647,39 @@ small{color:#666}</style></head><body>
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao obter status",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/accounts/health
+   * Contas de marketplace do tenant que precisam de atenção: parada (ERROR com
+   * credencial — não importa pedido nem baixa estoque) ou desconectada com
+   * anúncio ainda à venda. Alimenta o aviso no topo da aplicação e o bloco
+   * "Contas com problema" das abas de integração.
+   *
+   * Só leitura local: nunca renova token nem chama o marketplace (o oposto do
+   * /<plataforma>/status). Colaborador também vê — é ele quem opera a loja no
+   * dia a dia; a tela só troca o botão por "peça ao administrador".
+   */
+  app.get(
+    "/accounts/health",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const contas = await AccountHealthService.getForOwner(
+          request.user!.dataOwnerId,
+        );
+        return reply.send({ contas });
+      } catch (error) {
+        console.error(
+          "[/accounts/health] erro:",
+          error instanceof Error ? error.message : String(error),
+        );
+        return reply.status(500).send({
+          error: "Erro ao verificar contas",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

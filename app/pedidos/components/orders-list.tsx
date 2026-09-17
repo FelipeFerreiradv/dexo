@@ -62,6 +62,10 @@ import {
   type ReturnPendency,
 } from "./return-pendencies-banner";
 import {
+  OversellAlertsBanner,
+  type OversellAlert,
+} from "./oversell-alerts-banner";
+import {
   DEFAULT_ORDER_FILTERS,
   countActiveOrderFilters,
   hasActiveOrderFilters,
@@ -130,6 +134,7 @@ export function OrdersList() {
   // Pendências de importação: vendas que não viraram pedido. Enquanto a lista
   // estiver vazia (o caso normal) nada é renderizado e a tela fica idêntica.
   const [ingestionIssues, setIngestionIssues] = useState<IngestionIssue[]>([]);
+  const [oversellAlerts, setOversellAlerts] = useState<OversellAlert[]>([]);
   const [retryingIssueId, setRetryingIssueId] = useState<string | null>(null);
   const [returnPendencies, setReturnPendencies] = useState<ReturnPendency[]>([]);
   const [resolvingPendencyId, setResolvingPendencyId] = useState<string | null>(
@@ -417,6 +422,21 @@ export function OrdersList() {
     [session?.user?.email, fetchReturnPendencies, fetchOrders, fetchStats],
   );
 
+  const fetchOversellAlerts = useCallback(async () => {
+    if (!session?.user?.email) return;
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/orders/oversell-alerts`, {
+        headers: { email: session.user.email },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setOversellAlerts(Array.isArray(data.alertas) ? data.alertas : []);
+    } catch (error) {
+      // Silencioso de propósito, como os irmãos: o aviso é informação ADICIONAL.
+      console.error("Erro ao buscar vendas sobre peça sem estoque:", error);
+    }
+  }, [session?.user?.email]);
+
   const fetchIngestionIssues = useCallback(async () => {
     if (!isIngestionIssuesEnabled || !session?.user?.email) return;
     try {
@@ -515,6 +535,29 @@ export function OrdersList() {
     }
   };
 
+  // O aviso de venda sem estoque só tem o id: busca o pedido completo e abre o
+  // mesmo painel de detalhe da lista.
+  const handleViewOrderById = async (orderId: string) => {
+    const email = session?.user?.email;
+    if (!email) return;
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/orders/${orderId}`, {
+        headers: { email },
+      });
+      if (!res.ok) {
+        showToast("Não foi possível abrir o pedido agora", "error");
+        return;
+      }
+      const data = await res.json();
+      if (data?.order) {
+        setSelectedOrder(data.order);
+        setIsDetailSheetOpen(true);
+      }
+    } catch {
+      showToast("Não foi possível abrir o pedido agora", "error");
+    }
+  };
+
   const handleViewOrder = async (order: Order) => {
     // Abre o sheet imediatamente (o cabeçalho já vem na lista). A lista NÃO traz
     // os itens (egress enxuto), então recarrega o pedido COMPLETO via
@@ -559,6 +602,12 @@ export function OrdersList() {
       fetchReturnPendencies();
     }
   }, [fetchReturnPendencies, session, status]);
+
+  useEffect(() => {
+    if (status === "authenticated" && session?.user?.email) {
+      fetchOversellAlerts();
+    }
+  }, [fetchOversellAlerts, session, status]);
 
   if (status === "loading") {
     return <OrderSkeleton />;
@@ -701,6 +750,14 @@ export function OrdersList() {
           resolvingId={resolvingPendencyId}
         />
       ) : null}
+
+      {/* Vendas dos últimos 7 dias que caíram sobre peça sem estoque. Sem
+          alerta o componente devolve null e a tela fica como era. */}
+      <OversellAlertsBanner
+        alertas={oversellAlerts}
+        onViewOrder={handleViewOrderById}
+        email={session?.user?.email}
+      />
 
       {/* Toolbar: contagem + importar + alternância de visão */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

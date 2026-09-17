@@ -12,6 +12,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { ShippingLabelUseCase } from "../marketplaces/usecases/shipping-label.usecase";
 import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
+import { OversellAlertsService } from "../marketplaces/services/oversell-alerts.service";
 import {
   ShippingLabelError,
   type LabelSize,
@@ -400,6 +401,34 @@ export async function orderRoutes(app: FastifyInstance) {
         console.error("[Orders] List error:", error);
         return reply.status(500).send({
           error: "Erro ao listar pedidos",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /orders/oversell-alerts
+   * Vendas dos últimos 7 dias que caíram sobre peça sem estoque (o pedido
+   * pedia mais do que havia). Pedido cancelado não entra. Só leitura; mesmo
+   * escopo de tenant das pendências irmãs (colaborador também vê).
+   */
+  app.get(
+    "/oversell-alerts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const alertas = await OversellAlertsService.listForOwner(
+          request.user!.dataOwnerId,
+        );
+        return reply.status(200).send({ success: true, alertas });
+      } catch (error) {
+        console.error(
+          "[Orders] Oversell alerts error:",
+          error instanceof Error ? error.message : String(error),
+        );
+        return reply.status(500).send({
+          error: "Erro ao buscar vendas sobre peça sem estoque",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
