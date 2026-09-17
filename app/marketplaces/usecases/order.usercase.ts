@@ -4078,6 +4078,35 @@ export class OrderUseCase {
     }
   }
 
+  /**
+   * Dono do tenant (parentUserId ?? id) da conta de marketplace de um pedido,
+   * para gravar o alerta de venda sobre peça sem estoque COM empresa.
+   *
+   * Sem isto `OVERSELL_DETECTED` nascia com userId nulo e nenhum lojista o via
+   * (51 de 51 em setembro/2026): a tela de Logs e o aviso de Pedidos filtram
+   * pela empresa. Uma leitura por PEDIDO com oversell (raro: ~50/mês), nunca
+   * por item, e só depois do commit da baixa.
+   *
+   * NUNCA lança: o alerta sai mesmo sem dono (como antes), e um id inventado
+   * violaria a FK SystemLog→User e o log sumiria em silêncio.
+   */
+  private static async resolverDonoDaConta(
+    marketplaceAccountId: string | null | undefined,
+  ): Promise<string | undefined> {
+    if (!marketplaceAccountId) return undefined;
+    try {
+      const conta = await prisma.marketplaceAccount.findUnique({
+        where: { id: marketplaceAccountId },
+        select: { user: { select: { id: true, parentUserId: true } } },
+      });
+      const user = (conta as any)?.user;
+      if (!user?.id) return undefined;
+      return user.parentUserId ?? user.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   private static async deductStockForOrder(
     order: Order,
     reason: string,
@@ -4262,13 +4291,18 @@ export class OrderUseCase {
       });
     }
 
-    // Log de oversell preservado byte-idêntico (mesma message + details).
+    // Log de oversell preservado byte-idêntico (mesma message + details). O
+    // único acréscimo é o dono do tenant, para o lojista ver o alerta.
     if (oversellAlerts.length > 0) {
+      const donoDoPedido = await OrderUseCase.resolverDonoDaConta(
+        (order as { marketplaceAccountId?: string | null }).marketplaceAccountId,
+      );
       try {
         await SystemLogService.logWarning(
           "OVERSELL_DETECTED",
           `Oversell detectado no pedido ${order.id}: ${oversellAlerts.length} item(ns) com quantidade maior que estoque disponível`,
           {
+            ...(donoDoPedido ? { userId: donoDoPedido } : {}),
             resource: "Order",
             resourceId: order.id,
             details: {
@@ -5153,11 +5187,14 @@ export class OrderUseCase {
       // Peça vendida em outro canal enquanto o pedido esteve cancelado —
       // mesmo alerta de oversell da importação.
       if (oversellAlerts.length > 0) {
+        const donoDoPedido =
+          await OrderUseCase.resolverDonoDaConta(marketplaceAccountId);
         try {
           await SystemLogService.logWarning(
             "OVERSELL_DETECTED",
             `Oversell detectado ao reativar o pedido ${order.id}: ${oversellAlerts.length} item(ns) com quantidade maior que estoque disponível`,
             {
+              ...(donoDoPedido ? { userId: donoDoPedido } : {}),
               resource: "Order",
               resourceId: order.id,
               details: {
