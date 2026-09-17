@@ -16,6 +16,7 @@ import fastifyStatic from "@fastify/static";
 import fastifyCompress from "@fastify/compress";
 import { join } from "path";
 import { cacheControlFor } from "../lib/static-cache";
+import { isBackgroundWorkersEnabled } from "../lib/background-workers";
 import prisma from "../lib/prisma";
 import { SystemLogService } from "../services/system-log.service";
 import { userRoutes } from "../routes/user.routes";
@@ -411,14 +412,13 @@ try {
     })
     .then(() => {
       // ATENÇÃO: os workers abaixo MUTAM MARKETPLACE (criam/atualizam anúncio,
-      // empurram estoque). Com um .env de produção, subir a API na máquina de
-      // alguém faz a máquina dela começar a escrever no ML/Shopee/Magalu em
-      // 30-60s, concorrendo com a VPS. `BACKGROUND_WORKERS_DISABLED=1` desliga
-      // o bloco inteiro — é o que torna `npm run api` seguro para testar
-      // localmente. Ausente/vazio = comportamento de sempre.
-      if (process.env.BACKGROUND_WORKERS_DISABLED === "1") {
+      // empurram estoque). Eles são opt-in: só a VPS de produção deve ter
+      // `BACKGROUND_WORKERS_ENABLED=1`. O kill-switch explícito continua
+      // vencendo quando as duas flags estão presentes, tornando a API local
+      // segura mesmo se ela herdou o .env de produção.
+      if (!isBackgroundWorkersEnabled()) {
         api.log.warn(
-          "[api] BACKGROUND_WORKERS_DISABLED=1 — nenhum worker de fundo iniciado (sem escrita em marketplace).",
+          "[api] workers de fundo desabilitados — exige BACKGROUND_WORKERS_ENABLED=1 e BACKGROUND_WORKERS_DISABLED!=1; nenhum worker iniciado.",
         );
         // `/ready` continua 200: a inicialização terminou como configurado.
         // Sem isso o healthcheck reportaria "degraded" por uma escolha

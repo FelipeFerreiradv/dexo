@@ -53,6 +53,23 @@ describe("StockSyncRetryService.runOnce", () => {
     vi.restoreAllMocks();
   });
 
+  it("sem opt-in retorna antes de reservar qualquer job", async () => {
+    const enabled = process.env.BACKGROUND_WORKERS_ENABLED;
+    const disabled = process.env.BACKGROUND_WORKERS_DISABLED;
+    delete process.env.BACKGROUND_WORKERS_ENABLED;
+    delete process.env.BACKGROUND_WORKERS_DISABLED;
+    try {
+      await StockSyncRetryService.runOnce();
+      expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
+      expect(SyncUseCase.syncProductStock).not.toHaveBeenCalled();
+    } finally {
+      if (enabled === undefined) delete process.env.BACKGROUND_WORKERS_ENABLED;
+      else process.env.BACKGROUND_WORKERS_ENABLED = enabled;
+      if (disabled === undefined) delete process.env.BACKGROUND_WORKERS_DISABLED;
+      else process.env.BACKGROUND_WORKERS_DISABLED = disabled;
+    }
+  });
+
   it("deleta o job quando syncProductStock retorna success", async () => {
     (prisma as any).$queryRaw.mockResolvedValue([makeJob()]);
     (prisma as any).productListing.findMany.mockResolvedValue([

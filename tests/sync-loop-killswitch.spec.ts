@@ -78,6 +78,8 @@ async function carregar() {
 
 const guardadas: Record<string, string | undefined> = {};
 const NOMES = [
+  "BACKGROUND_WORKERS_ENABLED",
+  "BACKGROUND_WORKERS_DISABLED",
   "SYNC_LOOP_SPLIT_DISABLED",
   "SYNC_FULL_INTERVAL_MINUTES",
   "SYNC_ORDERS_CONCURRENCY",
@@ -122,6 +124,29 @@ describe("SYNC_LOOP_SPLIT_DISABLED escolhe o modo do loop", () => {
     process.env.SYNC_LOOP_SPLIT_DISABLED = "true";
     const { __testing } = await carregar();
     expect(__testing.modoDoLoop()).toBe("separado");
+  });
+});
+
+describe("gate mestre do processo de sync", () => {
+  it("sem opt-in encerra antes de consultar contas", async () => {
+    const { __testing } = await carregar();
+    const prisma = (await import("../app/lib/prisma")).default as any;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await __testing.main();
+
+    expect(prisma.marketplaceAccount.findMany).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("workers de fundo desabilitados"),
+    );
+  });
+
+  it("kill-switch explícito vence o opt-in", async () => {
+    process.env.BACKGROUND_WORKERS_ENABLED = "1";
+    process.env.BACKGROUND_WORKERS_DISABLED = "1";
+    const { __testing } = await carregar();
+
+    expect(__testing.isBackgroundWorkersEnabled()).toBe(false);
   });
 });
 

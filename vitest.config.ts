@@ -5,6 +5,13 @@ import path from "path";
 // Sem isso, qualquer suite que importa um repository explode antes de rodar.
 process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/test";
 
+// Os specs de serviços exercitam o comportamento de produção por default
+// (inclusive os efeitos pós-commit que disparam o retry). A suíte pode provar
+// o novo opt-in removendo esta variável no próprio caso; produção nunca lê o
+// vitest.config.ts e, portanto, continua exigindo BACKGROUND_WORKERS_ENABLED=1.
+process.env.BACKGROUND_WORKERS_ENABLED ??= "1";
+process.env.BACKGROUND_WORKERS_DISABLED ??= "0";
+
 // Auto-cadastro de cliente no import de pedidos: desligado por default na
 // suíte para os specs existentes de import (Shopee/Magalu/ML) continuarem
 // byte-idênticos — sem o kill-switch, o hook novo tentaria API real + prisma
