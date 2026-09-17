@@ -2,7 +2,7 @@
 #
 # POR QUE ESTE SCRIPT EXISTE:
 # o `.env` deste projeto aponta para o banco de PRODUÇÃO (Supabase São Paulo) e
-# `npm run api` sobe 7 workers de fundo que ESCREVEM no banco e chamam as APIs
+# `npm run api` sobe workers de fundo que ESCREVEM no banco e chamam as APIs
 # reais dos marketplaces (republicam anúncio, empurram estoque, varrem status).
 # Rodar `npm run api` cru na sua máquina mexeria em produção.
 #
@@ -55,7 +55,10 @@ if ($CallbackLocal) {
 
 # ─── TRAVA MESTRA ─────────────────────────────────────────────────────────────
 # Nenhum worker de fundo sobe. É o que impede a máquina local de empurrar
-# estoque e republicar anúncio em produção. NÃO REMOVA para testar a UI.
+# estoque e republicar anúncio em produção. O opt-in mestre fica explicitamente
+# ausente e o kill-switch vence mesmo se o .env trouxer o valor de produção.
+# NÃO REMOVA para testar a UI.
+$env:BACKGROUND_WORKERS_ENABLED = "0"
 $env:BACKGROUND_WORKERS_DISABLED = "1"
 
 # Reforço: mesmo que algum caminho tente subir, estes ficam explicitamente off.
@@ -80,7 +83,7 @@ if ($Publicar) {
   Write-Host ""
 }
 
-Write-Host "  workers de fundo: DESLIGADOS (BACKGROUND_WORKERS_DISABLED=1)" -ForegroundColor DarkGray
+Write-Host "  workers de fundo: DESLIGADOS (BACKGROUND_WORKERS_ENABLED=0 / BACKGROUND_WORKERS_DISABLED=1)" -ForegroundColor DarkGray
 Write-Host "  API em http://localhost:3333" -ForegroundColor Cyan
 
 if ($CallbackLocal) {

@@ -16,6 +16,7 @@
 import "dotenv/config";
 import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
+import { isBackgroundWorkersEnabled } from "../app/lib/background-workers";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
 import { SyncUseCase } from "../app/marketplaces/usecases/sync.usercase";
 import { MessagesUseCase } from "../app/marketplaces/usecases/messages.usecase";
@@ -504,6 +505,18 @@ function modoDoLoop(): "legado" | "separado" {
 }
 
 async function main() {
+  // This process is a long-lived worker, so the master gate belongs at the
+  // entrypoint as well as in the individual services.  Returning normally is
+  // intentional: the PM2 definition treats exit code 0 as a stopped process,
+  // avoiding a restart storm when a developer runs the production .env
+  // locally without the explicit opt-in.
+  if (!isBackgroundWorkersEnabled()) {
+    console.log(
+      "[sync-loop] workers de fundo desabilitados — exige BACKGROUND_WORKERS_ENABLED=1 e BACKGROUND_WORKERS_DISABLED!=1; processo encerrado sem sincronizar.",
+    );
+    return;
+  }
+
   if (modoDoLoop() === "legado") {
     console.log(
       `[sync-loop] Iniciando loop completo (pedidos + métricas). Intervalo ${intervalMinutes} min, janela ${syncDays} dias`,
@@ -546,4 +559,6 @@ export const __testing = {
   runOnce,
   modoDoLoop,
   envInt,
+  isBackgroundWorkersEnabled,
+  main,
 };

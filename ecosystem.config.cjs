@@ -47,6 +47,10 @@ module.exports = {
       cwd: "/var/www/dexo",
       script: "/usr/bin/bash",
       args: ["-c", "npx tsx scripts/sync-orders-and-metrics-loop.ts"],
+      // O worker é opt-in. Quando a flag não está presente (por exemplo, numa
+      // máquina de desenvolvimento com o .env de produção), o entrypoint sai
+      // com código 0; não o ressuscite em um loop de restart do PM2.
+      stop_exit_codes: [0],
     },
     {
       // Batch de estatísticas de catálogo. O caminho do npm/node do nvm é o

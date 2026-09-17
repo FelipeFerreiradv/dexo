@@ -1,4 +1,5 @@
 import prisma from "../../lib/prisma";
+import { isBackgroundWorkersEnabled } from "../../lib/background-workers";
 import { resolveReopenPrefForOwners } from "../../services/reopen-listings-preference";
 import {
   availableForSale,
@@ -314,8 +315,15 @@ export function firePostReservationEffects(
   const r = resultado;
   if (!r || r.enqueued === 0) return;
 
+  // The transaction intentionally keeps the durable StockSyncJob even when a
+  // local process is not allowed to perform marketplace work.  Only the
+  // post-commit remote effects are suppressed; the production worker will pick
+  // the job up after the opt-in flag is enabled.
+  if (!isBackgroundWorkersEnabled()) return;
+
   const timer = setTimeout(() => {
     void (async () => {
+      if (!isBackgroundWorkersEnabled()) return;
       try {
         const { StockSyncRetryService } =
           await import("./stock-sync-retry.service");
@@ -327,6 +335,7 @@ export function firePostReservationEffects(
         );
       }
 
+      if (!isBackgroundWorkersEnabled()) return;
       if (r.reopened.length === 0) return;
 
       // ── A PREFERÊNCIA DO TENANT, que este motor não conhecia ──

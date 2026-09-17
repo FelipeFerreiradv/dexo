@@ -60,6 +60,27 @@ beforeEach(() => {
 });
 
 describe("StockDeductionService.firePostEffects", () => {
+  it("sem opt-in não processa fila nem pausa anúncio remoto", async () => {
+    const enabled = process.env.BACKGROUND_WORKERS_ENABLED;
+    const disabled = process.env.BACKGROUND_WORKERS_DISABLED;
+    delete process.env.BACKGROUND_WORKERS_ENABLED;
+    process.env.BACKGROUND_WORKERS_DISABLED = "1";
+    try {
+      StockDeductionService.firePostEffects({
+        deductions: [deduction({ previousStock: 1, newStock: 0 })],
+        pauseOnZero: { userId: "u-1" },
+      });
+      await flushSetImmediates();
+      expect(StockSyncRetryService.runOnce).not.toHaveBeenCalled();
+      expect(pauseListingsMock).not.toHaveBeenCalled();
+    } finally {
+      if (enabled === undefined) delete process.env.BACKGROUND_WORKERS_ENABLED;
+      else process.env.BACKGROUND_WORKERS_ENABLED = enabled;
+      if (disabled === undefined) delete process.env.BACKGROUND_WORKERS_DISABLED;
+      else process.env.BACKGROUND_WORKERS_DISABLED = disabled;
+    }
+  });
+
   it("deductions vazias: não dispara runOnce nem pausa", async () => {
     StockDeductionService.firePostEffects({
       deductions: [],
