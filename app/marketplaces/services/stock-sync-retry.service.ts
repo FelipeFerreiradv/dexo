@@ -66,6 +66,27 @@ const AUTH_PATTERNS = [
 ];
 
 /**
+ * A RENOVAÇÃO do token falhou sem 401/403 no texto — na fila isso só chega
+ * pela Shopee ("Erro ao renovar token: …", lançado de dentro de
+ * refreshIfNeeded; o ML engole o erro de renovação e a baixa da Magalu não
+ * renova). Não casava AUTH_PATTERNS e o job queimava as 6 tentativas: na pane
+ * da partner key da Shopee (16/09/2026) 8 baixas foram APAGADAS assim e 3
+ * anúncios seguiram no ar sem saldo.
+ *
+ * Só a falha PASSAGEIRA espera. Loja desvinculada ou refresh_token vencido (os
+ * mesmos códigos de ShopeeOAuthService.TERMINAL_AUTH_ERRORS, que já marcam a
+ * conta ERROR) seguem o caminho de antes: esperar para sempre faria cada
+ * adiamento ressincronizar o PRODUTO inteiro — todos os anúncios, em todos os
+ * canais — a cada 30 min, numa loja que não volta sem nova autorização.
+ */
+const REFRESH_FAILURE = /erro ao renovar token/i;
+const REFRESH_TERMINAL = [/has no linked/i, /refresh_token expired/i];
+
+const isTransientRefreshFailure = (message: string) =>
+  REFRESH_FAILURE.test(message) &&
+  !REFRESH_TERMINAL.some((re) => re.test(message));
+
+/**
  * O CUSTO ACEITO, para quem for mexer nisto depois.
  *
  * Adiar em vez de apagar significa que o job de uma conta que nunca mais
@@ -83,7 +104,8 @@ const AUTH_PATTERNS = [
  */
 
 const isAuthError = (message: string) =>
-  AUTH_PATTERNS.some((re) => re.test(message));
+  AUTH_PATTERNS.some((re) => re.test(message)) ||
+  isTransientRefreshFailure(message);
 
 // Espelha classifyOlxRemoveError (listing-removal.helpers.ts): sem isto uma
 // recusa definitiva da OLX (preço suspeito, sem slot, imagem pequena) era

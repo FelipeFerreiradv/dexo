@@ -350,8 +350,9 @@ export class ListingRetryService {
             account.accessToken = refreshed.accessToken;
             account.refreshToken = refreshed.refreshToken;
           } catch (refreshErr) {
-            // Deliberadamente NÃO marca a conta como ERROR (o createMLListing
-            // marca). Um erro transitório de rede aqui derrubaria a conta para
+            // Deliberadamente NÃO marca a conta como ERROR (credencial morta é
+            // marcada pelo MLOAuthService — invalid_grant, client_id_mismatch —
+            // e pelo classificador central no createMLListing). Um erro transitório de rede aqui derrubaria a conta para
             // todos os fluxos — sync, pedidos, mensagens — a partir de um cron
             // sem contexto de usuário. Reagenda: se o refreshToken estiver
             // mesmo inválido, as tentativas se esgotam e o anúncio para com uma

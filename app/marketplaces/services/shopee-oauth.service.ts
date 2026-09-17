@@ -324,6 +324,11 @@ export class ShopeeOAuthService {
         timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,
       });
 
+      // Só com token de verdade na mão: a Shopee às vezes responde 200 com o
+      // erro no corpo, e isso não prova autorização viva.
+      if (response.data?.access_token) {
+        await this.reactivateAccountIfError(shopId);
+      }
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -406,6 +411,58 @@ export class ShopeeOAuthService {
     } catch (dbErr) {
       console.warn(
         `[ShopeeOAuthService] falha ao marcar conta ${shopId} como ERROR:`,
+        dbErr instanceof Error ? dbErr.message : String(dbErr),
+      );
+    }
+  }
+
+  /**
+   * O ESPELHO de markAccountDeadIfTerminal: renovação bem-sucedida prova que a
+   * autorização da loja está viva, então conta em ERROR volta a ACTIVE.
+   *
+   * Sem isto, ERROR era uma porta de mão única. Em 16/09/2026 a pane da
+   * partner key da Shopee fez o status-check marcar 8 contas saudáveis como
+   * ERROR; os tokens delas continuaram renovando normalmente por 11 h, mas a
+   * conta seguia fora do laço de pedidos, do webhook e da vigília — venda
+   * nenhuma entrava e nenhuma baixa acontecia.
+   *
+   * Seguro por construção: só toca linha em ERROR (ACTIVE e INACTIVE ficam
+   * como estão; conta desconectada tem refresh_token vazio e nunca chega a
+   * renovar), e a Shopee só marca ERROR por falha de renovação — se a
+   * renovação passou, a causa não existe mais. Por `shopId`, pela mesma razão
+   * da marcação: a autorização é da LOJA.
+   *
+   * ⚠️ A premissa "renovou, logo está sã" supõe que o chamador GRAVA o token
+   * renovado (a Shopee rotaciona o refresh_token). Quem renova só em memória
+   * — o rascunho de NF-e, por exemplo — já deixava o refresh_token do banco
+   * gasto antes desta função existir; isto não piora esse caso, mas também
+   * não o conserta.
+   *
+   * Best-effort, como a marcação: falha aqui nunca derruba o refresh.
+   * Kill-switch: SHOPEE_AUTO_REACTIVATE_DISABLED=1.
+   */
+  private static async reactivateAccountIfError(shopId: number): Promise<void> {
+    if (process.env.SHOPEE_AUTO_REACTIVATE_DISABLED === "1") return;
+
+    try {
+      const prisma = (await import("../../lib/prisma")).default;
+      const { count } = await prisma.marketplaceAccount.updateMany({
+        where: { shopId, platform: "SHOPEE", status: "ERROR" },
+        data: { status: "ACTIVE" },
+      });
+      if (count > 0) {
+        console.warn(
+          JSON.stringify({
+            event: "shopee.oauth.account.reactivated",
+            shopId,
+            accountsReactivated: count,
+            reason: "refresh ok — autorizacao viva",
+          }),
+        );
+      }
+    } catch (dbErr) {
+      console.warn(
+        `[ShopeeOAuthService] falha ao reativar conta ${shopId}:`,
         dbErr instanceof Error ? dbErr.message : String(dbErr),
       );
     }

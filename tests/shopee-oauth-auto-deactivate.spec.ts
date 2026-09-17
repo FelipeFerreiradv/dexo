@@ -140,7 +140,7 @@ describe("NÃO desativa — falso positivo pararia um vendedor que funciona", ()
     expect(updateMany).not.toHaveBeenCalled();
   });
 
-  it("refresh com SUCESSO não toca no status (caminho feliz intacto)", async () => {
+  it("refresh com SUCESSO nunca DESATIVA (só a reativação de ERROR pode ocorrer)", async () => {
     (mockedAxios as any).post.mockResolvedValue({
       data: {
         access_token: "novo",
@@ -152,7 +152,18 @@ describe("NÃO desativa — falso positivo pararia um vendedor que funciona", ()
 
     const r = await ShopeeOAuthService.refreshAccessToken("rt", 777);
     expect(r.access_token).toBe("novo");
-    expect(updateMany).not.toHaveBeenCalled();
+    // Desde 17/09/2026 a renovação bem-sucedida devolve ACTIVE a conta em ERROR
+    // (ver shopee-oauth-reativa-conta.spec.ts). O que este caso protege continua
+    // valendo: sucesso jamais marca ERROR nem toca conta ACTIVE.
+    expect(updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: "ERROR" } }),
+    );
+    for (const [arg] of updateMany.mock.calls) {
+      expect(arg).toEqual({
+        where: { shopId: 777, platform: "SHOPEE", status: "ERROR" },
+        data: { status: "ACTIVE" },
+      });
+    }
   });
 });
 
