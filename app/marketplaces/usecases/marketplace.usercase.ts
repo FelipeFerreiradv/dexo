@@ -99,12 +99,19 @@ export class MarketplaceUseCase {
         console.log(
           `[handleOAuthCallback] Updating existing account=${existingAccount.id} externalUserId=${tokenData.externalUserId}`,
         );
-        // Atualizar tokens
-        account = await MarketplaceRepository.updateTokens(existingAccount.id, {
-          accessToken: tokenData.accessToken,
-          refreshToken: tokenData.refreshToken,
-          expiresAt,
-        });
+        // O callback padrão trocou o code com as credenciais do ambiente.
+        // Remove no mesmo UPDATE qualquer override de outro app; mantê-lo faria
+        // o próximo refresh usar um client_id diferente daquele que emitiu os
+        // tokens e derrubaria a conta com client_id_mismatch.
+        account =
+          await MarketplaceRepository.updateTokensFromEnvironmentOAuth(
+            existingAccount.id,
+            {
+              accessToken: tokenData.accessToken,
+              refreshToken: tokenData.refreshToken,
+              expiresAt,
+            },
+          );
 
         // Reativar se estava inativa
         const wasInactive = account.status !== AccountStatus.ACTIVE;
