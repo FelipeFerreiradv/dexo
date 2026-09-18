@@ -86,10 +86,7 @@ export class ProductUseCase {
    * outra tentativa. Prendê-la à transação longa do pagamento só aumentaria a
    * janela de lock na linha do User.
    */
-  async create(
-    productData: ProductCreate,
-    tx?: any,
-  ): Promise<Product> {
+  async create(productData: ProductCreate, tx?: any): Promise<Product> {
     // Opt-in: atribuição atômica do SKU no servidor (ver createWithAutoSku).
     // O corpo legado abaixo só roda quando autoSku é falso — comportamento
     // de hoje preservado integralmente (sku explícito, importações, balcão).
@@ -108,8 +105,19 @@ export class ProductUseCase {
     const [user, skuExists] = await Promise.all([
       this.preloadedOwner !== undefined
         ? Promise.resolve(this.preloadedOwner)
-        : this.userRepository.findById(productData.userId),
-      this.productRepository.existsBySku(productData.sku, productData.userId),
+        : tx
+          ? this.userRepository.findById(productData.userId, tx)
+          : this.userRepository.findById(productData.userId),
+      tx
+        ? this.productRepository.existsBySku(
+            productData.sku,
+            productData.userId,
+            tx,
+          )
+        : this.productRepository.existsBySku(
+            productData.sku,
+            productData.userId,
+          ),
     ]);
 
     if (!user) {
@@ -480,7 +488,9 @@ export class ProductUseCase {
     rawIds: string[],
     userId?: string,
   ): Promise<BulkDeleteResponse> {
-    const ids = Array.from(new Set(rawIds.filter((id) => typeof id === "string" && id.length > 0)));
+    const ids = Array.from(
+      new Set(rawIds.filter((id) => typeof id === "string" && id.length > 0)),
+    );
 
     if (ids.length === 0) {
       return { results: [], summary: { total: 0, deleted: 0, failed: 0 } };
@@ -495,7 +505,9 @@ export class ProductUseCase {
     const semaphore = new AccountSemaphore();
 
     const results = await Promise.all(
-      ids.map(async (productId) => this.bulkDeleteOne(productId, userId, semaphore)),
+      ids.map(async (productId) =>
+        this.bulkDeleteOne(productId, userId, semaphore),
+      ),
     );
 
     const deleted = results.filter((r) => r.deleted).length;
@@ -531,7 +543,8 @@ export class ProductUseCase {
 
       const listingResults = await Promise.all(
         listings.map(async (listing) => {
-          const accountKey = listing.marketplaceAccountId ?? `listing:${listing.id}`;
+          const accountKey =
+            listing.marketplaceAccountId ?? `listing:${listing.id}`;
           const result = await semaphore.runExclusive(accountKey, () =>
             ListingUseCase.removeListing(listing.id),
           );
@@ -1049,15 +1062,14 @@ export class ProductUseCase {
       newVal !== undefined &&
       (newVal ?? null) !== ((oldVal ?? null) as string | null);
 
-    const numChanged = (
-      newVal: number | null | undefined,
-      oldVal: unknown,
-    ) => {
+    const numChanged = (newVal: number | null | undefined, oldVal: unknown) => {
       if (newVal === undefined) return false;
       const oldNum =
         typeof oldVal === "number"
           ? oldVal
-          : oldVal && typeof oldVal === "object" && "toNumber" in (oldVal as object)
+          : oldVal &&
+              typeof oldVal === "object" &&
+              "toNumber" in (oldVal as object)
             ? (oldVal as { toNumber(): number }).toNumber()
             : oldVal == null
               ? null
@@ -1068,7 +1080,9 @@ export class ProductUseCase {
     const jsonChanged = (newVal: unknown, oldVal: unknown) => {
       if (newVal === undefined) return false;
       try {
-        return JSON.stringify(newVal ?? null) !== JSON.stringify(oldVal ?? null);
+        return (
+          JSON.stringify(newVal ?? null) !== JSON.stringify(oldVal ?? null)
+        );
       } catch {
         return true;
       }
@@ -1184,7 +1198,10 @@ export class ProductUseCase {
     // create estouraria o índice único (userId, sku).
     for (let i = 0; i < 1000; i++) {
       const candidate = n.toString().padStart(3, "0");
-      const existing = await this.productRepository.existsBySku(candidate, userId);
+      const existing = await this.productRepository.existsBySku(
+        candidate,
+        userId,
+      );
       if (!existing) return candidate;
       n++;
     }

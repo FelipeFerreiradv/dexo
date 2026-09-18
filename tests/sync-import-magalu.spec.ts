@@ -14,10 +14,7 @@ const account = {
 } as any;
 
 beforeEach(() => {
-  vi.spyOn(
-    MarketplaceRepository,
-    "findByIdAndUser",
-  ).mockResolvedValue(account);
+  vi.spyOn(MarketplaceRepository, "findByIdAndUser").mockResolvedValue(account);
   vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
   vi.spyOn(prisma.product, "findMany").mockResolvedValue([] as any);
 });
@@ -104,13 +101,16 @@ describe("SyncUseCase.importMagaluItems — dedup do placeholder PENDING_", () =
     ] as any);
     vi.spyOn(prisma.productListing, "findMany").mockResolvedValue([] as any);
     vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      { id: "p9", skuNormalized: normalizeSku("SKU-NEW") },
+      {
+        id: "p9",
+        skuNormalized: normalizeSku("SKU-NEW"),
+        name: "SKU-NEW",
+      },
     ] as any);
     // Produto casado NÃO tem anúncio nesta conta → agrupamento legítimo (link).
-    vi.spyOn(
-      ListingRepository,
-      "productHasListingInAccount",
-    ).mockResolvedValue(false);
+    vi.spyOn(ListingRepository, "productHasListingInAccount").mockResolvedValue(
+      false,
+    );
     const update = vi
       .spyOn(ListingRepository, "updateListing")
       .mockResolvedValue({} as any);

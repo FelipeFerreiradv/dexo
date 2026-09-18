@@ -45,7 +45,9 @@ function isSkuUniqueViolation(error: unknown): boolean {
   const e = error as { code?: string; meta?: { target?: unknown } };
   if (e?.code !== "P2002") return false;
   const target = e?.meta?.target;
-  const asText = Array.isArray(target) ? target.join(",") : String(target ?? "");
+  const asText = Array.isArray(target)
+    ? target.join(",")
+    : String(target ?? "");
   return /sku/i.test(asText);
 }
 const PUBLISHED_MARKETPLACE_PLATFORMS = [
@@ -324,9 +326,7 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     mlCatalogProductId: (item as any).mlCatalogProductId ?? undefined,
     mlCatalogSnapshot:
       ((item as any).mlCatalogSnapshot as
-        | Record<string, unknown>
-        | null
-        | undefined) ?? undefined,
+        Record<string, unknown> | null | undefined) ?? undefined,
     // JSONB de forma livre no banco: só sobe se de fato for array de strings.
     // Cai em `undefined` tanto para linha antiga (coluna NULL) quanto para as
     // projeções que não pedem o campo — o `rulesLite` do findById e as demais
@@ -1161,8 +1161,12 @@ class ProductRepositoryPrisma implements ProductRepository {
   // Existência por SKU sem trafegar o Product inteiro (evita as colunas JSONB
   // — attributes, mlCatalogSnapshot, imageUrls…). Usado nos checks booleanos
   // do create/getNextSku, quentes em importação. Ver findBySku.
-  async existsBySku(sku: string, userId: string): Promise<boolean> {
-    const item = await prisma.product.findFirst({
+  async existsBySku(
+    sku: string,
+    userId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<boolean> {
+    const item = await (tx ?? prisma).product.findFirst({
       where: { sku, userId },
       select: { id: true },
     });

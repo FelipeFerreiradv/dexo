@@ -107,6 +107,7 @@ model User {
   bulkListingJobs     BulkListingJob[]
   unidades            Unidade[]
   whatsAppAccounts    WhatsAppAccount[]
+  ingestionIdentities ProductIngestionIdentity[]
 
   @@index([parentUserId])
 }
@@ -214,8 +215,10 @@ model Product {
   nfeItens               NfeItem[]
   receivableItems        ReceivableItem[]
   budgetItems            BudgetItem[]
+  ingestionIdentities    ProductIngestionIdentity[]
 
   @@unique([userId, sku])
+  @@unique([id, userId])
   @@index([userId, skuNormalized])
   @@index([userId, partNumberNormalized])
   @@index([userId, createdAt])
@@ -272,6 +275,24 @@ model Product {
   // leva ~25 s, e `CREATE INDEX` comum toma ACCESS EXCLUSIVE, que bloqueia
   // **até leitura** — 25 s de apagão em toda consulta que toque `Product`.
   @@index([imageUrls], type: Gin)
+}
+
+// DDL manual: 2026-09-17-product-ingestion-identity.sql. The status/productId
+// consistency CHECK is enforced in PostgreSQL, and ambiguous galleries are
+// never used to pick a physical piece.
+model ProductIngestionIdentity {
+  userId      String
+  platform    String
+  identityKey String
+  productId   String?
+  status      String   @default("OBSERVED")
+  sellerSkus  String[] @default([])
+  updatedAt   DateTime @default(now()) @db.Timestamp(3)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product     Product? @relation(fields: [productId, userId], references: [id, userId], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([userId, platform, identityKey])
+  @@index([productId])
 }
 
 model ProductCompatibility {

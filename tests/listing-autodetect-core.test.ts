@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { Platform } from "@prisma/client";
 
 import prisma from "@/app/lib/prisma";
+import { accountScopedAutodetectSku } from "@/app/marketplaces/lib/autodetect-synthetic-sku";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
@@ -26,6 +27,16 @@ const item = (
   createdAt: new Date("2026-06-18T00:00:00Z"),
   ...over,
 });
+
+const expectedSyntheticSku = (
+  prefix: string,
+  marketplaceItem: NormalizedMarketplaceItem,
+) =>
+  accountScopedAutodetectSku(prefix, {
+    platform: marketplaceItem.platform,
+    accountId: marketplaceItem.account.id,
+    externalListingId: marketplaceItem.externalListingId,
+  });
 
 describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
   afterEach(() => {
@@ -56,12 +67,12 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     ).mockResolvedValue(null);
     vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
       id: "p-existing",
+      name: "Roda Liga Leve",
     } as any);
     // Produto casado NÃO tem anúncio nesta conta → agrupamento legítimo.
-    vi.spyOn(
-      ListingRepository,
-      "productHasListingInAccount",
-    ).mockResolvedValue(false);
+    vi.spyOn(ListingRepository, "productHasListingInAccount").mockResolvedValue(
+      false,
+    );
     const create = vi.spyOn(ProductUseCase.prototype, "create");
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
@@ -94,10 +105,9 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
       name: "Mangueira Hidrovacuo Renault Kangoo 2010 2018 Usado",
     } as any);
     // Produto casado JÁ tem anúncio nesta conta → SKU reutilizado (rótulo).
-    vi.spyOn(
-      ListingRepository,
-      "productHasListingInAccount",
-    ).mockResolvedValue(true);
+    vi.spyOn(ListingRepository, "productHasListingInAccount").mockResolvedValue(
+      true,
+    );
     const create = vi
       .spyOn(ProductUseCase.prototype, "create")
       .mockResolvedValue({ id: "p-split" } as any);
@@ -105,26 +115,69 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
       .spyOn(ListingRepository, "upsertAutodetectedListing")
       .mockResolvedValue({ id: "l1", productId: "p-split" } as any);
 
-    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item({
-        rawSku: "Caixa mangueiras",
-        externalListingId: "MLB999",
-        title: "Mangueira Combustivel Pajero Tr4 4x2 Flex 2010 2012",
-      }),
-    );
+    const marketplaceItem = item({
+      rawSku: "Caixa mangueiras",
+      externalListingId: "MLB999",
+      title: "Mangueira Combustivel Pajero Tr4 4x2 Flex 2010 2012",
+    });
+    const res =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+        marketplaceItem,
+      );
 
     expect(res.action).toBe("created_product");
     expect(res.productId).toBe("p-split");
     // SKU sintético único por anúncio (não o rótulo de caixa reutilizado).
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
-        sku: "VAAPT-MLB999",
+        sku: expectedSyntheticSku("VAAPT", marketplaceItem),
         autoSku: false,
         createdFromMarketplace: true,
       }),
     );
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({ productId: "p-split" }),
+    );
+  });
+
+  it("SKU reutilizado em outra conta com título diferente não liga peças físicas distintas", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue(null);
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
+      id: "p-other-account",
+      name: "Painel Instrumentos Ford Verona 1995",
+    } as any);
+    vi.spyOn(ListingRepository, "productHasListingInAccount").mockResolvedValue(
+      false,
+    );
+    const create = vi
+      .spyOn(ProductUseCase.prototype, "create")
+      .mockResolvedValue({
+        id: "p-cover",
+      } as any);
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue({
+      id: "listing-cover",
+      productId: "p-cover",
+    } as any);
+
+    const marketplaceItem = item({
+      rawSku: "10095",
+      externalListingId: "MLB6456294238",
+      title: "Cobertura Acabamento Superior Cinto Caravan Chrysler 1996",
+    });
+    const result =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+        marketplaceItem,
+      );
+
+    expect(result).toEqual({ action: "created_product", productId: "p-cover" });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sku: expectedSyntheticSku("VAAPT", marketplaceItem),
+        autoSku: false,
+      }),
     );
   });
 
@@ -137,10 +190,9 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
       id: "p-dup",
       name: "Par Tela Autofalantes 12cm",
     } as any);
-    vi.spyOn(
-      ListingRepository,
-      "productHasListingInAccount",
-    ).mockResolvedValue(true);
+    vi.spyOn(ListingRepository, "productHasListingInAccount").mockResolvedValue(
+      true,
+    );
     const create = vi.spyOn(ProductUseCase.prototype, "create");
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
@@ -432,9 +484,8 @@ describe("gate de ignorados (ListingIngestionIgnore)", () => {
       findUnique: vi.fn().mockResolvedValue({ id: "ign-1" }),
     };
 
-    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item(),
-    );
+    const res =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(item());
 
     // A lista impede RE-CRIACAO; vinculo existente nao e tocado por ela.
     expect(res).toEqual({ action: "listing_exists", productId: "p1" });
@@ -493,5 +544,72 @@ describe("gate de ignorados (ListingIngestionIgnore)", () => {
 
     expect(res.action).toBe("created_product");
     expect(pontual).not.toHaveBeenCalled();
+  });
+
+  it("TRANSACAO: falha na consulta faz rollback e release antes do fail-open", async () => {
+    const consulta = vi.fn().mockRejectedValue(new Error("relation missing"));
+    const executeRaw = vi.fn().mockResolvedValue(0);
+    const tx = {
+      $executeRawUnsafe: executeRaw,
+      listingIngestionIgnore: { findUnique: consulta },
+    } as any;
+
+    const ignored = await (
+      ListingAutodetectUseCase as any
+    ).isIgnoredInsideTransaction(tx, item({ externalListingId: "MLB-TX" }));
+
+    expect(ignored).toBe(false);
+    expect(consulta).toHaveBeenCalledWith({
+      where: {
+        userId_platform_externalListingId: {
+          userId: "u1",
+          platform: Platform.MERCADO_LIVRE,
+          externalListingId: "MLB-TX",
+        },
+      },
+      select: { id: true },
+    });
+    expect(executeRaw.mock.calls.map(([sql]) => sql)).toEqual([
+      "SAVEPOINT listing_ingestion_ignore_lookup",
+      "ROLLBACK TO SAVEPOINT listing_ingestion_ignore_lookup",
+      "RELEASE SAVEPOINT listing_ingestion_ignore_lookup",
+    ]);
+  });
+
+  it("TRANSACAO: falha ao criar savepoint e propagada sem consultar a lista", async () => {
+    const fatal = new Error("transaction unavailable");
+    const consulta = vi.fn();
+    const tx = {
+      $executeRawUnsafe: vi.fn().mockRejectedValue(fatal),
+      listingIngestionIgnore: { findUnique: consulta },
+    } as any;
+
+    await expect(
+      (ListingAutodetectUseCase as any).isIgnoredInsideTransaction(tx, item()),
+    ).rejects.toBe(fatal);
+    expect(consulta).not.toHaveBeenCalled();
+  });
+
+  it("TRANSACAO: falha fatal no rollback de recuperacao e propagada", async () => {
+    const consultaFalhou = new Error("relation missing");
+    const recuperacaoFalhou = new Error("connection lost during rollback");
+    const executeRaw = vi
+      .fn()
+      .mockResolvedValueOnce(0)
+      .mockRejectedValueOnce(recuperacaoFalhou);
+    const tx = {
+      $executeRawUnsafe: executeRaw,
+      listingIngestionIgnore: {
+        findUnique: vi.fn().mockRejectedValue(consultaFalhou),
+      },
+    } as any;
+
+    await expect(
+      (ListingAutodetectUseCase as any).isIgnoredInsideTransaction(tx, item()),
+    ).rejects.toBe(recuperacaoFalhou);
+    expect(executeRaw.mock.calls.map(([sql]) => sql)).toEqual([
+      "SAVEPOINT listing_ingestion_ignore_lookup",
+      "ROLLBACK TO SAVEPOINT listing_ingestion_ignore_lookup",
+    ]);
   });
 });

@@ -1,4 +1,5 @@
 import prisma from "../../lib/prisma";
+import type { Prisma } from "@prisma/client";
 import { campoJson } from "../../lib/prisma-json-null";
 
 /**
@@ -167,16 +168,21 @@ export class ListingRepository {
    * `update` no-op em vez de estourar P2002. Espelha `upsertFromOrderFallback`,
    * acrescentando `permalink` (o anúncio já vem com a URL pública).
    */
-  static async upsertAutodetectedListing(data: {
-    productId: string;
-    marketplaceAccountId: string;
-    externalListingId: string;
-    externalSku?: string | null;
-    permalink?: string | null;
-    status: string;
-  }) {
+  static async upsertAutodetectedListing(
+    data: {
+      productId: string;
+      marketplaceAccountId: string;
+      externalListingId: string;
+      externalSku?: string | null;
+      permalink?: string | null;
+      status: string;
+    },
+    tx?: Prisma.TransactionClient,
+  ) {
+    const db = tx ?? prisma;
+    if (tx) await tx.$executeRawUnsafe("SAVEPOINT autodetect_listing");
     try {
-      return await prisma.productListing.upsert({
+      const listing = await db.productListing.upsert({
         where: {
           marketplaceAccountId_externalListingId: {
             marketplaceAccountId: data.marketplaceAccountId,
@@ -195,7 +201,15 @@ export class ListingRepository {
         // EGRESS: o chamador só precisa do id + productId (p/ detectar órfão).
         select: { id: true, productId: true },
       });
+      if (tx)
+        await tx.$executeRawUnsafe("RELEASE SAVEPOINT autodetect_listing");
+      return listing;
     } catch (error: any) {
+      // A PostgreSQL uniqueness error aborts the transaction until rollback.
+      if (tx) {
+        await tx.$executeRawUnsafe("ROLLBACK TO SAVEPOINT autodetect_listing");
+        await tx.$executeRawUnsafe("RELEASE SAVEPOINT autodetect_listing");
+      }
       // Prisma upsert NÃO é atômico (faz SELECT→INSERT). Sob entregas
       // concorrentes do MESMO anúncio (o ML dispara vários webhooks `items`
       // quase simultâneos: criação + preço + estoque), duas execuções passam
@@ -203,7 +217,7 @@ export class ListingRepository {
       // unique key (marketplaceAccountId, externalListingId). Isso é exatamente
       // o estado desejado (o listing já existe) → idempotente: relê e devolve.
       if (error?.code === "P2002") {
-        return prisma.productListing.findUnique({
+        return db.productListing.findUnique({
           where: {
             marketplaceAccountId_externalListingId: {
               marketplaceAccountId: data.marketplaceAccountId,

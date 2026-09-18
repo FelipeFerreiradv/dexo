@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { Platform } from "@prisma/client";
 
 import prisma from "@/app/lib/prisma";
+import { accountScopedAutodetectSku } from "@/app/marketplaces/lib/autodetect-synthetic-sku";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
@@ -44,6 +45,16 @@ const item = (
   ...over,
 });
 
+const expectedSyntheticSku = (
+  prefix: string,
+  marketplaceItem: NormalizedMarketplaceItem,
+) =>
+  accountScopedAutodetectSku(prefix, {
+    platform: marketplaceItem.platform,
+    accountId: marketplaceItem.account.id,
+    externalListingId: marketplaceItem.externalListingId,
+  });
+
 /**
  * `produtoCasado` só é consultado quando o anúncio TEM SKU: sem SKU o passo 2
  * não chega a consultar o banco, e é justamente esse o caminho sob teste.
@@ -72,12 +83,10 @@ function mockBase(
     .mockResolvedValue({ id: "p-novo" } as never);
   const upsert = vi
     .spyOn(ListingRepository, "upsertAutodetectedListing")
-    .mockImplementation(
-      (async (data: { productId: string }) => ({
-        id: "l1",
-        productId: data.productId,
-      })) as never,
-    );
+    .mockImplementation((async (data: { productId: string }) => ({
+      id: "l1",
+      productId: data.productId,
+    })) as never);
   return { create, upsert };
 }
 
@@ -110,14 +119,17 @@ describe("autodetect · SKU prefixado para anúncio sem código de vendedor", ()
   it("flag LIGADA → SKU derivado do anúncio, e NÃO um número de etiqueta", async () => {
     process.env[FLAG] = "true";
     const { create, upsert } = mockBase();
+    const marketplaceItem = item();
 
     const res =
-      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(item());
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+        marketplaceItem,
+      );
 
     expect(res.action).toBe("created_product");
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
-        sku: `SHP-${ANUNCIO_SHOPEE}`,
+        sku: expectedSyntheticSku("SHP", marketplaceItem),
         autoSku: false,
         createdFromMarketplace: true,
         name: TITULO,
@@ -150,21 +162,28 @@ describe("autodetect · SKU prefixado para anúncio sem código de vendedor", ()
   });
 
   it.each([
-    [Platform.MERCADO_LIVRE, "MLB1833459695", "ML-MLB1833459695"],
-    [Platform.SHOPEE, "58217400145", "SHP-58217400145"],
-    [Platform.MAGALU, "sku-magalu-9", "MGL-sku-magalu-9"],
-  ])("flag LIGADA → prefixo por plataforma: %s", async (platform, id, esperado) => {
-    process.env[FLAG] = "true";
-    const { create } = mockBase();
+    [Platform.MERCADO_LIVRE, "MLB1833459695", "ML"],
+    [Platform.SHOPEE, "58217400145", "SHP"],
+    [Platform.MAGALU, "sku-magalu-9", "MGL"],
+  ])(
+    "flag LIGADA → prefixo por plataforma: %s",
+    async (platform, id, prefix) => {
+      process.env[FLAG] = "true";
+      const { create } = mockBase();
+      const marketplaceItem = item({ platform, externalListingId: id });
 
-    await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item({ platform, externalListingId: id }),
-    );
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+        marketplaceItem,
+      );
 
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ sku: esperado, autoSku: false }),
-    );
-  });
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sku: expectedSyntheticSku(prefix, marketplaceItem),
+          autoSku: false,
+        }),
+      );
+    },
+  );
 
   // ------------------------------------------------- o que NÃO pode mudar
   it("flag LIGADA + anúncio COM SKU → usa o SKU do vendedor (inalterado)", async () => {
@@ -180,7 +199,7 @@ describe("autodetect · SKU prefixado para anúncio sem código de vendedor", ()
     );
   });
 
-  it("flag LIGADA + rótulo de caixa → segue no sintético VAAPT-<id> (inalterado)", async () => {
+  it("flag LIGADA + rótulo de caixa → segue no sintético VAAPT por conta e plataforma", async () => {
     process.env[FLAG] = "true";
     // Produto casado por SKU, JÁ com anúncio nesta conta e título alheio: é a
     // condição da guarda de rótulo de caixa, que tem precedência.
@@ -189,12 +208,20 @@ describe("autodetect · SKU prefixado para anúncio sem código de vendedor", ()
       true,
     );
 
+    const marketplaceItem = item({
+      rawSku: "106",
+      externalListingId: "MLB999",
+      platform: Platform.MERCADO_LIVRE,
+    });
     await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item({ rawSku: "106", externalListingId: "MLB999", platform: Platform.MERCADO_LIVRE }),
+      marketplaceItem,
     );
 
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ sku: "VAAPT-MLB999", autoSku: false }),
+      expect.objectContaining({
+        sku: expectedSyntheticSku("VAAPT", marketplaceItem),
+        autoSku: false,
+      }),
     );
   });
 
@@ -233,14 +260,20 @@ describe("autodetect · SKU prefixado para anúncio sem código de vendedor", ()
       name: TITULO,
     } as never);
 
+    const marketplaceItem = item();
     const res =
-      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(item());
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+        marketplaceItem,
+      );
 
     expect(res.productId).toBe("p-vencedor");
     expect(prisma.product.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          skuNormalized: `shp-${ANUNCIO_SHOPEE}`,
+          skuNormalized: expectedSyntheticSku(
+            "SHP",
+            marketplaceItem,
+          ).toLowerCase(),
         }),
       }),
     );
