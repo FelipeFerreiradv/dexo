@@ -16,8 +16,10 @@ import {
   parseMergeCliArgs,
   parseMergeManifest,
   reconcileCommitOutcome,
+  validateGalleryMemberProofs,
   validateGroupIdentityCoverage,
   type LiveListing,
+  type LockedProduct,
   type MergeManifest,
 } from "../scripts/merge-catalog-duplicates";
 
@@ -98,6 +100,20 @@ function manifestInput(): Record<string, unknown> {
               platform: "MERCADO_LIVRE",
               identityKey: REVIEWED_GALLERY_KEY,
               imageIds: REVIEWED_IMAGE_IDS,
+              memberProofs: [
+                {
+                  type: "PRODUCT_GALLERY",
+                  productId: "owner",
+                  platform: "MERCADO_LIVRE",
+                  imageIds: REVIEWED_IMAGE_IDS,
+                },
+                {
+                  type: "PRODUCT_GALLERY",
+                  productId: "donor",
+                  platform: "MERCADO_LIVRE",
+                  imageIds: REVIEWED_IMAGE_IDS,
+                },
+              ],
             },
           ],
         },
@@ -352,6 +368,102 @@ describe("merge manifest validation", () => {
     );
     expect(() => parseMergeManifest(raw)).toThrow(/galeria completa assinada/i);
   });
+
+  it("requires typed gallery provenance for every member", () => {
+    const missing = manifestInput();
+    delete (missing.groups as any[])[0].evidence.galleryIdentities[0]
+      .memberProofs;
+    expect(() => parseMergeManifest(missing)).toThrow(/provas tipadas/i);
+
+    const uncovered = manifestInput();
+    (uncovered.groups as any[])[0].evidence.galleryIdentities[0].memberProofs =
+      [
+        (uncovered.groups as any[])[0].evidence.galleryIdentities[0]
+          .memberProofs[0],
+      ];
+    expect(() => parseMergeManifest(uncovered)).toThrow(/todos os membros/i);
+  });
+
+  it("rejects unknown proof types, fields and products outside the group", () => {
+    const unknownType = manifestInput();
+    (
+      unknownType.groups as any[]
+    )[0].evidence.galleryIdentities[0].memberProofs[0].type = "CACHE_NOTE";
+    expect(() => parseMergeManifest(unknownType)).toThrow(/desconhecido/i);
+
+    const unknownField = manifestInput();
+    (
+      unknownField.groups as any[]
+    )[0].evidence.galleryIdentities[0].memberProofs[0].freeText = "trust me";
+    expect(() => parseMergeManifest(unknownField)).toThrow(
+      /campos desconhecidos/i,
+    );
+
+    const foreignProduct = manifestInput();
+    (
+      foreignProduct.groups as any[]
+    )[0].evidence.galleryIdentities[0].memberProofs[0].productId =
+      "other-product";
+    expect(() => parseMergeManifest(foreignProduct)).toThrow(
+      /não pertence ao grupo/i,
+    );
+  });
+
+  it("requires legacy origin to carry source code and an independent proof", () => {
+    const noSourceCode = manifestInput();
+    (noSourceCode.groups as any[])[0].sourceCode = null;
+    (
+      noSourceCode.groups as any[]
+    )[0].evidence.galleryIdentities[0].memberProofs[0] = {
+      type: "LEGACY_ML_ORIGIN",
+      productId: "owner",
+      platform: "MERCADO_LIVRE",
+      imageIds: REVIEWED_IMAGE_IDS,
+      externalListingId: "MLB4359325360",
+      sourceCode: "1001",
+    };
+    expect(() => parseMergeManifest(noSourceCode)).toThrow(/código de origem/i);
+
+    const twoLegacyOrigins = manifestInput();
+    (
+      twoLegacyOrigins.groups as any[]
+    )[0].evidence.galleryIdentities[0].memberProofs = ["owner", "donor"].map(
+      (productId) => ({
+        type: "LEGACY_ML_ORIGIN",
+        productId,
+        platform: "MERCADO_LIVRE",
+        imageIds: REVIEWED_IMAGE_IDS,
+        externalListingId: productId === "owner" ? "MLB1" : "MLB2",
+        sourceCode: "1001",
+      }),
+    );
+    expect(() => parseMergeManifest(twoLegacyOrigins)).toThrow(
+      /prova independente/i,
+    );
+  });
+
+  it("keeps a VAAPT/Shopee edge group blocked without matching ML proof", () => {
+    const raw = manifestInput();
+    (raw.groups as any[])[0].evidence.galleryIdentities[0].memberProofs = [
+      {
+        type: "LEGACY_ML_ORIGIN",
+        productId: "owner",
+        platform: "MERCADO_LIVRE",
+        imageIds: REVIEWED_IMAGE_IDS,
+        externalListingId: "MLB6284655462",
+        sourceCode: "1001",
+      },
+      {
+        type: "ACCOUNT_LISTING",
+        productId: "donor",
+        platform: "SHOPEE",
+        imageIds: REVIEWED_IMAGE_IDS,
+        marketplaceAccountId: "shopee-account",
+        externalListingId: "123",
+      },
+    ];
+    expect(() => parseMergeManifest(raw)).toThrow(/platform diverge/i);
+  });
 });
 
 describe("ambiguous COMMIT reconciliation", () => {
@@ -554,45 +666,40 @@ describe("identity seed validation", () => {
 });
 
 describe("reviewed gallery fallback", () => {
-  it("accepts signed legacy evidence only when every cited listing alias is live", () => {
-    const manifest = parsedManifest();
-    manifest.groups[0].exactFullGallery = false;
-    const group = manifest.groups[0];
-    const gallery = REVIEWED_GALLERY_KEY;
+  function legacyPlan() {
+    const raw = manifestInput();
+    (raw.groups as any[])[0].exactFullGallery = false;
+    (raw.groups as any[])[0].evidence.galleryIdentities[0].memberProofs = [
+      {
+        type: "LEGACY_ML_ORIGIN",
+        productId: "owner",
+        platform: "MERCADO_LIVRE",
+        imageIds: REVIEWED_IMAGE_IDS,
+        externalListingId: "MLB4359325360",
+        sourceCode: "1001",
+      },
+      {
+        type: "ACCOUNT_LISTING",
+        productId: "donor",
+        platform: "MERCADO_LIVRE",
+        imageIds: REVIEWED_IMAGE_IDS,
+        marketplaceAccountId: "donor-account",
+        externalListingId: "MLB456",
+      },
+      {
+        type: "PRODUCT_GALLERY",
+        productId: "donor",
+        platform: "MERCADO_LIVRE",
+        imageIds: REVIEWED_IMAGE_IDS,
+      },
+    ];
+    const manifest = parseMergeManifest(raw);
     const seed = parseIdentitySeed(
       identitySeedInput({
         identities: [
           {
             platform: "MERCADO_LIVRE",
-            identityKey: gallery,
-            productId: "owner",
-            status: "CONFIRMED",
-            sellerSkus: [],
-            evidence: {
-              observations: 2,
-              originalProductIds: ["owner", "donor"],
-              sources: [
-                "listing:MERCADO_LIVRE:account-id:MLB123:owner",
-                "listing:MERCADO_LIVRE:donor-account:MLB456:donor",
-                "product-images:ml",
-              ],
-            },
-          },
-          {
-            platform: "MERCADO_LIVRE",
-            identityKey: "listing:account-id:MLB123",
-            productId: "owner",
-            status: "CONFIRMED",
-            sellerSkus: [],
-            evidence: {
-              observations: 1,
-              originalProductIds: ["owner"],
-              sources: ["listing"],
-            },
-          },
-          {
-            platform: "SHOPEE",
-            identityKey: "listing:shopee-account:MLB123",
+            identityKey: REVIEWED_GALLERY_KEY,
             productId: "owner",
             status: "CONFIRMED",
             sellerSkus: [],
@@ -608,95 +715,147 @@ describe("reviewed gallery fallback", () => {
       }),
       manifest,
     );
-    const listing: LiveListing = {
-      id: "listing-row",
-      productId: "owner",
-      marketplaceAccountId: "account-id",
-      externalListingId: "MLB123",
-      externalSku: null,
-      platform: "MERCADO_LIVRE",
-      accountDataOwnerId: "tenant-id",
-    };
-    const donorListing: LiveListing = {
-      ...listing,
-      id: "donor-listing-row",
-      productId: "donor",
-      marketplaceAccountId: "donor-account",
-      externalListingId: "MLB456",
-    };
+    const products: LockedProduct[] = [
+      {
+        id: "owner",
+        userId: "tenant-id",
+        name: "Cobertura Cinto L.E.",
+        stock: 1,
+        reservedStock: 0,
+        autoCreatedFromSale: false,
+        scrapId: null,
+        attributes: { codPeca: "1001", mlb: "MLB4359325360" },
+        imageUrl: null,
+        imageUrls: [],
+      },
+      {
+        id: "donor",
+        userId: "tenant-id",
+        name: "Cobertura Cinto L.E.",
+        stock: 1,
+        reservedStock: 0,
+        autoCreatedFromSale: false,
+        scrapId: null,
+        attributes: { codPeca: "1001" },
+        imageUrl: null,
+        imageUrls: REVIEWED_IMAGE_IDS.map(
+          (id) => `https://http2.mlstatic.com/D_${id}-O.jpg`,
+        ),
+      },
+    ];
+    const listings: LiveListing[] = [
+      {
+        id: "donor-listing-row",
+        productId: "donor",
+        marketplaceAccountId: "donor-account",
+        externalListingId: "MLB456",
+        externalSku: null,
+        platform: "MERCADO_LIVRE",
+        accountDataOwnerId: "tenant-id",
+      },
+    ];
+    return { manifest, seed, products, listings };
+  }
 
+  it("accepts VAAPT legacy origin only with an independent live gallery proof", () => {
+    const { manifest, seed, products, listings } = legacyPlan();
     expect(
-      hasReviewedGalleryFallback(group, seed, [listing, donorListing]),
+      validateGalleryMemberProofs(
+        manifest.groups[0],
+        seed,
+        products,
+        listings,
+        manifest.tenantId,
+      ),
+    ).toEqual([]);
+    expect(
+      hasReviewedGalleryFallback(
+        manifest.groups[0],
+        seed,
+        products,
+        listings,
+        manifest.tenantId,
+      ),
     ).toBe(true);
-    expect(
-      hasReviewedGalleryFallback(group, seed, [
-        { ...listing, marketplaceAccountId: "other-account" },
-        donorListing,
-      ]),
-    ).toBe(false);
-    expect(
-      hasReviewedGalleryFallback(group, seed, [
-        {
-          ...listing,
-          platform: "SHOPEE",
-          marketplaceAccountId: "shopee-account",
-        },
-        donorListing,
-      ]),
-    ).toBe(false);
-    expect(
-      hasReviewedGalleryFallback(group, seed, [
-        { ...listing, productId: "donor" },
-        donorListing,
-      ]),
-    ).toBe(false);
   });
 
-  it("refuses fallback without source code or exact member coverage", () => {
-    const manifest = parsedManifest();
-    manifest.groups[0].exactFullGallery = false;
-    const seed = parseIdentitySeed(
-      identitySeedInput({
-        identities: [
-          {
-            platform: "MERCADO_LIVRE",
-            identityKey: REVIEWED_GALLERY_KEY,
-            productId: "owner",
-            status: "CONFIRMED",
-            sellerSkus: [],
-            evidence: {
-              observations: 2,
-              originalProductIds: ["owner"],
-              sources: ["listing:MERCADO_LIVRE:account-id:MLB123:owner"],
-            },
-          },
-          {
-            platform: "MERCADO_LIVRE",
-            identityKey: "listing:account-id:MLB123",
-            productId: "owner",
-            status: "CONFIRMED",
-            sellerSkus: [],
-          },
-        ],
-      }),
-      manifest,
-    );
-    const listing: LiveListing = {
-      id: "listing-row",
-      productId: "owner",
-      marketplaceAccountId: "account-id",
-      externalListingId: "MLB123",
-      externalSku: null,
-      platform: "MERCADO_LIVRE",
-      accountDataOwnerId: "tenant-id",
-    };
-
+  it.each([
+    {
+      label: "legacy MLB origin changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        (plan.products[0].attributes as any).mlb = "MLB999";
+      },
+      code: "LEGACY_ML_ORIGIN_PROOF_STALE",
+    },
+    {
+      label: "legacy MLB origin removed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        delete (plan.products[0].attributes as any).mlb;
+      },
+      code: "LEGACY_ML_ORIGIN_PROOF_STALE",
+    },
+    {
+      label: "legacy source code changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        (plan.products[0].attributes as any).codPeca = "different";
+      },
+      code: "LEGACY_ML_ORIGIN_PROOF_STALE",
+    },
+    {
+      label: "listing product changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        plan.listings[0].productId = "owner";
+      },
+      code: "ACCOUNT_LISTING_PROOF_STALE",
+    },
+    {
+      label: "listing account changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        plan.listings[0].marketplaceAccountId = "other-account";
+      },
+      code: "ACCOUNT_LISTING_PROOF_STALE",
+    },
+    {
+      label: "listing platform changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        plan.listings[0].platform = "SHOPEE";
+      },
+      code: "ACCOUNT_LISTING_PROOF_STALE",
+    },
+    {
+      label: "listing external id changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        plan.listings[0].externalListingId = "MLB999";
+      },
+      code: "ACCOUNT_LISTING_PROOF_STALE",
+    },
+    {
+      label: "product gallery changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        plan.products[1].imageUrls = [];
+      },
+      code: "PRODUCT_GALLERY_PROOF_STALE",
+    },
+  ])("rejects stale typed proof: $label", ({ mutate, code }) => {
+    const plan = legacyPlan();
+    mutate(plan);
     expect(
-      hasReviewedGalleryFallback(manifest.groups[0], seed, [listing]),
-    ).toBe(false);
-    manifest.groups[0].sourceCode = null;
+      validateGalleryMemberProofs(
+        plan.manifest.groups[0],
+        plan.seed,
+        plan.products,
+        plan.listings,
+        plan.manifest.tenantId,
+      ).map((entry) => entry.code),
+    ).toContain(code);
     expect(
-      hasReviewedGalleryFallback(manifest.groups[0], seed, [listing]),
+      hasReviewedGalleryFallback(
+        plan.manifest.groups[0],
+        plan.seed,
+        plan.products,
+        plan.listings,
+        plan.manifest.tenantId,
+      ),
     ).toBe(false);
   });
 });
