@@ -31,15 +31,15 @@ export class CatalogIdentityService {
         // Do not trust the caller-provided account shape. ProductListing has
         // independent FKs, so an incoherent account/tenant pair could otherwise
         // create an identity in one tenant and a listing in another account.
-        const account = await tx.marketplaceAccount.findFirst({
-          where: {
-            id: item.account.id,
-            userId: item.account.userId,
-            platform: item.platform,
-          },
-          select: { id: true },
-        });
-        if (!account) {
+        const accountRows = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+            FROM "MarketplaceAccount"
+           WHERE id = ${item.account.id}
+             AND "userId" = ${item.account.userId}
+             AND platform = ${item.platform}::"Platform"
+           FOR SHARE
+        `;
+        if (accountRows.length !== 1) {
           throw new Error("Conta de marketplace fora do tenant da identidade");
         }
         // Serialize across API, poll and batch import before creating Product.
@@ -123,12 +123,23 @@ export class CatalogIdentityService {
         );
 
         if (result.productId && result.action !== "ignored_by_list") {
-          const product = await tx.product.findFirst({
-            where: { id: result.productId, userId: item.account.userId },
-            select: { id: true, name: true },
-          });
+          // Keep the product in this tenant until every listing/identity write in
+          // the callback transaction commits. ProductListing has independent FKs,
+          // so checking without a row lock would leave an ownership-change race.
+          const productRows = await tx.$queryRaw<
+            Array<{ id: string; name: string }>
+          >`
+            SELECT id, name
+              FROM "Product"
+             WHERE id = ${result.productId}
+               AND "userId" = ${item.account.userId}
+             FOR SHARE
+          `;
+          if (productRows.length !== 1) {
+            throw new Error("Produto fora do tenant da identidade");
+          }
+          const [product] = productRows;
           if (
-            product &&
             !isOppositeSideOrAxis(item.title, product.name) &&
             areTitlesSimilar(item.title, product.name, 0.9)
           ) {

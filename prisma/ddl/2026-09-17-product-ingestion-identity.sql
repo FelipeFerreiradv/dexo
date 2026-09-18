@@ -416,17 +416,6 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'ProductIngestionIdentity contains cross-tenant product references';
   END IF;
-  IF EXISTS (
-    SELECT 1
-      FROM public."ProductListing" pl
-      LEFT JOIN public."Product" p ON p.id = pl."productId"
-      LEFT JOIN public."MarketplaceAccount" ma
-        ON ma.id = pl."marketplaceAccountId"
-     WHERE p.id IS NULL OR ma.id IS NULL
-        OR p."userId" IS NULL OR p."userId" IS DISTINCT FROM ma."userId"
-  ) THEN
-    RAISE EXCEPTION 'ProductListing contains cross-tenant or orphan references';
-  END IF;
 END;
 $$;
 
@@ -507,76 +496,22 @@ $$;
 CREATE INDEX IF NOT EXISTS "ProductIngestionIdentity_productId_idx"
   ON public."ProductIngestionIdentity"("productId");
 
--- ProductListing has independent FKs. The child trigger validates both owners,
--- and the parent triggers make tenant ownership immutable so that a concurrent
--- parent update cannot invalidate a just-checked child row.
-CREATE OR REPLACE FUNCTION public.assert_product_listing_same_tenant()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  product_user_id TEXT;
-  account_user_id TEXT;
-BEGIN
-  SELECT "userId" INTO product_user_id
-    FROM public."Product" WHERE id = NEW."productId" FOR KEY SHARE;
-  SELECT "userId" INTO account_user_id
-    FROM public."MarketplaceAccount"
-   WHERE id = NEW."marketplaceAccountId" FOR KEY SHARE;
-  IF product_user_id IS NULL OR account_user_id IS NULL
-     OR product_user_id IS DISTINCT FROM account_user_id THEN
-    RAISE EXCEPTION 'ProductListing product/account tenant mismatch'
-      USING ERRCODE = '23514';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
+-- A conta e o produto usados pelo novo fluxo são validados e bloqueados na mesma
+-- transação pelo CatalogIdentityService. Não imponha essa regra globalmente a ProductListing:
+-- o banco possui vínculos legados deliberados entre contas e estoques de
+-- usuários relacionados. Remova triggers de uma eventual versão parcial
+-- anterior deste DDL sem alterar esses vínculos.
 DROP TRIGGER IF EXISTS "ProductListing_same_tenant_guard"
   ON public."ProductListing";
-CREATE TRIGGER "ProductListing_same_tenant_guard"
-BEFORE INSERT OR UPDATE OF "productId", "marketplaceAccountId"
-ON public."ProductListing"
-FOR EACH ROW EXECUTE FUNCTION public.assert_product_listing_same_tenant();
-
-CREATE OR REPLACE FUNCTION public.forbid_product_tenant_change()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF NEW."userId" IS DISTINCT FROM OLD."userId" THEN
-    RAISE EXCEPTION 'Product tenant ownership is immutable'
-      USING ERRCODE = '23514';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
 DROP TRIGGER IF EXISTS "Product_linked_tenant_guard" ON public."Product";
 DROP TRIGGER IF EXISTS "Product_tenant_immutable" ON public."Product";
-CREATE TRIGGER "Product_tenant_immutable"
-BEFORE UPDATE OF "userId" ON public."Product"
-FOR EACH ROW EXECUTE FUNCTION public.forbid_product_tenant_change();
-
-CREATE OR REPLACE FUNCTION public.forbid_marketplace_account_tenant_change()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF NEW."userId" IS DISTINCT FROM OLD."userId" THEN
-    RAISE EXCEPTION 'Marketplace account tenant ownership is immutable'
-      USING ERRCODE = '23514';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
 DROP TRIGGER IF EXISTS "MarketplaceAccount_linked_tenant_guard"
   ON public."MarketplaceAccount";
 DROP TRIGGER IF EXISTS "MarketplaceAccount_tenant_immutable"
   ON public."MarketplaceAccount";
-CREATE TRIGGER "MarketplaceAccount_tenant_immutable"
-BEFORE UPDATE OF "userId" ON public."MarketplaceAccount"
-FOR EACH ROW EXECUTE FUNCTION public.forbid_marketplace_account_tenant_change();
+
+DROP FUNCTION IF EXISTS public.assert_product_listing_same_tenant();
+DROP FUNCTION IF EXISTS public.forbid_product_tenant_change();
+DROP FUNCTION IF EXISTS public.forbid_marketplace_account_tenant_change();
 
 COMMIT;
