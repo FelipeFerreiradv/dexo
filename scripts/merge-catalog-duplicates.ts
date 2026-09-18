@@ -1208,6 +1208,20 @@ export async function acquireExclusiveCatalogMergeGate(
   `;
 }
 
+export async function acquireStockSyncJobLocks(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
+  listingIds: string[],
+): Promise<void> {
+  if (!listingIds.length) return;
+  // This SELECT can return one PostgreSQL void column per listing. As with the
+  // global gate, execute it without deserializing the result through Prisma.
+  await tx.$executeRaw`
+    SELECT pg_advisory_xact_lock(hashtext('stock_sync_job:' || listing_id))
+      FROM unnest(${listingIds}::text[]) AS locked(listing_id)
+     ORDER BY listing_id
+  `;
+}
+
 function sha256(data: string | Buffer): string {
   return createHash("sha256").update(data).digest("hex");
 }
@@ -1690,13 +1704,7 @@ async function collectValidation(
       ...listings.map((listing) => listing.id),
       ...preexistingJobListingIds.map((row) => row.listingId),
     ]);
-    if (stockLockListingIds.length) {
-      await tx.$queryRaw`
-        SELECT pg_advisory_xact_lock(hashtext('stock_sync_job:' || listing_id))
-          FROM unnest(${stockLockListingIds}::text[]) AS locked(listing_id)
-         ORDER BY listing_id
-      `;
-    }
+    await acquireStockSyncJobLocks(tx, stockLockListingIds);
     // StockSyncJob has no Product FK. Once every legitimate writer is fenced
     // by its advisory lock, SHARE closes insert/update phantoms until commit.
     // BulkListingJob uses the separate global catalog merge advisory gate.
