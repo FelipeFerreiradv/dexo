@@ -1,0 +1,37 @@
+{
+  "data": "2026-09-18",
+  "head": {
+    "numPassedTests": 7937,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "success": true
+  },
+  "workingTreeChangesIncluded": true,
+  "base": {
+    "numPassedTests": 6633,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "success": true
+  },
+  "fiscalFinal": {
+    "passed": 2302,
+    "skippedPostgres": 2
+  },
+  "numeracaoFinal": {
+    "passed": 881,
+    "skippedPostgres": 2
+  },
+  "typescript": {
+    "baseErrors": 98,
+    "headErrors": 98,
+    "newErrors": 0
+  },
+  "lint": "pass",
+  "nextBuildFlagsOff": "pass",
+  "nextBuildFlagsOn": "pass",
+  "publicAllowlistLeak": false,
+  "prismaValidate": "pass",
+  "realPostgres": "not_run_local_docker_unavailable",
+  "realFiscalEmission": "not_run",
+  "deployment": "not_run"
+}

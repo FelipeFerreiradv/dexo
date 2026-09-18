@@ -124,4 +124,28 @@ export class FiscalStorageService {
       // best-effort: arquivo ausente/sem permissão não bloqueia a operação
     }
   }
+
+  /**
+   * Numeração V2: salva o XML ASSINADO de uma tentativa de transmissão ANTES
+   * de ela sair (invariante I3). Um arquivo por tentativa — nunca sobrescreve:
+   * é a prova do conteúdo enviado (DigestValue) e a base do nfeProc quando a
+   * autorização só é descoberta por consulta.
+   *
+   * Caminho: {FISCAL_STORAGE_PATH}/{userId}/xml-assinado/{nfeId}-{numero}-{ts}.xml
+   * Retorna o caminho gravado (mesmo formato de saveXmlAutorizado). Lança se
+   * não conseguir gravar — falha local, antes de qualquer transmissão.
+   */
+  async saveXmlTentativa(
+    userId: string,
+    nfeId: string,
+    numero: number,
+    xml: string,
+  ): Promise<string> {
+    const dir = this.getUserDir(userId, "xml-assinado");
+    const filePath = path.join(dir, `${nfeId}-${numero}-${Date.now()}.xml`);
+    // flag "wx": falha se o arquivo já existir (mesmo ms) em vez de apagar a
+    // prova de uma tentativa anterior.
+    fs.writeFileSync(filePath, xml, { encoding: "utf-8", flag: "wx" });
+    return filePath;
+  }
 }

@@ -381,6 +381,8 @@ function createLogMessage(
  * é seguro — preferimos pecar pelo excesso.
  */
 const SENSITIVE_FIELD_PATTERNS = [
+  "csrt",
+  "xmloriginal",
   "password",
   "senha",
   "token",

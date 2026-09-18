@@ -1,0 +1,3 @@
+{
+  "lancou": "SefazDirectProvider.emitir: nfeData precisa ter shape SefazEmitPayload ({ draft, config, numero }). O use case deve detectar providerName=SEFAZ_DIRECT e enviar este shape em vez do JSON Focus."
+}

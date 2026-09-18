@@ -15,6 +15,7 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
   const [saving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deletingRef=useRef(false);
 
   const headers = useCallback(
     () => ({
@@ -142,13 +143,19 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
 
   const deleteDraft = useCallback(
     async (id: string) => {
+      if(deletingRef.current)return;
+      deletingRef.current=true;
       try {
-        await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${id}`, {
+        let res=await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${id}`, {
           method: "DELETE",
           headers: headers(),
         });
+        if(res.status===409){const data=await res.json();if(data.code==="NUMERACAO_CONFIRMAR_DESCARTE" && window.confirm(`${data.error}. Confirmar exclusão e descarte?`))res=await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${id}?descartarNumero=true`,{method:"DELETE",headers:headers()});}
+        if(!res.ok)throw new Error("Não foi possível excluir o rascunho");
       } catch {
-        // silent
+        return false;
+      } finally {
+        deletingRef.current=false;
       }
     },
     [headers],

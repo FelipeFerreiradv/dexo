@@ -1,0 +1,582 @@
+{
+  "200-autorizado": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "cnpj_emitente": "11222333000181",
+        "ref": "nfe-golden-1",
+        "status": "autorizado",
+        "status_sefaz": "100",
+        "mensagem_sefaz": "Autorizado o uso da NF-e",
+        "chave_nfe": "NFe35260911222333000181550010000001011876543210",
+        "numero": "3",
+        "serie": "1",
+        "protocolo": "135260000000001",
+        "data_evento": "2026-09-17T10:31:00-03:00",
+        "caminho_xml_nota_fiscal": "/arquivos/xml.xml"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "chaveAcesso": "NFe35260911222333000181550010000001011876543210",
+      "protocolo": "135260000000001",
+      "dataAutorizacao": "2026-09-17T13:31:00.000Z",
+      "status": "processando",
+      "codigoStatus": "100",
+      "mensagem": "Autorizado o uso da NF-e",
+      "xmlAutorizado": null,
+      "providerRef": "nfe-golden-1"
+    }
+  },
+  "201-autorizado": {
+    "stub": {
+      "status": 201,
+      "json": {
+        "cnpj_emitente": "11222333000181",
+        "ref": "nfe-golden-1",
+        "status": "autorizado",
+        "status_sefaz": "100",
+        "mensagem_sefaz": "Autorizado o uso da NF-e",
+        "chave_nfe": "NFe35260911222333000181550010000001011876543210",
+        "numero": "3",
+        "serie": "1",
+        "protocolo": "135260000000001",
+        "data_evento": "2026-09-17T10:31:00-03:00",
+        "caminho_xml_nota_fiscal": "/arquivos/xml.xml"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "chaveAcesso": "NFe35260911222333000181550010000001011876543210",
+      "protocolo": "135260000000001",
+      "dataAutorizacao": "2026-09-17T13:31:00.000Z",
+      "status": "processando",
+      "codigoStatus": "100",
+      "mensagem": "Autorizado o uso da NF-e",
+      "xmlAutorizado": null,
+      "providerRef": "nfe-golden-1"
+    }
+  },
+  "202-processando": {
+    "stub": {
+      "status": 202,
+      "json": {
+        "cnpj_emitente": "11222333000181",
+        "ref": "nfe-golden-1",
+        "status": "processando_autorizacao"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "processando",
+      "codigoStatus": null,
+      "mensagem": "Enviada",
+      "xmlAutorizado": null,
+      "providerRef": "nfe-golden-1"
+    }
+  },
+  "202-sem-status": {
+    "stub": {
+      "status": 202,
+      "json": {}
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "processando",
+      "codigoStatus": null,
+      "mensagem": "Enviada",
+      "xmlAutorizado": null,
+      "providerRef": "nfe-golden-1"
+    }
+  },
+  "400-requisicao-invalida": {
+    "stub": {
+      "status": 400,
+      "json": {
+        "codigo": "requisicao_invalida",
+        "mensagem": "Parâmetro ref não informado"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": 400,
+      "mensagem": "Parâmetro ref não informado",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "401-html-access-denied": {
+    "stub": {
+      "status": 401,
+      "texto": "<html><body>HTTP Basic: Access denied.\n</body></html>",
+      "contentType": "text/html; charset=utf-8"
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": null,
+      "mensagem": "{{JSON_PARSE_ERRO}}",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "403-permissao-negada": {
+    "stub": {
+      "status": 403,
+      "json": {
+        "codigo": "permissao_negada",
+        "mensagem": "Empresa não habilitada para emitir NFe"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": 403,
+      "mensagem": "Empresa não habilitada para emitir NFe",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "404-nao-encontrado": {
+    "stub": {
+      "status": 404,
+      "json": {
+        "codigo": "nao_encontrado",
+        "mensagem": "Empresa não encontrada"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": 404,
+      "mensagem": "Empresa não encontrada",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "415-media-type": {
+    "stub": {
+      "status": 415,
+      "json": {
+        "codigo": "formato_invalido",
+        "mensagem": "Content-Type deve ser application/json"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": 415,
+      "mensagem": "Content-Type deve ser application/json",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "422-erro-validacao-schema": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "codigo": "erro_validacao_schema",
+        "mensagem": "Erro de validação do Schema XML",
+        "erros": [
+          {
+            "codigo": "schema",
+            "mensagem": "Element 'cMun': [facet 'pattern']",
+            "campo": "cMun"
+          }
+        ]
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "rejeitada",
+      "codigoStatus": "erro_validacao_schema",
+      "mensagem": "Erro de validação do Schema XML",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "422-permissao-negada": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "codigo": "permissao_negada",
+        "mensagem": "CNPJ do emitente não autorizado"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "rejeitada",
+      "codigoStatus": "permissao_negada",
+      "mensagem": "CNPJ do emitente não autorizado",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "422-already-processed": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "codigo": "already_processed",
+        "mensagem": "Nota fiscal já autorizada com esta referência"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "rejeitada",
+      "codigoStatus": "already_processed",
+      "mensagem": "Nota fiscal já autorizada com esta referência",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "422-pending-operation": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "codigo": "pending_operation",
+        "mensagem": "Existe uma operação pendente para esta referência"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "rejeitada",
+      "codigoStatus": "pending_operation",
+      "mensagem": "Existe uma operação pendente para esta referência",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "422-status-sefaz-974": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "status": "erro_autorizacao",
+        "status_sefaz": "974",
+        "mensagem_sefaz": "Rejeicao: CNPJ do responsavel tecnico nao autorizado a emitir para o contribuinte"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "rejeitada",
+      "codigoStatus": "974",
+      "mensagem": "Rejeicao: CNPJ do responsavel tecnico nao autorizado a emitir para o contribuinte",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "429-limite": {
+    "stub": {
+      "status": 429,
+      "json": {
+        "codigo": "limite_requisicoes_excedido",
+        "mensagem": "Limite de requisições excedido"
+      },
+      "headers": {
+        "retry-after": "60"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": 429,
+      "mensagem": "Limite de requisições excedido",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "500-html": {
+    "stub": {
+      "status": 500,
+      "texto": "<!DOCTYPE html><html><head><title>500</title></head><body>Internal Server Error</body></html>",
+      "contentType": "text/html"
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": null,
+      "mensagem": "{{JSON_PARSE_ERRO}}",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  },
+  "rede-lanca": {
+    "stub": {
+      "lancar": "TypeError: fetch failed"
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe?ref=nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "natureza_operacao": "VENDA",
+        "numero_nota": "101",
+        "serie": "1"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "status": "erro",
+      "codigoStatus": null,
+      "mensagem": "fetch failed",
+      "xmlAutorizado": null,
+      "providerRef": null
+    }
+  }
+}

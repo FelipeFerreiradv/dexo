@@ -1,0 +1,53 @@
+{
+  "200-xml": {
+    "stub": {
+      "status": 200,
+      "texto": "<nfeProc><NFe/></nfeProc>",
+      "contentType": "application/xml"
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1.xml",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": "<nfeProc><NFe/></nfeProc>"
+  },
+  "404-json": {
+    "stub": {
+      "status": 404,
+      "json": {
+        "codigo": "nao_encontrado",
+        "mensagem": "Nota fiscal não encontrada"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1.xml",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": null
+  },
+  "rede-lanca": {
+    "stub": {
+      "lancar": "TypeError: fetch failed"
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1.xml",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": null
+  }
+}

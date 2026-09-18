@@ -1,4 +1,7 @@
 import { NfeRepository } from "../repositories/nfe.repository";
+import { attachNumeracao, configNumeracao } from "../fiscal/numeracao/metadata";
+import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
+import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { CustomerRepository } from "../repositories/customer.repository";
 import { orderRepository } from "../repositories/order.repository";
@@ -121,7 +124,7 @@ export class NfeDraftUseCase {
     // e um rascunho 65 (NFC-e, criado pelo PDV) NUNCA pode ser reaproveitado
     // aqui — seria emitido como NFC-e sem o usuário perceber.
     const existing = await this.nfeRepo.findExistingDraft(userId, "55");
-    if (existing) return existing;
+    if (existing) return attachNumeracao(userId,existing);
 
     const draft = await this.nfeRepo.createDraft(userId, {
       ...input,
@@ -134,7 +137,7 @@ export class NfeDraftUseCase {
       orderId: null,
     });
 
-    return draft;
+    return attachNumeracao(userId,draft);
   }
 
   // Pré-popula um rascunho a partir de um pedido de marketplace. Mesmo padrão
@@ -304,7 +307,7 @@ export class NfeDraftUseCase {
 
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", { orderId });
 
-    return filled;
+    return attachNumeracao(userId,filled);
   }
 
   // Best-effort: dados fiscais do comprador (nome/CPF/endereço) na API do
@@ -488,7 +491,7 @@ export class NfeDraftUseCase {
     if (!draft) {
       throw new Error("Rascunho não encontrado");
     }
-    return draft;
+    return attachNumeracao(userId,draft);
   }
 
   async update(
@@ -518,15 +521,21 @@ export class NfeDraftUseCase {
       fields: Object.keys(input),
     });
 
-    return updated;
+    return attachNumeracao(userId,updated);
   }
 
-  async delete(userId: string, id: string): Promise<void> {
+  async delete(userId: string, id: string, confirmarDescarte=false): Promise<void> {
     const existing = await this.nfeRepo.findDraftById(userId, id);
     if (!existing) {
       throw new Error("Rascunho não encontrado");
     }
 
+    if(await configNumeracao(userId,existing)) {
+      const service=new NfeNumeracaoService();
+      let ddl=true;
+      try{await service.reservaViva(userId,id);}catch(e){if(tabelaFiscalAusente(e))ddl=false;else throw e;}
+      if(ddl){await service.abandonarPorExclusao(userId,id,confirmarDescarte);return;}
+    }
     await this.nfeRepo.deleteDraft(userId, id);
   }
 
@@ -613,7 +622,7 @@ export class NfeDraftUseCase {
       receivableId: input.receivableId,
     });
 
-    return filled;
+    return attachNumeracao(userId,filled);
   }
 
   // ── Lookups ──

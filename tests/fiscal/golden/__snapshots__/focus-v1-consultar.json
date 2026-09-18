@@ -1,0 +1,249 @@
+{
+  "autorizado": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "autorizado",
+        "status_sefaz": "100",
+        "mensagem_sefaz": "Autorizado o uso da NF-e",
+        "chave_nfe": "NFe35260911222333000181550010000001011876543210",
+        "numero": "3",
+        "serie": "1",
+        "protocolo": "135260000000001",
+        "data_evento": "2026-09-17T10:31:00-03:00"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "autorizada",
+      "chaveAcesso": "NFe35260911222333000181550010000001011876543210",
+      "protocolo": "135260000000001",
+      "dataAutorizacao": "2026-09-17T13:31:00.000Z",
+      "codigoStatus": "100",
+      "mensagem": "Autorizado o uso da NF-e",
+      "xmlAutorizado": null
+    }
+  },
+  "cancelado": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "cancelado",
+        "status_sefaz": "135",
+        "mensagem_sefaz": "Evento registrado e vinculado a NF-e",
+        "chave_nfe": "NFe35260911222333000181550010000001011876543210",
+        "protocolo": "135260000000009"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "cancelada",
+      "chaveAcesso": "NFe35260911222333000181550010000001011876543210",
+      "protocolo": "135260000000009",
+      "dataAutorizacao": null,
+      "codigoStatus": "135",
+      "mensagem": "Evento registrado e vinculado a NF-e",
+      "xmlAutorizado": null
+    }
+  },
+  "erro-autorizacao-598": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "erro_autorizacao",
+        "status_sefaz": "598",
+        "mensagem_sefaz": "Rejeicao: NF-e emitida em ambiente de homologacao com Razao Social do destinatario diferente de NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "rejeitada",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": "598",
+      "mensagem": "Rejeicao: NF-e emitida em ambiente de homologacao com Razao Social do destinatario diferente de NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL",
+      "xmlAutorizado": null
+    }
+  },
+  "processando-autorizacao": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "processando_autorizacao"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "processando",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": null,
+      "mensagem": "",
+      "xmlAutorizado": null
+    }
+  },
+  "denegado": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "denegado",
+        "status_sefaz": "302",
+        "mensagem_sefaz": "Uso Denegado: Irregularidade fiscal do destinatario"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "processando",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": "302",
+      "mensagem": "Uso Denegado: Irregularidade fiscal do destinatario",
+      "xmlAutorizado": null
+    }
+  },
+  "403-json": {
+    "stub": {
+      "status": 403,
+      "json": {
+        "codigo": "permissao_negada",
+        "mensagem": "Token não autorizado"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "processando",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": null,
+      "mensagem": "Token não autorizado",
+      "xmlAutorizado": null
+    }
+  },
+  "404-nao-encontrado": {
+    "stub": {
+      "status": 404,
+      "json": {
+        "codigo": "nao_encontrado",
+        "mensagem": "Nota fiscal não encontrada"
+      }
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "processando",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": null,
+      "mensagem": "Nota fiscal não encontrada",
+      "xmlAutorizado": null
+    }
+  },
+  "401-html": {
+    "stub": {
+      "status": 401,
+      "texto": "<html><body>HTTP Basic: Access denied.\n</body></html>",
+      "contentType": "text/html"
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "erro",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": null,
+      "mensagem": "{{JSON_PARSE_ERRO}}",
+      "xmlAutorizado": null
+    }
+  },
+  "rede-lanca": {
+    "stub": {
+      "lancar": "TypeError: fetch failed"
+    },
+    "requisicao": {
+      "metodo": "GET",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": null
+    },
+    "resultado": {
+      "status": "erro",
+      "chaveAcesso": null,
+      "protocolo": null,
+      "dataAutorizacao": null,
+      "codigoStatus": null,
+      "mensagem": "fetch failed",
+      "xmlAutorizado": null
+    }
+  }
+}

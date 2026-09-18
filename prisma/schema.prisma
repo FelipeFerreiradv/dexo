@@ -2024,6 +2024,160 @@ model NfeInutilizacao {
 }
 
 // =============================================================================
+// NUMERAÇÃO V2 (docs/fiscal-numeracao-v2.md) — reserva × consumo de número.
+// ADITIVO: tabelas novas, NENHUMA relação/coluna em NfeEmitida. Acesso só por
+// SQL cru (app/fiscal/numeracao/numeracao.repository.ts). DDL em
+// prisma/ddl/2026-09-18-nfe-numeracao-v2.sql. O índice PARCIAL
+// "NfeNumeroReserva_nfeId_vivo_key" vive SÓ no banco. ⛔ NUNCA `prisma db push`.
+// =============================================================================
+model NfeNumeroReserva {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId                String
+  companyFiscalConfigId String
+  ambiente              String
+  modelo                String
+  serie                 Int
+  numero                Int
+  // Sem FK: a reserva sobrevive à exclusão do rascunho (trilha do número).
+  nfeId                 String?
+  // RESERVADO | REJEITADO | EM_TRANSMISSAO | INCERTO | BLOQUEADO | AUTORIZADO |
+  // CANCELADO | DENEGADO | INUTILIZADO | CONSUMIDO_EXTERNO | ABANDONADO
+  estado                String
+  origem                String // CONTADOR | LEGADO_V1 | READBACK_FOCUS
+  cNF                   String?   @db.Char(8)
+  provedorUltimo        String?
+  ultimaClasse          String?
+  ultimoCStat           Int?
+  ultimoCodigoProvedor  String?   @db.VarChar(64)
+  motivo                String?   @db.VarChar(500)
+  requerInutilizacao    Boolean   @default(false)
+  bloqueadoAte          DateTime?
+  leaseAte              DateTime?
+  consumidoEm           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now())
+
+  tentativas NfeNumeroTentativa[]
+
+  @@unique([companyFiscalConfigId, ambiente, modelo, serie, numero], map: "NfeNumeroReserva_cfc_amb_mod_serie_num_key")
+  @@index([nfeId], map: "NfeNumeroReserva_nfeId_idx")
+  @@index([userId, estado], map: "NfeNumeroReserva_userId_estado_idx")
+}
+
+model NfeNumeroTentativa {
+  id              String    @id @default(dbgenerated("gen_random_uuid()::text"))
+  reservaId       String
+  nfeId           String
+  userId          String
+  seq             Int
+  provedor        String
+  ambiente        String
+  tpEmis          Int       @default(1)
+  chaveAcesso     String?   @db.Char(44)
+  cNF             String?   @db.Char(8)
+  dhEmi           DateTime?
+  digestValue     String?
+  xmlAssinadoPath String?
+  conteudoSha256  String    @db.Char(64)
+  focusRef        String?
+  nRec            String?
+  fase            String // TRANSMITINDO | RESPONDIDA | FECHADA
+  httpStatus      Int?
+  transporte      String?
+  cStat           Int?
+  codigoProvedor  String?   @db.VarChar(64)
+  classe          String?
+  prova           String?
+  mensagem        String?   @db.VarChar(500)
+  protocolo       String?
+  numeroLido      Int?
+  serieLida       Int?
+  transmitidaEm   DateTime
+  respondidaEm    DateTime?
+  consultadaEm    DateTime?
+  createdAt       DateTime  @default(now())
+
+  reserva NfeNumeroReserva @relation(fields: [reservaId], references: [id], onDelete: Restrict)
+
+  @@unique([reservaId, seq], map: "NfeNumeroTentativa_reserva_seq_key")
+  @@index([chaveAcesso], map: "NfeNumeroTentativa_chave_idx")
+  @@index([nfeId], map: "NfeNumeroTentativa_nfeId_idx")
+  @@index([focusRef], map: "NfeNumeroTentativa_focusRef_idx")
+}
+
+// =============================================================================
+// RESPONSÁVEL TÉCNICO POR EMPRESA (1:1 com CompanyFiscalConfig). ADITIVO: sem
+// @relation — a FK vive só no DDL (prisma/ddl/2026-09-18-company-fiscal-resp-tec.sql),
+// para CompanyFiscalConfig ficar intocado. csrtEnc é segredo (nunca sai da API).
+// =============================================================================
+model CompanyFiscalRespTec {
+  id                    String   @id @default(cuid())
+  companyFiscalConfigId String   @unique
+  userId                String
+  modo                  String   @default("PADRAO") // PADRAO | PROVEDOR | PERSONALIZADO | NENHUM
+  cnpj                  String?
+  xContato              String?
+  email                 String?
+  fone                  String?
+  idCsrt                String?
+  csrtEnc               String?
+  updatedByUserId       String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// =============================================================================
+// NF-e DE DEVOLUÇÃO (finNFe=4) — docs/fiscal-devolucao.md. ADITIVO: nenhuma
+// coluna/relação nova em NfeEmitida/NfeItem; FKs só no DDL
+// (prisma/ddl/2026-09-18-nfe-devolucao.sql). Vínculo com NfeItem é POSICIONAL
+// (devolucaoNfeId, ordem) ↔ NfeItem(nfeId, numero). ⛔ NUNCA `prisma db push`.
+// =============================================================================
+model NfeDevolucao {
+  id                   String   @id @default(cuid())
+  nfeId                String   @unique // NfeEmitida da devolução
+  userId               String // dono dos dados (dataOwnerId)
+  tipo                 String // VENDA_ENTRADA | COMPRA_SAIDA
+  fonte                String // DEXO | XML_IMPORTADO | MANUAL
+  escopoSolicitado     String // TOTAL | PARCIAL
+  // null na criação; a emissão exige true (recusa/não entrega é finNFe 5).
+  devolvidaAposEntrega Boolean?
+  confirmadoSemXml     Boolean  @default(false)
+  indFinal             String // "0" | "1"
+  origensJson          Json
+  createdByUserId      String // ator (request.user.id)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+model NfeDevolucaoItem {
+  id                    String   @id @default(cuid())
+  devolucaoNfeId        String
+  userId                String
+  ordem                 Int // det@nItem da devolução = NfeItem.numero
+  originalNfeId         String?
+  chaveAcessoOriginal   String // 44 dígitos (sem prefixo "NFe")
+  nItemOriginal         Int // det@nItem do XML AUTORIZADO da original
+  codigoOriginal        String
+  quantidadeOriginal    Decimal? @db.Decimal(15, 4)
+  valorUnitarioOriginal Decimal? @db.Decimal(15, 4)
+  quantidade            Decimal  @db.Decimal(15, 4)
+  valor                 Decimal  @db.Decimal(15, 2)
+  impostoOriginalJson   Json?
+  tributacaoJson        Json
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([devolucaoNfeId, ordem])
+  @@unique([devolucaoNfeId, chaveAcessoOriginal, nItemOriginal], map: "NfeDevolucaoItem_devol_chave_nitem_key")
+  @@index([userId, chaveAcessoOriginal, nItemOriginal], map: "NfeDevolucaoItem_user_chave_nitem_idx")
+  @@index([originalNfeId])
+}
+
+// =============================================================================
 // Caixa de mensagens (perguntas pré-venda do Mercado Livre).
 // Snapshot local alimentado por webhook (topic="questions") e pull on-demand.
 // Isolado dos fluxos de listing/order — apenas FK opcional para ProductListing

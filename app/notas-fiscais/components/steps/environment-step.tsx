@@ -3,6 +3,7 @@
 import { Control, Controller, FieldErrors, useWatch } from "react-hook-form";
 import { Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { RespTecCard } from "./resp-tec-card";
 import {
   Select,
   SelectContent,
@@ -260,6 +261,7 @@ export function FiscalEnvironmentStep({
       </div>
 
       {/* Certificado A1 — só quando o provedor é SEFAZ Direto */}
+      {process.env.NEXT_PUBLIC_NFE_RESP_TEC_EMPRESA_ENABLED === "true" && <RespTecCard key={companyId ?? "default"} companyId={companyId} userEmail={userEmail} configExists={configExists} providerName={providerName} />}
       {isSefazDirect ? (
         <CertificateUploadCard
           userEmail={userEmail}

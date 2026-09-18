@@ -1,4 +1,11 @@
 import prisma from "../lib/prisma";
+import { isFiscalFeatureOn, isNumeracaoV2ParaEmissao, isDevolucaoAtiva } from "../fiscal/flags";
+import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { NfeEmissaoV2Orchestrator } from "./nfe-emissao-v2.orchestrator";
+import type { EmitOpts, NumeracaoMetadata } from "./nfe-emissao-v2.orchestrator";
+import { NumeracaoError, tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
+import { resolverRespTecEmpresa } from "./company-fiscal-resp-tec.usecase";
+import { respTecParaPayloadSefaz } from "../fiscal/providers/nfe-provider-resolver";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { CustomerRepository } from "../repositories/customer.repository";
@@ -39,6 +46,10 @@ import {
   isNfeReemissaoRejeitadaEnabled,
 } from "../fiscal/domain/nfe-number-reuse";
 import { isNfeFreteMedidasEnabled } from "../fiscal/domain/frete";
+import {
+  normalizarCStat,
+  codigoProvedorNaoNumerico,
+} from "../fiscal/numeracao/cstat";
 import type { NfeDraftResponse } from "../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../interfaces/company-fiscal.interface";
 
@@ -51,6 +62,8 @@ export interface EmissionResult {
   chaveAcesso: string | null;
   protocolo: string | null;
   mensagem: string;
+  numeracao?: NumeracaoMetadata;
+  emAndamento?: boolean;
 }
 
 /**
@@ -88,7 +101,27 @@ export class NfeEmissionUseCase {
     this.customerRepo = new CustomerRepository();
   }
 
-  async emit(userId: string, nfeId: string): Promise<EmissionResult> {
+  private v2(): NfeEmissaoV2Orchestrator {
+    return new NfeEmissaoV2Orchestrator({validar:(d,c)=>this.validate(d,c),snapshot:c=>this.buildEmitenteSnapshot(c),
+      autorizado:async(d,c,r,xml,focusRef)=>this.handleAuthorized(d.id,d.userId,d.numero,d.serie,r.chaveAcesso!,r.protocolo!,r.dataAutorizacao??null,await createNfeProviderFromConfig(c),c,xml,{focusRef:focusRef??undefined})});
+  }
+  private async contextoV2(userId:string,nfeId:string) {
+    if(process.env.NFE_NUMERACAO_V2_ENABLED!=="true")return null;
+    const draft=await this.nfeRepo.findDraftById(userId,nfeId);if(!draft)return null;
+    const config=draft.companyFiscalConfigId?await this.configRepo.findByIdForUser(draft.companyFiscalConfigId,userId):await this.configRepo.findByUserId(userId);
+    if(!config || !isNumeracaoV2ParaEmissao(config.id,draft.modelo==="65"?"65":"55",config.providerName))return null;
+    // Probe before claim. No fallback to V1 is allowed after any V2 mutation.
+    try{await this.v2().numeros.reservaViva(userId,nfeId);}catch(e){if(tabelaFiscalAusente(e))return null;throw e;}
+    return {draft,config};
+  }
+  async consultarSituacao(userId:string,nfeId:string):Promise<EmissionResult> {
+    const ctx=await this.contextoV2(userId,nfeId);
+    if(!ctx)throw new NumeracaoError("RECURSO_INDISPONIVEL",404,"Recurso indisponível");
+    return this.v2().consultar(userId,ctx.draft,ctx.config);
+  }
+  async emit(userId: string, nfeId: string, opts:EmitOpts={}): Promise<EmissionResult> {
+    const ctx=await this.contextoV2(userId,nfeId);
+    if(ctx)return this.v2().emitir(userId,ctx.draft,ctx.config,opts);
     // ── 1. Load draft ──
     const draft = await this.nfeRepo.findDraftById(userId, nfeId);
     if (!draft) {
@@ -119,6 +152,7 @@ export class NfeEmissionUseCase {
       );
     }
     const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
+    if(draft.finalidade==="DEVOLUCAO" && isDevolucaoAtiva(config.id))throw new DevolucaoError("EXIGE_NUMERACAO_V2");
     // SEFAZ direto autentica por mTLS (certificado), nao por token. So Focus
     // exige providerToken.
     if (!isSefazDirect && !config.providerToken) {
@@ -127,6 +161,8 @@ export class NfeEmissionUseCase {
 
     // ── 3. Validate ──
     this.validate(draft, config);
+    const respTec = isSefazDirect && isFiscalFeatureOn("RESP_TEC_EMPRESA", config.id)
+      ? respTecParaPayloadSefaz(await resolverRespTecEmpresa(config)) : undefined;
 
     // Feature flag (reemissao de rejeitada reaproveitando numero). Lida uma vez
     // por emissao. Com a flag OFF, o fluxo abaixo e identico ao atual.
@@ -300,6 +336,7 @@ export class NfeEmissionUseCase {
           draft: nfeWithNumero,
           config,
           numero,
+          ...(respTec !== undefined ? { respTec } : {}),
         };
         payload = sefazPayload;
         // Audit/storage: salvamos um snapshot legível do payload de entrada
@@ -797,6 +834,7 @@ export class NfeEmissionUseCase {
     provider: any,
     config: CompanyFiscalConfig,
     xmlAutorizadoInline?: string | null,
+    extras?: {focusRef?:string},
   ): Promise<EmissionResult> {
     // Transition to AUTHORIZED
     await this.transitionStatus(nfeId, userId, "SENDING", "AUTHORIZED");
@@ -812,8 +850,9 @@ export class NfeEmissionUseCase {
         xmlAutorizadoInline,
       );
     } else if (provider.buscarXml) {
-      const xml = await provider.buscarXml(nfeId, config.providerToken!);
+      const xml = await provider.buscarXml(extras?.focusRef ?? nfeId, config.providerToken!);
       if (xml) {
+        if(extras)xmlAutorizadoInline=xml;
         xmlAutorizadoPath = await this.storage.saveXmlAutorizado(
           userId,
           nfeId,
@@ -1054,22 +1093,38 @@ export class NfeEmissionUseCase {
     numero: number,
     serie: number,
     mensagem: string,
-    cStat?: number | null,
+    // `unknown` de proposito: o Focus devolve o codigo como STRING ("974" ou
+    // "erro_validacao_schema"); o SEFAZ direto devolve numero. A normalizacao
+    // acontece aqui, na fronteira com a coluna Int? (ver fiscal/numeracao/cstat).
+    cStat?: unknown,
   ): Promise<EmissionResult> {
-    await this.forceStatus(nfeId, "REJECTED");
-
-    // Persiste o motivo (texto). Quando a feature esta ligada (coluna existe),
-    // grava tambem o cStat da rejeicao — necessario para, no retry, distinguir
-    // rejeicao reaproveitavel de denegada/duplicidade. Gated p/ manter o fluxo
-    // atual bit-a-bit identico com a flag off (e evitar erro pre-migration).
-    const rejData: Record<string, any> = { motivoRejeicao: mensagem };
-    if (isNfeReemissaoRejeitadaEnabled()) rejData.cStatRejeicao = cStat ?? null;
+    // UMA unica escrita (status + motivo + cStat). Antes eram duas: o status
+    // REJECTED era gravado e o update seguinte quebrava com o cStat em string,
+    // perdendo motivo e cStat (producao, 16/09/2026). Com cStat numerico o
+    // estado final e identico ao de antes.
+    // O cStat so e gravado com a feature ligada (coluna existe), como antes.
+    const rejData: Record<string, unknown> = {
+      status: "REJECTED",
+      motivoRejeicao: mensagem,
+    };
+    if (isNfeReemissaoRejeitadaEnabled()) {
+      rejData.cStatRejeicao = normalizarCStat(cStat);
+    }
     await (prisma as any).nfeEmitida.update({
       where: { id: nfeId },
       data: rejData,
     });
 
-    await this.nfeRepo.addAuditLog(nfeId, userId, "REJEITADA", { mensagem });
+    // Codigo nao numerico do provedor (ex.: Focus 422) nao cabe na coluna Int:
+    // fica registrado na auditoria para nao se perder. Codigo numerico segue
+    // com o mesmo payload de auditoria de sempre.
+    const codigoProvedor = codigoProvedorNaoNumerico(cStat);
+    await this.nfeRepo.addAuditLog(
+      nfeId,
+      userId,
+      "REJEITADA",
+      codigoProvedor ? { mensagem, codigoProvedor } : { mensagem },
+    );
 
     return {
       success: false,
@@ -1218,8 +1273,10 @@ export class NfeEmissionUseCase {
 function redactConfig(
   config: CompanyFiscalConfig,
 ): Partial<CompanyFiscalConfig> {
-  const { certificadoSenhaEnc, providerToken, ...rest } = config as any;
+  const { certificadoSenhaEnc, providerToken, respTec, csrtEnc, ...rest } = config as any;
   void certificadoSenhaEnc;
   void providerToken;
+  void respTec;
+  void csrtEnc;
   return rest;
 }

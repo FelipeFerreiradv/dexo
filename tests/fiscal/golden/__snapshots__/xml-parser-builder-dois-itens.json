@@ -1,0 +1,175 @@
+{
+  "chaveAcesso": "35260511222333000181550010000000071876543213",
+  "versao": "4.00",
+  "ide": {
+    "cUF": 35,
+    "natOp": "VENDA DE MERCADORIA",
+    "mod": "55",
+    "serie": 1,
+    "nNF": 7,
+    "dhEmi": "2026-05-14T15:00:00-03:00",
+    "dhSaiEnt": null,
+    "tpNF": "1",
+    "tpAmb": "2",
+    "finNFe": "1",
+    "tpEmis": 1,
+    "cMunFG": "3550308",
+    "cDV": "3"
+  },
+  "emit": {
+    "CNPJ": "11222333000181",
+    "CPF": null,
+    "xNome": "EMPRESA TESTE LTDA",
+    "xFant": "EMPRESA TESTE",
+    "IE": "123456789",
+    "IM": null,
+    "CNAE": null,
+    "CRT": "1",
+    "ender": {
+      "xLgr": "RUA TESTE",
+      "nro": "100",
+      "xCpl": null,
+      "xBairro": "CENTRO",
+      "cMun": "3550308",
+      "xMun": "SAO PAULO",
+      "UF": "SP",
+      "CEP": "01000000",
+      "cPais": "1058",
+      "xPais": "BRASIL",
+      "fone": null
+    }
+  },
+  "dest": {
+    "CNPJ": "00000000000100",
+    "CPF": null,
+    "idEstrangeiro": null,
+    "xNome": "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL",
+    "IE": null,
+    "indIEDest": "2",
+    "email": null,
+    "ender": {
+      "xLgr": "AV CLIENTE",
+      "nro": "200",
+      "xCpl": null,
+      "xBairro": "VILA",
+      "cMun": "3550308",
+      "xMun": "SAO PAULO",
+      "UF": "SP",
+      "CEP": "04000000",
+      "cPais": "1058",
+      "xPais": "BRASIL",
+      "fone": null
+    }
+  },
+  "itens": [
+    {
+      "nItem": 1,
+      "cProd": "PROD-001",
+      "cEAN": "SEM GTIN",
+      "xProd": "PRODUTO TESTE",
+      "NCM": "87089990",
+      "CFOP": "5102",
+      "uCom": "UN",
+      "qCom": 1,
+      "vUnCom": 100,
+      "vProd": 100,
+      "vDesc": 0,
+      "CEST": null,
+      "imposto": {
+        "ICMS": {
+          "ICMSSN102": {
+            "orig": "0",
+            "CSOSN": "102"
+          }
+        },
+        "PIS": {
+          "PISOutr": {
+            "CST": "49",
+            "vBC": "0.00",
+            "pPIS": "0.00",
+            "vPIS": "0.00"
+          }
+        },
+        "COFINS": {
+          "COFINSOutr": {
+            "CST": "49",
+            "vBC": "0.00",
+            "pCOFINS": "0.00",
+            "vCOFINS": "0.00"
+          }
+        }
+      }
+    },
+    {
+      "nItem": 2,
+      "cProd": "PROD-002",
+      "cEAN": "SEM GTIN",
+      "xProd": "OUTRO ITEM",
+      "NCM": "87089990",
+      "CFOP": "5102",
+      "uCom": "UN",
+      "qCom": 1,
+      "vUnCom": 100,
+      "vProd": 100,
+      "vDesc": 0,
+      "CEST": null,
+      "imposto": {
+        "ICMS": {
+          "ICMSSN102": {
+            "orig": "0",
+            "CSOSN": "102"
+          }
+        },
+        "PIS": {
+          "PISOutr": {
+            "CST": "49",
+            "vBC": "0.00",
+            "pPIS": "0.00",
+            "vPIS": "0.00"
+          }
+        },
+        "COFINS": {
+          "COFINSOutr": {
+            "CST": "49",
+            "vBC": "0.00",
+            "pCOFINS": "0.00",
+            "vCOFINS": "0.00"
+          }
+        }
+      }
+    }
+  ],
+  "total": {
+    "vBC": 0,
+    "vICMS": 0,
+    "vProd": 100,
+    "vFrete": 0,
+    "vSeg": 0,
+    "vDesc": 0,
+    "vIPI": 0,
+    "vPIS": 0,
+    "vCOFINS": 0,
+    "vOutro": 0,
+    "vNF": 100
+  },
+  "transp": {
+    "modFrete": "9",
+    "vol": [],
+    "transporta": null
+  },
+  "pag": [
+    {
+      "tPag": "90",
+      "vPag": 0
+    }
+  ],
+  "infCpl": null,
+  "protNFe": {
+    "chNFe": "35260511222333000181550010000000071876543213",
+    "nProt": "135260000000777",
+    "dhRecbto": "2026-05-14T15:00:31-03:00",
+    "cStat": 100,
+    "xMotivo": "Autorizado o uso da NF-e",
+    "digVal": "YWJjZGU="
+  }
+}

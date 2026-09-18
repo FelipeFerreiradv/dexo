@@ -1,0 +1,19 @@
+{
+  "resultado": {
+    "success": false,
+    "chaveAcesso": "{{CHAVE_ESPERADA}}",
+    "protocolo": null,
+    "dataAutorizacao": null,
+    "status": "rejeitada",
+    "codigoStatus": 225,
+    "mensagem": "Rejeicao: Falha no Schema XML da NFe",
+    "xmlAutorizado": null,
+    "providerRef": "nfe-golden-1"
+  },
+  "envios": [
+    {
+      "endpointUrl": "https://homologacao.nfe.fazenda.sp.gov.br/ws/nfeautorizacao4.asmx",
+      "soapAction": "http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4/nfeAutorizacaoLote"
+    }
+  ]
+}

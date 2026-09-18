@@ -1,4 +1,9 @@
 import prisma from "../lib/prisma";
+import { isDevolucaoAtiva, isNumeracaoV2ParaEmissao } from "../fiscal/flags";
+import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
+import { NfeDevolucaoRepository } from "../fiscal/devolucao/devolucao.repository";
+import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import {
@@ -106,8 +111,12 @@ export class NfeCancelamentoUseCase {
           modelo: nfe.modelo === "65" ? "65" : "55",
         });
 
+    let v2=isNumeracaoV2ParaEmissao(config.id,nfe.modelo==="65"?"65":"55",config.providerName);
+    const numeros=new NfeNumeracaoService();
+    if(v2)try{await numeros.reservaViva(userId,nfeId);}catch(e){if(tabelaFiscalAusente(e))v2=false;else throw e;}
+    const executeCancel=async():Promise<CancelResult>=>{
     const result = await provider.cancelar({
-      ref: nfeId,
+      ref: v2?(await numeros.focusRefAutorizada(userId,nfeId))??nfeId:nfeId,
       chaveAcesso: nfe.chaveAcesso,
       protocolo: nfe.protocoloAutorizacao,
       justificativa: justificativa.trim(),
@@ -144,6 +153,7 @@ export class NfeCancelamentoUseCase {
       justificativa: justificativa.trim(),
       protocolo: result.protocolo,
     });
+    if(v2)await numeros.marcarCancelado(userId,nfeId);
 
     return {
       success: true,
@@ -152,5 +162,16 @@ export class NfeCancelamentoUseCase {
       protocolo: result.protocolo,
       mensagem: "NF-e cancelada com sucesso",
     };
+    };
+    if(isDevolucaoAtiva(config.id)) {
+      const devolucao=new NfeDevolucaoRepository();
+      return prisma.$transaction(async tx=>{
+        await devolucao.lockOrigens(tx,userId,[nfe.chaveAcesso]);
+        const linhas=await devolucao.linhasSaldo(userId,nfe.chaveAcesso,tx);
+        if(linhas.some(l=>["AUTHORIZED","VALIDATING","SIGNING","SENDING"].includes(l.statusDevolucao)))throw new DevolucaoError("ORIGINAL_COM_DEVOLUCAO");
+        return executeCancel();
+      },{timeout:600000,maxWait:5000});
+    }
+    return executeCancel();
   }
 }

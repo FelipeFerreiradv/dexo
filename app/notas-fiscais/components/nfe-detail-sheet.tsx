@@ -30,6 +30,8 @@ import {
 } from "@/components/ui/table";
 import { getApiBaseUrl } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
+import { DevolucaoActions } from "./devolucao-actions";
+import { NumeracaoActions } from "./numeracao-actions";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
 
@@ -280,6 +282,8 @@ export function NfeDetailSheet({
             {/* ── Body ── */}
             <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-8 pt-6">
               {/* Ações rápidas */}
+              <DevolucaoActions nota={nfe} email={session?.user?.email??""}/>
+              <NumeracaoActions id={nfe.id} email={session?.user?.email??""} numeracao={nfe.numeracao} onChanged={fetchNfe}/>
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"

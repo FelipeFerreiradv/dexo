@@ -37,6 +37,8 @@ import { budgetRoutes } from "../routes/budget.routes";
 import { unidadeRoutes } from "../routes/unidade.routes";
 import { bankAccountRoutes } from "../routes/bank-account.routes";
 import { fiscalRoutes } from "../routes/fiscal.routes";
+import { fiscalRespTecRoutes } from "../routes/fiscal-resp-tec.routes";
+import { fiscalDevolucaoRoutes } from "../routes/fiscal-devolucao.routes";
 import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
 import { whatsappRoutes } from "../routes/whatsapp.routes";
@@ -248,6 +250,8 @@ api.register(bankAccountRoutes, {
   prefix: "/bank-accounts",
 });
 
+api.register(fiscalRespTecRoutes, { prefix: "/fiscal" });
+api.register(fiscalDevolucaoRoutes, { prefix: "/fiscal" });
 api.register(fiscalRoutes, {
   prefix: "/fiscal",
 });

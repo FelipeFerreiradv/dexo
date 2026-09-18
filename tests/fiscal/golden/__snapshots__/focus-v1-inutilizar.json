@@ -1,0 +1,144 @@
+{
+  "200-autorizado-102": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "autorizado",
+        "status_sefaz": "102",
+        "mensagem_sefaz": "Inutilizacao de numero homologado",
+        "protocolo_sefaz": "135260000000010"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/inutilizacao",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "cnpj": "11222333000181",
+        "serie": "1",
+        "numero_inicial": "8",
+        "numero_final": "10",
+        "justificativa": "Inutilizacao de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "protocolo": null,
+      "mensagem": "Inutilizacao de numero homologado"
+    }
+  },
+  "200-erro-autorizacao": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "erro_autorizacao",
+        "status_sefaz": "241",
+        "mensagem_sefaz": "Rejeicao: Um numero da faixa ja foi utilizado"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/inutilizacao",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "cnpj": "11222333000181",
+        "serie": "1",
+        "numero_inicial": "8",
+        "numero_final": "10",
+        "justificativa": "Inutilizacao de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "protocolo": null,
+      "mensagem": "Rejeicao: Um numero da faixa ja foi utilizado"
+    }
+  },
+  "422-json": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "codigo": "requisicao_invalida",
+        "mensagem": "numero_final menor que numero_inicial"
+      }
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/inutilizacao",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "cnpj": "11222333000181",
+        "serie": "1",
+        "numero_inicial": "8",
+        "numero_final": "10",
+        "justificativa": "Inutilizacao de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "protocolo": null,
+      "mensagem": "numero_final menor que numero_inicial"
+    }
+  },
+  "401-html": {
+    "stub": {
+      "status": 401,
+      "texto": "<html><body>HTTP Basic: Access denied.\n</body></html>",
+      "contentType": "text/html"
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/inutilizacao",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "cnpj": "11222333000181",
+        "serie": "1",
+        "numero_inicial": "8",
+        "numero_final": "10",
+        "justificativa": "Inutilizacao de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "protocolo": null,
+      "mensagem": "{{JSON_PARSE_ERRO}}"
+    }
+  },
+  "rede-lanca": {
+    "stub": {
+      "lancar": "TypeError: fetch failed"
+    },
+    "requisicao": {
+      "metodo": "POST",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/inutilizacao",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "cnpj": "11222333000181",
+        "serie": "1",
+        "numero_inicial": "8",
+        "numero_final": "10",
+        "justificativa": "Inutilizacao de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "protocolo": null,
+      "mensagem": "fetch failed"
+    }
+  }
+}

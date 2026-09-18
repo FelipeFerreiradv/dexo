@@ -54,6 +54,9 @@ import {
 } from "@/components/ui/tooltip";
 import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
+import { DevolucaoActions } from "./devolucao-actions";
+import { DevolucaoManual } from "./devolucao-manual";
+import { NumeracaoActions, type NumeracaoView } from "./numeracao-actions";
 import { NfeDetailSheet } from "./nfe-detail-sheet";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
@@ -64,6 +67,8 @@ const REEMISSAO_REJEITADA_ENABLED =
   process.env.NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED === "true";
 
 interface NfeListItem {
+  devolucaoDisponivel?:boolean;
+  numeracao?:NumeracaoView|null;
   id: string;
   orderId: string | null;
   ambiente: string;
@@ -611,6 +616,7 @@ export function NfeList() {
       {/* Table */}
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
+          <DevolucaoManual email={session?.user?.email??""}/>
           <SectionHeading
             eyebrow="Notas Fiscais · Registro"
             title="Notas"
@@ -728,6 +734,8 @@ export function NfeList() {
                             >
                               <Eye className="size-4" />
                             </Button>
+                            <DevolucaoActions nota={nota} email={session?.user?.email??""}/>
+                            <NumeracaoActions id={nota.id} email={session?.user?.email??""} numeracao={nota.numeracao} onChanged={fetchNotas}/>
                             {nota.hasXml && (
                               <Button
                                 variant="ghost"

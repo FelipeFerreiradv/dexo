@@ -1,0 +1,125 @@
+{
+  "chaveAcesso": "35260511222333000181650010000001231100000072",
+  "versao": "4.00",
+  "ide": {
+    "cUF": 35,
+    "natOp": "VENDA DE MERCADORIA",
+    "mod": "65",
+    "serie": 1,
+    "nNF": 123,
+    "dhEmi": "2026-05-14T15:00:00-03:00",
+    "dhSaiEnt": null,
+    "tpNF": "1",
+    "tpAmb": "2",
+    "finNFe": "1",
+    "tpEmis": 1,
+    "cMunFG": "3550308",
+    "cDV": "2"
+  },
+  "emit": {
+    "CNPJ": "11222333000181",
+    "CPF": null,
+    "xNome": "EMPRESA TESTE LTDA",
+    "xFant": "EMPRESA TESTE",
+    "IE": "123456789",
+    "IM": null,
+    "CNAE": null,
+    "CRT": "1",
+    "ender": {
+      "xLgr": "RUA TESTE",
+      "nro": "100",
+      "xCpl": null,
+      "xBairro": "CENTRO",
+      "cMun": "3550308",
+      "xMun": "SAO PAULO",
+      "UF": "SP",
+      "CEP": "01000000",
+      "cPais": "1058",
+      "xPais": "BRASIL",
+      "fone": null
+    }
+  },
+  "dest": {
+    "CNPJ": null,
+    "CPF": null,
+    "idEstrangeiro": null,
+    "xNome": "",
+    "IE": null,
+    "indIEDest": "9",
+    "email": null,
+    "ender": null
+  },
+  "itens": [
+    {
+      "nItem": 1,
+      "cProd": "PROD-001",
+      "cEAN": "SEM GTIN",
+      "xProd": "NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL",
+      "NCM": "87089990",
+      "CFOP": "5102",
+      "uCom": "UN",
+      "qCom": 1,
+      "vUnCom": 100,
+      "vProd": 100,
+      "vDesc": 0,
+      "CEST": null,
+      "imposto": {
+        "ICMS": {
+          "ICMSSN102": {
+            "orig": "0",
+            "CSOSN": "102"
+          }
+        },
+        "PIS": {
+          "PISOutr": {
+            "CST": "49",
+            "vBC": "0.00",
+            "pPIS": "0.00",
+            "vPIS": "0.00"
+          }
+        },
+        "COFINS": {
+          "COFINSOutr": {
+            "CST": "49",
+            "vBC": "0.00",
+            "pCOFINS": "0.00",
+            "vCOFINS": "0.00"
+          }
+        }
+      }
+    }
+  ],
+  "total": {
+    "vBC": 0,
+    "vICMS": 0,
+    "vProd": 100,
+    "vFrete": 0,
+    "vSeg": 0,
+    "vDesc": 0,
+    "vIPI": 0,
+    "vPIS": 0,
+    "vCOFINS": 0,
+    "vOutro": 0,
+    "vNF": 100
+  },
+  "transp": {
+    "modFrete": "9",
+    "vol": [],
+    "transporta": null
+  },
+  "pag": [
+    {
+      "tPag": "17",
+      "vPag": 100
+    }
+  ],
+  "infCpl": null,
+  "protNFe": {
+    "chNFe": "35260511222333000181650010000001231100000072",
+    "nProt": "135260000000777",
+    "dhRecbto": "2026-05-14T15:00:31-03:00",
+    "cStat": 100,
+    "xMotivo": "Autorizado o uso da NF-e",
+    "digVal": "YWJjZGU="
+  }
+}

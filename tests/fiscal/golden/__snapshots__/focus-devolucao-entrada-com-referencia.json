@@ -1,0 +1,74 @@
+{
+  "natureza_operacao": "DEVOLUCAO DE VENDA",
+  "forma_pagamento": "0",
+  "tipo_documento": "0",
+  "local_destino": "1",
+  "finalidade_emissao": "4",
+  "consumidor_final": "1",
+  "presenca_comprador": "1",
+  "numero_nota": "101",
+  "serie": "1",
+  "cnpj_emitente": "11222333000181",
+  "nome_emitente": "EMPRESA TESTE LTDA",
+  "nome_fantasia_emitente": "EMPRESA TESTE",
+  "inscricao_estadual_emitente": "123456789",
+  "logradouro_emitente": "RUA TESTE",
+  "numero_emitente": "100",
+  "complemento_emitente": "",
+  "bairro_emitente": "CENTRO",
+  "municipio_emitente": "SAO PAULO",
+  "codigo_municipio_emitente": "3550308",
+  "uf_emitente": "SP",
+  "cep_emitente": "01000000",
+  "codigo_pais_emitente": "1058",
+  "pais_emitente": "BRASIL",
+  "regime_tributario_emitente": "1",
+  "cpf_destinatario": "12345678909",
+  "nome_destinatario": "CONSUMIDOR DEVOLUCAO",
+  "logradouro_destinatario": "RUA DO CONSUMIDOR",
+  "numero_destinatario": "12",
+  "complemento_destinatario": "APTO 3",
+  "bairro_destinatario": "JARDIM",
+  "municipio_destinatario": "SAO PAULO",
+  "codigo_municipio_destinatario": "3550308",
+  "uf_destinatario": "SP",
+  "cep_destinatario": "04000000",
+  "codigo_pais_destinatario": "1058",
+  "pais_destinatario": "BRASIL",
+  "indicador_inscricao_estadual_destinatario": "9",
+  "items": [
+    {
+      "numero_item": "1",
+      "codigo_produto": "PROD-001",
+      "descricao": "PECA DEVOLVIDA",
+      "codigo_ncm": "87089990",
+      "cfop": "1202",
+      "unidade_comercial": "UN",
+      "quantidade_comercial": "1",
+      "valor_unitario_comercial": "100.0000",
+      "valor_bruto": "100.00",
+      "unidade_tributavel": "UN",
+      "quantidade_tributavel": "1",
+      "valor_unitario_tributavel": "100.0000",
+      "origem": "0",
+      "inclui_no_total": "1",
+      "icms_situacao_tributaria": "102",
+      "icms_origem": "0",
+      "pis_situacao_tributaria": "49",
+      "cofins_situacao_tributaria": "49"
+    }
+  ],
+  "modalidade_frete": "9",
+  "formas_pagamento": [
+    {
+      "forma_pagamento": "90",
+      "valor_pagamento": "0.00"
+    }
+  ],
+  "notas_referenciadas": [
+    {
+      "chave_nfe": "35260811222333000181550010000001001876543219"
+    }
+  ],
+  "informacoes_adicionais_contribuinte": "Devolucao referente a NF-e 35260811222333000181550010000001001876543219"
+}
