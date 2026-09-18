@@ -48,9 +48,6 @@ const donorIds = [
 async function main() {
   const live = await prisma.$transaction(
     async (tx) => {
-      await tx.$executeRawUnsafe(
-        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
-      );
       const [
         products,
         listings,
@@ -155,7 +152,11 @@ async function main() {
         activeBulkJobs,
       };
     },
-    { maxWait: 30_000, timeout: 180_000 },
+    {
+      maxWait: 30_000,
+      timeout: 180_000,
+      isolationLevel: "RepeatableRead",
+    },
   );
 
   if (
