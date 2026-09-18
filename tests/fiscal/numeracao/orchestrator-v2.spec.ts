@@ -1,0 +1,69 @@
+import {beforeEach,afterEach,describe,it,expect,vi} from "vitest";
+import {NfeEmissaoV2Orchestrator} from "../../../app/usecases/nfe-emissao-v2.orchestrator";
+import {NfeNumeracaoService} from "../../../app/fiscal/numeracao/numeracao.service";
+import {FakeNumeracaoRepository} from "../__harness__/fake-numeracao-repository";
+import {makeDraft,makeConfig} from "../__helpers__/test-draft";
+import {montarChave,chaveToString} from "../../../app/fiscal/sefaz/chave-acesso";
+import type {NfeRepository} from "../../../app/repositories/nfe.repository";
+import type {FiscalStorageService} from "../../../app/fiscal/storage/fiscal-storage.service";
+import type {NfeDraftResponse} from "../../../app/interfaces/nfe.interface";
+const state=vi.hoisted(()=>({code:100,calls:[] as number[],key:"",db:null as unknown,config:null as unknown,consulta:217,failPrepare:false,failSave:false,claimLose:false}));
+vi.mock("../../../app/lib/prisma",()=>({default:{$executeRawUnsafe:vi.fn(async(sql:string,...args:unknown[])=>{
+  const db=state.db as FakeNumeracaoRepository;
+  if(sql.includes('SET "status"=\'VALIDATING\'' )){if(state.claimLose)return 0;const n=db.state.notas.get(String(args[0]));if(!n || !["DRAFT","REJECTED"].includes(n.status))return 0;n.status="VALIDATING";return 1;}
+  if(sql.includes("'DRAFT'")){const n=db.state.notas.get(String(args[1]));if(n && n.status==="VALIDATING")n.status="DRAFT";return 1;}return 1;
+}),$queryRawUnsafe:vi.fn(async()=>[{protocoloAutorizacao:"protocol"}])}}));
+vi.mock("../../../app/repositories/company-fiscal.repository",()=>({CompanyFiscalRepository:class {findByIdForUser=async()=>state.config;}}));
+vi.mock("../../../app/usecases/company-fiscal-resp-tec.usecase",()=>({resolverRespTecEmpresa:async()=>({origem:"OMITIR"})}));
+vi.mock("../../../app/fiscal/providers/sefaz-direct.provider",()=>({SefazDirectProvider:class {
+  prepararEmissao(p:{numero:number;cNF:string;dhEmi:Date}){if(state.failPrepare)throw new Error("falha local");return {...p,chaveAcesso:state.key,signedXml:"<signed/>",digestValue:"digest",modelo:"55",tpEmis:1};}
+  async transmitirPreparada(p:{numero:number}){state.calls.push(p.numero);return {transporte:state.code===0?"TIMEOUT":null,httpStatus:200,loteCStat:104,loteXMotivo:"",protCStat:state.code||null,protXMotivo:"resposta",nProt:state.code===100?"protocol":null,dhRecbto:new Date(),nRec:null,chNFe:state.key,protNFeXml:null,xmlAutorizado:null};}
+  async consultarDetalhado(){return {transporte:null,httpStatus:200,cStat:state.consulta,xMotivo:"consulta",nProt:state.consulta===100?"protocol":null,dhRecbto:new Date(),digVal:"digest",chNFe:state.key,protNFeXml:null};}
+}}));
+vi.mock("../../../app/fiscal/providers/provider-factory",async()=>{const {SefazDirectProvider}=await import("../../../app/fiscal/providers/sefaz-direct.provider");return {createNfeProviderFromConfig:async(c:{providerName:string})=>c.providerName==="SEFAZ_DIRECT"?new SefazDirectProvider({} as never):{}};});
+vi.mock("../../../app/fiscal/providers/focus-nfe-v2.client",()=>({FocusNfeV2Client:class {
+  async emitir(p:{numero:string|number}){state.calls.push(Number(p.numero));return {httpStatus:state.code===100?201:422,transporte:null,retryAfterMs:null,corpo:{status:state.code===100?"autorizado":"erro_autorizacao",status_sefaz:String(state.code),chave_nfe:state.key,protocolo:state.code===100?"protocol":null}};}
+  async consultar(){return {httpStatus:404,transporte:null,retryAfterMs:null,corpo:{codigo:"nao_encontrado"}};}
+}}));
+
+function setup(providerName:"SEFAZ_DIRECT"|"FOCUS_NFE") {
+  const db=new FakeNumeracaoRepository();state.db=db;
+  const config=makeConfig({providerName,providerToken:"test",isDefault:true});state.config=config;
+  const base=makeDraft({userId:config.userId,companyFiscalConfigId:config.id,status:"DRAFT",numero:-1,modelo:"55",serie:1});
+  const key={cfc:config.id,ambiente:config.ambiente,modelo:"55",serie:1};
+  const draft=(id:string)=>({...base,...db.state.notas.get(id),id,updatedAt:new Date()}) as NfeDraftResponse;
+  const seed=(id:string)=>db.state.notas.set(id,{...base,id,key,numero:-1,status:"DRAFT"});
+  const service=new NfeNumeracaoService(db);
+  const storage={saveXmlTentativa:async()=>{if(state.failSave)throw new Error("disco");return "/tmp/signed.xml";}} as unknown as FiscalStorageService;
+  const uc=new NfeEmissaoV2Orchestrator({validar:()=>{},snapshot:()=>({}),autorizado:vi.fn(async()=>({} as never))},service,{findDraftById:async(_u:string,id:string)=>draft(id)} as NfeRepository,storage);
+  const emit=async(id:string)=>{const n=db.state.notas.get(id)!;const proximo=n.numero>0?n.numero:([...db.state.sequences.values()][0]?.proximoNumero??((db.state.pisos.values().next().value??0)+1));state.key=chaveToString(montarChave({uf:"SP",ano:2026,mes:9,cnpj:config.cnpj,modelo:"55",serie:1,numero:proximo,tpEmis:1,cNF:"87654321"}));return uc.emitir(config.userId,draft(id),config);};
+  return {db,config,service,uc,draft,seed,emit};
+}
+beforeEach(()=>{state.code=100;state.calls=[];state.consulta=217;state.failPrepare=false;state.failSave=false;state.claimLose=false;vi.stubEnv("NFE_DEVOLUCAO_ENABLED","false");});
+afterEach(()=>{vi.unstubAllEnvs();});
+describe.each(["SEFAZ_DIRECT","FOCUS_NFE"] as const)("orquestração %s",provider=>{
+  it("100 autorizada → 101 rejeitada → retry 101 autorizada → próxima 102",async()=>{
+    const w=setup(provider);w.db.state.pisos.set(`${w.config.userId}:${JSON.stringify([w.config.id,"HOMOLOGACAO","55",1])}`,99);
+    w.seed("a");expect((await w.emit("a")).numero).toBe(100);
+    w.seed("b");state.code=974;expect((await w.emit("b")).status).toBe("REJECTED");
+    const retry=w.draft("b");retry.naturezaOperacao="VENDA CORRIGIDA";
+    state.code=100;expect((await w.uc.emitir(w.config.userId,retry,w.config)).numero).toBe(101);
+    w.seed("c");expect((await w.emit("c")).numero).toBe(102);expect(state.calls).toEqual([100,101,101,102]);
+  });
+  it("duplo clique transmite uma única vez",async()=>{
+    const w=setup(provider);w.seed("a");await Promise.all([w.emit("a"),w.emit("a")]);expect(state.calls).toHaveLength(1);
+  });
+  it("replay autorizado não transmite",async()=>{const w=setup(provider);w.seed("a");await w.emit("a");await w.emit("a");expect(state.calls).toHaveLength(1);});
+  it("repetição sem correção é bloqueada antes do claim",async()=>{const w=setup(provider);w.seed("a");state.code=974;await w.emit("a");await expect(w.emit("a")).rejects.toMatchObject({code:"NUMERACAO_REPETICAO"});expect(state.calls).toHaveLength(1);});
+});
+it("falha local ou de armazenamento não cria tentativa nem transmite",async()=>{
+  for(const falha of ["failPrepare","failSave"] as const){const w=setup("SEFAZ_DIRECT");w.seed("a");state[falha]=true;await expect(w.emit("a")).rejects.toThrow();expect(w.db.state.tentativas.size).toBe(0);expect(w.db.state.notas.get("a")?.status).toBe("DRAFT");state[falha]=false;}
+  expect(state.calls).toHaveLength(0);
+});
+it("timeout bloqueia reenvio até consulta madura; mantém o número",async()=>{
+  const w=setup("SEFAZ_DIRECT");w.seed("a");state.code=0;await w.emit("a");expect((await w.service.reservaViva(w.config.userId,"a"))?.estado).toBe("INCERTO");
+  await w.emit("a");expect(state.calls).toHaveLength(1);
+  for(const t of w.db.state.tentativas.values())t.transmitidaEm=new Date(Date.now()-1000000);
+  await w.uc.consultar(w.config.userId,w.draft("a"),w.config);
+  expect((await w.service.reservaViva(w.config.userId,"a"))?.estado).toBe("RESERVADO");expect(state.calls).toHaveLength(1);
+});

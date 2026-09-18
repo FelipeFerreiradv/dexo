@@ -1,4 +1,9 @@
 import prisma from "../lib/prisma";
+import { numeroPlaceholderRascunho } from "../fiscal/domain/draft-number";
+import { attachFiscalLista } from "../fiscal/numeracao/metadata";
+import { isDevolucaoAtiva } from "../fiscal/flags";
+import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 import { normalizeSku } from "../lib/sku";
 import { isCodeLikeQuery } from "./product-search-terms";
 import { lookupCStat } from "../fiscal/sefaz/cstat-mapper";
@@ -226,8 +231,12 @@ export class NfeRepository {
     userId: string,
     modelo: "55" | "65" = "55",
   ): Promise<NfeDraftResponse | null> {
+    let excluidos:string[]=[];
+    if(process.env.NFE_DEVOLUCAO_ENABLED==="true") {
+      try{const rows=await prisma.$queryRawUnsafe<Array<{nfeId:string;companyFiscalConfigId:string}>>(`SELECT d."nfeId",n."companyFiscalConfigId" FROM "NfeDevolucao" d JOIN "NfeEmitida" n ON n."id"=d."nfeId" WHERE d."userId"=$1 AND n."status"='DRAFT'`,userId);excluidos=rows.filter(r=>isDevolucaoAtiva(r.companyFiscalConfigId)).map(r=>r.nfeId);}catch(e){if(!tabelaFiscalAusente(e))throw e;}
+    }
     const row = await (prisma as any).nfeEmitida.findFirst({
-      where: { userId, status: "DRAFT", modelo },
+      where: { userId, status: "DRAFT", modelo,...(excluidos.length?{id:{notIn:excluidos}}:{}) },
       orderBy: { updatedAt: "desc" },
       include: { itens: { orderBy: { numero: "asc" } } },
     });
@@ -254,7 +263,7 @@ export class NfeRepository {
         // Multi-CNPJ: emitente resolvido pelo usecase (null = padrão).
         companyFiscalConfigId: input.companyFiscalConfigId ?? null,
         serie: input.serie ?? 1,
-        numero: -(draftCount + 1), // placeholder negativo, será atribuído na emissão
+        numero: numeroPlaceholderRascunho(draftCount), // placeholder negativo, será atribuído na emissão
         tipoOperacao: "SAIDA",
         finalidade: "NORMAL",
         destinoOperacao: "INTERNA",
@@ -330,6 +339,14 @@ export class NfeRepository {
     id: string,
     input: NfeDraftUpdateInput,
   ): Promise<NfeDraftResponse> {
+    if(process.env.NFE_DEVOLUCAO_ENABLED==="true") {
+      let rows:Array<{companyFiscalConfigId:string}>=[];
+      try{rows=await prisma.$queryRawUnsafe<Array<{companyFiscalConfigId:string}>>(`SELECT n."companyFiscalConfigId" FROM "NfeEmitida" n JOIN "NfeDevolucao" d ON d."nfeId"=n."id" WHERE n."id"=$1 AND n."userId"=$2`,id,userId);}catch(e){if(!tabelaFiscalAusente(e))throw e;}
+      if(rows[0] && isDevolucaoAtiva(rows[0].companyFiscalConfigId)) {
+        const protegidos=["itens","totaisJson","notasReferenciadasJson","pagamentosJson","duplicatasJson","finalidade","tipoOperacao","destinoOperacao","companyFiscalConfigId"] as const;
+        if(protegidos.some(k=>input[k]!==undefined))throw new DevolucaoError("RASCUNHO_ALTERADO");
+      }
+    }
     // Build update data — only set fields that were provided. A guarda atomica
     // abaixo (updateMany condicional a userId + status) substitui a antiga
     // pre-checagem de posse: uma linha de outro tenant nunca casa o where.
@@ -719,6 +736,7 @@ export class NfeRepository {
           // So seleciona a coluna nova quando a feature esta ligada — com a flag
           // OFF o app roda sem depender da migration (coluna pode nao existir).
           ...(reemissaoEnabled ? { cStatRejeicao: true } : {}),
+          ...((process.env.NFE_NUMERACAO_V2_ENABLED==="true" || process.env.NFE_DEVOLUCAO_ENABLED==="true")?{companyFiscalConfigId:true}:{}),
         },
       }),
       (prisma as any).nfeEmitida.count({ where }),
@@ -739,6 +757,7 @@ export class NfeRepository {
         finalidade: r.finalidade,
         naturezaOperacao: r.naturezaOperacao,
         destinatarioNome: dest?.nome ?? "",
+        ...((process.env.NFE_NUMERACAO_V2_ENABLED==="true" || process.env.NFE_DEVOLUCAO_ENABLED==="true")?{companyFiscalConfigId:r.companyFiscalConfigId}:{}),
         destinatarioCpfCnpj: dest?.cpfCnpj ?? "",
         totalNota: totais?.totalNota ?? 0,
         status: r.status,
@@ -759,7 +778,7 @@ export class NfeRepository {
     });
 
     return {
-      notas,
+      notas:await attachFiscalLista(userId,notas),
       page: query.page,
       limit: query.limit,
       total,

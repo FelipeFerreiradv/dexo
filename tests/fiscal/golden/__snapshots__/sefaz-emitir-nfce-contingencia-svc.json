@@ -1,0 +1,14 @@
+{
+  "resultado": {
+    "success": false,
+    "chaveAcesso": null,
+    "protocolo": null,
+    "dataAutorizacao": null,
+    "status": "erro",
+    "codigoStatus": null,
+    "mensagem": "NFC-e (modelo 65) nao suporta contingencia SVC — emissao deve ser online",
+    "xmlAutorizado": null,
+    "providerRef": "nfe-golden-1"
+  },
+  "envios": []
+}

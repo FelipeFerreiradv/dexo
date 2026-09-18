@@ -1,0 +1,7 @@
+{
+  "vazio": "XML NFe vazio ou invalido",
+  "semNFe": "XML nao contem <NFe> — verifique o root element",
+  "semInfNFe": "XML NFe sem <infNFe>",
+  "semDest55": "XML NFe sem <dest>",
+  "xxe": "Falha ao parsear XML NFe: External entities are not supported"
+}

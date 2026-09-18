@@ -5,6 +5,12 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
 import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
+import { NumeracaoError } from "../fiscal/numeracao/numeracao.errors";
+import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { attachFiscalLista } from "../fiscal/numeracao/metadata";
+import { isDevolucaoAtiva } from "../fiscal/flags";
+import { NfeDevolucaoUseCase } from "../usecases/nfe-devolucao.usecase";
+import { calcularDevolucao } from "../fiscal/devolucao/emissao";
 import { NfeListingUseCase } from "../usecases/nfe-listing.usecase";
 import { NfeCancelamentoUseCase } from "../usecases/nfe-cancelamento.usecase";
 import { NfeInutilizacaoUseCase } from "../usecases/nfe-inutilizacao.usecase";
@@ -137,6 +143,8 @@ export function sanitizeFiscalConfig(
   delete safe.certificadoPath;
   delete safe.providerToken;
   delete safe.cscToken;
+  delete safe.respTec;
+  delete safe.csrtEnc;
   return safe;
 }
 
@@ -243,6 +251,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const config = await companyFiscal.getByUserId(userId);
         return reply.status(200).send({ config: sanitizeFiscalConfig(config) });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -263,6 +273,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const config = await companyFiscal.upsert(userId, body);
         return reply.status(200).send({ config: sanitizeFiscalConfig(config) });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error
             ? error.message
@@ -308,6 +320,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           cnpjMatched: result.cnpjMatched ?? false,
         });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         request.log?.error?.(error);
         // Limites do multipart (ex.: muitas partes) lançados pelo próprio
         // iterador escapam o try interno: mapeamos para 413 em vez de 500.
@@ -385,6 +399,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           companies: companies.map((c) => sanitizeFiscalConfig(c)),
         });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error ? error.message : "Erro ao listar empresas",
@@ -411,6 +427,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           .status(201)
           .send({ company: sanitizeFiscalConfig(company) });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao criar empresa";
         return reply
@@ -433,6 +451,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           .status(200)
           .send({ company: sanitizeFiscalConfig(company) });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao salvar empresa";
         return reply
@@ -452,6 +472,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         await companyFiscal.setDefault(id, userId);
         return reply.status(200).send({ success: true });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error
             ? error.message
@@ -473,6 +495,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         await companyFiscal.deleteById(id, userId);
         return reply.status(200).send({ success: true });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao remover empresa";
         return reply
@@ -513,6 +537,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           cnpjMatched: result.cnpjMatched ?? false,
         });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         request.log?.error?.(error);
         const code = (error as { code?: string })?.code ?? "";
         if (/FST_(PARTS|FIELDS|FILES)_LIMIT|FST_REQ_FILE_TOO_LARGE/.test(code)) {
@@ -552,6 +578,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         });
         return reply.status(200).send({ accounts });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error ? error.message : "Erro ao listar contas",
@@ -605,6 +633,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           .status(200)
           .send({ success: true, companyFiscalConfigId: companyId });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error ? error.message : "Erro ao vincular conta",
@@ -663,6 +693,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         );
         return reply.status(200).send({ serie, ambiente, proximoNumero });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -693,6 +725,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         });
         return reply.status(201).send({ draft });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao criar rascunho";
         const status = message.includes("Configuração fiscal")
@@ -716,8 +750,11 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const draft = await nfeDraft.getById(userId, id);
+
         return reply.status(200).send({ draft });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao buscar rascunho";
         const status = message.includes("não encontrado") ? 404 : 500;
@@ -749,6 +786,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const draft = await nfeDraft.update(userId, id, body);
         return reply.status(200).send({ draft });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error
             ? error.message
@@ -769,9 +808,11 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
-        await nfeDraft.delete(userId, id);
+        await nfeDraft.delete(userId, id, (request.query as {descartarNumero?:string}).descartarNumero === "true");
         return reply.status(204).send();
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao excluir rascunho";
         const status = message.includes("não encontrado") ? 404 : 500;
@@ -795,6 +836,11 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
         // Load draft with items
         const draft = await nfeDraft.getById(userId, id);
+        if(draft.finalidade==="DEVOLUCAO" && isDevolucaoAtiva(draft.companyFiscalConfigId)) {
+          const dev=await new NfeDevolucaoUseCase().contextoEmissao(userId,id);
+          const calculada=calcularDevolucao(draft,dev.contexto);
+          return reply.send({totais:calculada.totaisJson,itens:calculada.itens.map(i=>i.tributosJson)});
+        }
         if (!draft.itens || draft.itens.length === 0) {
           return reply
             .status(400)
@@ -868,6 +914,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
         return reply.status(200).send({ totais: result.totais, itens: result.itens });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         console.error("[fiscal/calculate] Error:", error);
         const message =
           error instanceof Error ? error.message : "Erro ao calcular impostos";
@@ -891,6 +939,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const results = await nfeDraft.lookupCustomers(userId, q);
         return reply.status(200).send({ results });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -914,6 +964,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const results = await nfeDraft.lookupProducts(userId, q);
         return reply.status(200).send({ results });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -936,11 +988,16 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
-        const result = await nfeEmission.emit(userId, id);
+        const body=request.body as {confirmarDescarteNumero?:unknown}|undefined;
+        const result = await nfeEmission.emit(userId, id, {confirmarDescarteNumero:body?.confirmarDescarteNumero===true,actorUserId:(request as FastifyRequest & {user:{id:string}}).user.id});
         return reply.status(200).send(result);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao emitir NF-e";
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:message,code:error.code,issues:error.issues});
         const status =
           message.includes("nao encontrad") ||
           message.includes("não encontrad")
@@ -960,6 +1017,10 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   );
 
   // ── Listagem de notas emitidas (F6) ──
+  fastify.post<{Params:{id:string}}>("/nfe/:id/consultar-situacao",{preHandler:[authMiddleware]},async(request,reply)=>{
+    try{return await nfeEmission.consultarSituacao((request as FastifyRequest & {user:{dataOwnerId:string}}).user.dataOwnerId,request.params.id);}
+    catch(e){if(e instanceof NumeracaoError)return reply.code(e.httpStatus).send({error:e.message,code:e.code});return reply.code(500).send({error:"Não foi possível consultar a situação"});}
+  });
 
   fastify.get(
     "/nfe",
@@ -983,6 +1044,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         });
         return reply.status(200).send(result);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -1008,6 +1071,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         });
         return reply.status(200).send({ stats });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -1056,6 +1121,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           )
           .send(buffer);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error ? error.message : "Erro ao exportar dados",
@@ -1107,6 +1174,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           )
           .send(xml);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error
             ? error.message
@@ -1140,8 +1209,10 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         if (!row) {
           return reply.status(404).send({ error: "NF-e nao encontrada" });
         }
-        return reply.status(200).send({ nfe: row });
+        return reply.status(200).send({ nfe: (await attachFiscalLista(userId,[row]))[0] });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -1187,6 +1258,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           )
           .send(content);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error: error instanceof Error ? error.message : "Erro ao baixar XML",
         });
@@ -1254,6 +1327,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           )
           .send(corpo);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error: error instanceof Error ? error.message : "Erro ao baixar DANFE",
         });
@@ -1287,6 +1362,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         });
         return reply.status(200).send({ events });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -1314,6 +1391,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const result = await nfeCancelamento.cancel(userId, id, justificativa);
         return reply.status(result.success ? 200 : 422).send(result);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error ? error.message : "Erro ao cancelar NF-e";
         const status =
@@ -1351,6 +1430,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const result = await nfeCartaCorrecao.execute(userId, id, correcao);
         return reply.status(result.success ? 200 : 422).send(result);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error
             ? error.message
@@ -1396,6 +1477,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         });
         return reply.status(result.success ? 200 : 422).send(result);
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         const message =
           error instanceof Error
             ? error.message
@@ -1422,6 +1505,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const items = await nfeInutilizacao.list(userId);
         return reply.status(200).send({ items });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error
@@ -1542,6 +1627,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           mensagem: `E-mail enviado para ${email}`,
         });
       } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
         return reply.status(500).send({
           error:
             error instanceof Error

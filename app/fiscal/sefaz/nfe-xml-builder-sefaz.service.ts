@@ -14,6 +14,9 @@
  */
 
 import { create } from "xmlbuilder2";
+import type { XMLBuilder } from "xmlbuilder2/lib/interfaces";
+import type { ContextoEmissaoDevolucao } from "../devolucao/emissao";
+import { tributosDevolucao } from "../devolucao/emissao";
 import { createHash } from "crypto";
 
 import type { NfeDraftResponse, NfeDraftItem } from "../../interfaces/nfe.interface";
@@ -74,6 +77,7 @@ export interface NfeRespTec {
 }
 
 export interface NfeXmlSefazBuildOptions {
+  devolucao?: ContextoEmissaoDevolucao;
   draft: NfeDraftResponse;
   config: CompanyFiscalConfig;
   numero: number;
@@ -162,7 +166,7 @@ export class NfeXmlBuilderSefazService {
           )
         : [];
 
-    this.buildIde(infNFe, draft, partes, dhEmi, tpEmis, config, modelo);
+    this.buildIde(infNFe, draft, partes, dhEmi, tpEmis, config, modelo, opts.devolucao);
     this.buildEmit(infNFe, config);
     this.buildDest(infNFe, draft, modelo);
     draft.itens.forEach((item, idx) =>
@@ -174,13 +178,14 @@ export class NfeXmlBuilderSefazService {
         modelo,
         draft.ambiente,
         fretePorItem[idx] ?? 0,
+        opts.devolucao,
       ),
     );
-    this.buildTotal(infNFe, draft, valorFreteNota);
+    this.buildTotal(infNFe, draft, valorFreteNota, opts.devolucao);
     this.buildTransp(infNFe, draft, modelo);
     // <cobr> (duplicatas) nao existe no modelo 65.
-    if (modelo !== "65") this.buildCobr(infNFe, draft);
-    this.buildPag(infNFe, draft);
+    if (modelo !== "65" && !opts.devolucao) this.buildCobr(infNFe, draft);
+    this.buildPag(infNFe, opts.devolucao ? {...draft,pagamentosJson:[{meio:"SEM_PAGAMENTO",valor:0}]} : draft);
     this.buildInfAdic(infNFe, draft);
     // <infRespTec> e o ULTIMO grupo dentro de infNFe (leiaute 4.00). Fica dentro
     // do conteudo assinado (a assinatura e feita depois, sobre o infNFe completo).
@@ -200,6 +205,7 @@ export class NfeXmlBuilderSefazService {
     tpEmis: number,
     config: CompanyFiscalConfig,
     modelo: "55" | "65" = "55",
+    devolucao?: ContextoEmissaoDevolucao,
   ): void {
     const isNfce = modelo === "65";
     const tpAmb = draft.ambiente === "PRODUCAO" ? "1" : "2";
@@ -208,7 +214,7 @@ export class NfeXmlBuilderSefazService {
     const idDest = isNfce
       ? "1"
       : (DESTINO_OPERACAO_COD[draft.destinoOperacao as DestinoOperacao] ?? "1");
-    const indFinal = "1"; // consumidor final — pode evoluir conforme draft
+    const indFinal = devolucao?.indFinal ?? "1";
     // NFC-e: indPres nao pode ser 0 — fallback presencial (1).
     const indPresMapped =
       IND_PRESENCA_COD[draft.indPresenca as IndicadorPresenca] ?? "0";
@@ -243,6 +249,9 @@ export class NfeXmlBuilderSefazService {
     ide.ele("indPres").txt(indPres).up();
     ide.ele("procEmi").txt("0").up(); // 0 = emissão de aplicativo do contribuinte
     ide.ele("verProc").txt("Dexo-1.0").up();
+    if (devolucao?.modoReferencia === "NOTA") {
+      for (const chave of new Set(devolucao.refs.map(r => r.chaveAcessoOriginal))) ide.ele("NFref").ele("refNFe").txt(chave).up().up();
+    }
   }
 
   // ── <emit> ──
@@ -390,6 +399,7 @@ export class NfeXmlBuilderSefazService {
     modelo: "55" | "65" = "55",
     ambiente?: string,
     vFreteItem = 0,
+    devolucao?: ContextoEmissaoDevolucao,
   ): void {
     const det = parent.ele("det", { nItem: String(nItem) });
 
@@ -436,11 +446,44 @@ export class NfeXmlBuilderSefazService {
     const imposto = det.ele("imposto");
     const tributos = (item.tributosJson ?? emptyTributos()) as NfeItemTributos;
 
+    if (devolucao) {
+      this.buildImpostoDevolucao(det, imposto, item, nItem, regime, devolucao);
+      return;
+    }
+
     this.buildIcms(imposto, item, regime, tributos);
     // <IPI> nao se aplica ao modelo 65 (venda a consumidor final).
     if (modelo !== "65") this.buildIpi(imposto, item, tributos);
     this.buildPis(imposto, item, regime, tributos);
     this.buildCofins(imposto, item, regime, tributos);
+  }
+
+  private buildImpostoDevolucao(det: XMLBuilder, imposto: XMLBuilder, item: NfeDraftItem, ordem: number, regime: RegimeTributario, ctx: ContextoEmissaoDevolucao): void {
+    const r = ctx.refs.find(ref => ref.ordem === ordem);
+    if (!r || !r.tributacao.icms.tag) throw new Error("Referência ou tributação da devolução incompleta");
+    const t = r.tributacao;
+    const node = imposto.ele("ICMS").ele(t.icms.tag!);
+    node.ele("orig").txt(String(t.icms.orig ?? 0)).up();
+    node.ele(t.icms.csosn ? "CSOSN" : "CST").txt(t.icms.csosn ?? t.icms.cst ?? "").up();
+    if (["ICMS00","ICMS90","ICMSSN900"].includes(t.icms.tag!)) {
+      node.ele("modBC").txt(t.icms.modBC ?? "3").up();
+      node.ele("vBC").txt(fmt2(t.icms.vBC)).up();
+      node.ele("pICMS").txt(fmt2(t.icms.pICMS)).up();
+      node.ele("vICMS").txt(fmt2(t.icms.vICMS)).up();
+    }
+    const copy = {...item,cstPis:t.pis.cst as NfeDraftItem["cstPis"],cstCofins:t.cofins.cst as NfeDraftItem["cstCofins"]};
+    const trib = tributosDevolucao(t);
+    this.buildPis(imposto,copy,regime,trib);this.buildCofins(imposto,copy,regime,trib);
+    if (t.ipiDevol) {
+      const ipi = det.ele("impostoDevol");
+      ipi.ele("pDevol").txt(fmt2(t.ipiDevol.pDevol)).up();
+      ipi.ele("IPI").ele("vIPIDevol").txt(fmt2(t.ipiDevol.vIPIDevol)).up().up();
+    }
+    if (ctx.modoReferencia === "ITEM") {
+      const ref = det.ele("DFeReferenciado");
+      ref.ele("chaveAcesso").txt(r.chaveAcessoOriginal).up();
+      ref.ele("nItem").txt(String(r.nItemOriginal)).up();
+    }
   }
 
   // ── <ICMS> ──
@@ -594,6 +637,7 @@ export class NfeXmlBuilderSefazService {
     parent: any,
     draft: NfeDraftResponse,
     valorFrete = 0,
+    devolucao?: ContextoEmissaoDevolucao,
   ): void {
     const totais =
       draft.totaisJson ?? deriveTotaisFromItens(draft.itens, valorFrete);
@@ -623,7 +667,7 @@ export class NfeXmlBuilderSefazService {
     icmsTot.ele("vDesc").txt(fmt2(totais.totalDesconto)).up();
     icmsTot.ele("vII").txt("0.00").up();
     icmsTot.ele("vIPI").txt(fmt2(totais.totalIpi)).up();
-    icmsTot.ele("vIPIDevol").txt("0.00").up();
+    icmsTot.ele("vIPIDevol").txt(fmt2(devolucao?.refs.reduce((n,r)=>n+(r.tributacao.ipiDevol?.vIPIDevol ?? 0),0) ?? 0)).up();
     icmsTot.ele("vPIS").txt(fmt2(totais.totalPis)).up();
     icmsTot.ele("vCOFINS").txt(fmt2(totais.totalCofins)).up();
     icmsTot.ele("vOutro").txt("0.00").up();

@@ -1,0 +1,19 @@
+{
+  "resultado": {
+    "success": true,
+    "chaveAcesso": "{{CHAVE_ESPERADA}}",
+    "protocolo": "351000000000123",
+    "dataAutorizacao": null,
+    "status": "processando",
+    "codigoStatus": 103,
+    "mensagem": "Lote recebido com sucesso",
+    "xmlAutorizado": null,
+    "providerRef": "nfe-golden-1"
+  },
+  "envios": [
+    {
+      "endpointUrl": "https://homologacao.nfe.fazenda.sp.gov.br/ws/nfeautorizacao4.asmx",
+      "soapAction": "http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4/nfeAutorizacaoLote"
+    }
+  ]
+}

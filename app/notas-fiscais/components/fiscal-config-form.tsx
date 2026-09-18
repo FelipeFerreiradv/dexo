@@ -23,6 +23,7 @@ import {
 import { FiscalIdentificationStep } from "./steps/identification-step";
 import { FiscalAddressStep } from "./steps/address-step";
 import { FiscalEnvironmentStep } from "./steps/environment-step";
+import { RespTecCard } from "./steps/resp-tec-card";
 import { type CertificateStatus } from "./steps/certificate-upload";
 
 const STEPS: (StepperStep & { fields: (keyof FiscalConfigFormData)[] })[] = [
@@ -109,6 +110,7 @@ export function FiscalConfigForm({
   );
   const [certStatus, setCertStatus] = useState<CertificateStatus | null>(null);
   const [configExists, setConfigExists] = useState(false);
+  const [configRevision,setConfigRevision]=useState(0);
   const [providerTokenConfigured, setProviderTokenConfigured] = useState(false);
   // NFC-e (Fase 2): CSC salvo? (segredo nunca volta — só o booleano)
   const [cscConfigured, setCscConfigured] = useState(false);
@@ -259,6 +261,7 @@ export function FiscalConfigForm({
         throw new Error(result.error || "Erro ao salvar configuração");
       }
       setConfigExists(true);
+      setConfigRevision(v=>v+1);
       // Token salvo se já havia um ou se um novo foi digitado agora (o backend
       // preserva o anterior quando o campo vai vazio).
       setProviderTokenConfigured((prev) => prev || Boolean(payload.providerToken));
@@ -308,6 +311,7 @@ export function FiscalConfigForm({
           />
         )}
         {currentStep === 3 && (
+          <>
           <FiscalEnvironmentStep
             control={control}
             errors={errors}
@@ -320,6 +324,8 @@ export function FiscalConfigForm({
             cscConfigured={cscConfigured}
             companyId={companyId}
           />
+          <RespTecCard key={`${companyId??"default"}-${configRevision}`} companyId={companyId} userEmail={session?.user?.email} configExists={configExists} providerName={form.watch("providerName")} />
+          </>
         )}
       </div>
 

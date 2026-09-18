@@ -1,4 +1,8 @@
 import prisma from "../lib/prisma";
+import { isNumeracaoV2ParaEmissao } from "../fiscal/flags";
+import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
+import { FocusNfeV2Client } from "../fiscal/providers/focus-nfe-v2.client";
+import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
 import {
@@ -103,7 +107,15 @@ export class NfeInutilizacaoUseCase {
       | "producao";
 
     // ── 3. Create record (PENDENTE) ──
-    const record = await (prisma as any).nfeInutilizacao.create({
+    let v2=isNumeracaoV2ParaEmissao(config.id,"55",config.providerName);
+    const numeros=new NfeNumeracaoService();
+    const key={cfc:config.id,ambiente:config.ambiente,modelo:"55",serie:input.serie};
+    if(v2)try{await numeros.repo.reservasNaChave(userId,key);}catch(e){if(tabelaFiscalAusente(e))v2=false;else throw e;}
+    const record = v2?await numeros.inutilizacaoGuard(userId,key,config.isDefault??true,input.numeroInicial,input.numeroFinal,async tx=>{
+      if(!tx.sql)throw new Error("Transação fiscal indisponível");
+      const rows=await tx.sql.$queryRawUnsafe<Array<{id:string}>>(`INSERT INTO "NfeInutilizacao" ("id","userId","companyFiscalConfigId","ambiente","serie","numeroInicial","numeroFinal","justificativa","status") VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,'PENDENTE') RETURNING "id"`,userId,config.id,config.ambiente,input.serie,input.numeroInicial,input.numeroFinal,input.justificativa.trim());
+      return rows[0];
+    }):await (prisma as any).nfeInutilizacao.create({
       data: {
         userId,
         companyFiscalConfigId: config.id,
@@ -127,7 +139,8 @@ export class NfeInutilizacaoUseCase {
         })
       : createNfeProvider(config.providerName, config.ambiente as FiscalAmbiente);
 
-    const result = await provider.inutilizar({
+    const executarFocus=async()=>{const r=await new FocusNfeV2Client(config.ambiente,"55").inutilizar({cnpj:config.cnpj.replace(/\D/g,""),serie:input.serie,numeroInicial:input.numeroInicial,numeroFinal:input.numeroFinal,justificativa:input.justificativa.trim()},config.providerToken??"");return {success:r.sucesso,protocolo:r.protocolo,mensagem:r.corpo?.mensagem_sefaz??r.corpo?.mensagem??"Inutilização sem confirmação"};};
+    const result = v2 && !isSefazDirect?await executarFocus():await provider.inutilizar({
       cnpj: config.cnpj.replace(/\D/g, ""),
       serie: input.serie,
       numeroInicial: input.numeroInicial,
@@ -154,7 +167,8 @@ export class NfeInutilizacaoUseCase {
     // ── 6. Advance sequencer past the inutilized range ──
     // Sem isto, a próxima emissão reserva um número dentro da faixa já
     // inutilizada na SEFAZ e leva rejeição "NF-e ja esta inutilizada".
-    if (result.success) {
+    if (result.success && v2)await numeros.inutilizacaoPos(userId,key,config.isDefault??true,input.numeroInicial,input.numeroFinal);
+    if (result.success && !v2) {
       // Multi-CNPJ: o contador avançado é o do EMITENTE da faixa. Sem escolha
       // explícita, o config veio de findByUserId = padrão POR DEFINIÇÃO.
       const seqOpts = {

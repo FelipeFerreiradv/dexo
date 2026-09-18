@@ -71,6 +71,16 @@ import {
   buildInutNFeEnvelope,
   SOAP_ACTIONS,
 } from "../sefaz/envelopes";
+// Numeração V2 (duas fases) — imports aditivos; nada acima foi alterado.
+import type { NfeRespTec } from "../sefaz/nfe-xml-builder-sefaz.service";
+import { extrairDigestValue } from "../sefaz/digest";
+import { normalizarCStat } from "../numeracao/cstat";
+import type {
+  SefazNfePreparada,
+  SefazTransmissao,
+  SefazConsultaDetalhada,
+  Transporte,
+} from "../numeracao/tipos";
 
 export class NotImplementedError extends Error {
   constructor(method: string, phase: string) {
@@ -101,6 +111,7 @@ export interface SefazDirectProviderOptions {
  * passar este shape em vez do JSON Focus.
  */
 export interface SefazEmitPayload {
+  respTec?: NfeRespTec | null;
   draft: NfeXmlSefazBuildOptions["draft"];
   config: NfeXmlSefazBuildOptions["config"];
   numero: number;
@@ -194,7 +205,7 @@ export class SefazDirectProvider implements INfeProvider {
         tpEmis: effectiveTpEmis,
         // Responsável Técnico (NT 2018.005): resolvido do env aqui (I/O), fora do
         // builder puro. undefined => grupo <infRespTec> omitido (kill-switch).
-        respTec: resolveRespTecFromEnv(),
+        respTec: payload.respTec === undefined ? resolveRespTecFromEnv() : (payload.respTec ?? undefined),
       });
     } catch (error) {
       return makeEmitErrorResult(
@@ -819,6 +830,355 @@ export class SefazDirectProvider implements INfeProvider {
     }
     return getSefazEndpoint(this.uf, this.ambiente, servico);
   }
+
+  // ── NUMERAÇÃO V2: emissão em duas fases (aditivo; emitir() intacto) ──
+  //
+  // Contrato (docs/fiscal-numeracao-v2.md, invariante I3): o orquestrador
+  // PREPARA (monta + assina, sem rede), grava a tentativa (chave, cNF, dhEmi,
+  // DigestValue, XML assinado) e só então TRANSMITE. Os métodos abaixo refazem
+  // o pipeline de emitir() (build → sign → QR 65 → envelope → SOAP) com duas
+  // diferenças deliberadas: falha local LANÇA (em vez de virar "erro" com o
+  // número queimado) e o resultado é o bruto da SEFAZ (a classificação mora
+  // em app/fiscal/numeracao). Sem SVC: a V2 nunca entra em contingência.
+
+  /**
+   * Fase 1 — monta e assina a NF-e/NFC-e (com QR na 65). NUNCA toca a rede.
+   * LANÇA em qualquer falha local (dados, RT incompleto, assinatura, QR,
+   * autorizador inexistente para UF/modelo): nada foi transmitido, então o
+   * número continua reservado para o retry.
+   *
+   * `respTec`: undefined ⇒ resolveRespTecFromEnv() (idêntico a emitir);
+   * null ⇒ sem grupo <infRespTec>; objeto ⇒ usa o objeto.
+   */
+  prepararEmissao(p: SefazPrepararEmissaoInput): SefazNfePreparada {
+    if (!p?.draft || !p?.config) {
+      throw new Error(
+        "SefazDirectProvider.prepararEmissao: draft e config sao obrigatorios",
+      );
+    }
+    if (!Number.isInteger(p.numero) || p.numero < 1) {
+      throw new Error(
+        `SefazDirectProvider.prepararEmissao: numero invalido (${String(p.numero)})`,
+      );
+    }
+    // cNF fixo por número (gerado na reserva): mesma chave em todo reenvio do
+    // mês. Vazio aqui faria o builder sortear outro cNF em silêncio.
+    if (typeof p.cNF !== "string" || !/^\d{8}$/.test(p.cNF)) {
+      throw new Error(
+        "SefazDirectProvider.prepararEmissao: cNF deve ter 8 digitos (gerado na reserva)",
+      );
+    }
+    if (!(p.dhEmi instanceof Date) || !Number.isFinite(p.dhEmi.getTime())) {
+      throw new Error("SefazDirectProvider.prepararEmissao: dhEmi invalido");
+    }
+
+    const modelo: "55" | "65" = p.draft.modelo === "65" ? "65" : "55";
+    const respTec: NfeRespTec | undefined =
+      p.respTec === undefined ? resolveRespTecFromEnv() : (p.respTec ?? undefined);
+
+    // 1. Build — mesmos argumentos de emitir() sem contingência (tpEmis 1).
+    let built;
+    try {
+      built = this.builder.build({
+        draft: p.draft,
+        config: p.config,
+        numero: p.numero,
+        dhEmi: p.dhEmi,
+        cNF: p.cNF,
+        tpEmis: 1,
+        respTec,
+        ...(p.devolucao ? { devolucao: p.devolucao } : {}),
+      });
+    } catch (error) {
+      throw new Error(`Falha ao montar XML NFe: ${mensagemDeErro(error)}`);
+    }
+
+    // 2. Sign
+    let signedXml: string;
+    try {
+      signedXml = this.signer.sign({
+        xml: built.xml,
+        privateKeyPem: this.certificate.privateKeyPem,
+        certificatePem: this.certificate.certificatePem,
+        referenceElement: "infNFe",
+      });
+    } catch (error) {
+      throw new Error(`Falha ao assinar XML: ${mensagemDeErro(error)}`);
+    }
+
+    // 2b. NFC-e: <infNFeSupl> DEPOIS da assinatura (igual a emitir()).
+    if (modelo === "65") {
+      try {
+        const qr = montarQrCodeNfce({
+          chaveAcesso: built.chaveAcesso,
+          tpAmb: this.ambiente === "producao" ? "1" : "2",
+          cscId: p.config.cscId ?? "",
+          cscToken: p.config.cscToken ?? "",
+          uf: this.uf,
+          ambiente: this.ambiente,
+        });
+        signedXml = injectInfNFeSupl(
+          signedXml,
+          buildInfNFeSuplXml(qr.qrCode, qr.urlChave),
+        );
+      } catch (error) {
+        throw new Error(
+          `Falha ao montar QR Code da NFC-e: ${mensagemDeErro(error)}`,
+        );
+      }
+    }
+
+    const digestValue = extrairDigestValue(signedXml);
+    if (!digestValue) {
+      throw new Error(
+        "Falha ao extrair DigestValue da assinatura do infNFe — XML nao sera transmitido",
+      );
+    }
+
+    // Autorizador resolvido já na preparação: UF/modelo sem endpoint é falha
+    // local e precisa lançar ANTES de a tentativa ser gravada.
+    resolverEndpointAutorizacaoV2(this.uf, this.ambiente, modelo);
+
+    return {
+      modelo,
+      tpEmis: 1,
+      chaveAcesso: built.chaveAcesso,
+      cNF: built.chaveParts.cNF,
+      dhEmi: new Date(p.dhEmi.getTime()),
+      signedXml,
+      digestValue,
+    };
+  }
+
+  /**
+   * Fase 2 — transmite o XML JÁ assinado (byte a byte) no MESMO envelope que
+   * emitir() enviaria: enviNFe indSinc=1, idLote novo (fora da assinatura e
+   * da chave), autorizador 55/65, mesma SOAP action, mesmo soapClient
+   * (timeout/retry do construtor). Sem SVC.
+   *
+   * NUNCA lança. Falha de transporte ⇒ `transporte` TIMEOUT/REDE; HTTP ≥ 400
+   * ⇒ `httpStatus`, sem cStat. Resposta legível ⇒ cStat/xMotivo do lote e do
+   * protNFe desta chave, nProt, dhRecbto, nRec, chNFe, bloco protNFe e, se
+   * autorizada síncrona, o nfeProc montado.
+   */
+  async transmitirPreparada(
+    p: SefazNfePreparada,
+    opts?: { svc?: never },
+  ): Promise<SefazTransmissao> {
+    void opts;
+    const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
+
+    let envelope: string;
+    let endpoint: string;
+    try {
+      envelope = buildEnviNFeEnvelope({
+        signedNfeXml: p.signedXml,
+        tpAmb,
+        idLote: defaultIdLote(),
+        indSinc: "1",
+      });
+      endpoint = resolverEndpointAutorizacaoV2(
+        this.uf,
+        this.ambiente,
+        p.modelo === "65" ? "65" : "55",
+      );
+    } catch (error) {
+      // Inalcançável após prepararEmissao na mesma instância. Nada saiu, mas
+      // a V2 não afirma "não enviado" sem prova: resultado inconclusivo.
+      return transmissaoSemRespostaV2(
+        "SEM_CREDENCIAL",
+        null,
+        `Falha local antes do envio: ${mensagemDeErro(error)}`,
+      );
+    }
+
+    let response: SoapResponse;
+    try {
+      response = await this.soapClient.send({
+        endpointUrl: endpoint,
+        envelope,
+        soapAction: SOAP_ACTIONS.NFeAutorizacao4,
+        certificate: this.certificate,
+        timeoutMs: this.timeoutMs,
+        retryMax: this.retryMax,
+      });
+    } catch (error) {
+      return transmissaoSemRespostaV2(
+        transporteDaFalhaV2(error),
+        null,
+        `Erro de rede ao enviar NFe: ${mensagemDeErro(error)}`,
+      );
+    }
+
+    if (response.status >= 400) {
+      return transmissaoSemRespostaV2(
+        null,
+        response.status,
+        `HTTP ${response.status} ao enviar NFe`,
+      );
+    }
+
+    try {
+      return parseRetEnviNFeDetalhadoV2(corpoDaRespostaV2(response), p, response.status);
+    } catch (error) {
+      return transmissaoSemRespostaV2(
+        null,
+        response.status,
+        `Resposta da SEFAZ ilegivel: ${mensagemDeErro(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Consulta por chave (NfeConsultaProtocolo4) — MESMO SOAP de consultar(),
+   * resultado bruto: cStat da situação, nProt/dhRecbto/digVal/chNFe do
+   * protNFe e o bloco protNFe. NUNCA lança (chave inválida não é enviada e
+   * volta inconclusiva).
+   */
+  async consultarDetalhado(chave: string): Promise<SefazConsultaDetalhada> {
+    const ch = String(chave ?? "").replace(/\D/g, "");
+    if (ch.length !== 44) {
+      return consultaSemRespostaV2(
+        null,
+        null,
+        "Chave de acesso invalida (44 digitos) — consulta nao enviada",
+      );
+    }
+
+    const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
+    let envelope: string;
+    let endpoint: string;
+    try {
+      envelope = buildConsSitNFeEnvelope({ tpAmb, chNFe: ch });
+      endpoint =
+        ch.slice(20, 22) === "65"
+          ? getNfceEndpoint(this.uf, this.ambiente, "NfeConsultaProtocolo4")
+          : getSefazEndpoint(this.uf, this.ambiente, "NfeConsultaProtocolo4");
+    } catch (error) {
+      return consultaSemRespostaV2(
+        "SEM_CREDENCIAL",
+        null,
+        `Falha local antes da consulta: ${mensagemDeErro(error)}`,
+      );
+    }
+
+    let response: SoapResponse;
+    try {
+      response = await this.soapClient.send({
+        endpointUrl: endpoint,
+        envelope,
+        soapAction: SOAP_ACTIONS.NfeConsultaProtocolo4,
+        certificate: this.certificate,
+        timeoutMs: this.timeoutMs,
+        retryMax: this.retryMax,
+      });
+    } catch (error) {
+      return consultaSemRespostaV2(
+        transporteDaFalhaV2(error),
+        null,
+        `Erro de rede ao consultar NFe: ${mensagemDeErro(error)}`,
+      );
+    }
+
+    if (response.status >= 400) {
+      return consultaSemRespostaV2(
+        null,
+        response.status,
+        `HTTP ${response.status} ao consultar NFe`,
+      );
+    }
+
+    try {
+      return parseRetConsSitNFeDetalhadoV2(corpoDaRespostaV2(response), ch, response.status);
+    } catch (error) {
+      return consultaSemRespostaV2(
+        null,
+        response.status,
+        `Resposta da SEFAZ ilegivel: ${mensagemDeErro(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Consulta por recibo (NFeRetAutorizacao4) — MESMO SOAP de
+   * consultarRecibo(). Com protNFe desta chave, o cStat é o da NF-e; sem ele,
+   * o do lote (105 em processamento, 106 não localizado…). NUNCA lança.
+   */
+  async consultarReciboDetalhado(
+    nRec: string,
+    chave: string,
+  ): Promise<SefazConsultaDetalhada> {
+    if (typeof nRec !== "string" || nRec.trim().length === 0) {
+      return consultaSemRespostaV2(
+        null,
+        null,
+        "Recibo (nRec) ausente — consulta nao enviada",
+      );
+    }
+
+    const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
+    const ch = String(chave ?? "").replace(/\D/g, "");
+    let envelope: string;
+    let endpoint: string;
+    try {
+      envelope = buildConsReciNFeEnvelope({ tpAmb, nRec });
+      endpoint =
+        ch.slice(20, 22) === "65"
+          ? getNfceEndpoint(this.uf, this.ambiente, "NFeRetAutorizacao4")
+          : getSefazEndpoint(this.uf, this.ambiente, "NFeRetAutorizacao4");
+    } catch (error) {
+      return consultaSemRespostaV2(
+        "SEM_CREDENCIAL",
+        null,
+        `Falha local antes da consulta: ${mensagemDeErro(error)}`,
+      );
+    }
+
+    let response: SoapResponse;
+    try {
+      response = await this.soapClient.send({
+        endpointUrl: endpoint,
+        envelope,
+        soapAction: SOAP_ACTIONS.NFeRetAutorizacao4,
+        certificate: this.certificate,
+        timeoutMs: this.timeoutMs,
+        retryMax: this.retryMax,
+      });
+    } catch (error) {
+      return consultaSemRespostaV2(
+        transporteDaFalhaV2(error),
+        null,
+        `Erro de rede ao consultar recibo: ${mensagemDeErro(error)}`,
+      );
+    }
+
+    if (response.status >= 400) {
+      return consultaSemRespostaV2(
+        null,
+        response.status,
+        `HTTP ${response.status} ao consultar recibo`,
+      );
+    }
+
+    try {
+      return parseRetConsReciNFeDetalhadoV2(corpoDaRespostaV2(response), ch, response.status);
+    } catch (error) {
+      return consultaSemRespostaV2(
+        null,
+        response.status,
+        `Resposta da SEFAZ ilegivel: ${mensagemDeErro(error)}`,
+      );
+    }
+  }
+
+  /**
+   * nfeProc canônico (NFe assinada + protNFe) — mesma saída do montador usado
+   * por emitir(). Usado quando a autorização é descoberta por consulta e o XML
+   * assinado vem do storage da tentativa.
+   */
+  static montarNfeProc(signedXml: string, protNFeXml: string): string {
+    return buildNfeProc(signedXml, protNFeXml);
+  }
 }
 
 function parseStatusServicoResponse(
@@ -1306,4 +1666,243 @@ function buildProcEventoCce(signedEventoXml: string, retEvento: string): string 
     retEvento,
     "</procEventoNFe>",
   ].join("");
+}
+
+// ─────────────── Numeração V2 (duas fases) — helpers aditivos ───────────────
+// Nada acima deste ponto foi alterado. Os parsers "Detalhado" devolvem o
+// BRUTO da SEFAZ (sem categoria/status): a classificação é da V2.
+
+/** Entrada de `SefazDirectProvider.prepararEmissao`. */
+export interface SefazPrepararEmissaoInput {
+  devolucao?: NfeXmlSefazBuildOptions["devolucao"];
+  draft: NfeXmlSefazBuildOptions["draft"];
+  config: NfeXmlSefazBuildOptions["config"];
+  numero: number;
+  /** 8 dígitos, fixo por número (gerado na reserva). */
+  cNF: string;
+  /** Sempre novo por tentativa (a chave só depende de AAMM). */
+  dhEmi: Date;
+  /** undefined ⇒ env (igual a emitir); null ⇒ sem infRespTec; objeto ⇒ usa. */
+  respTec?: NfeRespTec | null;
+}
+
+/** Mesmo roteamento de emitir() sem contingência: 65 → autorizador NFC-e. */
+function resolverEndpointAutorizacaoV2(
+  uf: UF,
+  ambiente: SefazAmbiente,
+  modelo: "55" | "65",
+): string {
+  return modelo === "65"
+    ? getNfceEndpoint(uf, ambiente, "NFeAutorizacao4")
+    : getSefazEndpoint(uf, ambiente, "NFeAutorizacao4");
+}
+
+function mensagemDeErro(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Falha lançada pelo SoapClientService (último erro após os retries dele).
+ * Timeout do axios (clarifyTimeoutError) ⇒ ETIMEDOUT; o resto ⇒ REDE. As duas
+ * são inconclusivas (a SEFAZ pode ter processado): quem decide é a consulta.
+ */
+function transporteDaFalhaV2(error: unknown): "TIMEOUT" | "REDE" {
+  const code =
+    error && typeof error === "object"
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  if (code === "ETIMEDOUT" || code === "ECONNABORTED") return "TIMEOUT";
+  const texto =
+    error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  return /timeout|timed out|ETIMEDOUT|ECONNABORTED/i.test(texto)
+    ? "TIMEOUT"
+    : "REDE";
+}
+
+function corpoDaRespostaV2(response: SoapResponse): string {
+  const body: unknown = response.body;
+  return typeof body === "string" ? body : String(body ?? "");
+}
+
+/** cStat inteiro ou null (tag vazia/ausente não vira 0). */
+function lerCStatV2(xml: string): number | null {
+  return normalizarCStat(extractTagValueNs(xml, "cStat"));
+}
+
+function textoOuNullV2(valor: string | null): string | null {
+  return valor && valor.length > 0 ? valor : null;
+}
+
+// Mesmo padrão de extractTagBlock (sem prefixo), para que o bloco escolhido
+// seja byte-idêntico ao que emitir() usa no nfeProc.
+const PROT_NFE_BLOCO_V2 = /<protNFe(?:\s[^>]*)?>[\s\S]*?<\/protNFe>/g;
+
+/** Resposta sem os blocos protNFe: sobra o nível do lote/raiz. */
+function semProtNFeV2(xml: string): string {
+  return xml.replace(new RegExp(PROT_NFE_BLOCO_V2.source, "g"), "");
+}
+
+/**
+ * protNFe DESTA chave. Chave inválida ⇒ o primeiro bloco (igual a V1). Chave
+ * válida sem bloco correspondente ⇒ null: resultado de outra NF-e nunca é
+ * atribuído a esta tentativa.
+ */
+function escolherProtNFeV2(xml: string, chave: string): string | null {
+  const blocos = xml.match(new RegExp(PROT_NFE_BLOCO_V2.source, "g")) ?? [];
+  if (blocos.length === 0) return null;
+  const alvo = String(chave ?? "").replace(/\D/g, "");
+  if (alvo.length !== 44) return blocos[0] ?? null;
+  return (
+    blocos.find(
+      (b) => (extractTagValueNs(b, "chNFe") ?? "").replace(/\D/g, "") === alvo,
+    ) ?? null
+  );
+}
+
+function transmissaoSemRespostaV2(
+  transporte: Transporte,
+  httpStatus: number | null,
+  motivo: string,
+): SefazTransmissao {
+  return {
+    transporte,
+    httpStatus,
+    loteCStat: null,
+    loteXMotivo: motivo,
+    protCStat: null,
+    protXMotivo: "",
+    nProt: null,
+    dhRecbto: null,
+    nRec: null,
+    chNFe: null,
+    protNFeXml: null,
+    xmlAutorizado: null,
+  };
+}
+
+function consultaSemRespostaV2(
+  transporte: Transporte,
+  httpStatus: number | null,
+  motivo: string,
+): SefazConsultaDetalhada {
+  return {
+    transporte,
+    httpStatus,
+    cStat: null,
+    xMotivo: motivo,
+    nProt: null,
+    dhRecbto: null,
+    digVal: null,
+    chNFe: null,
+    protNFeXml: null,
+  };
+}
+
+/** retEnviNFe (NFeAutorizacao4) → bruto. */
+function parseRetEnviNFeDetalhadoV2(
+  body: string,
+  preparada: SefazNfePreparada,
+  httpStatus: number,
+): SefazTransmissao {
+  const lote = semProtNFeV2(body);
+  const protBlock = escolherProtNFeV2(body, preparada.chaveAcesso);
+
+  const protCStat = protBlock ? lerCStatV2(protBlock) : null;
+  const chNFe = protBlock ? textoOuNullV2(extractTagValueNs(protBlock, "chNFe")) : null;
+  const chaveConfere =
+    chNFe === null ||
+    chNFe.replace(/\D/g, "") === preparada.chaveAcesso.replace(/\D/g, "");
+  const autorizada =
+    protBlock !== null &&
+    chaveConfere &&
+    lookupCStat(protCStat).categoria === "autorizada";
+
+  return {
+    transporte: null,
+    httpStatus,
+    loteCStat: lerCStatV2(lote),
+    loteXMotivo: extractTagValueNs(lote, "xMotivo") ?? "",
+    protCStat,
+    protXMotivo: protBlock ? (extractTagValueNs(protBlock, "xMotivo") ?? "") : "",
+    nProt: protBlock ? textoOuNullV2(extractTagValueNs(protBlock, "nProt")) : null,
+    dhRecbto: protBlock ? extractDateValue(protBlock, "dhRecbto") : null,
+    nRec: textoOuNullV2(extractTagValueNs(lote, "nRec")),
+    chNFe,
+    protNFeXml: protBlock,
+    xmlAutorizado:
+      autorizada && protBlock
+        ? buildNfeProc(preparada.signedXml, protBlock)
+        : null,
+  };
+}
+
+/** protNFe → campos comuns da consulta detalhada. */
+function camposProtNFeV2(protBlock: string | null) {
+  return {
+    nProt: protBlock ? textoOuNullV2(extractTagValueNs(protBlock, "nProt")) : null,
+    dhRecbto: protBlock ? extractDateValue(protBlock, "dhRecbto") : null,
+    digVal: protBlock ? textoOuNullV2(extractTagValueNs(protBlock, "digVal")) : null,
+    chNFe: protBlock ? textoOuNullV2(extractTagValueNs(protBlock, "chNFe")) : null,
+  };
+}
+
+/**
+ * retConsSitNFe (NfeConsultaProtocolo4) → bruto. O cStat é o da RAIZ (100,
+ * 101 cancelada, 110 denegada, 217 não consta…); nProt/dhRecbto/digVal vêm
+ * só do protNFe (o procEventoNFe de um cancelamento tem nProt próprio).
+ */
+function parseRetConsSitNFeDetalhadoV2(
+  body: string,
+  chave: string,
+  httpStatus: number,
+): SefazConsultaDetalhada {
+  const raiz = semProtNFeV2(body);
+  const protBlock = escolherProtNFeV2(body, chave);
+  const prot = camposProtNFeV2(protBlock);
+  return {
+    transporte: null,
+    httpStatus,
+    cStat: lerCStatV2(raiz),
+    xMotivo: extractTagValueNs(raiz, "xMotivo") ?? "",
+    nProt: prot.nProt,
+    dhRecbto: prot.dhRecbto,
+    digVal: prot.digVal,
+    chNFe: prot.chNFe ?? textoOuNullV2(extractTagValueNs(raiz, "chNFe")),
+    protNFeXml: protBlock,
+  };
+}
+
+/**
+ * retConsReciNFe (NFeRetAutorizacao4) → bruto. Com protNFe desta chave, o
+ * cStat/xMotivo são os da NF-e; sem ele, os do lote (105/106/…).
+ */
+function parseRetConsReciNFeDetalhadoV2(
+  body: string,
+  chave: string,
+  httpStatus: number,
+): SefazConsultaDetalhada {
+  const protBlock = escolherProtNFeV2(body, chave);
+  if (protBlock) {
+    const prot = camposProtNFeV2(protBlock);
+    return {
+      transporte: null,
+      httpStatus,
+      cStat: lerCStatV2(protBlock),
+      xMotivo: extractTagValueNs(protBlock, "xMotivo") ?? "",
+      ...prot,
+      protNFeXml: protBlock,
+    };
+  }
+  const lote = semProtNFeV2(body);
+  return {
+    transporte: null,
+    httpStatus,
+    cStat: lerCStatV2(lote),
+    xMotivo: extractTagValueNs(lote, "xMotivo") ?? "",
+    nProt: null,
+    dhRecbto: null,
+    digVal: null,
+    chNFe: null,
+    protNFeXml: null,
+  };
 }

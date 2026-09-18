@@ -1,0 +1,32 @@
+# shouldReuseNumero × lookupCStat(c).categoria — golden F0 (1549bc4)
+# formato: <cStat | faixa> | categoria | máscara (bit i: status=i&8 REJECTED, numero=i&4 101, ambiente=i&2 diferente, flag=i&1 true)
+null | desconhecido | 0000000000000000
+undefined | desconhecido | 0000000000000000
+"974" | desconhecido | 0000000000000000
+0-99 | desconhecido | 0000000000000000
+100 | autorizada | 0000000000000000
+101 | cancelada | 0000000000000000
+102 | inutilizada | 0000000000000000
+103 | lote_recebido | 0000000000000000
+104 | lote_processado | 0000000000000000
+105 | lote_em_processamento | 0000000000000000
+106 | desconhecido | 0000000000000000
+107 | servico_operacional | 0000000000000000
+108-109 | servico_indisponivel | 0000000000000000
+110 | denegada | 0000000000000000
+111-134 | desconhecido | 0000000000000000
+135-136 | evento_registrado | 0000000000000000
+137-149 | desconhecido | 0000000000000000
+150 | autorizada | 0000000000000000
+151-199 | desconhecido | 0000000000000000
+200-203 | rejeitada | 0000000000000100
+204 | duplicidade | 0000000000000000
+205-216 | rejeitada | 0000000000000100
+217 | nao_consta | 0000000000000000
+218 | duplicidade | 0000000000000000
+219-538 | rejeitada | 0000000000000100
+539 | duplicidade | 0000000000000000
+540-572 | rejeitada | 0000000000000100
+573 | duplicidade | 0000000000000000
+574-599 | rejeitada | 0000000000000100
+600-1100 | desconhecido | 0000000000000000

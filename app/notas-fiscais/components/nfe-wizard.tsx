@@ -1,6 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
+import { DevolucaoEditor } from "./devolucao-editor";
+import { NumeracaoActions } from "./numeracao-actions";
+import type { NumeracaoView } from "./numeracao-actions";
+import type { DevolucaoDetalhe } from "@/app/fiscal/devolucao/contrato";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
@@ -98,6 +102,10 @@ export function NfeWizard() {
 
   const [currentStep, setCurrentStep] = useState(1);
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [devolucao,setDevolucao]=useState<DevolucaoDetalhe|null>(null);
+  const [numeracao,setNumeracao]=useState<NumeracaoView|null>(null);
+  const emitindoRef=useRef(false);
+  const [confirmarDescarte,setConfirmarDescarte]=useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [rejeicaoInfo, setRejeicaoInfo] = useState<RejeicaoInfo | null>(null);
   // Multi-CNPJ: empresas do tenant + emitente do draft atual.
@@ -178,6 +186,11 @@ export function NfeWizard() {
             setDraftId(existingId);
             setDraftCompanyId(draft.companyFiscalConfigId ?? null);
             populateFormFromDraft(draft);
+            setNumeracao(draft.numeracao??null);
+            if(draft.finalidade==="DEVOLUCAO") {
+              const res=await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${existingId}/devolucao`,{headers:{email}});
+              if(res.ok && !cancelled)setDevolucao(await res.json());
+            }
             // Reabrindo uma nota REJEITADA: guarda os dados para o banner do
             // motivo (gated). Nao altera o formulario nem o fluxo de emissao.
             if (
@@ -189,7 +202,7 @@ export function NfeWizard() {
                 serie: draft.serie,
                 numero: draft.numero,
                 motivo: draft.motivoRejeicao,
-                reaproveitavel: draft.reaproveitavel === true,
+                reaproveitavel: draft.numeracao!==undefined?draft.numeracao?.reutilizavel===true:draft.reaproveitavel === true,
               });
             } else {
               setRejeicaoInfo(null);
@@ -362,6 +375,7 @@ export function NfeWizard() {
   const saveCurrentStep = useCallback(async () => {
     if (!draftId || isEmitting) return;
     const data = getValues();
+    if(devolucao && [1,3,6,7,8].includes(currentStep))return;
 
     if (currentStep === 1) {
       return saveDraft(draftId, {
@@ -408,7 +422,7 @@ export function NfeWizard() {
       } as any);
     }
     // Steps 8 and 9 are read-only — no save needed
-  }, [draftId, currentStep, getValues, saveDraft, isEmitting]);
+  }, [draftId, currentStep, getValues, saveDraft, isEmitting,devolucao]);
 
   const handleNext = async () => {
     const ok = await validateCurrentStep();
@@ -455,7 +469,8 @@ export function NfeWizard() {
   );
 
   const handleEmitir = async () => {
-    if (!draftId || isEmitting) return;
+    if (!draftId || isEmitting || emitindoRef.current) return;
+    emitindoRef.current=true;
 
     // Aguarda o save do passo atual TERMINAR antes de emitir. saveCurrentStep
     // agora retorna a promise do PUT /draft/:id — assim o rascunho e gravado
@@ -468,12 +483,14 @@ export function NfeWizard() {
       const res = await fetch(`${getApiBaseUrl()}/fiscal/nfe/${draftId}/issue`, {
         method: "POST",
         headers: { "Content-Type": "application/json", email },
-        body: "{}",
+        body: JSON.stringify({confirmarDescarteNumero:confirmarDescarte}),
       });
 
       const data = await res.json();
+      if(data.numeracao)setNumeracao(data.numeracao);
 
       if (!res.ok) {
+        if(data.code==="NUMERACAO_CONFIRMAR_DESCARTE")setConfirmarDescarte(true);
         showToast(data.error || "Erro ao emitir NF-e", "error");
         return;
       }
@@ -501,6 +518,7 @@ export function NfeWizard() {
       showToast("Erro de conexao ao emitir NF-e", "error");
     } finally {
       setIsEmitting(false);
+      emitindoRef.current=false;
     }
   };
 
@@ -555,7 +573,10 @@ export function NfeWizard() {
       />
 
       <div className="min-h-[300px]">
-        {currentStep === 1 && (
+        {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={()=>{void loadDraft(draftId).then(d=>d&&setNumeracao(d.numeracao??null));}}/>}
+        {confirmarDescarte && <p role="alert">Ao clicar em emitir novamente, você confirma o descarte do número anterior. Em produção ele precisará ser inutilizado.</p>}
+        {devolucao && [1,3,8].includes(currentStep) && <DevolucaoEditor key={`${devolucao.draftId}-${currentStep}`} step={currentStep} value={devolucao} email={email} onSaved={async d=>{setDevolucao(d);const fresh=await loadDraft(d.draftId);if(fresh)populateFormFromDraft(fresh);}}/>}
+        {currentStep === 1 && !devolucao && (
           <StepInformacoesGerais
             control={control}
             errors={errors}
@@ -572,7 +593,7 @@ export function NfeWizard() {
             email={email}
           />
         )}
-        {currentStep === 3 && (
+        {currentStep === 3 && !devolucao && (
           <StepProdutos
             control={control}
             errors={errors}
@@ -587,21 +608,22 @@ export function NfeWizard() {
         {currentStep === 5 && (
           <StepVolumes control={control} errors={errors} />
         )}
-        {currentStep === 6 && (
+        {devolucao && [6,7].includes(currentStep) && <p>Devolução sem cobrança, com pagamento 90 — sem pagamento.</p>}
+        {currentStep === 6 && !devolucao && (
           <StepDuplicatas
             control={control}
             errors={errors}
             getValues={getValues}
           />
         )}
-        {currentStep === 7 && (
+        {currentStep === 7 && !devolucao && (
           <StepPagamentos
             control={control}
             errors={errors}
             getValues={getValues}
           />
         )}
-        {currentStep === 8 && draftId && (
+        {currentStep === 8 && draftId && !devolucao && (
           <StepImpostos
             getValues={getValues}
             draftId={draftId}
@@ -634,7 +656,7 @@ export function NfeWizard() {
         onBack={handleBack}
         onNext={handleNext}
         onSubmit={handleEmitir}
-        submitLabel={isEmitting ? "Emitindo..." : "Emitir NF-e"}
+        submitLabel={isEmitting ? "Emitindo..." : confirmarDescarte ? "Confirmar descarte e emitir" : "Emitir NF-e"}
         isSubmitting={isEmitting}
       />
 

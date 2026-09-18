@@ -1,0 +1,14 @@
+{
+  "resultado": {
+    "success": false,
+    "chaveAcesso": "{{CHAVE_ESPERADA}}",
+    "protocolo": null,
+    "dataAutorizacao": null,
+    "status": "erro",
+    "codigoStatus": null,
+    "mensagem": "Falha ao montar QR Code da NFC-e: QR NFC-e: idCSC (cscId) inválido — configure na configuração fiscal",
+    "xmlAutorizado": null,
+    "providerRef": "nfe-golden-1"
+  },
+  "envios": []
+}

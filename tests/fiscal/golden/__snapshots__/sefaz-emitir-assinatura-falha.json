@@ -1,0 +1,14 @@
+{
+  "resultado": {
+    "success": false,
+    "chaveAcesso": "{{CHAVE_ESPERADA}}",
+    "protocolo": null,
+    "dataAutorizacao": null,
+    "status": "erro",
+    "codigoStatus": null,
+    "mensagem": "Falha ao assinar XML: {{ERRO_DO_OPENSSL}}",
+    "xmlAutorizado": null,
+    "providerRef": "nfe-golden-1"
+  },
+  "envios": []
+}

@@ -26,6 +26,9 @@ export interface ParsedNfe {
 }
 
 export interface ParsedIde {
+  /** Opt-in de devolução: mantém o retorno legado byte-idêntico. */
+  idDest?: 1 | 2 | 3;
+  referencias?: string[];
   cUF: number;
   natOp: string;
   mod: string;
@@ -154,7 +157,7 @@ export interface ParsedProtNFe {
  * Aceita também a `<NFe>` "crua" (sem protNFe) — útil para auditoria de
  * rascunhos assinados antes do envio.
  */
-export function parseNfeXml(xml: string): ParsedNfe {
+export function parseNfeXml(xml: string, options?: { devolucao: boolean }): ParsedNfe {
   if (!xml || typeof xml !== "string") {
     throw new Error("XML NFe vazio ou invalido");
   }
@@ -194,6 +197,13 @@ export function parseNfeXml(xml: string): ParsedNfe {
   const versao = String(infNFe["@_versao"] ?? "");
 
   const ide = parseIde(infNFe.ide);
+  if (options?.devolucao) {
+    const idDest = Number(infNFe.ide?.idDest);
+    if (idDest !== 1 && idDest !== 2 && idDest !== 3) throw new Error("XML sem idDest válido");
+    ide.idDest = idDest;
+    const refs = infNFe.ide?.NFref;
+    ide.referencias = (Array.isArray(refs) ? refs : refs ? [refs] : []).map((r: {refNFe?:string}) => String(r.refNFe ?? "")).filter(Boolean);
+  }
   const emit = parseEmit(infNFe.emit);
   const dest = parseDest(infNFe.dest, ide.mod);
   const itens = parseItens(infNFe.det);

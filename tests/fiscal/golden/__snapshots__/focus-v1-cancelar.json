@@ -1,0 +1,124 @@
+{
+  "200-cancelado": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "cancelado",
+        "status_sefaz": "135",
+        "mensagem_sefaz": "Evento registrado e vinculado a NF-e",
+        "protocolo": "135260000000009"
+      }
+    },
+    "requisicao": {
+      "metodo": "DELETE",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "justificativa": "Cancelamento de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "protocolo": "135260000000009",
+      "mensagem": "Evento registrado e vinculado a NF-e"
+    }
+  },
+  "200-erro-cancelamento": {
+    "stub": {
+      "status": 200,
+      "json": {
+        "status": "erro_cancelamento",
+        "status_sefaz": "501",
+        "mensagem_sefaz": "Rejeicao: Prazo de cancelamento superior ao previsto na Legislacao"
+      }
+    },
+    "requisicao": {
+      "metodo": "DELETE",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "justificativa": "Cancelamento de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": true,
+      "protocolo": null,
+      "mensagem": "Rejeicao: Prazo de cancelamento superior ao previsto na Legislacao"
+    }
+  },
+  "422-json": {
+    "stub": {
+      "status": 422,
+      "json": {
+        "codigo": "requisicao_invalida",
+        "mensagem": "Justificativa deve ter entre 15 e 255 caracteres"
+      }
+    },
+    "requisicao": {
+      "metodo": "DELETE",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "justificativa": "Cancelamento de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "protocolo": null,
+      "mensagem": "Justificativa deve ter entre 15 e 255 caracteres"
+    }
+  },
+  "401-html": {
+    "stub": {
+      "status": 401,
+      "texto": "<html><body>HTTP Basic: Access denied.\n</body></html>",
+      "contentType": "text/html"
+    },
+    "requisicao": {
+      "metodo": "DELETE",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "justificativa": "Cancelamento de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "protocolo": null,
+      "mensagem": "{{JSON_PARSE_ERRO}}"
+    }
+  },
+  "rede-lanca": {
+    "stub": {
+      "lancar": "TypeError: fetch failed"
+    },
+    "requisicao": {
+      "metodo": "DELETE",
+      "url": "https://homologacao.focusnfe.com.br/v2/nfe/nfe-golden-1",
+      "headers": {
+        "Authorization": "Basic VE9LRU4tR09MREVOLUZPQ1VTOg==",
+        "Content-Type": "application/json"
+      },
+      "corpo": {
+        "justificativa": "Cancelamento de teste do golden F0"
+      }
+    },
+    "resultado": {
+      "success": false,
+      "protocolo": null,
+      "mensagem": "fetch failed"
+    }
+  }
+}

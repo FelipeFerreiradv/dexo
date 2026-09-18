@@ -1907,7 +1907,10 @@ export class FinanceUseCase {
       nfeId = draft.id;
     }
 
-    const emission = await this.nfeEmission.emit(userId, nfeId);
+    const mudouEmitente=!!existing && !!companyFiscalConfigId && companyFiscalConfigId!==existing.companyFiscalConfigId;
+    const emission = mudouEmitente
+      ? await this.nfeEmission.emit(userId,nfeId,{confirmarDescarteNumero:true,actorUserId:userId})
+      : await this.nfeEmission.emit(userId, nfeId);
     const state =
       emission.status === "AUTHORIZED"
         ? ("authorized" as const)

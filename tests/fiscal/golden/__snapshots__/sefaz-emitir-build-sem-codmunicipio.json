@@ -1,0 +1,14 @@
+{
+  "resultado": {
+    "success": false,
+    "chaveAcesso": null,
+    "protocolo": null,
+    "dataAutorizacao": null,
+    "status": "erro",
+    "codigoStatus": null,
+    "mensagem": "Falha ao montar XML NFe: CompanyFiscalConfig.codMunicipio obrigatorio para SEFAZ direto",
+    "xmlAutorizado": null,
+    "providerRef": "nfe-golden-1"
+  },
+  "envios": []
+}
