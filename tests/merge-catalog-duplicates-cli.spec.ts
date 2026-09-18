@@ -5,6 +5,7 @@ import { CATALOG_PRODUCT_MERGE_LOCK_KEY } from "../app/marketplaces/lib/catalog-
 
 import {
   acquireExclusiveCatalogMergeGate,
+  acquireStockSyncJobLocks,
   assertProductionDatabaseHost,
   assertWorkersDrainedForApply,
   canonicalManifestPhoto,
@@ -38,6 +39,18 @@ describe("exclusive catalog merge gate", () => {
 
     expect(executeRaw).toHaveBeenCalledOnce();
     expect(executeRaw.mock.calls[0]).toContain(CATALOG_PRODUCT_MERGE_LOCK_KEY);
+  });
+
+  it("executes per-listing void advisory locks without deserializing them", async () => {
+    const executeRaw = vi.fn(async () => 2);
+
+    await acquireStockSyncJobLocks({ $executeRaw: executeRaw } as any, [
+      "listing-a",
+      "listing-b",
+    ]);
+
+    expect(executeRaw).toHaveBeenCalledOnce();
+    expect(executeRaw.mock.calls[0]).toContainEqual(["listing-a", "listing-b"]);
   });
 });
 
