@@ -825,3 +825,12 @@ Esta atualização substitui os estados antigos de P1–P8 apresentados acima. A
 - Cenário obrigatório testado em Focus e SEFAZ simulados: 100 autorizada → 101 falha → retry 101 autorizada → próxima 102.
 - Docker local indisponível: testes reais PostgreSQL não executados. Nenhuma emissão, consulta remota de provedor, SSH, DDL remoto, commit, push ou implantação. Nenhum `.env` criado; configuração Codex e backup preservados.
 - Focus/Kiko ainda exigem verificação externa de credenciais, habilitação, UPD e RT/CSRT. Seguir o roteiro; não repetir toda a exploração ou os gates sem novas alterações que justifiquem.
+
+
+## Atualização posterior — PR, merge e deploy autorizados
+
+O usuário autorizou commit/PR, merge e implantação na VPS. PR #353 mesclado, revisão `84b915d` implantada, DDLs aplicados e verificações locais/públicas aprovadas. Diagnóstico somente leitura executado. Ver [12-DEPLOY-VPS.md](docs/handoff-nfe-evolucao/12-DEPLOY-VPS.md). Esta seção substitui a indicação anterior de ausência de publicação.
+
+A numeração V2 Focus segue desligada: o usuário confirmou que ainda não recebeu as confirmações de número/série/ref do suporte Focus exigidas no plano. Última nota consultada na Focus retornou erro_autorizacao/974. Não houve emissão real ou homologação; pendências externas não devem ser registradas como resolvidas.
+
+Validação complementar: os dois testes PostgreSQL reais passaram em container local PostgreSQL 16 Alpine, banco descartável ligado somente a 127.0.0.1:54329. O container foi encerrado ao terminar. Esta evidência encerra a pendência de engine indisponível anotada nas seções anteriores. UAT das telas ativadas e homologação fiscal continuam pendentes do canário.
