@@ -6,6 +6,10 @@ const script = fs.readFileSync(
   path.resolve("scripts/catalog-dedupe/run-catalog-merge.sh"),
   "utf8",
 );
+const finalizer = fs.readFileSync(
+  path.resolve("scripts/catalog-dedupe/finalize-live-manifest.ts"),
+  "utf8",
+);
 
 describe("catalog merge operational runner", () => {
   it("drains sync before stopping the API and never targets the frontend", () => {
@@ -39,5 +43,10 @@ describe("catalog merge operational runner", () => {
     );
     expect(script).toContain('CATALOG_MERGE_WORKERS_DRAINED=1 "${cli[@]}"');
     expect(script).toContain("--identity-sha256=$identity_sha256");
+  });
+
+  it("requests repeatable-read through Prisma before the transaction starts", () => {
+    expect(finalizer).toContain('isolationLevel: "RepeatableRead"');
+    expect(finalizer).not.toMatch(/SET TRANSACTION ISOLATION LEVEL/i);
   });
 });
