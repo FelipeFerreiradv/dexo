@@ -89,11 +89,36 @@ export interface MergeManifestGroup {
       platform: string;
       identityKey: string;
       imageIds: string[];
+      memberProofs: GalleryMemberProof[];
     }>;
     [key: string]: unknown;
   };
   [key: string]: unknown;
 }
+
+export type GalleryMemberProof =
+  | {
+      type: "PRODUCT_GALLERY";
+      productId: string;
+      platform: string;
+      imageIds: string[];
+    }
+  | {
+      type: "ACCOUNT_LISTING";
+      productId: string;
+      platform: string;
+      imageIds: string[];
+      marketplaceAccountId: string;
+      externalListingId: string;
+    }
+  | {
+      type: "LEGACY_ML_ORIGIN";
+      productId: string;
+      platform: "MERCADO_LIVRE";
+      imageIds: string[];
+      externalListingId: string;
+      sourceCode: string;
+    };
 
 export interface MergeManifest {
   version: 1;
@@ -135,7 +160,7 @@ export interface ValidationIssue {
   actual?: unknown;
 }
 
-interface LockedProduct {
+export interface LockedProduct {
   id: string;
   userId: string | null;
   name: string;
@@ -237,6 +262,21 @@ class CliError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function assertOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const allowedSet = new Set(allowed);
+  const unexpected = Object.keys(value).filter((key) => !allowedSet.has(key));
+  if (unexpected.length) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label} contém campos desconhecidos: ${unexpected.sort().join(", ")}.`,
+    );
+  }
 }
 
 export async function reconcileCommitOutcome(
@@ -533,6 +573,124 @@ function stockSyncJobEvidenceKey(row: ManifestStockSyncJob): string {
     new Date(row.createdAt).toISOString(),
     new Date(row.updatedAt).toISOString(),
   ]);
+}
+
+function parseGalleryMemberProof(
+  value: unknown,
+  label: string,
+  context: {
+    members: Set<string>;
+    platform: string;
+    identityKey: string;
+    imageIds: string[];
+    sourceCode: string | null;
+  },
+): GalleryMemberProof {
+  if (!isRecord(value)) {
+    throw new CliError("INVALID_MANIFEST", `${label} deve ser objeto.`);
+  }
+  const type = asNonEmptyString(value.type, `${label}.type`);
+  const commonKeys = ["type", "productId", "platform", "imageIds"];
+  const allowedByType: Record<string, string[]> = {
+    PRODUCT_GALLERY: commonKeys,
+    ACCOUNT_LISTING: [
+      ...commonKeys,
+      "marketplaceAccountId",
+      "externalListingId",
+    ],
+    LEGACY_ML_ORIGIN: [...commonKeys, "externalListingId", "sourceCode"],
+  };
+  const allowed = allowedByType[type];
+  if (!allowed) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label}.type desconhecido: ${type}.`,
+    );
+  }
+  assertOnlyKeys(value, allowed, label);
+  const productId = asNonEmptyString(value.productId, `${label}.productId`);
+  if (!context.members.has(productId)) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label}.productId não pertence ao grupo revisado.`,
+    );
+  }
+  const platform = asNonEmptyString(
+    value.platform,
+    `${label}.platform`,
+  ).toUpperCase();
+  if (platform !== context.platform) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label}.platform diverge do fingerprint de galeria.`,
+    );
+  }
+  const imageIds = sortedUnique(
+    asUniqueStrings(value.imageIds, `${label}.imageIds`, false).map((imageId) =>
+      imageId.toLowerCase(),
+    ),
+  );
+  if (
+    !arraysEqual(imageIds, context.imageIds) ||
+    `gallery:v1:${sha256(JSON.stringify(imageIds))}` !== context.identityKey
+  ) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label}.imageIds não corresponde à galeria completa assinada.`,
+    );
+  }
+  if (type === "PRODUCT_GALLERY") {
+    return { type, productId, platform, imageIds };
+  }
+  const externalListingId = asNonEmptyString(
+    value.externalListingId,
+    `${label}.externalListingId`,
+  );
+  if (/[:\s\u0000-\u001f]/.test(externalListingId)) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label}.externalListingId inválido.`,
+    );
+  }
+  if (type === "ACCOUNT_LISTING") {
+    const marketplaceAccountId = asNonEmptyString(
+      value.marketplaceAccountId,
+      `${label}.marketplaceAccountId`,
+    );
+    if (/[:\s\u0000-\u001f]/.test(marketplaceAccountId)) {
+      throw new CliError(
+        "INVALID_MANIFEST",
+        `${label}.marketplaceAccountId inválido.`,
+      );
+    }
+    return {
+      type,
+      productId,
+      platform,
+      imageIds,
+      marketplaceAccountId,
+      externalListingId,
+    };
+  }
+  const sourceCode = asNonEmptyString(value.sourceCode, `${label}.sourceCode`);
+  if (
+    platform !== "MERCADO_LIVRE" ||
+    !context.sourceCode ||
+    sourceCode !== context.sourceCode
+  ) {
+    throw new CliError(
+      "INVALID_MANIFEST",
+      `${label} exige plataforma MERCADO_LIVRE e o código de origem assinado do grupo.`,
+    );
+  }
+  return {
+    type: "LEGACY_ML_ORIGIN",
+    productId,
+    platform: "MERCADO_LIVRE",
+    imageIds,
+    externalListingId,
+    sourceCode,
+  };
 }
 
 export function parseMergeManifest(value: unknown): MergeManifest {
@@ -847,6 +1005,11 @@ export function parseMergeManifest(value: unknown): MergeManifest {
             `Grupo ${ownerId}: galleryIdentities[${index}] inválida.`,
           );
         }
+        assertOnlyKeys(
+          entry,
+          ["platform", "identityKey", "imageIds", "memberProofs"],
+          `Grupo ${ownerId}: galleryIdentities[${index}]`,
+        );
         const platform = asNonEmptyString(
           entry.platform,
           `Grupo ${ownerId}: galleryIdentities[${index}].platform`,
@@ -905,6 +1068,51 @@ export function parseMergeManifest(value: unknown): MergeManifest {
             `Grupo ${ownerId}: fingerprint não corresponde à galeria completa assinada.`,
           );
         }
+        if (!Array.isArray(entry.memberProofs) || !entry.memberProofs.length) {
+          throw new CliError(
+            "INVALID_MANIFEST",
+            `Grupo ${ownerId}: fingerprint deve possuir provas tipadas por membro.`,
+          );
+        }
+        const members = new Set([ownerId, ...duplicateIds]);
+        const memberProofs = entry.memberProofs.map((proof, proofIndex) =>
+          parseGalleryMemberProof(
+            proof,
+            `Grupo ${ownerId}: galleryIdentities[${index}].memberProofs[${proofIndex}]`,
+            { members, platform, identityKey, imageIds, sourceCode },
+          ),
+        );
+        const proofKeys = memberProofs.map((proof) => JSON.stringify(proof));
+        if (new Set(proofKeys).size !== proofKeys.length) {
+          throw new CliError(
+            "INVALID_MANIFEST",
+            `Grupo ${ownerId}: fingerprint contém prova por membro repetida.`,
+          );
+        }
+        const coveredMembers = sortedUnique(
+          memberProofs.map((proof) => proof.productId),
+        );
+        if (!arraysEqual(coveredMembers, sortedUnique([...members]))) {
+          throw new CliError(
+            "INVALID_MANIFEST",
+            `Grupo ${ownerId}: fingerprint não cobre todos os membros do grupo.`,
+          );
+        }
+        for (const proof of memberProofs) {
+          if (
+            proof.type === "LEGACY_ML_ORIGIN" &&
+            !memberProofs.some(
+              (candidate) =>
+                candidate.type !== "LEGACY_ML_ORIGIN" &&
+                candidate.productId !== proof.productId,
+            )
+          ) {
+            throw new CliError(
+              "INVALID_MANIFEST",
+              `Grupo ${ownerId}: origem legada exige prova independente da mesma galeria em outro membro.`,
+            );
+          }
+        }
         const scopedKey = `${platform}\u0000${identityKey}`;
         if (seenGalleryIdentities.has(scopedKey)) {
           throw new CliError(
@@ -913,7 +1121,7 @@ export function parseMergeManifest(value: unknown): MergeManifest {
           );
         }
         seenGalleryIdentities.add(scopedKey);
-        return { platform, identityKey, imageIds };
+        return { platform, identityKey, imageIds, memberProofs };
       })
       .sort((left, right) =>
         `${left.platform}\u0000${left.identityKey}`.localeCompare(
@@ -1286,6 +1494,31 @@ function productGallery(product: LockedProduct): string[] {
   );
 }
 
+function galleryImageIdsForPlatform(
+  product: LockedProduct,
+  platform: string,
+): string[] {
+  return productGallery(product).flatMap((photo) => {
+    if (platform === "MERCADO_LIVRE" && photo.startsWith("ml:")) {
+      return [photo.slice(3).toLowerCase()];
+    }
+    if (platform === "SHOPEE" && photo.startsWith("shopee:/file/")) {
+      return [
+        photo.slice("shopee:/file/".length).replace(/_tn$/i, "").toLowerCase(),
+      ];
+    }
+    return [];
+  });
+}
+
+function liveLegacyMlOrigin(attributes: unknown): string | null {
+  if (!isRecord(attributes)) return null;
+  const raw = attributes.mlb;
+  const value = isRecord(raw) ? raw.value_name : raw;
+  if (typeof value !== "string") return null;
+  return value.trim() || null;
+}
+
 function galleryNamespace(photo: string): string {
   const separator = photo.indexOf(":");
   return separator > 0 ? photo.slice(0, separator + 1) : "opaque:";
@@ -1436,103 +1669,171 @@ export function validateGroupIdentityCoverage(
 }
 
 /**
- * Algumas fichas legadas do Tijuco preservam a galeria original do VAAPT no
- * Product, enquanto seus anúncios vivos usam a galeria do Mercado Livre que
- * provou a duplicidade. Nesse caso não há como reconstruir a prova só pelas
- * imagens do Product sem consultar o marketplace durante a manutenção.
- *
- * O fallback aceita apenas a evidência revisada e assinada que cobre
- * exatamente todos os membros do grupo. Cada anúncio citado na evidência
- * precisa continuar vivo no grupo e ter seu alias exato, account-scoped,
- * confirmado no mesmo seed. Grupos sem código de origem nunca usam o fallback.
+ * Revalida cada ligação entre um membro e a galeria assinada. Provas vindas
+ * de cache só são aceitas quando a associação live que lhes dá significado
+ * continua intacta dentro da transação de manutenção.
  */
+export function validateGalleryMemberProofs(
+  group: MergeManifestGroup,
+  seed: IdentitySeed,
+  products: LockedProduct[],
+  listings: LiveListing[],
+  tenantId: string,
+): ValidationIssue[] {
+  const errors: ValidationIssue[] = [];
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const seedByKey = new Map(
+    seed.identities.map((row) => [
+      `${row.platform}\u0000${row.identityKey}`,
+      row,
+    ]),
+  );
+
+  for (const gallery of group.evidence.galleryIdentities) {
+    const gallerySeed = seedByKey.get(
+      `${gallery.platform}\u0000${gallery.identityKey}`,
+    );
+    if (
+      !gallerySeed ||
+      gallerySeed.status !== "CONFIRMED" ||
+      gallerySeed.productId !== group.ownerId
+    ) {
+      errors.push(
+        issue(
+          "GALLERY_MEMBER_PROOF_SEED_MISMATCH",
+          `Galeria ${gallery.platform}/${gallery.identityKey} não possui seed confirmado para o owner.`,
+          { ownerId: group.ownerId, actual: gallerySeed ?? null },
+        ),
+      );
+      continue;
+    }
+
+    for (const proof of gallery.memberProofs) {
+      const product = productById.get(proof.productId);
+      if (!product || product.userId !== tenantId) {
+        errors.push(
+          issue(
+            "GALLERY_MEMBER_PROOF_PRODUCT_STALE",
+            `Prova de galeria aponta para produto ausente ou fora do tenant.`,
+            {
+              ownerId: group.ownerId,
+              productId: proof.productId,
+              expected: tenantId,
+              actual: product?.userId ?? null,
+            },
+          ),
+        );
+        continue;
+      }
+
+      if (proof.type === "PRODUCT_GALLERY") {
+        const liveImageIds = galleryImageIdsForPlatform(
+          product,
+          proof.platform,
+        );
+        if (!arraysEqual(liveImageIds, proof.imageIds)) {
+          errors.push(
+            issue(
+              "PRODUCT_GALLERY_PROOF_STALE",
+              `Galeria live de ${proof.productId} divergiu da prova assinada.`,
+              {
+                ownerId: group.ownerId,
+                productId: proof.productId,
+                expected: proof.imageIds,
+                actual: liveImageIds,
+              },
+            ),
+          );
+        }
+        continue;
+      }
+
+      if (proof.type === "ACCOUNT_LISTING") {
+        const liveMatches = listings.filter(
+          (listing) =>
+            listing.productId === proof.productId &&
+            listing.platform === proof.platform &&
+            listing.marketplaceAccountId === proof.marketplaceAccountId &&
+            listing.externalListingId === proof.externalListingId,
+        );
+        const live = liveMatches.length === 1 ? liveMatches[0] : null;
+        const listingKey = `listing:${proof.marketplaceAccountId}:${proof.externalListingId}`;
+        const alias = seedByKey.get(`${proof.platform}\u0000${listingKey}`);
+        if (
+          !live ||
+          live.accountDataOwnerId !== tenantId ||
+          !alias ||
+          alias.status !== "CONFIRMED" ||
+          alias.productId !== group.ownerId
+        ) {
+          errors.push(
+            issue(
+              "ACCOUNT_LISTING_PROOF_STALE",
+              `Anúncio citado pela prova de ${proof.productId} mudou ou perdeu seu alias confirmado.`,
+              {
+                ownerId: group.ownerId,
+                productId: proof.productId,
+                expected: {
+                  tenantId,
+                  platform: proof.platform,
+                  marketplaceAccountId: proof.marketplaceAccountId,
+                  externalListingId: proof.externalListingId,
+                  aliasProductId: group.ownerId,
+                },
+                actual: { listing: live, alias: alias ?? null },
+              },
+            ),
+          );
+        }
+        continue;
+      }
+
+      const currentOrigin = liveLegacyMlOrigin(product.attributes);
+      const currentSourceCode = liveSourceCode(product.attributes);
+      if (
+        proof.platform !== "MERCADO_LIVRE" ||
+        !group.sourceCode ||
+        proof.sourceCode !== group.sourceCode ||
+        currentSourceCode !== proof.sourceCode ||
+        currentOrigin !== proof.externalListingId
+      ) {
+        errors.push(
+          issue(
+            "LEGACY_ML_ORIGIN_PROOF_STALE",
+            `Origem legada de ${proof.productId} divergiu da prova assinada.`,
+            {
+              ownerId: group.ownerId,
+              productId: proof.productId,
+              expected: {
+                sourceCode: proof.sourceCode,
+                externalListingId: proof.externalListingId,
+              },
+              actual: {
+                sourceCode: currentSourceCode || null,
+                externalListingId: currentOrigin,
+              },
+            },
+          ),
+        );
+      }
+    }
+  }
+  return errors;
+}
+
 export function hasReviewedGalleryFallback(
   group: MergeManifestGroup,
   seed: IdentitySeed,
+  products: LockedProduct[],
   listings: LiveListing[],
+  tenantId: string,
 ): boolean {
-  if (!group.sourceCode || group.exactFullGallery) return false;
-  const members = sortedUnique([group.ownerId, ...group.duplicateIds]);
-  const listingAliases = new Set(
-    seed.identities
-      .filter(
-        (row) =>
-          row.status === "CONFIRMED" &&
-          row.productId === group.ownerId &&
-          row.identityKey.startsWith("listing:"),
-      )
-      .map((row) => `${row.platform}\u0000${row.identityKey}`),
+  return (
+    Boolean(group.sourceCode) &&
+    !group.exactFullGallery &&
+    validateGalleryMemberProofs(group, seed, products, listings, tenantId)
+      .length === 0
   );
-  const groupListings = listings.filter((listing) =>
-    members.includes(listing.productId),
-  );
-
-  return seed.identities.some((row) => {
-    if (
-      row.status !== "CONFIRMED" ||
-      row.productId !== group.ownerId ||
-      !row.identityKey.startsWith("gallery:v1:") ||
-      !row.evidence ||
-      row.evidence.observations < members.length ||
-      !arraysEqual(sortedUnique(row.evidence.originalProductIds), members)
-    ) {
-      return false;
-    }
-    const rawListingSources = row.evidence.sources.filter((source) =>
-      source.startsWith("listing:"),
-    );
-    const sourceListings = rawListingSources.map((source) => {
-      const match = source.match(
-        /^listing:([A-Z][A-Z0-9_]{1,63}):([^:\s]+):([^:\s]+):([^:\s]+)$/,
-      );
-      return match
-        ? {
-            platform: match[1],
-            accountId: match[2],
-            externalListingId: match[3],
-            originalProductId: match[4],
-          }
-        : null;
-    });
-    if (
-      !sourceListings.length ||
-      row.evidence.observations < sourceListings.length ||
-      sourceListings.some(
-        (source) =>
-          !source ||
-          source.platform !== row.platform ||
-          !members.includes(source.originalProductId),
-      )
-    ) {
-      return false;
-    }
-    if (
-      !arraysEqual(
-        sortedUnique(
-          sourceListings.flatMap((source) =>
-            source ? [source.originalProductId] : [],
-          ),
-        ),
-        members,
-      )
-    ) {
-      return false;
-    }
-    return sourceListings.every((source) => {
-      if (!source) return false;
-      const live = groupListings.find(
-        (listing) =>
-          listing.platform === source.platform &&
-          listing.marketplaceAccountId === source.accountId &&
-          listing.externalListingId === source.externalListingId &&
-          listing.productId === source.originalProductId,
-      );
-      if (!live) return false;
-      return listingAliases.has(
-        `${live.platform}\u0000listing:${live.marketplaceAccountId}:${live.externalListingId}`,
-      );
-    });
-  });
 }
 
 async function createPlanTempTables(
@@ -1675,6 +1976,7 @@ async function collectValidation(
          WHERE pl."productId" = ANY(${allIds}::text[])
          ORDER BY pl.id
          FOR UPDATE OF pl
+         FOR SHARE OF ma
       `
     : await tx.$queryRaw<LiveListing[]>`
         SELECT pl.id, pl."productId", pl."marketplaceAccountId", pl."externalListingId",
@@ -1998,11 +2300,18 @@ async function collectValidation(
     }
 
     const galleries = members.map(productGallery);
-    const reviewedGalleryFallback = hasReviewedGalleryFallback(
+    const memberProofErrors = validateGalleryMemberProofs(
       group,
       seed,
-      listings,
+      members,
+      groupListings,
+      manifest.tenantId,
     );
+    errors.push(...memberProofErrors);
+    const reviewedGalleryFallback =
+      Boolean(group.sourceCode) &&
+      !group.exactFullGallery &&
+      memberProofErrors.length === 0;
     if (!reviewedGalleryFallback) {
       const evidence = new Set(group.evidence.photoIds);
       galleries.forEach((gallery, index) => {
