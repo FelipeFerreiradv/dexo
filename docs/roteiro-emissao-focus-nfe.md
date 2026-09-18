@@ -2,7 +2,7 @@
 
 ## O que está pronto
 
-O código local integra a Focus ao fluxo V2 e passou nos testes simulados de emissão, rejeição, correção com o mesmo número e próxima numeração. Ainda não foi implantado nem homologado com a conta do cliente. Este roteiro descreve as próximas etapas; não indica que elas já foram executadas.
+O código local integra a Focus ao fluxo V2 e passou nos testes simulados de emissão, rejeição, correção com o mesmo número e próxima numeração. Implantado na VPS pelo PR #353 em 18/09/2026, com os DDLs aplicados e smoke aprovado. A numeração V2 permanece desligada enquanto faltam as confirmações da Focus; não houve homologação com a conta do cliente. Consulte o [registro do deploy](handoff-nfe-evolucao/12-DEPLOY-VPS.md).
 
 ## 1. Conferir a empresa na Focus
 
@@ -14,7 +14,7 @@ Confirme também com a Focus que a conta aceita o número/série explícitos, a 
 
 ## 2. Preparar a versão e o banco — responsável técnico pela implantação
 
-As alterações estão no worktree `receivable-stock-listing-sync-9b376d`, branch `claude/dexo-nfe-module-evolution-3abbea`, ainda sem commit/push/deploy.
+A versão foi publicada pelo PR #353, commit `84b915d`. Os três DDLs abaixo já foram aplicados e verificados na VPS; não é necessário reaplicá-los para este canário.
 
 Após autorização operacional, publicar esta versão e aplicar os DDLs aditivos revisados:
 
@@ -22,7 +22,7 @@ Após autorização operacional, publicar esta versão e aplicar os DDLs aditivo
 - `prisma/ddl/2026-09-18-company-fiscal-resp-tec.sql`
 - `prisma/ddl/2026-09-18-nfe-devolucao.sql`
 
-Antes da implantação, concluir os testes PostgreSQL em ambiente local isolado; eles ficaram pendentes porque o Docker local não estava disponível. Não usar `prisma db push`. Conferir a existência das tabelas/índices depois do DDL. A ausência das tabelas pode fazer notas comuns seguirem pelo V1; **uma emissão aceita, sozinha, não comprova que o V2 foi ativado**.
+Os dois testes PostgreSQL também foram concluídos em banco local isolado após iniciar o Docker Desktop. Não usar `prisma db push`. Conferir a existência das tabelas/índices depois do DDL. A ausência das tabelas pode fazer notas comuns seguirem pelo V1; **uma emissão aceita, sozinha, não comprova que o V2 foi ativado**.
 
 ## 3. Configurar a empresa no Dexo
 
