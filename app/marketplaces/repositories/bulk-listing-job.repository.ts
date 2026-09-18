@@ -1,5 +1,6 @@
 import { BulkJobStatus, Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
+import { CATALOG_PRODUCT_MERGE_LOCK_KEY } from "../lib/catalog-merge-lock";
 
 export type BulkListingPlatform =
   "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
@@ -167,18 +168,39 @@ export class BulkListingJobRepository {
   }) {
     const totalItems =
       data.totalItems ?? data.productIds.length * data.requests.length;
-    return prisma.bulkListingJob.create({
-      data: {
-        userId: data.userId,
-        productIds: data.productIds,
-        requests: data.requests as unknown as Prisma.InputJsonValue,
-        overrideTemplate: data.overrideTemplate
-          ? (data.overrideTemplate as unknown as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-        totalItems,
-        status: BulkJobStatus.QUEUED,
+    const uniqueProductIds = [...new Set(data.productIds)].sort();
+    return prisma.$transaction(
+      async (tx) => {
+        // Catalog merge takes the exclusive form. Waiting creators resume
+        // after COMMIT and must revalidate IDs before persisting an array that
+        // deliberately has no Product foreign key.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock_shared(hashtext(${CATALOG_PRODUCT_MERGE_LOCK_KEY}))
+        `;
+        const ownedProducts = await tx.product.findMany({
+          where: { id: { in: uniqueProductIds }, userId: data.userId },
+          select: { id: true },
+        });
+        if (ownedProducts.length !== uniqueProductIds.length) {
+          throw new Error(
+            "Um ou mais produtos do lote não existem mais ou pertencem a outro estoque.",
+          );
+        }
+        return tx.bulkListingJob.create({
+          data: {
+            userId: data.userId,
+            productIds: data.productIds,
+            requests: data.requests as unknown as Prisma.InputJsonValue,
+            overrideTemplate: data.overrideTemplate
+              ? (data.overrideTemplate as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
+            totalItems,
+            status: BulkJobStatus.QUEUED,
+          },
+        });
       },
-    });
+      { maxWait: 20_000, timeout: 60_000 },
+    );
   }
 
   static async findByIdAndUser(id: string, userId: string) {

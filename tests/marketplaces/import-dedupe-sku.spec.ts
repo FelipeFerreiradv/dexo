@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Platform } from "@prisma/client";
 
 import prisma from "@/app/lib/prisma";
+import { accountScopedAutodetectSku } from "@/app/marketplaces/lib/autodetect-synthetic-sku";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
@@ -67,9 +68,8 @@ describe("cenários de duplicação de produto", () => {
     ).mockResolvedValue(null as never);
     vi.spyOn(prisma.product, "findFirst").mockResolvedValue(null as never);
 
-    const out = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item(),
-    );
+    const out =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(item());
 
     expect(out.action).toBe("created_product");
     expect(created).toHaveBeenCalledTimes(1);
@@ -87,9 +87,8 @@ describe("cenários de duplicação de produto", () => {
       name: "Acabamento Moldura Churrasqueira Esquerda",
     } as never);
 
-    const out = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item(),
-    );
+    const out =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(item());
 
     expect(out.action).toBe("linked_existing_product");
     expect(out.productId).toBe("p-da-shopee");
@@ -108,9 +107,8 @@ describe("cenários de duplicação de produto", () => {
       "findProductIdByExternalListingId",
     ).mockResolvedValue({ productId: "p-ja-linkado" } as never);
 
-    const out = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item(),
-    );
+    const out =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(item());
 
     expect(out.action).toBe("listing_exists");
     expect(out.productId).toBe("p-ja-linkado");
@@ -123,9 +121,10 @@ describe("cenários de duplicação de produto", () => {
       ListingRepository,
       "findProductIdByExternalListingId",
     ).mockResolvedValue(null as never);
-    const lookup = vi
-      .spyOn(prisma.product, "findFirst")
-      .mockResolvedValue({ id: "p-shopee", name: "Acabamento Moldura" } as never);
+    const lookup = vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
+      id: "p-shopee",
+      name: "Acabamento Moldura",
+    } as never);
 
     const out = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
       item({ rawSku: "Mk2-204" }),
@@ -150,7 +149,10 @@ describe("cenários de duplicação de produto", () => {
     // 1ª busca: não achou (cache/leitura anterior à corrida). 2ª: o vencedor.
     vi.spyOn(prisma.product, "findFirst")
       .mockResolvedValueOnce(null as never)
-      .mockResolvedValueOnce({ id: "p-vencedor", name: "x" } as never);
+      .mockResolvedValueOnce({
+        id: "p-vencedor",
+        name: "Acabamento Moldura Churrasqueira Esquerda",
+      } as never);
     // O banco rejeita pelo índice único parcial de (userId, skuNormalized).
     created.mockRejectedValueOnce(
       new Error(
@@ -183,14 +185,26 @@ describe("cenários de duplicação de produto", () => {
       true as never,
     );
 
-    const out = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item({ rawSku: "caixote 1", title: "Soleira Dianteira Direita Citroën" }),
-    );
+    const marketplaceItem = item({
+      rawSku: "caixote 1",
+      title: "Soleira Dianteira Direita Citroën",
+    });
+    const out =
+      await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+        marketplaceItem,
+      );
 
     expect(out.action).toBe("created_product");
     // SKU sintético por anúncio: não re-agrupa nem colide com o produto casado.
     expect(created).toHaveBeenCalledWith(
-      expect.objectContaining({ sku: "VAAPT-MLB999", autoSku: false }),
+      expect.objectContaining({
+        sku: accountScopedAutodetectSku("VAAPT", {
+          platform: marketplaceItem.platform,
+          accountId: marketplaceItem.account.id,
+          externalListingId: marketplaceItem.externalListingId,
+        }),
+        autoSku: false,
+      }),
     );
   });
 });

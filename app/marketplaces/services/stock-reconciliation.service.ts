@@ -235,19 +235,44 @@ export class StockReconciliationService {
         async (tx) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + c.listingId}))`;
 
+          // The candidate was collected before the advisory lock. A catalog
+          // merge may have relinked this listing while we waited, so re-read
+          // both ownership and available stock under the lock. A stale donor
+          // candidate must never recreate a StockSyncJob for a deleted ID.
+          const live = await tx.productListing.findUnique({
+            where: { id: c.listingId },
+            select: {
+              productId: true,
+              product: { select: { stock: true, reservedStock: true } },
+              marketplaceAccount: {
+                select: { platform: true, status: true },
+              },
+            },
+          });
+          if (
+            !live ||
+            live.productId !== c.productId ||
+            live.marketplaceAccount.status !== "ACTIVE"
+          ) {
+            return;
+          }
+          const targetStock = availableForSale(
+            live.product.stock,
+            live.product.reservedStock,
+          );
           await (tx as any).stockSyncJob.upsert({
             where: {
               listingId_status: { listingId: c.listingId, status: "PENDING" },
             },
             create: {
-              productId: c.productId,
+              productId: live.productId,
               listingId: c.listingId,
-              platform: c.platform,
-              targetStock: c.stock,
+              platform: live.marketplaceAccount.platform,
+              targetStock,
               status: "PENDING",
             },
             update: {
-              targetStock: c.stock,
+              targetStock,
             },
           });
         },

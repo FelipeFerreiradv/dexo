@@ -62,3 +62,48 @@ describe("ListingRepository.upsertListing", () => {
     expect(arg.create.status).toBe("active");
   });
 });
+
+describe("ListingRepository.upsertAutodetectedListing transacional", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("volta ao savepoint antes de reler o vencedor de uma colisão P2002", async () => {
+    const events: string[] = [];
+    const tx = {
+      $executeRawUnsafe: vi.fn(async (sql: string) => {
+        events.push(sql);
+        return 0;
+      }),
+      productListing: {
+        upsert: vi.fn(async () => {
+          events.push("upsert");
+          throw { code: "P2002" };
+        }),
+        findUnique: vi.fn(async () => {
+          events.push("read");
+          return { id: "listing", productId: "winner" };
+        }),
+      },
+    };
+
+    const result = await ListingRepository.upsertAutodetectedListing(
+      {
+        productId: "candidate",
+        marketplaceAccountId: "account",
+        externalListingId: "MLB1",
+        status: "active",
+      },
+      tx as any,
+    );
+
+    expect(result).toEqual({ id: "listing", productId: "winner" });
+    expect(events).toEqual([
+      "SAVEPOINT autodetect_listing",
+      "upsert",
+      "ROLLBACK TO SAVEPOINT autodetect_listing",
+      "RELEASE SAVEPOINT autodetect_listing",
+      "read",
+    ]);
+  });
+});

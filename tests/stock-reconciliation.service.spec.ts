@@ -2,17 +2,52 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/app/lib/prisma", () => {
   const stockSyncJob = { upsert: vi.fn() };
+  const productListing = { findMany: vi.fn(), findUnique: vi.fn() };
+  const queryRaw = vi.fn().mockResolvedValue([]);
   const mock: any = {
     stockLog: { findMany: vi.fn() },
-    productListing: { findMany: vi.fn() },
+    productListing,
     product: { findMany: vi.fn() },
     systemLog: { findFirst: vi.fn().mockResolvedValue(null) },
     stockSyncJob,
-    $queryRaw: vi.fn().mockResolvedValue([]),
+    $queryRaw: queryRaw,
     // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
     $executeRaw: vi.fn().mockResolvedValue([]),
     $transaction: vi.fn(),
   };
+  productListing.findUnique.mockImplementation(async ({ where }: any) => {
+    const results = [
+      ...productListing.findMany.mock.results,
+      ...queryRaw.mock.results,
+    ].reverse();
+    for (const result of results) {
+      if (result.type !== "return") continue;
+      const rows = await result.value;
+      if (!Array.isArray(rows)) continue;
+      const row = rows.find(
+        (entry: any) => (entry.id ?? entry.listingId) === where.id,
+      );
+      if (!row) continue;
+      const platform =
+        row.marketplaceAccount?.platform ??
+        row.platform ??
+        (String(row.externalListingId ?? "").startsWith("MLB")
+          ? "MERCADO_LIVRE"
+          : "SHOPEE");
+      return {
+        productId: row.productId,
+        product: {
+          stock: row.product?.stock ?? row.disponivel ?? row.stock ?? 0,
+          reservedStock: row.product?.reservedStock ?? 0,
+        },
+        marketplaceAccount: {
+          platform,
+          status: row.marketplaceAccount?.status ?? "ACTIVE",
+        },
+      };
+    }
+    return null;
+  });
   mock.$transaction.mockImplementation(async (cb: any) => cb(mock));
   return { default: mock };
 });
@@ -57,9 +92,48 @@ const makeListingRow = (overrides: Partial<any> = {}) => ({
   ...overrides,
 });
 
+function installFreshListingLookupMock(): void {
+  (prisma as any).productListing.findUnique.mockImplementation(
+    async ({ where }: any) => {
+      const results = [
+        ...(prisma as any).productListing.findMany.mock.results,
+        ...(prisma as any).$queryRaw.mock.results,
+      ].reverse();
+      for (const result of results) {
+        if (result.type !== "return") continue;
+        const rows = await result.value;
+        if (!Array.isArray(rows)) continue;
+        const row = rows.find(
+          (entry: any) => (entry.id ?? entry.listingId) === where.id,
+        );
+        if (!row) continue;
+        const platform =
+          row.marketplaceAccount?.platform ??
+          row.platform ??
+          (String(row.externalListingId ?? "").startsWith("MLB")
+            ? "MERCADO_LIVRE"
+            : "SHOPEE");
+        return {
+          productId: row.productId,
+          product: {
+            stock: row.product?.stock ?? row.disponivel ?? row.stock ?? 0,
+            reservedStock: row.product?.reservedStock ?? 0,
+          },
+          marketplaceAccount: {
+            platform,
+            status: row.marketplaceAccount?.status ?? "ACTIVE",
+          },
+        };
+      }
+      return null;
+    },
+  );
+}
+
 describe("StockReconciliationService.runOnce", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installFreshListingLookupMock();
     (prisma as any).$transaction.mockImplementation(async (cb: any) =>
       cb(prisma),
     );
@@ -82,7 +156,10 @@ describe("StockReconciliationService.runOnce", () => {
   // em venda aberta é invisível para esta varredura. A flag inclui esses
   // produtos; sem ela, o comportamento é o de sempre.
   describe("peças comprometidas em venda aberta (RESERVED_STOCK_RECONCILE_ENABLED)", () => {
-    const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+    const comFlag = async (
+      valor: string | undefined,
+      fn: () => Promise<void>,
+    ) => {
       const anterior = process.env.RESERVED_STOCK_RECONCILE_ENABLED;
       if (valor === undefined) {
         delete process.env.RESERVED_STOCK_RECONCILE_ENABLED;
@@ -248,6 +325,44 @@ describe("StockReconciliationService.runOnce", () => {
     expect(call.update.targetStock).toBe(12);
   });
 
+  it("revalida depois do advisory e descarta candidato relinkado por merge", async () => {
+    (prisma as any).stockLog.findMany.mockResolvedValue([
+      { productId: "donor" },
+    ]);
+    (prisma as any).productListing.findMany.mockResolvedValue([
+      makeListingRow({ id: "lst-merge", productId: "donor" }),
+    ]);
+    (prisma as any).productListing.findUnique.mockResolvedValueOnce({
+      productId: "canonical-owner",
+      product: { stock: 1, reservedStock: 0 },
+      marketplaceAccount: { platform: "MERCADO_LIVRE", status: "ACTIVE" },
+    });
+
+    await StockReconciliationService.runOnce();
+
+    expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+  });
+
+  it("recalcula o disponível live depois de adquirir o advisory", async () => {
+    (prisma as any).stockLog.findMany.mockResolvedValue([
+      { productId: "prod-1" },
+    ]);
+    (prisma as any).productListing.findMany.mockResolvedValue([
+      makeListingRow({ product: { stock: 12, reservedStock: 0 } }),
+    ]);
+    (prisma as any).productListing.findUnique.mockResolvedValueOnce({
+      productId: "prod-1",
+      product: { stock: 9, reservedStock: 4 },
+      marketplaceAccount: { platform: "SHOPEE", status: "ACTIVE" },
+    });
+
+    await StockReconciliationService.runOnce();
+
+    const call = (prisma as any).stockSyncJob.upsert.mock.calls[0][0];
+    expect(call.create.targetStock).toBe(5);
+    expect(call.update.targetStock).toBe(5);
+  });
+
   it("não derruba o loop quando um upsert falha", async () => {
     (prisma as any).stockLog.findMany.mockResolvedValue([
       { productId: "prod-1" },
@@ -299,7 +414,10 @@ describe("StockReconciliationService.runOnce", () => {
  * única defesa é ver a VOLTA para `active` e pausar.
  */
 describe("StockReconciliationService.watchAvailabilityOnce", () => {
-  const comFlag = async (valor: string | undefined, fn: () => Promise<void>) => {
+  const comFlag = async (
+    valor: string | undefined,
+    fn: () => Promise<void>,
+  ) => {
     const anterior = process.env.AVAILABILITY_WATCH_ENABLED;
     if (valor === undefined) delete process.env.AVAILABILITY_WATCH_ENABLED;
     else process.env.AVAILABILITY_WATCH_ENABLED = valor;
@@ -326,8 +444,11 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    installFreshListingLookupMock();
     StockReconciliationService.stop(); // zera o cursor entre os testes
-    (prisma as any).$transaction.mockImplementation(async (cb: any) => cb(prisma));
+    (prisma as any).$transaction.mockImplementation(async (cb: any) =>
+      cb(prisma),
+    );
     (prisma as any).systemLog.findFirst.mockResolvedValue(null);
     (prisma as any).stockSyncJob.upsert.mockResolvedValue({});
   });
@@ -355,9 +476,10 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
       await StockReconciliationService.watchAvailabilityOnce();
 
       // Multiget, nunca item a item: uma chamada por CONTA, com os ids juntos.
-      expect(MLApiService.getItemsStockSnapshot).toHaveBeenCalledWith("tok-ml", [
-        "MLB4862135565",
-      ]);
+      expect(MLApiService.getItemsStockSnapshot).toHaveBeenCalledWith(
+        "tok-ml",
+        ["MLB4862135565"],
+      );
       expect(MLApiService.getItemDetails).not.toHaveBeenCalled();
       expect(SystemLogService.logError).not.toHaveBeenCalled();
       expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
@@ -450,7 +572,9 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
       (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
         { id: "MLB4862135565", status: "active", available_quantity: 1 },
       ]);
-      (prisma as any).systemLog.findFirst.mockResolvedValue({ id: "ja-existe" });
+      (prisma as any).systemLog.findFirst.mockResolvedValue({
+        id: "ja-existe",
+      });
 
       await StockReconciliationService.watchAvailabilityOnce();
 
@@ -613,6 +737,7 @@ describe("StockReconciliationService — vigília na Shopee", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    installFreshListingLookupMock();
     (prisma as any).$transaction.mockImplementation(async (cb: any) =>
       cb(prisma),
     );

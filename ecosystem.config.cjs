@@ -51,6 +51,10 @@ module.exports = {
       // máquina de desenvolvimento com o .env de produção), o entrypoint sai
       // com código 0; não o ressuscite em um loop de restart do PM2.
       stop_exit_codes: [0],
+      // O handler de SIGTERM/SIGINT deixa as passadas em voo terminarem antes
+      // de desconectar o Prisma. O default curto do PM2 mataria o processo no
+      // meio de uma chamada externa; este prazo vale só para este worker.
+      kill_timeout: 60000,
     },
     {
       // Batch de estatísticas de catálogo. O caminho do npm/node do nvm é o
