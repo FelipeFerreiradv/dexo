@@ -788,6 +788,27 @@ describe("reviewed gallery fallback", () => {
       code: "LEGACY_ML_ORIGIN_PROOF_STALE",
     },
     {
+      label: "legacy MLB origin removed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        delete (plan.products[0].attributes as any).mlb;
+      },
+      code: "LEGACY_ML_ORIGIN_PROOF_STALE",
+    },
+    {
+      label: "legacy source code changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        (plan.products[0].attributes as any).codPeca = "different";
+      },
+      code: "LEGACY_ML_ORIGIN_PROOF_STALE",
+    },
+    {
+      label: "listing product changed",
+      mutate: (plan: ReturnType<typeof legacyPlan>) => {
+        plan.listings[0].productId = "owner";
+      },
+      code: "ACCOUNT_LISTING_PROOF_STALE",
+    },
+    {
       label: "listing account changed",
       mutate: (plan: ReturnType<typeof legacyPlan>) => {
         plan.listings[0].marketplaceAccountId = "other-account";
