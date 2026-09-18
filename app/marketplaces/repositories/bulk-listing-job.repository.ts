@@ -174,7 +174,7 @@ export class BulkListingJobRepository {
         // Catalog merge takes the exclusive form. Waiting creators resume
         // after COMMIT and must revalidate IDs before persisting an array that
         // deliberately has no Product foreign key.
-        await tx.$queryRaw`
+        await tx.$executeRaw`
           SELECT pg_advisory_xact_lock_shared(hashtext(${CATALOG_PRODUCT_MERGE_LOCK_KEY}))
         `;
         const ownedProducts = await tx.product.findMany({

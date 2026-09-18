@@ -45,7 +45,7 @@ export class CatalogIdentityService {
         // Serialize across API, poll and batch import before creating Product.
         // The insert, listing and learned identity commit or roll back together.
         const lockKey = `${item.account.userId}:${item.platform}:${galleryKey ?? listingKey}`;
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
 
         const rows = await tx.$queryRaw<
           Array<{
