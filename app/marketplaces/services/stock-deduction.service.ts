@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { isBackgroundWorkersEnabled } from "@/app/lib/background-workers";
 
 /**
  * Serviço compartilhado de baixa atômica de estoque.
@@ -395,34 +396,38 @@ export class StockDeductionService {
     const logPrefix = input.logPrefix ?? "[StockDeductionService]";
 
     // Dispara processamento imediato dos jobs recém-enfileirados (best-effort;
-    // se falhar, o interval do service pegará no próximo ciclo).
-    setImmediate(() => {
-      void import("./stock-sync-retry.service")
-        .then(({ StockSyncRetryService }) => StockSyncRetryService.runOnce())
-        .catch((err) =>
-          console.error(
-            `${logPrefix} Falha ao disparar StockSyncRetryService.runOnce:`,
-            err,
-          ),
-        )
-        // ⚠️ ENCADEADO NO `runOnce`, e não num `setImmediate` próprio: a ordem
-        // é a correção inteira. O empurrão de quantidade REABRE o anúncio (o
-        // ML tira o `out_of_stock` sozinho; Shopee/Magalu voltam a vender), e
-        // uma pausa disparada em paralelo poderia chegar ANTES dele e ser
-        // desfeita. Mesmo desenho de `firePostReservationEffects`, que já
-        // sequencia empurrar-e-reabrir no mesmo timer pelo motivo simétrico.
-        //
-        // O `.catch` acima já neutralizou a falha do runOnce: a pausa acontece
-        // mesmo quando o sync falha — ali o anúncio nem chegou a reabrir, e
-        // `pauseListings` é idempotente.
-        .then(() => StockDeductionService.keepListingsPaused(input, logPrefix))
-        .catch((err) =>
-          console.error(
-            `${logPrefix} Falha ao manter anuncios pausados (best-effort):`,
-            err,
-          ),
+    // se falhar, o interval do service pegará no próximo ciclo). A transação
+    // acima continua enfileirando mesmo com o gate desligado; apenas este
+    // efeito remoto fica inerte até o processo de produção ser habilitado.
+    if (isBackgroundWorkersEnabled()) {
+      setImmediate(() => {
+        void import("./stock-sync-retry.service")
+          .then(({ StockSyncRetryService }) => StockSyncRetryService.runOnce())
+          .catch((err) =>
+            console.error(
+              `${logPrefix} Falha ao disparar StockSyncRetryService.runOnce:`,
+              err,
+            ),
+          )
+          // ⚠️ ENCADEADO NO `runOnce`, e não num `setImmediate` próprio: a ordem
+          // é a correção inteira. O empurrão de quantidade REABRE o anúncio (o
+          // ML tira o `out_of_stock` sozinho; Shopee/Magalu voltam a vender), e
+          // uma pausa disparada em paralelo poderia chegar ANTES dele e ser
+          // desfeita. Mesmo desenho de `firePostReservationEffects`, que já
+          // sequencia empurrar-e-reabrir no mesmo timer pelo motivo simétrico.
+          //
+          // O `.catch` acima já neutralizou a falha do runOnce: a pausa acontece
+          // mesmo quando o sync falha — ali o anúncio nem chegou a reabrir, e
+          // `pauseListings` é idempotente.
+          .then(() => StockDeductionService.keepListingsPaused(input, logPrefix))
+          .catch((err) =>
+            console.error(
+              `${logPrefix} Falha ao manter anuncios pausados (best-effort):`,
+              err,
+            ),
         );
-    });
+      });
+    }
 
     // OBSERVABILIDADE (não altera comportamento): grava SystemLog para cada
     // produto multi-unidade que foi a zero num único movimento. Roda para
@@ -467,11 +472,12 @@ export class StockDeductionService {
 
     // Pausa-ao-zerar é OPT-IN por caller (venda balcão na Fase 7). Order não
     // passa esse campo → comportamento atual preservado.
-    if (input.pauseOnZero) {
+    if (isBackgroundWorkersEnabled() && input.pauseOnZero) {
       const zeroed = input.deductions.filter((d) => d.newStock === 0);
       if (zeroed.length > 0) {
         const { userId } = input.pauseOnZero;
         setImmediate(() => {
+          if (!isBackgroundWorkersEnabled()) return;
           void import("@/app/usecases/product.usercase")
             .then(async ({ ProductUseCase }) => {
               const uc = new ProductUseCase();
@@ -502,13 +508,14 @@ export class StockDeductionService {
     // (via pauseOnZero), e agora têm estoque novamente. pauseListings com
     // status "active" é idempotente — anúncios que já estão active são
     // contados como alreadyInState. Best-effort, mesmo padrão.
-    if (input.reopenOnRefill) {
+    if (isBackgroundWorkersEnabled() && input.reopenOnRefill) {
       const refilled = input.deductions.filter(
         (d) => d.previousStock === 0 && d.newStock > 0,
       );
       if (refilled.length > 0) {
         const { userId, force } = input.reopenOnRefill;
         setImmediate(() => {
+          if (!isBackgroundWorkersEnabled()) return;
           void import("@/app/usecases/product.usercase")
             .then(async ({ ProductUseCase }) => {
               const uc = new ProductUseCase();
@@ -566,6 +573,7 @@ export class StockDeductionService {
     input: FirePostEffectsInput,
     logPrefix: string,
   ): Promise<void> {
+    if (!isBackgroundWorkersEnabled()) return;
     if (!input.keepPausedOnRefill) return;
 
     // Mesmo filtro do irmão: só o que SAIU de zero. Um produto que foi de 3

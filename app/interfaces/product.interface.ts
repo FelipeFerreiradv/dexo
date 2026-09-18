@@ -1,13 +1,8 @@
-import { Platform } from "@prisma/client";
+import { Platform, type Prisma } from "@prisma/client";
 
 export type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
 export type ProductPublicationStatus =
-  | "ACTIVE"
-  | "PAUSED"
-  | "PENDING"
-  | "ERROR"
-  | "CLOSED"
-  | "NO_LISTING";
+  "ACTIVE" | "PAUSED" | "PENDING" | "ERROR" | "CLOSED" | "NO_LISTING";
 export type ProductStockStatus = "IN_STOCK" | "OUT_OF_STOCK" | "LOW_STOCK";
 export type ProductMarketplaceFilter = Platform | "BOTH";
 
@@ -360,7 +355,10 @@ export interface ProductUpdate {
   // não atualizar. Não use `{}` para limpar: um mapa vazio conta como MUDANÇA
   // contra a coluna NULL em `clearOverridesForEditedFields` e zeraria o
   // `attributesOverride` dos anúncios do produto sem ninguém ter editado a ficha.
-  attributes?: Record<string, { value_id?: string; value_name?: string }> | null;
+  attributes?: Record<
+    string,
+    { value_id?: string; value_name?: string }
+  > | null;
 
   // Vínculo opcional ao catálogo do Mercado Livre
   mlCatalogProductId?: string | null;
@@ -407,7 +405,11 @@ export interface ProductRepository {
    * Só a existência (SELECT id) — evita puxar o Product inteiro (com colunas
    * JSONB) quando o chamador usa o retorno apenas como booleano. Ver findBySku.
    */
-  existsBySku(sku: string, userId: string): Promise<boolean>;
+  existsBySku(
+    sku: string,
+    userId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<boolean>;
   findById(id: string, userId?: string): Promise<Product | null>;
   findAll(
     filters?: ProductListFilters,

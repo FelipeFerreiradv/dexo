@@ -16,6 +16,7 @@
 import "dotenv/config";
 import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
+import { isBackgroundWorkersEnabled } from "../app/lib/background-workers";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
 import { SyncUseCase } from "../app/marketplaces/usecases/sync.usercase";
 import { MessagesUseCase } from "../app/marketplaces/usecases/messages.usecase";
@@ -96,8 +97,98 @@ const ordersConcurrency = envInt("SYNC_ORDERS_CONCURRENCY", 4, 1);
 // dono dos dados precisa ver que as vendas da conta nao estao entrando).
 type LoopAccount = { id: string; platform: Platform; userId: string | null };
 
-async function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+type ShutdownSignal = "SIGTERM" | "SIGINT";
+
+type ShutdownController = {
+  isStopping: () => boolean;
+  requestStop: (signal?: ShutdownSignal) => boolean;
+  /** `true` quando o prazo terminou; `false` quando o shutdown cancelou o wait. */
+  wait: (ms: number) => Promise<boolean>;
+};
+
+/**
+ * Estado cooperativo de encerramento do processo.
+ *
+ * O sinal nunca interrompe uma chamada de marketplace já em voo. Ele apenas
+ * impede que outra passada comece e acorda os loops que estiverem no intervalo
+ * ocioso. Assim, o `main` consegue aguardar as passadas atuais, desconectar o
+ * Prisma e terminar normalmente com código 0.
+ */
+function createShutdownController(): ShutdownController {
+  let stopping = false;
+  const waiters = new Set<() => void>();
+
+  return {
+    isStopping: () => stopping,
+
+    requestStop(signal) {
+      if (stopping) return false;
+      stopping = true;
+      console.log(
+        `[sync-loop] Encerramento solicitado${signal ? ` por ${signal}` : ""}; aguardando passadas em voo.`,
+      );
+      for (const cancel of [...waiters]) cancel();
+      return true;
+    },
+
+    wait(ms) {
+      if (stopping) return Promise.resolve(false);
+
+      return new Promise<boolean>((resolve) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout>;
+
+        const finish = (elapsed: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          waiters.delete(cancel);
+          resolve(elapsed);
+        };
+        const cancel = () => finish(false);
+
+        timer = setTimeout(() => finish(true), ms);
+        waiters.add(cancel);
+
+        // Defesa para um pedido de parada feito entre a checagem inicial e o
+        // cadastro deste waiter (útil também para implementações de timer fake).
+        if (stopping) cancel();
+      });
+    },
+  };
+}
+
+type SignalTarget = {
+  on: (event: ShutdownSignal, listener: () => void) => unknown;
+  off: (event: ShutdownSignal, listener: () => void) => unknown;
+  exit?: (code?: number) => unknown;
+  exitCode?: number | string;
+};
+
+/** Instala os handlers só enquanto o worker está ativo. */
+function installShutdownHandlers(
+  shutdown: ShutdownController,
+  target: SignalTarget = process,
+): () => void {
+  const handlers = new Map<ShutdownSignal, () => void>();
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    const handler = () => {
+      if (shutdown.requestStop(signal)) {
+        // Não usa process.exit(): isso abortaria requests externos em voo.
+        // O processo termina naturalmente quando `main` concluir o finally.
+        target.exitCode = 0;
+      }
+    };
+    handlers.set(signal, handler);
+    target.on(signal, handler);
+  }
+
+  return () => {
+    for (const [signal, handler] of handlers) {
+      target.off(signal, handler);
+    }
+  };
 }
 
 async function listActiveAccounts(): Promise<LoopAccount[]> {
@@ -144,16 +235,28 @@ async function runPool<T>(
 async function importOrdersForAccount(account: LoopAccount): Promise<void> {
   try {
     if (account.platform === Platform.MERCADO_LIVRE) {
-      await OrderUseCase.importRecentOrdersForAccount(account.id, syncDays, true);
+      await OrderUseCase.importRecentOrdersForAccount(
+        account.id,
+        syncDays,
+        true,
+      );
     } else if (account.platform === Platform.SHOPEE) {
-      await OrderUseCase.importRecentShopeeOrdersForAccount(account.id, Math.min(syncDays, 15), true);
+      await OrderUseCase.importRecentShopeeOrdersForAccount(
+        account.id,
+        Math.min(syncDays, 15),
+        true,
+      );
     } else if (account.platform === Platform.MAGALU) {
       // Sem este branch, a Magalu nao tinha NENHUM poll de pedidos: o webhook
       // era ponto unico de falha e, como nunca chegou (zero registros em
       // WebhookEventLog com source MAGALU), nenhuma venda Magalu jamais virou
       // Order — nem para contas com centenas de anuncios ativos. Os blocos
       // Magalu mais abaixo neste arquivo tratam apenas anuncios e chat.
-      await OrderUseCase.importRecentMagaluOrdersForAccount(account.id, syncDays, true);
+      await OrderUseCase.importRecentMagaluOrdersForAccount(
+        account.id,
+        syncDays,
+        true,
+      );
     }
   } catch (err) {
     // Um throw aqui derruba o import da conta INTEIRA neste ciclo: nenhuma venda
@@ -162,7 +265,10 @@ async function importOrdersForAccount(account: LoopAccount): Promise<void> {
     // para qualquer consulta. Agora vira SystemLog do tenant, que e onde o
     // cliente ve, e log estruturado para grep (auditoria 29/07/2026).
     const mensagem = err instanceof Error ? err.message : String(err);
-    console.error(`[sync-loop] Falha ao importar pedidos para conta ${account.id}:`, err);
+    console.error(
+      `[sync-loop] Falha ao importar pedidos para conta ${account.id}:`,
+      err,
+    );
     console.log(
       JSON.stringify({
         event: "sync_loop.order_import_failed",
@@ -350,7 +456,10 @@ async function runListingsMetrics(): Promise<void> {
   try {
     await syncAllListingsMetrics();
   } catch (err) {
-    console.error(`[sync-loop] Falha ao sincronizar métricas de anúncios:`, err);
+    console.error(
+      `[sync-loop] Falha ao sincronizar métricas de anúncios:`,
+      err,
+    );
   }
 }
 
@@ -380,7 +489,10 @@ async function runOnce() {
 }
 
 /** Passada rápida: SÓ import de pedidos, com pool de concorrência. */
-async function runOrdersPass(): Promise<{ accounts: number; elapsedMs: number }> {
+async function runOrdersPass(): Promise<{
+  accounts: number;
+  elapsedMs: number;
+}> {
   const started = Date.now();
   const accounts = await listActiveAccounts();
   await runPool(accounts, ordersConcurrency, importOrdersForAccount);
@@ -388,7 +500,10 @@ async function runOrdersPass(): Promise<{ accounts: number; elapsedMs: number }>
 }
 
 /** Passada lenta: catálogo, mensagens e métricas. Serial, como antes. */
-async function runCatalogPass(): Promise<{ accounts: number; elapsedMs: number }> {
+async function runCatalogPass(): Promise<{
+  accounts: number;
+  elapsedMs: number;
+}> {
   const started = Date.now();
   const accounts = await listActiveAccounts();
 
@@ -423,11 +538,15 @@ async function logPassOutcome(
   const message = `[sync-loop] passada ${label}: ${accounts} contas em ${elapsedMs} ms`;
   try {
     if (elapsedMs > budgetMs * 2) {
-      await SystemLogService.logWarning("SYNC_ORDERS", `${message} (acima de 2x o intervalo)`, {
-        resource: "SyncLoop",
-        resourceId: label,
-        details,
-      });
+      await SystemLogService.logWarning(
+        "SYNC_ORDERS",
+        `${message} (acima de 2x o intervalo)`,
+        {
+          resource: "SyncLoop",
+          resourceId: label,
+          details,
+        },
+      );
     } else {
       await SystemLogService.logInfo("SYNC_ORDERS", message, {
         resource: "SyncLoop",
@@ -445,9 +564,10 @@ async function runLoop(
   label: "orders" | "catalog",
   intervalMin: number,
   pass: () => Promise<{ accounts: number; elapsedMs: number }>,
-): Promise<never> {
+  shutdown: ShutdownController,
+): Promise<void> {
   const budgetMs = intervalMin * 60 * 1000;
-  for (;;) {
+  while (!shutdown.isStopping()) {
     const started = Date.now();
     try {
       const { accounts, elapsedMs } = await pass();
@@ -460,22 +580,34 @@ async function runLoop(
       // matar o processo: process.exit aqui gera crash-loop no PM2, e cada
       // reinicio vaza as conexoes abertas -> satura o pooler do Supabase ->
       // derruba api/frontend (504). Loga e segue pro proximo ciclo.
-      console.error(`[sync-loop] Passada ${label} falhou (loop continua):`, err);
+      console.error(
+        `[sync-loop] Passada ${label} falhou${shutdown.isStopping() ? " durante o encerramento" : " (loop continua)"}:`,
+        err,
+      );
     }
+
+    if (shutdown.isStopping()) break;
+
     const waitMs = Math.max(budgetMs - (Date.now() - started), 5000);
     console.log(`[sync-loop] Próxima passada ${label} em ${waitMs} ms.`);
-    await wait(waitMs);
+    if (!(await shutdown.wait(waitMs))) break;
   }
 }
 
 /** Caminho legado (kill-switch ligado): ciclo único serial. */
-async function runLegacyLoop(): Promise<never> {
-  for (;;) {
+async function runLegacyLoop(
+  shutdown: ShutdownController,
+  cycle: () => Promise<void> = runOnce,
+): Promise<void> {
+  while (!shutdown.isStopping()) {
     const started = Date.now();
     try {
-      await runOnce();
+      await cycle();
     } catch (err) {
-      console.error("[sync-loop] Ciclo falhou (loop continua, sem matar o processo):", err);
+      console.error(
+        `[sync-loop] Ciclo falhou${shutdown.isStopping() ? " durante o encerramento" : " (loop continua, sem matar o processo)"}:`,
+        err,
+      );
     } finally {
       // Libera as conexoes durante o intervalo ocioso; reconecta sozinho no
       // proximo ciclo. Protegido pra um disconnect com erro nao escapar.
@@ -485,10 +617,15 @@ async function runLegacyLoop(): Promise<never> {
         /* ignore */
       }
     }
+
+    if (shutdown.isStopping()) break;
+
     const elapsed = Date.now() - started;
     const waitMs = Math.max(intervalMinutes * 60 * 1000 - elapsed, 5000);
-    console.log(`[sync-loop] Ciclo concluído em ${elapsed} ms. Próximo em ${waitMs} ms.`);
-    await wait(waitMs);
+    console.log(
+      `[sync-loop] Ciclo concluído em ${elapsed} ms. Próximo em ${waitMs} ms.`,
+    );
+    if (!(await shutdown.wait(waitMs))) break;
   }
 }
 
@@ -503,29 +640,65 @@ function modoDoLoop(): "legado" | "separado" {
   return splitDisabled ? "legado" : "separado";
 }
 
-async function main() {
-  if (modoDoLoop() === "legado") {
+async function main(signalTarget: SignalTarget = process) {
+  // This process is a long-lived worker, so the master gate belongs at the
+  // entrypoint as well as in the individual services.  Returning normally is
+  // intentional: the PM2 definition treats exit code 0 as a stopped process,
+  // avoiding a restart storm when a developer runs the production .env
+  // locally without the explicit opt-in.
+  if (!isBackgroundWorkersEnabled()) {
     console.log(
-      `[sync-loop] Iniciando loop completo (pedidos + métricas). Intervalo ${intervalMinutes} min, janela ${syncDays} dias`,
+      "[sync-loop] workers de fundo desabilitados — exige BACKGROUND_WORKERS_ENABLED=1 e BACKGROUND_WORKERS_DISABLED!=1; processo encerrado sem sincronizar.",
     );
-    await runLegacyLoop();
     return;
   }
 
-  console.log(
-    `[sync-loop] Iniciando loops separados — pedidos a cada ${intervalMinutes} min (concorrência ${ordersConcurrency}, janela ${syncDays} dias); catálogo/métricas a cada ${catalogIntervalMinutes} min`,
+  const shutdown = createShutdownController();
+  const removeShutdownHandlers = installShutdownHandlers(
+    shutdown,
+    signalTarget,
   );
 
-  // As duas passadas compartilham o mesmo PrismaClient e correm em paralelo.
-  // Por isso NÃO há `$disconnect()` entre ciclos aqui: desconectar durante a
-  // passada de pedidos (que roda a cada poucos minutos) derrubaria as queries
-  // da passada de catálogo em voo, e vice-versa. O client fica quente o tempo
-  // todo — o disconnect existia só para soltar conexões no ocioso longo do
-  // ciclo único, ocioso que deixa de existir com a passada rápida.
-  await Promise.all([
-    runLoop("orders", intervalMinutes, runOrdersPass),
-    runLoop("catalog", catalogIntervalMinutes, runCatalogPass),
-  ]);
+  try {
+    if (modoDoLoop() === "legado") {
+      console.log(
+        `[sync-loop] Iniciando loop completo (pedidos + métricas). Intervalo ${intervalMinutes} min, janela ${syncDays} dias`,
+      );
+      await runLegacyLoop(shutdown);
+      return;
+    }
+
+    console.log(
+      `[sync-loop] Iniciando loops separados — pedidos a cada ${intervalMinutes} min (concorrência ${ordersConcurrency}, janela ${syncDays} dias); catálogo/métricas a cada ${catalogIntervalMinutes} min`,
+    );
+
+    // As duas passadas compartilham o mesmo PrismaClient e correm em paralelo.
+    // Por isso NÃO há `$disconnect()` entre ciclos aqui: desconectar durante a
+    // passada de pedidos (que roda a cada poucos minutos) derrubaria as queries
+    // da passada de catálogo em voo, e vice-versa. O client fica quente o tempo
+    // todo — o disconnect existia só para soltar conexões no ocioso longo do
+    // ciclo único, ocioso que deixa de existir com a passada rápida.
+    await Promise.all([
+      runLoop("orders", intervalMinutes, runOrdersPass, shutdown),
+      runLoop("catalog", catalogIntervalMinutes, runCatalogPass, shutdown),
+    ]);
+  } finally {
+    removeShutdownHandlers();
+    try {
+      await prisma.$disconnect();
+    } catch (err) {
+      console.error(
+        "[sync-loop] Falha ao desconectar Prisma no encerramento:",
+        err,
+      );
+    }
+    if (shutdown.isStopping()) {
+      // Só sai explicitamente depois das duas passadas terminarem e do Prisma
+      // desconectar. Isso também impede que sockets keep-alive já ociosos
+      // mantenham o processo antigo vivo depois de um reload do PM2.
+      signalTarget.exit?.(0);
+    }
+  }
 }
 
 // Só executa quando rodado direto (`npx tsx scripts/sync-orders-and-metrics-loop.ts`).
@@ -534,7 +707,7 @@ async function main() {
 if (require.main === module) {
   main().catch((err) => {
     console.error(`[sync-loop] Erro fatal`, err);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
 
@@ -546,4 +719,10 @@ export const __testing = {
   runOnce,
   modoDoLoop,
   envInt,
+  isBackgroundWorkersEnabled,
+  createShutdownController,
+  installShutdownHandlers,
+  runLoop,
+  runLegacyLoop,
+  main,
 };

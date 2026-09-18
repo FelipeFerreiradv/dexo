@@ -1,4 +1,5 @@
 import prisma from "@/app/lib/prisma";
+import { isBackgroundWorkersEnabled } from "@/app/lib/background-workers";
 import { SyncUseCase } from "../usecases/sync.usercase";
 import { SystemLogService } from "@/app/services/system-log.service";
 
@@ -176,6 +177,15 @@ export class StockSyncRetryService {
   private static runInProgress = false;
 
   static async runOnce(): Promise<void> {
+    // This method is also called directly by post-commit hooks, so the guard
+    // must live here rather than only in `start()`.  It has to run before the
+    // claim query below: a local process must never reserve a production job
+    // merely because it imported a module that has a post-effect hook.
+    if (!isBackgroundWorkersEnabled()) {
+      if (this.running) this.stop();
+      return;
+    }
+
     // Evita sobreposição entre ticks do setInterval (batches > intervalo).
     // Dois workers pegariam o mesmo job e tentariam deletar em paralelo,
     // causando P2025 e chamadas duplicadas às APIs dos marketplaces.
@@ -459,6 +469,16 @@ export class StockSyncRetryService {
   }
 
   static start(intervalMs = 30 * 1000) {
+    // Opt-in is checked before creating the interval.  Without this check a
+    // local API would keep an idle timer alive forever even though every tick
+    // was guaranteed to return at the runOnce guard above.
+    if (!isBackgroundWorkersEnabled()) {
+      this.stop();
+      console.log(
+        "[StockSyncRetryService] not started (background workers disabled)",
+      );
+      return;
+    }
     if (this.running) return;
     this.running = true;
     this.intervalId = setInterval(() => {

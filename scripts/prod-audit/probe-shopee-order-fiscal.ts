@@ -15,7 +15,6 @@
 import "dotenv/config";
 import prisma from "../../app/lib/prisma";
 import { ShopeeApiService } from "../../app/marketplaces/services/shopee-api.service";
-import { ShopeeOAuthService } from "../../app/marketplaces/services/shopee-oauth.service";
 
 function shape(o: any): any {
   if (o === null || o === undefined) return typeof o;
@@ -60,7 +59,6 @@ async function main() {
           accountName: true,
           shopId: true,
           accessToken: true,
-          refreshToken: true,
           expiresAt: true,
         },
       },
@@ -75,23 +73,19 @@ async function main() {
     `Conta ${acc.accountName} shopId=${acc.shopId} | pedido ${order.externalOrderId}`,
   );
 
-  let token = acc.accessToken;
-  if (
-    acc.refreshToken &&
-    (!token ||
-      (acc.expiresAt && acc.expiresAt.getTime() - Date.now() < 60_000))
-  ) {
-    try {
-      token = (
-        await ShopeeOAuthService.refreshAccessToken(
-          acc.refreshToken,
-          acc.shopId!,
-        )
-      ).access_token;
-      console.log("(token refrescado)");
-    } catch (e) {
-      console.log("refresh falhou:", (e as any)?.message);
-    }
+  // Este probe é estritamente somente leitura: nunca consome/rotaciona o
+  // refresh_token da conta de produção. Sem um access token válido, aborta
+  // antes de qualquer chamada à API para evitar um diagnóstico enganoso.
+  const token = acc.accessToken;
+  if (!token) {
+    throw new Error(
+      "Token de acesso ausente; probe abortado (somente leitura, sem refresh).",
+    );
+  }
+  if (acc.expiresAt && acc.expiresAt.getTime() - Date.now() < 60_000) {
+    throw new Error(
+      "Token de acesso expirado ou prestes a expirar; probe abortado (somente leitura, sem refresh).",
+    );
   }
 
   // Campos opcionais relevantes p/ NF-e: endereço do destinatário + comprador +
@@ -125,5 +119,8 @@ async function main() {
 }
 
 main()
-  .catch((e) => console.error(e))
+  .catch((e) => {
+    console.error(e instanceof Error ? e.message : "Falha no probe");
+    process.exitCode = 1;
+  })
   .finally(() => prisma.$disconnect());

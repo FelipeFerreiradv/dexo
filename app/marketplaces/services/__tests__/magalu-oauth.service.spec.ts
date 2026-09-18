@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import axios from "axios";
+import { inspect } from "util";
 
 // Credenciais de teste para validateMagaluConfig() passar (lê env ao vivo).
 process.env.MAGALU_CLIENT_ID = "test-client";
@@ -8,6 +9,16 @@ process.env.MAGALU_CLIENT_SECRET = "test-secret";
 import { MagaluOAuthService } from "../magalu-oauth.service";
 
 vi.mock("axios");
+const prismaFindUnique = vi.hoisted(() => vi.fn());
+const prismaUpdate = vi.hoisted(() => vi.fn());
+vi.mock("@/app/lib/prisma", () => ({
+  default: {
+    marketplaceAccount: {
+      findUnique: prismaFindUnique,
+      update: prismaUpdate,
+    },
+  },
+}));
 const mockedAxios = axios as unknown as {
   post: ReturnType<typeof vi.fn>;
   isAxiosError: (e: unknown) => boolean;
@@ -16,16 +27,51 @@ const mockedAxios = axios as unknown as {
 beforeEach(() => {
   (mockedAxios as any).post = vi.fn().mockResolvedValue({ data: {} });
   (mockedAxios as any).isAxiosError = (e: any) => !!e && e.isAxiosError === true;
+  prismaFindUnique.mockClear();
+  prismaUpdate.mockClear();
+  prismaFindUnique.mockResolvedValue(null);
+  prismaUpdate.mockResolvedValue({});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  [
+    "acc-invalid-grant",
+    "acc-transient-429",
+    "acc-transient-503",
+    "acc-transient-timeout",
+    "acc-sanitized-error",
+  ].forEach((accountId) =>
+    MagaluOAuthService.clearAccountCircuitBreaker(accountId),
+  );
 });
 
 const b64u = (o: unknown) =>
   Buffer.from(JSON.stringify(o)).toString("base64url");
 const jwt = (payload: Record<string, unknown>) =>
   `${b64u({ alg: "none" })}.${b64u(payload)}.sig`;
+
+function axiosFailure(
+  status: number | undefined,
+  data: Record<string, unknown> | undefined,
+  options: { code?: string; message?: string } = {},
+) {
+  const error = new Error(
+    options.message ??
+      (status ? `Request failed with status code ${status}` : "timeout"),
+  ) as Error & Record<string, any>;
+  error.isAxiosError = true;
+  error.code = options.code;
+  error.config = {
+    url: "https://id.magalu.com/oauth/token",
+    data: "client_secret=secret-app&refresh_token=secret-refresh",
+    headers: { Authorization: "Bearer secret-access-token" },
+  };
+  if (status !== undefined) {
+    error.response = { status, data };
+  }
+  return error;
+}
 
 describe("MagaluOAuthService.generateAuthUrl", () => {
   it("monta a URL de consent do ID Magalu SEM PKCE", () => {
@@ -117,5 +163,128 @@ describe("MagaluOAuthService.refreshAccessToken", () => {
     });
     const r = await MagaluOAuthService.refreshAccessToken("keep-me");
     expect(r.refreshToken).toBe("keep-me");
+  });
+
+  it("prioriza data.error=invalid_grant quando a descrição é apenas textual", async () => {
+    (mockedAxios as any).post.mockRejectedValue(
+      axiosFailure(400, {
+        error: "invalid_grant",
+        error_description: "The provided authorization grant is invalid",
+      }),
+    );
+
+    const error = await MagaluOAuthService.refreshAccessToken("old-refresh")
+      .then(() => undefined)
+      .catch((err) => err);
+
+    expect(error?.errorCode).toBe("invalid_grant");
+  });
+
+  it.each([
+    ["401", axiosFailure(401, { message: "unauthorized" }), "unauthorized"],
+    ["400", axiosFailure(400, { error: "invalid_request" }), "bad_request"],
+  ])("preserva a classificação não-terminal de %s", async (_label, failure, expected) => {
+    (mockedAxios as any).post.mockRejectedValue(failure);
+
+    const error = await MagaluOAuthService.refreshAccessToken("old-refresh")
+      .then(() => undefined)
+      .catch((err) => err);
+
+    expect(error?.errorCode).toBe(expected);
+  });
+});
+
+describe("MagaluOAuthService.refreshAccessTokenForAccount", () => {
+  it("invalid_grant marca ERROR, registra o evento e impede a segunda chamada HTTP", async () => {
+    const accountId = "acc-invalid-grant";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    (mockedAxios as any).post.mockRejectedValue(
+      axiosFailure(400, {
+        error: "invalid_grant",
+        error_description: "The provided authorization grant is invalid",
+      }),
+    );
+
+    const firstError = await MagaluOAuthService.refreshAccessTokenForAccount(
+      accountId,
+      "secret-refresh",
+    )
+      .then(() => undefined)
+      .catch((err) => err);
+
+    expect(firstError?.errorCode).toBe("invalid_grant");
+    expect(prismaUpdate).toHaveBeenCalledWith({
+      where: { id: accountId },
+      data: { status: "ERROR" },
+    });
+    expect(warn.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+      '"event":"magalu.oauth.account.auto_deactivated"',
+    );
+
+    const secondError = await MagaluOAuthService.refreshAccessTokenForAccount(
+      accountId,
+      "secret-refresh",
+    )
+      .then(() => undefined)
+      .catch((err) => err);
+
+    expect(secondError?.errorCode).toBe("invalid_grant");
+    expect(secondError?.circuitBreaker).toBe(true);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(prismaUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["429", axiosFailure(429, { error: "rate_limited" })],
+    ["503", axiosFailure(503, { message: "temporarily unavailable" })],
+    ["timeout", axiosFailure(undefined, undefined, { code: "ECONNABORTED" })],
+  ])("%s não marca ERROR nem abre o circuit breaker", async (label, failure) => {
+    const accountId = `acc-transient-${label}`;
+    (mockedAxios as any).post.mockRejectedValue(failure);
+
+    const firstError = await MagaluOAuthService.refreshAccessTokenForAccount(
+      accountId,
+      "secret-refresh",
+    )
+      .then(() => undefined)
+      .catch((err) => err);
+    const secondError = await MagaluOAuthService.refreshAccessTokenForAccount(
+      accountId,
+      "secret-refresh",
+    )
+      .then(() => undefined)
+      .catch((err) => err);
+
+    expect(firstError?.errorCode).not.toBe("invalid_grant");
+    expect(secondError?.circuitBreaker).not.toBe(true);
+    expect(prismaUpdate).not.toHaveBeenCalled();
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+  });
+
+  it("mantém client_secret, refresh_token e Authorization fora do erro embrulhado", async () => {
+    const accountId = "acc-sanitized-error";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    (mockedAxios as any).post.mockRejectedValue(
+      axiosFailure(503, {
+        message: "temporarily unavailable",
+      }),
+    );
+
+    const error = await MagaluOAuthService.refreshAccessTokenForAccount(
+      accountId,
+      "secret-refresh",
+    )
+      .then(() => undefined)
+      .catch((err) => err);
+
+    const rendered = inspect(error, { depth: 12 });
+    expect(rendered).not.toContain("secret-app");
+    expect(rendered).not.toContain("secret-refresh");
+    expect(rendered).not.toContain("secret-access-token");
+    expect(error.cause).toMatchObject({
+      name: "HttpErrorCause",
+      status: 503,
+    });
+    expect(warn).toHaveBeenCalled();
   });
 });

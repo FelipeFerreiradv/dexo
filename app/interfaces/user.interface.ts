@@ -1,4 +1,4 @@
-import { Role } from "@prisma/client";
+import { Role, type Prisma } from "@prisma/client";
 
 export interface User {
   id: string;
@@ -104,7 +104,7 @@ export interface UserUpdate {
 export interface UserRepository {
   create(data: UserCreate): Promise<User>;
   findByEmail(email: string): Promise<User | null>;
-  findById(id: string): Promise<User | null>;
+  findById(id: string, tx?: Prisma.TransactionClient): Promise<User | null>;
   findChildren(parentUserId: string): Promise<User[]>;
   update(id: string, data: UserUpdate): Promise<User>;
   getLastSkuSequential(id: string): Promise<number | null>;

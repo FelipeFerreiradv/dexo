@@ -1,4 +1,4 @@
-import { Platform } from "@prisma/client";
+import { Platform, type Prisma } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { normalizeSku } from "@/app/lib/sku";
 import {
@@ -16,6 +16,9 @@ import { MLItemDetails } from "../types/ml-api.types";
 import { ShopeeItem } from "../types/shopee-api.types";
 import { MagaluSku } from "../types/magalu-api.types";
 import { FacebookCatalogProduct } from "../types/facebook-api.types";
+import { catalogIdentityEnabled } from "../lib/catalog-gallery-identity";
+import { accountScopedAutodetectSku } from "../lib/autodetect-synthetic-sku";
+import { CatalogIdentityService } from "../services/catalog-identity.service";
 
 /**
  * Formato comum para o qual ML e Shopee normalizam um anúncio antes de chamar o
@@ -107,19 +110,101 @@ export interface AutodetectImportCache {
  * polling Shopee). Reaproveita `ProductUseCase.create` e `ListingRepository`.
  */
 export class ListingAutodetectUseCase {
+  private static readonly IGNORE_LOOKUP_SAVEPOINT =
+    "listing_ingestion_ignore_lookup";
+
+  private static async isIgnoredInsideTransaction(
+    tx: Prisma.TransactionClient,
+    item: NormalizedMarketplaceItem,
+  ): Promise<boolean> {
+    const savepoint = this.IGNORE_LOOKUP_SAVEPOINT;
+
+    // A criacao do savepoint fica fora do catch: se nem ela funciona, a
+    // transacao nao esta em condicoes de continuar e o chamador deve abortar.
+    await tx.$executeRawUnsafe(`SAVEPOINT ${savepoint}`);
+
+    let hit: { id: string } | null;
+    try {
+      hit = await (tx as any).listingIngestionIgnore.findUnique({
+        where: {
+          userId_platform_externalListingId: {
+            userId: item.account.userId,
+            platform: item.platform,
+            externalListingId: item.externalListingId,
+          },
+        },
+        select: { id: true },
+      });
+    } catch {
+      // Um erro SQL aborta a transacao PostgreSQL ate um rollback. So fazemos
+      // fail-open depois de restaurar e liberar o savepoint; falha em qualquer
+      // passo de recuperacao e fatal e, portanto, continua sendo propagada.
+      await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
+      return false;
+    }
+
+    // Falha ao liberar o savepoint tambem denuncia uma transacao inviavel.
+    await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
+    return Boolean(hit);
+  }
+
   static async upsertProductFromMarketplaceItem(
     item: NormalizedMarketplaceItem,
     cache?: AutodetectImportCache,
   ): Promise<UpsertAutodetectResult> {
+    if (catalogIdentityEnabled(item)) {
+      // A rolled-back transaction must not publish phantom products to a batch cache.
+      const workingCache = cache
+        ? {
+            ...cache,
+            productsBySku: new Map(cache.productsBySku),
+            productIdsWithListing: new Set(cache.productIdsWithListing),
+            knownExternalListingIds: new Set(cache.knownExternalListingIds),
+          }
+        : undefined;
+      const result = await CatalogIdentityService.serialized(
+        item,
+        (tx, canonical, blockSkuMatch) =>
+          this.upsertItem(item, workingCache, tx, canonical, blockSkuMatch),
+      );
+      if (cache && workingCache) {
+        cache.productsBySku = workingCache.productsBySku;
+        cache.productIdsWithListing = workingCache.productIdsWithListing;
+        cache.knownExternalListingIds = workingCache.knownExternalListingIds;
+        cache.owner = workingCache.owner;
+      }
+      return result;
+    }
+    return this.upsertItem(item, cache);
+  }
+
+  private static async upsertItem(
+    item: NormalizedMarketplaceItem,
+    cache?: AutodetectImportCache,
+    tx?: Prisma.TransactionClient,
+    canonical: { id: string; name: string } | null = null,
+    blockSkuMatch = false,
+  ): Promise<UpsertAutodetectResult> {
     const { account, externalListingId } = item;
+    const db = tx ?? prisma;
 
     // 1. Idempotência por listing: vínculo (conta, anúncio) já existe → no-op.
     // EGRESS-light: só o productId, não o Product inteiro. Com cache (lote):
     // ausente do Set = inexistente garantido, sem query; presente → confere
     // fresco como sempre. Corrida com webhook no meio do lote degrada para o
     // upsert idempotente + limpeza de órfão abaixo (mesmo caminho de hoje).
-    const existing =
-      cache && !cache.knownExternalListingIds.has(externalListingId)
+    const existing = tx
+      ? await tx.productListing.findUnique({
+          where: {
+            marketplaceAccountId_externalListingId: {
+              marketplaceAccountId: account.id,
+              externalListingId,
+            },
+          },
+          select: { productId: true },
+        })
+      : cache && !cache.knownExternalListingIds.has(externalListingId)
         ? null
         : await ListingRepository.findProductIdByExternalListingId(
             account.id,
@@ -142,25 +227,25 @@ export class ListingAutodetectUseCase {
       ? // Em LOTE a resposta vem SEMPRE do preload — cache legado sem o campo
         // vale "sem lista" (fail-open), nunca uma query por item (regra R5).
         (cache.ignoredExternalIds?.has(externalListingId) ?? false)
-      : await (async () => {
-          try {
-            const hit = await (
-              prisma as any
-            ).listingIngestionIgnore.findUnique({
-              where: {
-                userId_platform_externalListingId: {
-                  userId: account.userId,
-                  platform: item.platform,
-                  externalListingId,
+      : tx
+        ? await this.isIgnoredInsideTransaction(tx, item)
+        : await (async () => {
+            try {
+              const hit = await (db as any).listingIngestionIgnore.findUnique({
+                where: {
+                  userId_platform_externalListingId: {
+                    userId: account.userId,
+                    platform: item.platform,
+                    externalListingId,
+                  },
                 },
-              },
-              select: { id: true },
-            });
-            return Boolean(hit);
-          } catch {
-            return false;
-          }
-        })();
+                select: { id: true },
+              });
+              return Boolean(hit);
+            } catch {
+              return false;
+            }
+          })();
     if (ignorado) {
       return { action: "ignored_by_list", productId: null };
     }
@@ -169,27 +254,39 @@ export class ListingAutodetectUseCase {
     // cache: o preload cobre todos os SKUs do lote e os creates entram via
     // write-through — hit/miss equivalem à query fresca.
     const normalizedSku = normalizeSku(item.rawSku);
-    const matched = normalizedSku
-      ? cache
-        ? (cache.productsBySku.get(normalizedSku) ?? null)
-        : await this.findProductBySku(account.userId, normalizedSku)
-      : null;
+    const matched =
+      canonical ??
+      (!blockSkuMatch && normalizedSku
+        ? cache
+          ? (cache.productsBySku.get(normalizedSku) ?? null)
+          : await this.findProductBySku(account.userId, normalizedSku, tx)
+        : null);
     const matchedId = matched?.id ?? null;
 
-    // Guarda de "SKU de caixa": só NÃO agrupa quando (a) o produto casado já tem
-    // um anúncio NESTA conta (SKU reutilizado na conta) E (b) o título deste
-    // anúncio é CLARAMENTE diferente do produto casado (produto distinto). Se os
-    // títulos são parecidos, é o mesmo produto reanunciado → agrupa (hoje).
-    // Contas diferentes com o mesmo SKU seguem agrupando (multi-conta legítimo).
+    // Um mesmo código pode ser reutilizado como rótulo de caixa, inclusive em
+    // outra conta do mesmo tenant. Título claramente diferente nunca prova a
+    // mesma peça física; crie uma ficha sintética até existir uma identidade de
+    // galeria confirmada. Títulos parecidos continuam agrupando multi-conta.
+    const hasIncompatibleTitle =
+      matched != null && !areTitlesSimilar(item.title, matched.name);
     const isBoxLabel =
-      matched != null &&
+      hasIncompatibleTitle &&
       (cache
         ? cache.productIdsWithListing.has(matched.id)
-        : await ListingRepository.productHasListingInAccount(
-            matched.id,
-            account.id,
-          )) &&
-      !areTitlesSimilar(item.title, matched.name);
+        : tx
+          ? Boolean(
+              await tx.productListing.findFirst({
+                where: {
+                  productId: matched.id,
+                  marketplaceAccountId: account.id,
+                },
+                select: { id: true },
+              }),
+            )
+          : await ListingRepository.productHasListingInAccount(
+              matched.id,
+              account.id,
+            ));
 
     // ⚠️⚠️ PEÇA ESPELHADA: o Jaccard aprova lado/eixo OPOSTO, então a guarda de
     // caixa acima nunca dispara nesses casos — "Amortecedor ... L/e" casa com
@@ -219,7 +316,9 @@ export class ListingAutodetectUseCase {
       );
     }
 
-    const naoPodeLigar = isBoxLabel || isMirroredPart;
+    const naoPodeLigar =
+      blockSkuMatch || isBoxLabel || hasIncompatibleTitle || isMirroredPart;
+    let usesSyntheticSku = naoPodeLigar;
 
     let productId: string;
     let action: AutodetectAction;
@@ -235,21 +334,26 @@ export class ListingAutodetectUseCase {
         normalizedSku,
         naoPodeLigar,
         cache,
+        tx,
       );
       productId = created.productId;
+      usesSyntheticSku = created.usesSyntheticSku;
       action = created.raced ? "raced" : "created_product";
     }
 
     // 4. Cria/keep do listing — idempotente na unique key (trata P2002 de
     // corrida no repositório, relendo o listing vencedor).
-    const listing = await ListingRepository.upsertAutodetectedListing({
+    const listingData = {
       productId,
       marketplaceAccountId: account.id,
       externalListingId,
       externalSku: item.rawSku || undefined,
       permalink: item.permalink,
       status: item.status,
-    });
+    };
+    const listing = tx
+      ? await ListingRepository.upsertAutodetectedListing(listingData, tx)
+      : await ListingRepository.upsertAutodetectedListing(listingData);
 
     // WRITE-THROUGH do listing recém-criado/mantido: o item seguinte do lote
     // com o mesmo produto/anúncio precisa enxergar o estado novo.
@@ -261,21 +365,24 @@ export class ListingAutodetectUseCase {
     // Corrida sem SKU: se criamos um produto novo agora mas o listing já existia
     // apontando p/ OUTRO produto (uma entrega concorrente do mesmo anúncio
     // venceu), o nosso virou órfão → remove p/ não duplicar no catálogo.
-    if (
-      action === "created_product" &&
-      listing &&
-      listing.productId !== productId
-    ) {
-      await prisma.product
-        .delete({ where: { id: productId } })
-        .catch((e) =>
-          console.error(
-            `[autodetect] Órfão não removido (product ${productId}):`,
-            e instanceof Error ? e.message : e,
-          ),
-        );
+    if (listing && listing.productId !== productId) {
+      // Só um produto criado por esta execução pode ser órfão. Um candidato
+      // preexistente por SKU/identidade continua válido e jamais é apagado.
+      if (action === "created_product") {
+        const removal = db.product.delete({ where: { id: productId } });
+        if (tx) {
+          await removal;
+        } else {
+          await removal.catch((e) =>
+            console.error(
+              `[autodetect] Órfão não removido (product ${productId}):`,
+              e instanceof Error ? e.message : e,
+            ),
+          );
+        }
+      }
       // Write-through com o VENCEDOR da corrida (nunca o órfão removido).
-      if (cache && normalizedSku && !isBoxLabel) {
+      if (cache && normalizedSku && !usesSyntheticSku) {
         cache.productsBySku.set(normalizedSku, {
           id: listing.productId,
           name: item.title,
@@ -287,11 +394,12 @@ export class ListingAutodetectUseCase {
     // WRITE-THROUGH do produto criado (ou vencedor de corrida de SKU): itens
     // SEGUINTES do lote com o MESMO SKU casam com ele em vez de recriar — no
     // caminho sem cache é a query fresca por item que dá essa garantia. Box
-    // label fica de fora (SKU sintético único por anúncio, ninguém casa nele).
+    // label e peça espelhada ficam de fora: seu SKU sintético não é o código
+    // do vendedor e não pode substituir o produto original no mapa.
     if (
       cache &&
       normalizedSku &&
-      !isBoxLabel &&
+      !usesSyntheticSku &&
       action !== "linked_existing_product"
     ) {
       cache.productsBySku.set(normalizedSku, {
@@ -306,8 +414,9 @@ export class ListingAutodetectUseCase {
   private static async findProductBySku(
     userId: string,
     normalizedSku: string,
+    tx?: Prisma.TransactionClient,
   ): Promise<{ id: string; name: string } | null> {
-    const product = await prisma.product.findFirst({
+    const product = await (tx ?? prisma).product.findFirst({
       where: { userId, skuNormalized: normalizedSku },
       select: { id: true, name: true },
       // ⚠️ ORDEM ESTAVEL. A unique do catalogo e `@@unique([userId, sku])` sobre
@@ -338,18 +447,24 @@ export class ListingAutodetectUseCase {
   private static async createProductFromItem(
     item: NormalizedMarketplaceItem,
     normalizedSku: string | null,
-    isBoxLabel = false,
+    useSyntheticSku = false,
     cache?: AutodetectImportCache,
-  ): Promise<{ productId: string; raced: boolean }> {
+    tx?: Prisma.TransactionClient,
+  ): Promise<{
+    productId: string;
+    raced: boolean;
+    usesSyntheticSku: boolean;
+  }> {
     // Dono resolvido UMA vez por lote (cache.owner, lazy) e injetado no
     // ProductUseCase — evita um findById(userId) por produto criado. Sem cache
     // (webhook/polling), fica undefined e create() faz o findById como hoje.
     let preloadedUser: User | null | undefined = undefined;
     if (cache) {
       if (cache.owner === undefined) {
-        cache.owner = await new UserRepositoryPrisma().findById(
-          item.account.userId,
-        );
+        const users = new UserRepositoryPrisma();
+        cache.owner = tx
+          ? await users.findById(item.account.userId, tx)
+          : await users.findById(item.account.userId);
       }
       preloadedUser = cache.owner;
     }
@@ -368,13 +483,17 @@ export class ListingAutodetectUseCase {
     };
 
     // SKU do produto novo:
-    //  - box label (SKU reutilizado em vários anúncios da conta): sintético e
-    //    único por anúncio (VAAPT-<id>), para não colidir com o produto casado
-    //    nem re-agrupar via o mesmo SKU;
+    //  - box label (SKU reutilizado): sintético e único por
+    //    plataforma+conta+anúncio, para não colidir com o produto casado nem
+    //    re-agrupar via o mesmo SKU;
     //  - anúncio com SKU próprio: usa o SKU do vendedor;
     //  - sem SKU: autoSku (contador sequencial) — ou, com
     //    AUTODETECT_SKU_PREFIXADO=true, sintético prefixado (ver abaixo).
-    const syntheticSku = `VAAPT-${item.externalListingId}`;
+    const syntheticSku = accountScopedAutodetectSku("VAAPT", {
+      platform: item.platform,
+      accountId: item.account.id,
+      externalListingId: item.externalListingId,
+    });
 
     // SKU sintético para anúncio SEM código de vendedor (OPT-IN, desligado por
     // padrão).
@@ -392,7 +511,7 @@ export class ListingAutodetectUseCase {
     //
     // O prefixo torna o SKU inconfundível com etiqueta e, por ser derivado do
     // anúncio, DETERMINÍSTICO: reimportar o mesmo anúncio reencontra o mesmo
-    // produto em vez de criar outro. É o mesmo princípio do `VAAPT-<id>` acima,
+    // produto em vez de criar outro. É o mesmo princípio do sintético acima,
     // que já roda em produção — inclusive no destino de publicação
     // (`seller_custom_field` no ML, `item_sku` na Shopee), onde SKU
     // alfanumérico é aceito.
@@ -400,58 +519,91 @@ export class ListingAutodetectUseCase {
     // ⚠️ Esta flag lê "true", não "1" como as demais do projeto — é o contrato
     // do spec que veio junto. Flag ausente ⇒ caminho de hoje, byte a byte.
     const semSkuPrefixado =
-      process.env.AUTODETECT_SKU_PREFIXADO === "true"
-        ? `${ListingAutodetectUseCase.SEM_SKU_PREFIXO[item.platform] ?? "MP"}-${item.externalListingId}`
+      // The identity transaction requires a deterministic SKU. Auto-number
+      // collision retries inside ProductUseCase cannot recover an aborted tx.
+      process.env.AUTODETECT_SKU_PREFIXADO === "true" || Boolean(tx)
+        ? accountScopedAutodetectSku(
+            ListingAutodetectUseCase.SEM_SKU_PREFIXO[item.platform] ?? "MP",
+            {
+              platform: item.platform,
+              accountId: item.account.id,
+              externalListingId: item.externalListingId,
+            },
+          )
         : null;
-    try {
-      let product;
-      if (isBoxLabel) {
-        product = await productUseCase.create({
+    // No máximo duas tentativas: SKU do vendedor e, se o vencedor da corrida
+    // for incompatível, o sintético deste anúncio. Uma colisão no sintético
+    // só relê seu vencedor; nunca volta a tentar o SKU original.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (tx) await tx.$executeRawUnsafe("SAVEPOINT autodetect_product");
+      try {
+        const sku = useSyntheticSku
+          ? syntheticSku
+          : item.rawSku || semSkuPrefixado || "";
+        const payload = {
           ...base,
-          sku: syntheticSku,
-          autoSku: false,
-        });
-      } else if (item.rawSku) {
-        product = await productUseCase.create({
-          ...base,
-          sku: item.rawSku,
-          autoSku: false,
-        });
-      } else if (semSkuPrefixado) {
-        product = await productUseCase.create({
-          ...base,
-          sku: semSkuPrefixado,
-          autoSku: false,
-        });
-      } else {
-        product = await productUseCase.create({ ...base, sku: "", autoSku: true });
-      }
-      return { productId: product.id, raced: false };
-    } catch (err) {
-      if (this.isDuplicateSkuError(err)) {
-        // Corrida de SKU: re-resolve pelo SKU efetivamente usado e vincula.
-        // Box label re-resolve pelo sintético (único por anúncio); demais pelo
-        // SKU do vendedor. Sem duplicar produto.
-        // Box label re-resolve pelo sintético (único por anúncio); anúncio sem
-        // SKU, pelo sintético prefixado quando a flag está ligada — sem ela não
-        // há chave nenhuma e a corrida relança, como hoje; demais pelo SKU do
-        // vendedor. Sem duplicar produto.
-        const resolveKey = isBoxLabel
-          ? normalizeSku(syntheticSku)
-          : (normalizedSku ??
-            (semSkuPrefixado ? normalizeSku(semSkuPrefixado) : null));
-        if (resolveKey) {
-          const raced = await this.findProductBySku(
-            item.account.userId,
-            resolveKey,
+          sku,
+          autoSku: !sku,
+        };
+        const product = tx
+          ? await productUseCase.create(payload, tx)
+          : await productUseCase.create(payload);
+        if (tx)
+          await tx.$executeRawUnsafe("RELEASE SAVEPOINT autodetect_product");
+        return {
+          productId: product.id,
+          raced: false,
+          usesSyntheticSku: useSyntheticSku,
+        };
+      } catch (err) {
+        if (tx) {
+          await tx.$executeRawUnsafe(
+            "ROLLBACK TO SAVEPOINT autodetect_product",
           );
-          if (raced) {
-            return { productId: raced.id, raced: true };
+          await tx.$executeRawUnsafe("RELEASE SAVEPOINT autodetect_product");
+        }
+        if (this.isDuplicateSkuError(err)) {
+          // Re-resolve pelo código efetivamente usado. Sem SKU de vendedor
+          // nem prefixo determinístico não há chave para recuperar a corrida.
+          const resolveKey = useSyntheticSku
+            ? normalizeSku(syntheticSku)
+            : (normalizedSku ??
+              (semSkuPrefixado ? normalizeSku(semSkuPrefixado) : null));
+          if (resolveKey) {
+            const raced = await this.findProductBySku(
+              item.account.userId,
+              resolveKey,
+              tx,
+            );
+            if (raced) {
+              // O lookup inicial pode ter ocorrido antes de outro processo
+              // criar uma peça diferente com o mesmo SKU. A unique garante o
+              // código, mas não a identidade física: reaplique as guardas.
+              // A presença de listing é lida fresca, pois o cache antecede a
+              // corrida e pode não conhecer o anúncio recém-criado.
+              const mirrored = isOppositeSideOrAxis(item.title, raced.name);
+              const incompatibleTitle =
+                Boolean(raced.name) &&
+                !areTitlesSimilar(item.title, raced.name);
+              if (mirrored || incompatibleTitle) {
+                if (!useSyntheticSku && attempt === 0) {
+                  useSyntheticSku = true;
+                  continue;
+                }
+                throw err;
+              }
+              return {
+                productId: raced.id,
+                raced: true,
+                usesSyntheticSku: useSyntheticSku,
+              };
+            }
           }
         }
+        throw err;
       }
-      throw err;
     }
+    throw new Error("Não foi possível resolver o SKU do anúncio");
   }
 
   /**
@@ -536,8 +688,10 @@ export class ListingAutodetectUseCase {
     // "active" (mesma convenção dos demais listings). Sem isso o status ia
     // undefined e o upsert do listing falhava ("Argument status is missing") —
     // o autodetect criava o produto mas NÃO o listing (venda não baixava estoque).
-    const rawStatus = (item as { item_status?: string }).item_status ?? item.status;
-    const listingStatus = rawStatus && rawStatus !== "NORMAL" ? rawStatus : "active";
+    const rawStatus =
+      (item as { item_status?: string }).item_status ?? item.status;
+    const listingStatus =
+      rawStatus && rawStatus !== "NORMAL" ? rawStatus : "active";
 
     return {
       platform: Platform.SHOPEE,
@@ -615,9 +769,7 @@ export class ListingAutodetectUseCase {
       permalink,
       imageUrl,
       imageUrls,
-      createdAt: this.parseDate(
-        (sku as { created_at?: string }).created_at,
-      ),
+      createdAt: this.parseDate((sku as { created_at?: string }).created_at),
     };
   }
 

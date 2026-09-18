@@ -137,9 +137,12 @@ class UserRepositoryPrisma implements UserRepository {
     }
   }
 
-  async findById(id: string): Promise<User | null> {
+  async findById(
+    id: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<User | null> {
     try {
-      const data = await prisma.user.findUnique({
+      const data = await (tx ?? prisma).user.findUnique({
         where: {
           id,
         },

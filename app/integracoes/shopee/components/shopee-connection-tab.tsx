@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
+import { AccountProblemsBlock } from "@/app/integracoes/components/account-problems-block";
 import {
   CheckCircle2,
   XCircle,
@@ -329,6 +330,8 @@ export function ShopeeConnectionTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Conta parada ou desconectada some da lista acima (só lista ativa). */}
+          <AccountProblemsBlock platform="SHOPEE" />
           {status?.connected ? (
             <div className="space-y-4">
               <div className="space-y-2">

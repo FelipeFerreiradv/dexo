@@ -18,6 +18,7 @@ import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { MagaluApiService } from "../marketplaces/services/magalu-api.service";
 import { MagaluOAuthService } from "../marketplaces/services/magalu-oauth.service";
+import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 
 /** Conta de origem do pedido usada p/ buscar dados fiscais do comprador. */
 type BillingAccount = {
@@ -348,14 +349,13 @@ export class NfeDraftUseCase {
     let token = acc.accessToken;
     if (this.tokenSoon(acc) && acc.refreshToken) {
       try {
-        token = (
-          await MLOAuthService.refreshAccessTokenForAccount(
-            acc.id,
-            acc.refreshToken,
-          )
-        ).accessToken;
+        const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+          acc.id,
+          acc.refreshToken,
+        );
+        token = await this.persistRefreshedTokens(acc, refreshed);
       } catch {
-        /* mantém o token atual */
+        this.reportTokenRefreshFailure(acc);
       }
     }
     if (!token) return null;
@@ -386,11 +386,13 @@ export class NfeDraftUseCase {
     let token = acc.accessToken;
     if (this.tokenSoon(acc) && acc.refreshToken) {
       try {
-        token = (
-          await ShopeeOAuthService.refreshAccessToken(acc.refreshToken, acc.shopId)
-        ).access_token;
+        const refreshed = await ShopeeOAuthService.refreshAccessToken(
+          acc.refreshToken,
+          acc.shopId,
+        );
+        token = await this.persistRefreshedShopeeTokens(acc, refreshed);
       } catch {
-        /* mantém o token atual */
+        this.reportTokenRefreshFailure(acc);
       }
     }
     if (!token) return null;
@@ -425,14 +427,13 @@ export class NfeDraftUseCase {
     let token = acc.accessToken;
     if (this.tokenSoon(acc) && acc.refreshToken) {
       try {
-        token = (
-          await MagaluOAuthService.refreshAccessTokenForAccount(
-            acc.id,
-            acc.refreshToken,
-          )
-        ).accessToken;
+        const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+          acc.id,
+          acc.refreshToken,
+        );
+        token = await this.persistRefreshedTokens(acc, refreshed);
       } catch {
-        /* mantém o token atual */
+        this.reportTokenRefreshFailure(acc);
       }
     }
     if (!token) return null;
@@ -458,6 +459,64 @@ export class NfeDraftUseCase {
       uf: addr?.state ?? null,
       countryId: "BR",
     };
+  }
+
+  /**
+   * O refresh token de ML/Magalu pode ser rotacionado a cada uso. Persistimos
+   * o trio completo antes de qualquer consulta fiscal para que uma falha da
+   * API do marketplace não descarte o token novo. Esta função não registra os
+   * valores dos tokens nem os inclui em erros/logs.
+   */
+  private async persistRefreshedTokens(
+    acc: BillingAccount,
+    refreshed: {
+      accessToken: string;
+      refreshToken: string;
+      expiresIn: number;
+    },
+  ): Promise<string> {
+    const expiresAt = new Date(Date.now() + refreshed.expiresIn * 1000);
+    await MarketplaceRepository.updateTokens(acc.id, {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt,
+    });
+    acc.accessToken = refreshed.accessToken;
+    acc.refreshToken = refreshed.refreshToken;
+    acc.expiresAt = expiresAt;
+    return refreshed.accessToken;
+  }
+
+  /** Adapta a resposta snake_case da Shopee ao persistidor comum. */
+  private async persistRefreshedShopeeTokens(
+    acc: BillingAccount,
+    refreshed: {
+      access_token: string;
+      refresh_token: string;
+      expire_in: number;
+    },
+  ): Promise<string> {
+    const expiresAt = ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in);
+    await MarketplaceRepository.updateTokens(acc.id, {
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token,
+      expiresAt,
+    });
+    acc.accessToken = refreshed.access_token;
+    acc.refreshToken = refreshed.refresh_token;
+    acc.expiresAt = expiresAt;
+    return refreshed.access_token;
+  }
+
+  /** Registra a falha sem serializar o erro, que pode carregar credenciais. */
+  private reportTokenRefreshFailure(acc: BillingAccount): void {
+    console.warn(
+      JSON.stringify({
+        event: "nfe.billing.token_refresh_or_persist_failed",
+        accountId: acc.id,
+        platform: acc.platform,
+      }),
+    );
   }
 
   /** Endereço postal do pedido Magalu (1º com CEP/rua entre drop/pickup/recipient). */

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Platform } from "@prisma/client";
 
 import prisma from "@/app/lib/prisma";
+import { accountScopedAutodetectSku } from "@/app/marketplaces/lib/autodetect-synthetic-sku";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
@@ -67,13 +68,19 @@ describe("ListingAutodetectUseCase — cache do import em lote", () => {
     );
     const create = vi
       .spyOn(ProductUseCase.prototype, "create")
-      .mockResolvedValue({ id: "p-novo", name: "Roda Liga Leve Aro 15" } as never);
+      .mockResolvedValue({
+        id: "p-novo",
+        name: "Roda Liga Leve Aro 15",
+      } as never);
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
-      .mockImplementation(async (input: { productId: string }) => ({
-        id: "l-x",
-        productId: input.productId,
-      }) as never);
+      .mockImplementation(
+        async (input: { productId: string }) =>
+          ({
+            id: "l-x",
+            productId: input.productId,
+          }) as never,
+      );
 
     const cache = emptyCache();
 
@@ -155,18 +162,24 @@ describe("ListingAutodetectUseCase — cache do import em lote", () => {
       knownExternalListingIds: new Set(),
     };
 
+    const marketplaceItem = item({
+      externalListingId: "MLB77",
+      rawSku: "CAIXA-9",
+      title: "Parachoque Dianteiro Gol G5 Original",
+    });
+    const expectedSku = accountScopedAutodetectSku("VAAPT", {
+      platform: marketplaceItem.platform,
+      accountId: marketplaceItem.account.id,
+      externalListingId: marketplaceItem.externalListingId,
+    });
     const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
-      item({
-        externalListingId: "MLB77",
-        rawSku: "CAIXA-9",
-        title: "Parachoque Dianteiro Gol G5 Original",
-      }),
+      marketplaceItem,
       cache,
     );
 
     // SKU de caixa: produto próprio com SKU sintético (não re-agrupa).
     expect(res.action).toBe("created_product");
-    expect(res.productId).toBe("p-VAAPT-MLB77");
+    expect(res.productId).toBe(`p-${expectedSku}`);
     // O cache NÃO foi sobrescrito pelo sintético: o SKU segue no original.
     expect(cache.productsBySku.get("caixa-9")?.id).toBe("p-original");
   });

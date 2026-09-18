@@ -343,6 +343,27 @@ describe("As flags — REGRA ZERO", () => {
 });
 
 describe("firePostReservationEffects", () => {
+  it("sem opt-in não agenda consumo nem efeito remoto", () => {
+    vi.useFakeTimers();
+    const enabled = process.env.BACKGROUND_WORKERS_ENABLED;
+    const disabled = process.env.BACKGROUND_WORKERS_DISABLED;
+    delete process.env.BACKGROUND_WORKERS_ENABLED;
+    process.env.BACKGROUND_WORKERS_DISABLED = "1";
+    try {
+      firePostReservationEffects({
+        changed: [{ productId: "p-1", before: 1, after: 0 }],
+        reopened: [],
+        enqueued: 1,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (enabled === undefined) delete process.env.BACKGROUND_WORKERS_ENABLED;
+      else process.env.BACKGROUND_WORKERS_ENABLED = enabled;
+      if (disabled === undefined) delete process.env.BACKGROUND_WORKERS_DISABLED;
+      else process.env.BACKGROUND_WORKERS_DISABLED = disabled;
+    }
+  });
+
   it("não agenda nada quando não houve o que enfileirar", () => {
     vi.useFakeTimers();
     firePostReservationEffects({ changed: [], reopened: [], enqueued: 0 });
