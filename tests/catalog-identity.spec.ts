@@ -90,13 +90,17 @@ describe("complete gallery identity", () => {
   });
 });
 
-function transaction(rows: any[]) {
+function transaction(
+  rows: any[],
+  accountRows: Array<{ id: string }> = [{ id: item.account.id }],
+  productRows: Array<{ id: string; name: string }> = [
+    { id: "canonical", name: title },
+  ],
+) {
   const events: string[] = [];
   const writes: { sql: string; values: unknown[] }[] = [];
+  const reads: { sql: string; values: unknown[] }[] = [];
   const tx = {
-    marketplaceAccount: {
-      findFirst: vi.fn(async () => ({ id: item.account.id })),
-    },
     $executeRaw: vi.fn(
       async (parts: TemplateStringsArray, ...values: unknown[]) => {
         const sql = parts.join("?");
@@ -105,41 +109,50 @@ function transaction(rows: any[]) {
         return 1;
       },
     ),
-    $queryRaw: vi.fn(async (parts: TemplateStringsArray) => {
-      const sql = parts.join("?");
-      events.push(sql.includes("advisory") ? "lock" : "lookup");
-      return sql.includes("advisory")
-        ? [{ pg_advisory_xact_lock: null }]
-        : rows.map((row) => ({
-            status: "CONFIRMED",
-            productUserId: "tenant-a",
-            ...row,
-          }));
-    }),
-    product: {
-      findFirst: vi.fn(async () => ({ id: "canonical", name: title })),
-    },
+    $queryRaw: vi.fn(
+      async (parts: TemplateStringsArray, ...values: unknown[]) => {
+        const sql = parts.join("?");
+        reads.push({ sql, values });
+        if (sql.includes('FROM "MarketplaceAccount"')) {
+          events.push("account");
+          return accountRows;
+        }
+        if (sql.includes("advisory")) {
+          events.push("lock");
+          return [{ pg_advisory_xact_lock: null }];
+        }
+        if (sql.includes('FROM "Product"')) {
+          events.push("product");
+          return productRows;
+        }
+        events.push("lookup");
+        return rows.map((row) => ({
+          status: "CONFIRMED",
+          productUserId: "tenant-a",
+          ...row,
+        }));
+      },
+    ),
   };
   vi.spyOn(prisma, "$transaction").mockImplementation(async (run: any) =>
     run(tx),
   );
-  return { tx, events, writes };
+  return { tx, events, reads, writes };
 }
 describe("durable canonical aliases", () => {
   it("refuses a caller-provided account that does not belong to the tenant", async () => {
-    const { tx, events, writes } = transaction([]);
-    tx.marketplaceAccount.findFirst.mockResolvedValueOnce(null as never);
+    const { events, writes } = transaction([], []);
     await expect(
       CatalogIdentityService.serialized(item, async () => ({
         productId: null,
         action: "ignored_by_list",
       })),
     ).rejects.toThrow(/conta de marketplace fora do tenant/i);
-    expect(events).toEqual([]);
+    expect(events).toEqual(["account"]);
     expect(writes).toHaveLength(0);
   });
   it("locks before resolving and runs listing/product writes in the same transaction", async () => {
-    const { tx, events, writes } = transaction([
+    const { tx, events, reads, writes } = transaction([
       {
         id: "canonical",
         name: title,
@@ -158,17 +171,46 @@ describe("durable canonical aliases", () => {
     );
     expect(result.productId).toBe("canonical");
     expect(events).toEqual([
+      "account",
       "lock",
       "lookup",
       "listing",
+      "product",
       "identity",
       "identity",
     ]);
+    const accountRead = reads.find((read) =>
+      read.sql.includes('FROM "MarketplaceAccount"'),
+    );
+    const productRead = reads.find((read) =>
+      read.sql.includes('FROM "Product"'),
+    );
+    expect(accountRead?.sql).toMatch(/FOR SHARE/);
+    expect(accountRead?.values).toEqual([
+      item.account.id,
+      item.account.userId,
+      item.platform,
+    ]);
+    expect(productRead?.sql).toMatch(/FOR SHARE/);
+    expect(productRead?.values).toEqual(["canonical", item.account.userId]);
     expect(writes[0].values).toContain("listing:account-a:MLB123");
     expect(writes[1].values).toContain("CONFIRMED");
     expect(writes.every((write) => write.values.includes("tenant-a"))).toBe(
       true,
     );
+  });
+  it("rolls back identity writes when the returned product leaves the tenant", async () => {
+    const { events, writes } = transaction([], [{ id: item.account.id }], []);
+
+    await expect(
+      CatalogIdentityService.serialized(item, async () => ({
+        productId: "canonical",
+        action: "linked_existing_product",
+      })),
+    ).rejects.toThrow(/produto.*tenant/i);
+
+    expect(events).toEqual(["account", "lock", "lookup", "product"]);
+    expect(writes).toHaveLength(0);
   });
   it("does not use a gallery to override a different explicit physical-piece code", async () => {
     transaction([
