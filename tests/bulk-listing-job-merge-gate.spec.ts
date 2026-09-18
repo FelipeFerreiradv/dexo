@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { events, tx, database } = vi.hoisted(() => {
   const hoistedEvents: string[] = [];
   const hoistedTx = {
-    $queryRaw: vi.fn(async () => {
+    $executeRaw: vi.fn(async () => {
       hoistedEvents.push("gate");
-      return [{ pg_advisory_xact_lock_shared: null }];
+      return 1;
     }),
     product: { findMany: vi.fn() },
     bulkListingJob: { create: vi.fn() },
@@ -53,7 +53,7 @@ describe("BulkListingJob catalog merge gate", () => {
     await BulkListingJobRepository.create(input);
 
     expect(events).toEqual(["gate", "validate-products", "create-job"]);
-    expect(tx.$queryRaw.mock.calls[0]).toContain(
+    expect(tx.$executeRaw.mock.calls[0]).toContain(
       CATALOG_PRODUCT_MERGE_LOCK_KEY,
     );
     expect(tx.product.findMany).toHaveBeenCalledWith({

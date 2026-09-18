@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 
+import { CATALOG_PRODUCT_MERGE_LOCK_KEY } from "../app/marketplaces/lib/catalog-merge-lock";
+
 import {
+  acquireExclusiveCatalogMergeGate,
   assertProductionDatabaseHost,
   assertWorkersDrainedForApply,
   canonicalManifestPhoto,
@@ -26,6 +29,17 @@ const REVIEWED_IMAGE_IDS = [
 const REVIEWED_GALLERY_KEY = `gallery:v1:${createHash("sha256")
   .update(JSON.stringify(REVIEWED_IMAGE_IDS))
   .digest("hex")}`;
+
+describe("exclusive catalog merge gate", () => {
+  it("executes the void advisory lock without deserializing it", async () => {
+    const executeRaw = vi.fn(async () => 1);
+
+    await acquireExclusiveCatalogMergeGate({ $executeRaw: executeRaw } as any);
+
+    expect(executeRaw).toHaveBeenCalledOnce();
+    expect(executeRaw.mock.calls[0]).toContain(CATALOG_PRODUCT_MERGE_LOCK_KEY);
+  });
+});
 
 function manifestInput(): Record<string, unknown> {
   return {

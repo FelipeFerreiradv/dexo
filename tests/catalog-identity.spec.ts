@@ -104,6 +104,10 @@ function transaction(
     $executeRaw: vi.fn(
       async (parts: TemplateStringsArray, ...values: unknown[]) => {
         const sql = parts.join("?");
+        if (sql.includes("advisory")) {
+          events.push("lock");
+          return 1;
+        }
         events.push("identity");
         writes.push({ sql, values });
         return 1;
@@ -116,10 +120,6 @@ function transaction(
         if (sql.includes('FROM "MarketplaceAccount"')) {
           events.push("account");
           return accountRows;
-        }
-        if (sql.includes("advisory")) {
-          events.push("lock");
-          return [{ pg_advisory_xact_lock: null }];
         }
         if (sql.includes('FROM "Product"')) {
           events.push("product");

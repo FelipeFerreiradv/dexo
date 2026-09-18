@@ -1198,6 +1198,16 @@ export function assertWorkersDrainedForApply(
   }
 }
 
+export async function acquireExclusiveCatalogMergeGate(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
+): Promise<void> {
+  // Advisory lock functions return PostgreSQL void. Execute the statement
+  // without asking Prisma to deserialize that unsupported result column.
+  await tx.$executeRaw`
+    SELECT pg_advisory_xact_lock(hashtext(${CATALOG_PRODUCT_MERGE_LOCK_KEY}))
+  `;
+}
+
 function sha256(data: string | Buffer): string {
   return createHash("sha256").update(data).digest("hex");
 }
@@ -2879,9 +2889,7 @@ async function runTransaction(
         // revalidates Product ownership after it acquires the lock. A creator
         // already in flight commits before validation; a later creator wakes
         // after this merge and refuses deleted donor IDs.
-        await tx.$queryRaw`
-          SELECT pg_advisory_xact_lock(hashtext(${CATALOG_PRODUCT_MERGE_LOCK_KEY}))
-        `;
+        await acquireExclusiveCatalogMergeGate(tx);
       }
       await createPlanTempTables(tx, manifest, seed);
       progress.phases.push({
