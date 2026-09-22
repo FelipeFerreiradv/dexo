@@ -330,7 +330,6 @@ paths:
                   description: "Mangueira superior do radiador, original/usada em bom estado."
                   price: 89.9
                   costPrice: 35.0
-                  markup: 1.57
                   stock: 2
                   brand: Volkswagen
                   model: Gol
@@ -1742,9 +1741,15 @@ components:
           maxLength: 60
         description: { type: string, maxLength: 4000 }
         stock: { type: integer, minimum: 0 }
-        price: { type: number, minimum: 0 }
-        costPrice: { type: number, minimum: 0 }
-        markup: { type: number, minimum: 0 }
+        price: { type: number, minimum: 0, maximum: 99999999.99 }
+        costPrice: { type: number, minimum: 0, maximum: 99999999.99 }
+        markup:
+          type: number
+          description: >-
+            Ignorado na entrada: o servidor calcula a partir de price e costPrice
+            como percentual sobre o custo ((price - costPrice) / costPrice * 100,
+            2 casas). Sem custo, ou quando o valor passa de 99.999.999,99, o markup
+            fica vazio.
         brand: { type: string }
         model: { type: string }
         year: { type: string, example: "2010" }

@@ -31,6 +31,9 @@ import { CategoryResolutionService } from "../marketplaces/services/category-res
 import { parseProductListingCategoryValue } from "../lib/product-listing-category";
 import { getMeasurementsForCategory } from "../lib/ml-measurements";
 import { normalizeQuality, InvalidQualityError } from "../lib/quality";
+import { computeMarkupPercent } from "../lib/money/markup";
+import { productNumericLimitError } from "../lib/money/product-numeric-limits";
+import { isNumericOverflowError } from "../repositories/numeric-overflow-error";
 import { sanitizeCompatPositions } from "../marketplaces/lib/ml-compat-position.logic";
 import {
   parseNfeXml,
@@ -289,9 +292,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         description,
         stock,
         price,
-        // Campos de autopeças
+        // Campos de autopeças (`markup` do corpo é ignorado: calculado abaixo)
         costPrice,
-        markup,
         brand,
         model,
         year,
@@ -352,6 +354,21 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         throw err;
       }
 
+      // Markup é DERIVADO e calculado aqui — o valor que o navegador manda é
+      // ignorado. Ele podia chegar "velho" (custo apagado depois do cálculo) ou
+      // grande demais para `Decimal(10,2)`, e o produto inteiro deixava de ser
+      // criado. Não calculável ou fora da coluna ⇒ não grava (a tela calcula na
+      // hora a partir de preço e custo). Ver app/lib/money/markup.ts.
+      const markupResult = computeMarkupPercent(
+        price !== undefined ? Number(price) : 0,
+        costPrice !== undefined ? Number(costPrice) : undefined,
+      );
+      if (markupResult.reason === "OUT_OF_RANGE") {
+        console.warn(
+          JSON.stringify({ event: "product.markup.out_of_range", op: "create" }),
+        );
+      }
+
       // Sanitize / coerce incoming numeric fields to expected types to avoid Prisma/runtime errors
       const sanitized = {
         sku: sku as string,
@@ -360,7 +377,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         stock: stock !== undefined ? Number(stock) : 0,
         price: price !== undefined ? Number(price) : 0,
         costPrice: costPrice !== undefined ? Number(costPrice) : undefined,
-        markup: markup !== undefined ? Number(markup) : undefined,
+        markup: markupResult.value ?? undefined,
         brand: brand ?? undefined,
         model: model ?? undefined,
         year: year ?? undefined,
@@ -460,6 +477,13 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: "Preço inválido" });
       if (!Number.isInteger(Number(sanitized.stock)) || sanitized.stock < 0)
         return reply.status(400).send({ error: "Estoque inválido" });
+      {
+        // Valores que o banco recusaria (acima da coluna, não finitos, cm
+        // fracionado) param aqui com mensagem legível, em vez de virar 500 com
+        // o texto do Prisma.
+        const limitError = productNumericLimitError(sanitized);
+        if (limitError) return reply.status(400).send({ error: limitError });
+      }
       if (!sanitized.imageUrl || typeof sanitized.imageUrl !== "string")
         return reply
           .status(400)
@@ -1116,6 +1140,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         console.error("Erro ao criar produto:", error);
         const msg = error instanceof Error ? error.message : String(error);
 
+        // Antes do regex abaixo: a mensagem do estouro cita "preço", e o regex a
+        // mandaria para 400 como se fosse erro de digitação do campo.
+        if (isNumericOverflowError(error))
+          return reply.status(422).send({ error: msg });
+
         // Mapear erros esperados para códigos HTTP apropriados
         if (msg.includes("Usuário não encontrado"))
           return reply.status(401).send({ error: msg });
@@ -1732,6 +1761,19 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
+        {
+          // Mesmos limites do POST: só o que o banco recusaria de qualquer jeito.
+          const limitError = productNumericLimitError({
+            price,
+            costPrice,
+            weightKg,
+            heightCm,
+            widthCm,
+            lengthCm,
+          });
+          if (limitError) return reply.status(400).send({ error: limitError });
+        }
+
         // Mesma validação do POST: aceita case-insensitive, rejeita com 400
         // amigável se o cliente externo mandar fora do enum (ex.: "USADO").
         let normalizedQuality;
@@ -1955,6 +1997,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           syncResults: result.syncResults,
         });
       } catch (error) {
+        if (isNumericOverflowError(error)) {
+          return reply.status(422).send({ error: error.message });
+        }
         return reply.status(500).send({
           error:
             error instanceof Error

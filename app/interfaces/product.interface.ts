@@ -306,7 +306,9 @@ export interface ProductUpdate {
   scrapId?: string | null;
 
   costPrice?: number;
-  markup?: number;
+  // null = limpar (custo apagado, ou markup fora do limite da coluna). Quem
+  // decide o valor é `ProductUseCase.update` (calculado de preço e custo).
+  markup?: number | null;
   brand?: string;
   model?: string;
   year?: string;
