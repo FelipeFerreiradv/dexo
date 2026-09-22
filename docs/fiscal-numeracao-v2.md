@@ -16,7 +16,21 @@ O claim pré-envio usa a versão da nota; reutilizar a reserva avança sua vers�
 
 `POST /fiscal/nfe/:id/issue` aceita `confirmarDescarteNumero`. Em produção, troca de empresa/ambiente/modelo/série exige confirmação. Exclusão usa `DELETE /fiscal/nfe/draft/:id?descartarNumero=true`; reserva abandonada fica fora de uso e pode exigir inutilização. Números autorizados, cancelados ou pendentes não são liberados pela exclusão.
 
-Respostas V2 incluem `numeracao` e `emAndamento`. O frontend só promete manutenção quando o servidor informa `reutilizavel`. Na Focus, a chave autorizada prevalece para número/série; divergência é realinhada sem reduzir contador. Chave incompatível com CNPJ/modelo bloqueia para conferência. A referência Focus da tentativa acompanha recuperação de XML e cancelamento.
+### Focus (revisão de 22/09/2026)
+
+A NF-e 55 na Focus é assíncrona: o POST devolve 202 `processando_autorizacao` e o resultado (autorização ou rejeição da SEFAZ) chega pela consulta. Por isso:
+
+- a consulta usa `?completa=1`, única forma de a Focus devolver `protocolo` e `protocolo_nota_fiscal.{numero_protocolo, data_recebimento}`;
+- autorização Focus vale com `status: autorizado` e chave de 44 dígitos compatível com o emitente, **mesmo sem protocolo** (o 201 síncrono e a consulta simples não trazem protocolo); no SEFAZ direto o protocolo continua obrigatório;
+- rejeição, 108/109 e 656 recebidos na consulta são a resposta da MESMA tentativa: gravam motivo e cStat reais na nota e na reserva (transição INCERTO → REJEITADO/RESERVADO);
+- 539/562/613 na consulta: chave citada compatível com emitente/série/número ⇒ `CONSUMIDO_EXTERNO` (a mensagem traz a chave para conferência); chave ausente ou inconsistente ⇒ `BLOQUEADO` para conferência manual. A nota nunca fica INCERTO indefinidamente;
+- o payload leva `data_emissao` (obrigatório) do instante da tentativa atual, e esse mesmo instante é gravado em `NfeEmitida.dataEmissao`;
+- após o 202, a V2 faz consultas curtas (`NFE_NUMERACAO_V2_FOCUS_PAUSAS_MS`, padrão 2s/3s/4s) antes de responder "em andamento";
+- a referência de reemissão é alfanumérica (`<nfeId>n<numero>`).
+
+Falha na pós-autorização (XML/DANFE/auditoria) não desfaz a autorização: fica marcada em `POS_AUTORIZACAO_PENDENTE` e é refeita na próxima consulta/replay, uma única vez (a marca de conclusão é o evento `AUTORIZADA`).
+
+Respostas V2 incluem `numeracao` (null quando não há reserva viva) e `emAndamento`. O frontend só promete manutenção quando o servidor informa `reutilizavel`. Na Focus, a chave autorizada prevalece para número/série; divergência é realinhada sem reduzir contador. Chave incompatível com CNPJ/modelo bloqueia para conferência. A referência Focus da tentativa acompanha recuperação de XML e cancelamento.
 
 ## Responsável técnico
 
@@ -29,7 +43,7 @@ GET/PUT `/fiscal/config/resp-tec` ou `/fiscal/companies/:id/resp-tec`. Modos: PA
 3. Executar o diagnóstico somente leitura e revisar divergências históricas. Nenhuma correção histórica é automática.
 4. Validar em homologação, em série dedicada, com autorização explícita para emissão. Habilitar primeiro uma configuração.
 5. Focus só entra no canário após confirmar comportamento de número/série/ref com o fornecedor.
-6. Rollback: retirar a configuração da allowlist. Não apagar reservas ou tentativas. Antes de alternar Focus/V1, consultar envios pendentes e preservar a referência registrada; não renumerar automaticamente documentos incertos.
+6. Rollback: retirar a configuração da allowlist (ou a sub-flag Focus) — **não** desligar `NFE_NUMERACAO_V2_ENABLED`, senão o ledger deixa de ser consultado no cancelamento e na exclusão. Nota com reserva viva numa config fora da V2 responde 409 `NUMERACAO_EMITENTE_FORA_V2` (emitir pelo V1 deixaria o número órfão); libere reativando a empresa ou descartando o número na exclusão. Trocar ambiente/token com nota pendente de consulta responde 409. Não apagar reservas ou tentativas. Antes de alternar Focus/V1, consultar envios pendentes e preservar a referência registrada; não renumerar automaticamente documentos incertos.
 
 Tabela V2 ausente é detectada **antes do claim** e conserva o caminho V1 para notas comuns. Devolução habilitada nunca cai para emissão V1. Falha após mutação V2 não dispara fallback.
 

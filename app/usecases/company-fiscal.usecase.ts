@@ -8,6 +8,8 @@ import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
 import { CertificateManagerService } from "../fiscal/certificate/certificate-manager.service";
 import { validateCertForEmitter } from "../fiscal/certificate/certificate-loader.service";
 import { isValidCnpj } from "../lib/masks";
+import { NumeracaoError } from "../fiscal/numeracao/numeracao.errors";
+import { reservasPendentesDaConfig } from "../fiscal/numeracao/metadata";
 
 /**
  * Resultado do upload de certificado A1. `ok=false` carrega `status` (HTTP) e
@@ -122,7 +124,63 @@ export class CompanyFiscalUseCase {
   ): Promise<CompanyFiscalConfig> {
     if (!userId) throw new Error("Usuário não encontrado");
     this.validateUpsert(data);
+    if (process.env.NFE_NUMERACAO_V2_ENABLED === "true") {
+      await this.guardarTrocaCredencial(
+        userId,
+        await this.repo.findByIdForUser(id, userId),
+        data,
+      );
+    }
     return this.repo.updateById(id, userId, data);
+  }
+
+  /**
+   * Numeração V2: a consulta de uma tentativa sem desfecho (EM_TRANSMISSAO/
+   * INCERTO) usa o token e o ambiente ATUAIS da config. A Focus tem um token
+   * por ambiente e a config guarda um só: trocar ambiente/token com envio
+   * pendente deixa a nota presa (401 ⇒ consulta inconclusiva para sempre).
+   * Bloqueia a troca até as pendências serem resolvidas. Só com a V2 ligada
+   * (global) — desligada, nenhuma consulta extra (I8); tabela ausente ⇒ sem guarda.
+   */
+  private async guardarTrocaCredencial(
+    userId: string,
+    atual: CompanyFiscalConfig | null,
+    data: CompanyFiscalConfigUpsert,
+  ): Promise<void> {
+    if (!atual) return;
+    // Mesma normalização do repositório (buildBaseData / buildSecrets).
+    const novoAmbiente = data.ambiente ?? "HOMOLOGACAO";
+    const novoToken =
+      typeof data.providerToken === "string" && data.providerToken.trim()
+        ? data.providerToken.trim()
+        : null;
+    const mudouAmbiente = novoAmbiente !== atual.ambiente;
+    const mudouToken = novoToken !== null && novoToken !== (atual.providerToken ?? null);
+    if (!mudouAmbiente && !mudouToken) return;
+    const pendentes = await reservasPendentesDaConfig(userId, atual.id);
+    if (!pendentes.length) return;
+    const lista = pendentes
+      .slice(0, 5)
+      .map(
+        (p) =>
+          `nº ${p.numero} (série ${p.serie}, ${p.ambiente === "PRODUCAO" ? "produção" : "homologação"})`,
+      )
+      .join(", ");
+    throw new NumeracaoError(
+      "NUMERACAO_PENDENTE_TROCA_CREDENCIAL",
+      409,
+      `Há NF-e com envio pendente de confirmação nesta empresa (${lista}${pendentes.length > 5 ? " e outras" : ""}). ` +
+        `Resolva essas notas antes de trocar o ${mudouAmbiente && mudouToken ? "ambiente e o token do provedor" : mudouAmbiente ? "ambiente" : "token do provedor"}: abra cada uma e use "Consultar situação" até concluir.`,
+      {
+        pendentes: pendentes.map((p) => ({
+          numero: p.numero,
+          serie: p.serie,
+          ambiente: p.ambiente,
+          modelo: p.modelo,
+          estado: p.estado,
+        })),
+      },
+    );
   }
 
   async setDefault(id: string, userId: string): Promise<void> {
@@ -147,6 +205,14 @@ export class CompanyFiscalUseCase {
   ): Promise<CompanyFiscalConfig> {
     if (!userId) throw new Error("Usuário não encontrado");
     this.validateUpsert(data);
+    if (process.env.NFE_NUMERACAO_V2_ENABLED === "true") {
+      // PUT /fiscal/config opera sobre a config padrão (ver repo.upsert).
+      await this.guardarTrocaCredencial(
+        userId,
+        await this.repo.findDefaultByUserId(userId),
+        data,
+      );
+    }
     return this.repo.upsert(userId, data);
   }
 

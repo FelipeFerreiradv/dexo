@@ -27,7 +27,8 @@ const PERMITIDAS: Record<EstadoReserva, EstadoReserva[]> = {
     "CONSUMIDO_EXTERNO",
     "BLOQUEADO",
   ],
-  INCERTO: ["AUTORIZADO", "RESERVADO", "DENEGADO", "INUTILIZADO", "CONSUMIDO_EXTERNO", "BLOQUEADO", "INCERTO"],
+  // INCERTO → REJEITADO: rejeição da MESMA tentativa assíncrona (Focus 55 / SEFAZ recibo) lida na consulta.
+  INCERTO: ["AUTORIZADO", "REJEITADO", "RESERVADO", "DENEGADO", "INUTILIZADO", "CONSUMIDO_EXTERNO", "BLOQUEADO", "INCERTO"],
   AUTORIZADO: ["CANCELADO", "ABANDONADO"],
   BLOQUEADO: [],
   CANCELADO: [],
@@ -99,7 +100,6 @@ describe("proibições que protegem contra número queimado ou duplicado", () =>
   it.each([
     ["INCERTO", "ABANDONADO"],
     ["EM_TRANSMISSAO", "ABANDONADO"],
-    ["INCERTO", "REJEITADO"],
     ["INCERTO", "EM_TRANSMISSAO"],
     ["EM_TRANSMISSAO", "EM_TRANSMISSAO"],
     ["AUTORIZADO", "RESERVADO"],

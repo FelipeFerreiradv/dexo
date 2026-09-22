@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { DevolucaoEditor } from "./devolucao-editor";
 import { NumeracaoActions } from "./numeracao-actions";
 import type { NumeracaoView } from "./numeracao-actions";
+import { desfechoConsulta, desfechoEmissao, type DesfechoTela } from "../lib/nfe-numeracao-ui";
 import type { DevolucaoDetalhe } from "@/app/fiscal/devolucao/contrato";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -468,6 +469,20 @@ export function NfeWizard() {
     [draftId, isEmitting, draftCompanyId, companies, setValue, saveDraft],
   );
 
+  // Aplica o desfecho de /issue ou /consultar-situacao. `numeracao` undefined
+  // (resposta sem a chave, V1) não mexe no estado; null limpa (nº consumido).
+  const aplicarDesfecho = (x: DesfechoTela) => {
+    if (x.numeracao !== undefined) setNumeracao(x.numeracao);
+    if (x.pedirConfirmacaoDescarte) setConfirmarDescarte(true);
+    if (x.toast) showToast(x.toast.msg, x.toast.type);
+    if (x.redirecionar) {
+      // Redirect after short delay
+      setTimeout(() => {
+        window.location.href = "/notas-fiscais/nfe";
+      }, 2000);
+    }
+  };
+
   const handleEmitir = async () => {
     if (!draftId || isEmitting || emitindoRef.current) return;
     emitindoRef.current=true;
@@ -487,33 +502,9 @@ export function NfeWizard() {
       });
 
       const data = await res.json();
-      if(data.numeracao)setNumeracao(data.numeracao);
-
-      if (!res.ok) {
-        if(data.code==="NUMERACAO_CONFIRMAR_DESCARTE")setConfirmarDescarte(true);
-        showToast(data.error || "Erro ao emitir NF-e", "error");
-        return;
-      }
-
-      if (data.success) {
-        if (data.status === "AUTHORIZED") {
-          showToast(
-            `NF-e ${data.numero} autorizada! Chave: ${data.chaveAcesso?.slice(0, 20)}...`,
-            "success",
-          );
-          // Redirect after short delay
-          setTimeout(() => {
-            window.location.href = "/notas-fiscais/nfe";
-          }, 2000);
-        } else {
-          showToast(data.mensagem || "NF-e enviada, aguardando SEFAZ", "info");
-        }
-      } else {
-        showToast(
-          data.mensagem || "NF-e rejeitada pela SEFAZ",
-          "error",
-        );
-      }
+      // Decisão em lib/nfe-numeracao-ui (testada em node): resposta V1 segue o
+      // caminho de sempre; V2 em andamento (202/INCERTO, claim perdido) é info.
+      aplicarDesfecho(desfechoEmissao(res.ok, data));
     } catch {
       showToast("Erro de conexao ao emitir NF-e", "error");
     } finally {
@@ -573,7 +564,7 @@ export function NfeWizard() {
       />
 
       <div className="min-h-[300px]">
-        {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={()=>{void loadDraft(draftId).then(d=>d&&setNumeracao(d.numeracao??null));}}/>}
+        {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={d=>aplicarDesfecho(desfechoConsulta(d))}/>}
         {confirmarDescarte && <p role="alert">Ao clicar em emitir novamente, você confirma o descarte do número anterior. Em produção ele precisará ser inutilizado.</p>}
         {devolucao && [1,3,8].includes(currentStep) && <DevolucaoEditor key={`${devolucao.draftId}-${currentStep}`} step={currentStep} value={devolucao} email={email} onSaved={async d=>{setDevolucao(d);const fresh=await loadDraft(d.draftId);if(fresh)populateFormFromDraft(fresh);}}/>}
         {currentStep === 1 && !devolucao && (

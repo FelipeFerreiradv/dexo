@@ -9,7 +9,7 @@ import { decidirEntrada, decidirPreClaim, decidirReadbackFocus, hashConteudo, pa
 import { classificarEnvioSefaz, classificarConsultaSefaz, classificarPostFocus, classificarGetFocus, extrairChaveReferida } from "../fiscal/numeracao/classificacao";
 import type { Reserva, Tentativa, NumeracaoTx } from "../fiscal/numeracao/persistencia";
 import type { FocusV2Resposta } from "../fiscal/numeracao/tipos";
-import { consumoIndevidoCooldownMs, cooldownRepeticaoMs, leasePreEnvioMs, leaseEnvioSefazMs, leaseEnvioFocusMs, naoConstaMinMs, isDevolucaoAtiva } from "../fiscal/flags";
+import { consumoIndevidoCooldownMs, cooldownRepeticaoMs, focusPausasConsultaMs, leasePreEnvioMs, leaseEnvioSefazMs, leaseEnvioFocusMs, naoConstaMinMs, isDevolucaoAtiva } from "../fiscal/flags";
 import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
 import { SefazDirectProvider } from "../fiscal/providers/sefaz-direct.provider";
 import { FocusNfeV2Client } from "../fiscal/providers/focus-nfe-v2.client";
@@ -39,17 +39,20 @@ interface Hooks {
 export class NfeEmissaoV2Orchestrator {
   constructor(private readonly hooks:Hooks,readonly numeros=new NfeNumeracaoService(),private readonly repo=new NfeRepository(),private readonly storage=new FiscalStorageService()) {}
   private async resposta(userId:string,id:string,mensagem:string,mantido=true):Promise<EmissionResult> {
-    const d=await this.repo.findDraftById(userId,id);if(!d)throw new NumeracaoError("NFE_NAO_ENCONTRADA",404,"Nota não encontrada");
+    // Qualquer status: a resposta da V2 descreve notas SENDING (incerto/em andamento) e AUTHORIZED (replay).
+    const d=await this.repo.findNfeById(userId,id);if(!d)throw new NumeracaoError("NFE_NAO_ENCONTRADA",404,"Nota não encontrada");
     const r=await this.numeros.reservaViva(userId,id);
     const fiscal=d.status==="AUTHORIZED"?partesDaChave(d.chaveAcesso):null;
     return {success:d.status==="AUTHORIZED",nfeId:id,status:d.status,numero:d.numero,serie:d.serie,chaveAcesso:d.chaveAcesso??null,protocolo:(await prisma.$queryRawUnsafe<Array<{protocoloAutorizacao:string|null}>>('SELECT "protocoloAutorizacao" FROM "NfeEmitida" WHERE "id"=$1 AND "userId"=$2',id,userId))[0]?.protocoloAutorizacao??null,mensagem,
-      ...(fiscal?{numero:Number(fiscal.nNF),serie:Number(fiscal.serie)}:{}),emAndamento:["VALIDATING","SIGNING","SENDING"].includes(d.status) || !!r && ["INCERTO","EM_TRANSMISSAO"].includes(r.estado),...(r?{numeracao:metadadosNumeracao(r,mantido)}:{})};
+      // `numeracao` sempre presente (null sem reserva viva): o front limpa o "nº mantido" de números já consumidos.
+      ...(fiscal?{numero:Number(fiscal.nNF),serie:Number(fiscal.serie)}:{}),emAndamento:["VALIDATING","SIGNING","SENDING"].includes(d.status) || !!r && ["INCERTO","EM_TRANSMISSAO"].includes(r.estado),numeracao:r?metadadosNumeracao(r,mantido):null};
   }
   async emitir(userId:string,draft:NfeDraftResponse,config:CompanyFiscalConfig,opts:EmitOpts={}):Promise<EmissionResult> {
     const id=draft.id;const viva=await this.numeros.reservaViva(userId,id);
-    const entrada=decidirEntrada({status:draft.status,updatedAt:new Date(draft.updatedAt),viva,agora:new Date(),leasePreEnvioMs:leasePreEnvioMs()});
+    const entrada=decidirEntrada({status:draft.status,updatedAt:new Date(draft.updatedAt),viva,agora:new Date(),leasePreEnvioMs:leasePreEnvioMs(),numero:draft.numero});
     if(entrada.acao==="RECONCILIAR")return this.consultar(userId,draft,config);
-    if(entrada.acao==="REPLAY_AUTORIZADA" || entrada.acao==="EM_ANDAMENTO")return this.resposta(userId,id,entrada.mensagem);
+    if(entrada.acao==="REPLAY_AUTORIZADA"){await this.completarPosAutorizacao(userId,id,config);return this.resposta(userId,id,entrada.mensagem);}
+    if(entrada.acao==="EM_ANDAMENTO")return this.resposta(userId,id,entrada.mensagem);
     if(entrada.acao==="BLOQUEADA_MANUAL")throw new NumeracaoError("NUMERACAO_BLOQUEADA",409,entrada.mensagem);
     if(entrada.acao==="DELEGAR_V1")throw new NumeracaoError("NFE_NAO_EMITIVEL",409,"Esta nota não pode ser emitida");
     const dev=new NfeDevolucaoUseCase();
@@ -96,16 +99,19 @@ export class NfeEmissaoV2Orchestrator {
         return this.resposta(userId,id,result.classificacao.mensagem,reserva.origemDecisao!=="CONTADOR");
       }
       if(!config.providerToken)throw new NumeracaoError("PROVEDOR_SEM_TOKEN",422,"Token do provedor não configurado");
-      let payload=new NfeXmlBuilderService().build(calculada,config,reserva.numero) as Record<string,unknown>;
+      // Um instante por tentativa: vai no payload (data_emissao, obrigatório na Focus), na tentativa e na nota.
+      const dhEmi=new Date();
+      let payload=new NfeXmlBuilderService().build({...calculada,dataEmissao:dhEmi},config,reserva.numero) as Record<string,unknown>;
       payload.numero=String(reserva.numero);payload.serie=String(reserva.serie);
       if(devolucao)payload=decorarFocusDevolucao(payload,devolucao.contexto);
       const focusRef=await this.numeros.focusRefPara(userId,id,reserva);
-      const ativo=await this.numeros.iniciarTransmissao(reserva,{provedor:"FOCUS_NFE",chaveAcesso:null,dhEmi:new Date(),digestValue:null,xmlAssinadoPath:null,conteudoSha256,focusRef},leaseEnvioFocusMs());
+      const ativo=await this.numeros.iniciarTransmissao(reserva,{provedor:"FOCUS_NFE",chaveAcesso:null,dhEmi,digestValue:null,xmlAssinadoPath:null,conteudoSha256,focusRef},leaseEnvioFocusMs());
       enviada=true;
       const raw=await new FocusNfeV2Client(config.ambiente,draft.modelo==="65"?"65":"55").emitir(payload,focusRef,config.providerToken);
       const result=this.focusResultado(raw,false,ativo.tentativa);
       const r=await this.registrarFocus(ativo.reserva,ativo.tentativa,result,config,false);
       if(r.estado==="AUTORIZADO")return this.finalizar(userId,calculada,config,result,null,focusRef);
+      if(result.classificacao.acao==="POLL_REF")return this.acompanharFocus(userId,calculada,config);
       if(result.classificacao.acao!=="NENHUMA")return this.consultar(userId,calculada,config);
       return this.resposta(userId,id,result.classificacao.mensagem,reserva.origemDecisao!=="CONTADOR");
     } catch(error) {
@@ -117,6 +123,7 @@ export class NfeEmissaoV2Orchestrator {
   }
   async consultar(userId:string,draft:NfeDraftResponse,config:CompanyFiscalConfig):Promise<EmissionResult> {
     const viva=await this.numeros.reservaViva(userId,draft.id);
+    if(viva?.estado==="AUTORIZADO")await this.completarPosAutorizacao(userId,draft.id,config);
     if(!viva || !["EM_TRANSMISSAO","INCERTO"].includes(viva.estado))return this.resposta(userId,draft.id,viva?.motivo??"Nenhum envio pendente de consulta");
     let r=await this.numeros.tomarLease(userId,viva.id,leaseEnvioSefazMs());
     if(!r)return this.resposta(userId,draft.id,"Emissão ou consulta em andamento");
@@ -131,6 +138,17 @@ export class NfeEmissaoV2Orchestrator {
         if(t.provedor==="FOCUS_NFE") {
           const raw=await new FocusNfeV2Client(c.ambiente,r.modelo==="65"?"65":"55").consultar(t.focusRef!,c.providerToken??"");
           result=this.focusResultado(raw,true,t);
+          if(result.classificacao.classe==="DUPLICIDADE_OUTRA_CHAVE") {
+            // 539/562/613: a SEFAZ diz que o número já existe com OUTRA chave. A ref da Focus não muda de
+            // status, então sem decisão aqui a nota ficaria INCERTO para sempre.
+            const referida=result.classificacao.chaveReferida??null;
+            const partes=partesDaChave(referida);
+            const mesmaIdentidade=!!partes && partes.CNPJ===c.cnpj.replace(/\D/g,"") && partes.mod===r.modelo && Number(partes.serie)===r.serie && Number(partes.nNF)===r.numero;
+            const nossa=!!referida && ts.some(at=>at.chaveAcesso===referida);
+            result.classificacao=!mesmaIdentidade || nossa
+              ?{...result.classificacao,estadoAlvo:"BLOQUEADO",conclusiva:false,mensagem:"Duplicidade sem chave fiscal consistente — conferência manual"}
+              :{...result.classificacao,estadoAlvo:"CONSUMIDO_EXTERNO",conclusiva:true,chaveReferida:referida,mensagem:`Nº ${r.numero} já usado na SEFAZ pela chave ${referida} — confira se é uma NF-e desta empresa antes de reemitir`};
+          }
           r=await this.registrarFocus(r,t,result,c,true);
         } else {
           const provider=await createNfeProviderFromConfig(c);
@@ -147,7 +165,8 @@ export class NfeEmissaoV2Orchestrator {
             else if(!nossa)result.classificacao={...result.classificacao,classe:"DUPLICIDADE_OUTRA_CHAVE",chaveReferida:referida,estadoAlvo:null,conclusiva:false,mensagem:"Duplicidade ainda sem confirmação — consulte novamente"};
           }
           r=await this.numeros.registrarConsulta(r,t,result);
-          if(r.estado==="AUTORIZADO" && raw.protNFeXml && t.xmlAssinadoPath){const signed=await this.storage.readFile(t.xmlAssinadoPath);if(signed)xml=SefazDirectProvider.montarNfeProc(signed.toString("utf8"),raw.protNFeXml);}
+          // Depois do commit AUTORIZADO nada pode virar 500: sem o XML assinado, a pós-autorização segue sem nfeProc.
+          if(r.estado==="AUTORIZADO" && raw.protNFeXml && t.xmlAssinadoPath){try{const signed=await this.storage.readFile(t.xmlAssinadoPath);if(signed)xml=SefazDirectProvider.montarNfeProc(signed.toString("utf8"),raw.protNFeXml);}catch{xml=null;}}
         }
         if(r.estado==="AUTORIZADO")return this.finalizar(userId,draft,c,result,xml,t.focusRef);
         if(!["INCERTO","EM_TRANSMISSAO"].includes(r.estado))return this.resposta(userId,draft.id,result.classificacao.mensagem);
@@ -161,7 +180,41 @@ export class NfeEmissaoV2Orchestrator {
     }
   }
   private focusResultado(raw:FocusV2Resposta,consulta:boolean,t:Tentativa):ResultadoFiscal {
-    return {classificacao:consulta?classificarGetFocus(raw,{madura:Date.now()-t.transmitidaEm.getTime()>=naoConstaMinMs(),postConclusivo:t.prova==="RESPOSTA_CONCLUSIVA"},{consumoIndevidoCooldownMs:consumoIndevidoCooldownMs()}):classificarPostFocus(raw,{consumoIndevidoCooldownMs:consumoIndevidoCooldownMs()}),chaveAcesso:raw.corpo?.chave_nfe,protocolo:raw.corpo?.protocolo??raw.corpo?.protocolo_sefaz,httpStatus:raw.httpStatus,transporte:raw.transporte};
+    // data_recebimento só vem na consulta completa; sem ela a data da autorização é a do registro.
+    const recebida=raw.corpo?.data_recebimento?new Date(raw.corpo.data_recebimento):null;
+    return {classificacao:consulta?classificarGetFocus(raw,{madura:Date.now()-t.transmitidaEm.getTime()>=naoConstaMinMs(),postConclusivo:t.prova==="RESPOSTA_CONCLUSIVA"},{consumoIndevidoCooldownMs:consumoIndevidoCooldownMs()}):classificarPostFocus(raw,{consumoIndevidoCooldownMs:consumoIndevidoCooldownMs()}),chaveAcesso:raw.corpo?.chave_nfe,protocolo:raw.corpo?.protocolo??raw.corpo?.protocolo_sefaz,dataAutorizacao:recebida && Number.isFinite(recebida.getTime())?recebida:undefined,httpStatus:raw.httpStatus,transporte:raw.transporte};
+  }
+  /** NF-e 55 na Focus é assíncrona: depois do 202, algumas consultas curtas antes de devolver "em andamento". */
+  private async acompanharFocus(userId:string,draft:NfeDraftResponse,config:CompanyFiscalConfig):Promise<EmissionResult> {
+    const pausas=focusPausasConsultaMs();
+    if(!pausas.length)return this.consultar(userId,draft,config);
+    let res:EmissionResult|null=null;
+    for(const ms of pausas) {
+      await new Promise(resolve=>setTimeout(resolve,ms));
+      res=await this.consultar(userId,draft,config);
+      if(!res.emAndamento)break;
+    }
+    return res!;
+  }
+  /**
+   * Nota AUTHORIZED pela V2 cuja pós-autorização (XML/DANFE/auditoria AUTORIZADA) não concluiu:
+   * refaz o hook. A marca de conclusão é o evento AUTORIZADA, gravado no fim de handleAuthorized.
+   */
+  private async completarPosAutorizacao(userId:string,id:string,config:CompanyFiscalConfig):Promise<void> {
+    try {
+      const r=await this.numeros.reservaViva(userId,id);
+      if(!r || r.estado!=="AUTORIZADO")return;
+      const feito=await prisma.$queryRawUnsafe<Array<{x:number}>>(`SELECT 1 AS x FROM "NfeAuditLog" WHERE "nfeId"=$1 AND "userId"=$2 AND "evento"='AUTORIZADA' LIMIT 1`,id,userId);
+      if(feito.length)return;
+      const d=await this.repo.findNfeById(userId,id);
+      if(!d || d.status!=="AUTHORIZED" || !d.chaveAcesso)return;
+      const row=(await prisma.$queryRawUnsafe<Array<{protocoloAutorizacao:string|null;dataAutorizacao:Date|null}>>('SELECT "protocoloAutorizacao","dataAutorizacao" FROM "NfeEmitida" WHERE "id"=$1 AND "userId"=$2',id,userId))[0];
+      const focusRef=config.providerName==="SEFAZ_DIRECT"?null:await this.numeros.focusRefAutorizada(userId,id);
+      const result={classificacao:{classe:"AUTORIZADA",estadoAlvo:"AUTORIZADO",acao:"NENHUMA",cStat:100,codigoProvedor:null,conclusiva:true,chaveReferida:null,retryAposMs:null,mensagem:"NF-e autorizada"},chaveAcesso:d.chaveAcesso,protocolo:row?.protocoloAutorizacao??null,dataAutorizacao:row?.dataAutorizacao??undefined} as unknown as ResultadoFiscal;
+      await this.hooks.autorizado(d,config,result,null,focusRef);
+    } catch(error) {
+      logNumeracao("pos_autorizacao_pendente",{userId,nfeId:id,motivo:error instanceof Error?error.message.slice(0,200):"erro"},"error");
+    }
   }
   private async registrarFocus(r:Reserva,t:Tentativa,result:ResultadoFiscal,c:CompanyFiscalConfig,consulta:boolean):Promise<Reserva> {
     if(result.classificacao.estadoAlvo==="AUTORIZADO") {
@@ -172,11 +225,20 @@ export class NfeEmissaoV2Orchestrator {
     return consulta?this.numeros.registrarConsulta(r,t,result):this.numeros.registrarResposta(r,t,result);
   }
   private async finalizar(userId:string,draft:NfeDraftResponse,c:CompanyFiscalConfig,result:ResultadoFiscal,xml:string|null,focusRef?:string|null):Promise<EmissionResult> {
-    const atual=await this.repo.findDraftById(userId,draft.id);if(!atual)throw new Error("Nota não encontrada");
+    // A linha já foi gravada AUTHORIZED por registrarResposta/registrarConsulta.
+    const atual=await this.repo.findNfeById(userId,draft.id);if(!atual)throw new Error("Nota não encontrada");
     const real=partesDaChave(result.chaveAcesso);
+    // A NF-e já está autorizada (commit feito): falha aqui não desfaz nada, fica marcada e é refeita
+    // na próxima consulta/replay (completarPosAutorizacao).
+    let pendente=false;
     try{await this.hooks.autorizado({...atual,...(real?{numero:Number(real.nNF),serie:Number(real.serie)}:{})},c,result,xml,focusRef);}
-    catch{logNumeracao("pos_autorizacao_pendente",{userId,nfeId:draft.id},"error");}
+    catch(error){
+      pendente=true;
+      const motivo=error instanceof Error?error.message.slice(0,200):"erro";
+      logNumeracao("pos_autorizacao_pendente",{userId,nfeId:draft.id,motivo},"error");
+      try{await this.repo.addAuditLog(draft.id,userId,"POS_AUTORIZACAO_PENDENTE",{motivo});}catch{/* a marca durável é a ausência do evento AUTORIZADA */}
+    }
     if(atual.finalidade==="DEVOLUCAO" && isDevolucaoAtiva(c.id))try{await new NfeDevolucaoUseCase().registrarAutorizacao(userId,draft.id);}catch{logNumeracao("devolucao_pos_autorizacao_pendente",{userId,nfeId:draft.id},"error");}
-    return this.resposta(userId,draft.id,"NF-e autorizada");
+    return this.resposta(userId,draft.id,pendente?"NF-e autorizada — XML/DANFE pendentes; use Consultar situação para concluir":"NF-e autorizada");
   }
 }

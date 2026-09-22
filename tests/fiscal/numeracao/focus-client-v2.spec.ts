@@ -95,14 +95,14 @@ describe("FocusNfeV2Client — requisição", () => {
     await c.emitir({}, "ref-1", TOKEN);
     await c.consultar("ref-1", TOKEN);
     expect(chamadas[0].url).toBe("https://api.focusnfe.com.br/v2/nfce?ref=ref-1");
-    expect(chamadas[1].url).toBe("https://api.focusnfe.com.br/v2/nfce/ref-1?completa=0");
+    expect(chamadas[1].url).toBe("https://api.focusnfe.com.br/v2/nfce/ref-1?completa=1");
   });
 
-  it("GET /v2/nfe/{ref}?completa=0 sem corpo e sem Content-Type", async () => {
+  it("GET /v2/nfe/{ref}?completa=1 sem corpo e sem Content-Type", async () => {
     const { c, chamadas } = cliente(() => json(200, { status: "autorizado" }));
     await c.consultar("nfe/1", TOKEN);
     const [{ url, init }] = chamadas;
-    expect(url).toBe("https://homologacao.focusnfe.com.br/v2/nfe/nfe%2F1?completa=0");
+    expect(url).toBe("https://homologacao.focusnfe.com.br/v2/nfe/nfe%2F1?completa=1");
     expect(init.method).toBe("GET");
     expect(init.body).toBeUndefined();
     expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();

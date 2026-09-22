@@ -67,6 +67,9 @@ export class NfeNumeracaoService {
         const decisao = decidirAdocaoLegado({ row: { ...c.row, cStatRejeicao: c.row.cStatRejeicao }, providerName: c.providerName, trilha,
           proximoNumero: seq.proximoNumero, ocupacao: await tx.ocupacao(c, c.row.numero) });
         if (decisao.adotar) {
+          // Adota a linha legada (contador ainda com companyFiscalConfigId NULL) na MESMA transação,
+          // como o V1 faz: sem isso um lockSequencia posterior sem isDefault criaria uma sequência-sombra em 1.
+          await tx.avancarContador(seq.id, c.key.cfc, seq.proximoNumero);
           const adotada = await tx.inserirReserva(this.novaReserva(c, c.row.numero, decisao.estado, "LEGADO_V1"));
           await tx.gravarNumero(c, adotada.numero);
           return { ...adotada, origemDecisao: "ADOCAO_LEGADO" };
@@ -113,7 +116,7 @@ export class NfeNumeracaoService {
       const reserva = await tx.transicionar(atual, "EM_TRANSMISSAO", { leaseAte: new Date(agora.getTime() + leaseMs), provedorUltimo: dados.provedor });
       const tentativa = await tx.inserirTentativa({ ...dados, reservaId: r.id, nfeId: r.nfeId!, userId: r.userId, seq: (ts[0]?.seq ?? 0) + 1,
         ambiente: r.ambiente, cNF: r.cNF, transmitidaEm: agora });
-      await tx.atualizarNota(r.userId, r.nfeId!, ["VALIDATING", "SIGNING"], { status: "SENDING", chaveAcesso: dados.chaveAcesso });
+      await tx.atualizarNota(r.userId, r.nfeId!, ["VALIDATING", "SIGNING"], { status: "SENDING", chaveAcesso: dados.chaveAcesso, dataEmissao: dados.dhEmi ?? undefined });
       return { reserva, tentativa };
     });
   }
@@ -142,7 +145,8 @@ export class NfeNumeracaoService {
       if (!t || t.fase === "FECHADA" || (!consulta && ts[0]?.id !== t.id)) concorrencia();
       const cls = resultado.classificacao;
       const alvo = cls.estadoAlvo ?? "INCERTO";
-      if (alvo === "AUTORIZADO" && (!resultado.protocolo || !/^\d{44}$/.test(resultado.chaveAcesso ?? ""))) {
+      // Focus: "autorizado" + chave de 44 dígitos é a prova (o 201 e a consulta simples vêm sem protocolo).
+      if (alvo === "AUTORIZADO" && (!/^\d{44}$/.test(resultado.chaveAcesso ?? "") || (!resultado.protocolo && t.provedor !== "FOCUS_NFE"))) {
         throw new NumeracaoError("AUTORIZACAO_SEM_PROVA", 409, "Autorização sem chave ou protocolo — consulte a situação");
       }
       if ((alvo === "REJEITADO" || alvo === "RESERVADO") && ts.some(x => x.id !== t.id && x.fase !== "FECHADA")) concorrencia();
@@ -156,7 +160,7 @@ export class NfeNumeracaoService {
         respondidaEm: consulta ? t.respondidaEm : agora, consultadaEm: consulta ? agora : t.consultadaEm });
       if (alvo === "AUTORIZADO") {
         await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "AUTHORIZED", chaveAcesso: resultado.chaveAcesso,
-          protocoloAutorizacao: resultado.protocolo, dataAutorizacao: resultado.dataAutorizacao ?? agora, xmlAssinadoPath: t.xmlAssinadoPath });
+          protocoloAutorizacao: resultado.protocolo ?? null, dataAutorizacao: resultado.dataAutorizacao ?? agora, xmlAssinadoPath: t.xmlAssinadoPath });
       } else if (alvo !== "INCERTO" && alvo !== "BLOQUEADO") {
         await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "REJECTED", motivoRejeicao: cls.mensagem, cStatRejeicao: cls.cStat });
       }
@@ -167,7 +171,11 @@ export class NfeNumeracaoService {
   /** Records a consultation; an absence closes ONLY this mature attempt. */
   async registrarConsulta(r: Reserva, tentativa: Tentativa, resultado: ResultadoFiscal): Promise<Reserva> {
     const cls = resultado.classificacao;
-    if (cls.estadoAlvo && ["AUTORIZADO", "DENEGADO", "INUTILIZADO", "CONSUMIDO_EXTERNO", "BLOQUEADO"].includes(cls.estadoAlvo)) {
+    // Focus 55 (e SEFAZ em modo recibo) é assíncrona: a rejeição da tentativa chega pela consulta.
+    // Resultado conclusivo com alvo REJEITADO/RESERVADO (rejeição, 108/109, 656, erro do provedor)
+    // é aplicado como resposta da tentativa, com motivo e cStat reais. "Não consta" segue abaixo.
+    const conclusivoDaTentativa = cls.conclusiva && cls.classe !== "NAO_CONSTA" && (cls.estadoAlvo === "REJEITADO" || cls.estadoAlvo === "RESERVADO");
+    if (cls.estadoAlvo && (conclusivoDaTentativa || ["AUTORIZADO", "DENEGADO", "INUTILIZADO", "CONSUMIDO_EXTERNO", "BLOQUEADO"].includes(cls.estadoAlvo))) {
       return this.aplicarResultado(r, tentativa, resultado, true);
     }
     return this.repo.transaction(async tx => {
@@ -213,7 +221,7 @@ export class NfeNumeracaoService {
   }
   /** Authorization and Focus's actual fiscal identity are committed together. */
   async registrarReadbackFocus(r:Reserva,t:Tentativa,result:ResultadoFiscal,real:{numero:number;serie:number},isDefault:boolean):Promise<Reserva> {
-    if(!result.protocolo || !result.chaveAcesso)throw new NumeracaoError("AUTORIZACAO_SEM_PROVA",409,"Autorização sem prova");
+    if(!result.chaveAcesso)throw new NumeracaoError("AUTORIZACAO_SEM_PROVA",409,"Autorização sem prova");
     return this.repo.transaction(async tx=>{
       const key={...chaveDaReserva(r),serie:real.serie};
       const keys=[chaveDaReserva(r),key].filter((k,i,all)=>all.findIndex(x=>chaveOrdenavel(x)===chaveOrdenavel(k))===i).sort((a,b)=>chaveOrdenavel(a).localeCompare(chaveOrdenavel(b)));
@@ -236,7 +244,7 @@ export class NfeNumeracaoService {
         autorizada=await tx.inserirReserva({userId:r.userId,companyFiscalConfigId:r.companyFiscalConfigId,ambiente:r.ambiente,modelo:r.modelo,serie:real.serie,numero:real.numero,nfeId:r.nfeId,estado:"AUTORIZADO",origem:"READBACK_FOCUS",cNF:result.chaveAcesso!.slice(35,43)});
       }
       await tx.avancarContador(seq!.id,key.cfc,real.numero+1);
-      await tx.atualizarNota(r.userId,t.nfeId,["SENDING"],{status:"AUTHORIZED",chaveAcesso:result.chaveAcesso,protocoloAutorizacao:result.protocolo,dataAutorizacao:result.dataAutorizacao??this.agora()});
+      await tx.atualizarNota(r.userId,t.nfeId,["SENDING"],{status:"AUTHORIZED",chaveAcesso:result.chaveAcesso,protocoloAutorizacao:result.protocolo??null,dataAutorizacao:result.dataAutorizacao??this.agora()});
       if(tx.sql) {
         await tx.sql.$executeRawUnsafe('SAVEPOINT focus_numero');
         try{await tx.atualizarNota(r.userId,t.nfeId,["AUTHORIZED"],{status:"AUTHORIZED",numero:real.numero,serie:real.serie});}
@@ -300,13 +308,13 @@ export class NfeNumeracaoService {
       if (r.id === reserva.id && ts.some(t => t.focusRef)) return ts.find(t => t.focusRef)!.focusRef!;
     }
     for (const r of await this.repo.reservas(userId, nfeId)) {
-      if ((await this.repo.tentativas(userId, r.id)).some(t => t.focusRef === nfeId)) return `${nfeId}-n${reserva.numero}`;
+      if ((await this.repo.tentativas(userId, r.id)).some(t => t.focusRef === nfeId)) return `${nfeId}n${reserva.numero}`;
     }
     return nfeId;
   }
   async focusRefAutorizada(userId: string, nfeId: string): Promise<string | null> {
     for (const r of await this.repo.reservas(userId, nfeId)) {
-      const t = (await this.repo.tentativas(userId, r.id)).find(x => x.fase === "FECHADA" && x.classe === "AUTORIZADA" && x.protocolo && x.focusRef);
+      const t = (await this.repo.tentativas(userId, r.id)).find(x => x.fase === "FECHADA" && x.classe === "AUTORIZADA" && x.focusRef);
       if (t) return t.focusRef;
     }
     return null;

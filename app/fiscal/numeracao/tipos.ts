@@ -117,6 +117,8 @@ export interface FocusV2Corpo {
   serie?: string | number | null;
   protocolo?: string | null;
   protocolo_sefaz?: string | null;
+  /** `protocolo_nota_fiscal.data_recebimento` da consulta completa (ISO com fuso). */
+  data_recebimento?: string | null;
   data_evento?: string | null;
   caminho_xml_nota_fiscal?: string | null;
   erros?: Array<{ mensagem?: string; campo?: string; codigo?: string }>;

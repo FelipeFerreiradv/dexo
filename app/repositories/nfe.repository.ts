@@ -334,6 +334,22 @@ export class NfeRepository {
     return row ? toDraftResponse(row) : null;
   }
 
+  /**
+   * Nota do tenant em QUALQUER status. A numeração V2 precisa dela: depois de
+   * autorizar a linha já está AUTHORIZED, e uma nota INCERTO fica SENDING —
+   * findDraftById (DRAFT/REJECTED) devolveria null nos dois casos.
+   */
+  async findNfeById(
+    userId: string,
+    id: string,
+  ): Promise<NfeDraftResponse | null> {
+    const row = await (prisma as any).nfeEmitida.findFirst({
+      where: { id, userId },
+      include: { itens: { orderBy: { numero: "asc" } } },
+    });
+    return row ? toDraftResponse(row) : null;
+  }
+
   async updateDraft(
     userId: string,
     id: string,

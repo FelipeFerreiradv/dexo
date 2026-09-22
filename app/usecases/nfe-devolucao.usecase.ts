@@ -94,10 +94,14 @@ export class NfeDevolucaoUseCase {
       saldos.push(...calcularSaldoPorItem({itensOriginais:origem.itens.map(i=>({nItem:i.nItem,quantidade:i.quantidade||null})),linhas,chave:origem.chaveAcesso,excluirDevolucaoNfeId:n.id}).map(s=>({...s,chaveAcesso:origem.chaveAcesso})));
     }
     const originais=await (db??this.repo.db).$queryRawUnsafe<Array<{chaveAcesso:string;status:string;ambiente:string}>>(`SELECT regexp_replace("chaveAcesso",'[^0-9]','','g') AS "chaveAcesso","status","ambiente" FROM "NfeEmitida" WHERE "userId"=$1 AND regexp_replace("chaveAcesso",'[^0-9]','','g')=ANY($2::text[])`,h.userId,h.origensJson.map(o=>o.chaveAcesso));
-    const issues=validarDevolucao({cabecalho:h,nota:{...n,destinatarioCpfCnpj:n.destinatarioJson?.cpfCnpj},emitente:{cnpj:config.cnpj,crt:crtDeRegime(config.regimeTributario)},itens:n.itens,
+    // Ambiente de EMISSÃO = o da config atual (o orquestrador monta a chave fiscal com ele),
+    // não o da linha (ambiente de criação do rascunho): rascunho criado em homologação e
+    // emitido depois da troca para produção cai em AMBIENTE_DIVERGENTE.
+    const ambienteEmissao=config.ambiente;
+    const issues=validarDevolucao({cabecalho:h,nota:{...n,ambiente:ambienteEmissao,destinatarioCpfCnpj:n.destinatarioJson?.cpfCnpj},emitente:{cnpj:config.cnpj,crt:crtDeRegime(config.regimeTributario)},itens:n.itens,
       refs:d.refs.map(r=>({...r,chaveAcesso:r.chaveAcessoOriginal,nItem:r.nItemOriginal})),saldos,originais,idDestOriginal:h.origensJson[0]?.idDest});
     return {draftId:n.id,status:n.status,tipo:h.tipo,fonte:h.fonte,escopo:h.escopoSolicitado,devolvidaAposEntrega:h.devolvidaAposEntrega,confirmadoSemXml:h.confirmadoSemXml,indFinal:h.indFinal,
-      modoReferencia:modoReferenciaDevolucao(n.ambiente,new Date(),devolucaoRefItemProdDesde()),
+      modoReferencia:modoReferenciaDevolucao(ambienteEmissao,new Date(),devolucaoRefItemProdDesde()),
       originais:h.origensJson.map(o=>({...o,destinatarioNome:null})),issues,podeEmitir:!temBloqueio(issues),
       itens:d.refs.map(r=>{
         const item=n.itens.find(i=>i.numero===r.ordem);const s=saldos.find(s=>s.chaveAcesso===r.chaveAcessoOriginal && s.nItem===r.nItemOriginal);

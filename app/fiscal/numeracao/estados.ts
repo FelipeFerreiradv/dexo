@@ -8,8 +8,11 @@
  * Proibidas de propósito (e cobertas por teste):
  *  - INCERTO/EM_TRANSMISSAO → ABANDONADO: número que pode estar autorizado na
  *    SEFAZ nunca é descartado; primeiro se consulta.
- *  - INCERTO → REJEITADO: rejeição é resposta a uma tentativa NOVA, que precisa
- *    passar por EM_TRANSMISSAO.
+ *
+ * INCERTO → REJEITADO é permitido: na Focus (NF-e 55 assíncrona) e na SEFAZ em
+ * modo recibo a rejeição da MESMA tentativa só chega pela consulta, com a
+ * reserva já INCERTO. O serviço só aplica essa transição com a tentativa aberta
+ * que a consulta leu (registrarConsulta → aplicarResultado).
  *
  * Módulo PURO.
  */
@@ -62,6 +65,7 @@ export const TRANSICOES: Readonly<Record<EstadoReserva, readonly EstadoReserva[]
   ],
   INCERTO: [
     "AUTORIZADO",
+    "REJEITADO",
     "RESERVADO",
     "DENEGADO",
     "INUTILIZADO",

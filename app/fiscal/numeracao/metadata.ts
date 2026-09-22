@@ -17,6 +17,16 @@ export async function attachNumeracao<T extends {id:string;companyFiscalConfigId
     return {...d,numeracao:r?{estado:r.estado,numero:r.numero,serie:r.serie,ambiente:r.ambiente,companyFiscalConfigId:r.companyFiscalConfigId,reutilizavel:["RESERVADO","REJEITADO"].includes(r.estado)}:null};
   }catch(e){if(tabelaFiscalAusente(e))return d;throw e;}
 }
+/**
+ * Reservas da config com envio sem desfecho (EM_TRANSMISSAO/INCERTO): a consulta delas
+ * usa o token/ambiente ATUAIS da config. Global desligado ⇒ [] sem consulta (I8);
+ * tabela ausente ⇒ [] (sem guarda).
+ */
+export async function reservasPendentesDaConfig(userId:string,cfcId:string):Promise<Array<{numero:number;serie:number;ambiente:string;modelo:string;estado:string}>> {
+  if(process.env.NFE_NUMERACAO_V2_ENABLED!=="true")return [];
+  try{return await prisma.$queryRawUnsafe(`SELECT "numero","serie","ambiente","modelo","estado" FROM "NfeNumeroReserva" WHERE "userId"=$1 AND "companyFiscalConfigId"=$2 AND "estado" IN ('EM_TRANSMISSAO','INCERTO') ORDER BY "ambiente","modelo","serie","numero" LIMIT 20`,userId,cfcId);}
+  catch(e){if(tabelaFiscalAusente(e))return [];throw e;}
+}
 export async function attachFiscalLista<T extends {id:string;companyFiscalConfigId?:string|null;modelo?:string}>(userId:string,notas:T[]):Promise<T[]> {
   if(!notas.length || (process.env.NFE_NUMERACAO_V2_ENABLED!=="true" && process.env.NFE_DEVOLUCAO_ENABLED!=="true"))return notas;
   const configs=await prisma.$queryRawUnsafe<Array<{id:string;providerName:string;isDefault:boolean}>>('SELECT "id","providerName","isDefault" FROM "CompanyFiscalConfig" WHERE "userId"=$1',userId);
