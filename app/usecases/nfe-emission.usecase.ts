@@ -548,6 +548,23 @@ export class NfeEmissionUseCase {
         }
 
         // Ainda pendente — manter SENDING. NUNCA voltar para DRAFT apos envio.
+        //
+        // Registra o que o provedor e a consulta responderam. Sem isso a nota fica
+        // SENDING sem NENHUMA evidencia (auditoria em branco): em 22/09/2026, 20 notas
+        // de producao so tiveram o desfecho descoberto consultando a chave na SEFAZ —
+        // todas eram duplicidade (539/613) por contador abaixo da numeracao real.
+        await this.nfeRepo.addAuditLog(nfeId, userId, "ENVIO_PENDENTE", {
+          mensagem:
+            "Envio aceito e consulta sem desfecho — nota mantida em SENDING para reconciliacao",
+          providerName: provider?.name ?? config.providerName ?? null,
+          envioCStat: providerResult.codigoStatus ?? null,
+          envioMensagem: String(providerResult.mensagem ?? "").slice(0, 300),
+          consultaStatus: consultaResult.status ?? null,
+          consultaCStat: consultaResult.codigoStatus ?? null,
+          consultaMensagem: String(consultaResult.mensagem ?? "").slice(0, 300),
+          chaveAcesso:
+            consultaResult.chaveAcesso ?? providerResult.chaveAcesso ?? null,
+        });
         return this.pendingResult(
           nfeId,
           numero,
