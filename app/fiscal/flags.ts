@@ -213,6 +213,21 @@ export function focusGetTimeoutMs(env: FiscalEnv = process.env): number {
   return inteiroPositivo(env, "FOCUS_V2_GET_TIMEOUT_MS", 15_000);
 }
 
+/**
+ * Pausas (ms) entre as consultas curtas que a V2 faz depois do 202 da Focus (NF-e 55
+ * assíncrona), antes de responder "em andamento". `NFE_NUMERACAO_V2_FOCUS_PAUSAS_MS`
+ * (lista separada por vírgula; "0" desliga ⇒ uma consulta imediata). Padrão 2s, 3s, 4s,
+ * na ordem do polling do V1 (3 × 3s).
+ */
+export function focusPausasConsultaMs(env: FiscalEnv = process.env): number[] {
+  const raw = (env.NFE_NUMERACAO_V2_FOCUS_PAUSAS_MS ?? "").trim();
+  if (!raw) return [2_000, 3_000, 4_000];
+  if (raw === "0") return [];
+  const pausas = raw.split(",").map((p) => p.trim());
+  if (!pausas.every((p) => INTEIRO_POSITIVO.test(p))) return [2_000, 3_000, 4_000];
+  return pausas.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0 && n <= 30_000).slice(0, 5);
+}
+
 /** L1: janela em que o MESMO conteúdo rejeitado não é retransmitido. `NFE_NUMERACAO_V2_COOLDOWN_REPETICAO_MS`. */
 export function cooldownRepeticaoMs(env: FiscalEnv = process.env): number {
   return inteiroPositivo(env, "NFE_NUMERACAO_V2_COOLDOWN_REPETICAO_MS", 60_000);

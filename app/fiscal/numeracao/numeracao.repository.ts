@@ -10,7 +10,7 @@ export type { INfeNumeracaoRepository } from "./persistencia";
 type SqlClient = Pick<Prisma.TransactionClient, "$queryRawUnsafe"|"$executeRawUnsafe">;
 const RESERVA_COLUNAS = ["motivo", "requerInutilizacao", "bloqueadoAte", "leaseAte", "consumidoEm", "provedorUltimo", "ultimaClasse", "ultimoCStat", "ultimoCodigoProvedor"];
 const TENTATIVA_COLUNAS = ["fase", "httpStatus", "transporte", "cStat", "codigoProvedor", "classe", "prova", "mensagem", "protocolo", "numeroLido", "serieLida", "nRec", "respondidaEm", "consultadaEm"];
-const NOTA_COLUNAS = ["status", "motivoRejeicao", "cStatRejeicao", "chaveAcesso", "protocoloAutorizacao", "dataAutorizacao", "xmlAssinadoPath", "numero", "serie"];
+const NOTA_COLUNAS = ["status", "motivoRejeicao", "cStatRejeicao", "chaveAcesso", "protocoloAutorizacao", "dataAutorizacao", "dataEmissao", "xmlAssinadoPath", "numero", "serie"];
 
 /** Identificadores vêm exclusivamente destas allowlists; valores sempre são parâmetros. */
 function setters(patch: object, allowed: readonly string[], values: unknown[]): string[] {

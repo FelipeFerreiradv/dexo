@@ -57,12 +57,17 @@ import { NfeStatusBadge } from "./nfe-status-badge";
 import { DevolucaoActions } from "./devolucao-actions";
 import { DevolucaoManual } from "./devolucao-manual";
 import { NumeracaoActions, type NumeracaoView } from "./numeracao-actions";
+import {
+  mostrarTentarNovamente,
+  rotuloTentarNovamente,
+} from "../lib/nfe-numeracao-ui";
 import { NfeDetailSheet } from "./nfe-detail-sheet";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
 
 // Feature flag: botão "Tentar novamente" em notas rejeitadas reaproveitáveis.
 // Com a flag off, nenhum botão novo aparece — comportamento atual da lista.
+// Só vale para linha V1: linha V2 (com `numeracao`) decide pelo servidor.
 const REEMISSAO_REJEITADA_ENABLED =
   process.env.NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED === "true";
 
@@ -789,9 +794,11 @@ export function NfeList() {
                                 <Ban className="size-4" />
                               </Button>
                             )}
-                            {REEMISSAO_REJEITADA_ENABLED &&
-                              nota.status === "REJECTED" &&
-                              nota.reaproveitavel && (
+                            {/* Linha V2 (tem `numeracao`): decide por numeracao.reutilizavel; linha V1: flag + cStat, como antes. */}
+                            {mostrarTentarNovamente(
+                              nota,
+                              REEMISSAO_REJEITADA_ENABLED,
+                            ) && (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
                                     <Button
@@ -808,8 +815,7 @@ export function NfeList() {
                                     </Button>
                                   </TooltipTrigger>
                                   <TooltipContent>
-                                    Tentar novamente — reaproveita o nº{" "}
-                                    {nota.serie}/{nota.numero}
+                                    {rotuloTentarNovamente(nota)}
                                   </TooltipContent>
                                 </Tooltip>
                               )}

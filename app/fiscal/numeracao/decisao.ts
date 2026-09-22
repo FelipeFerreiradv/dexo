@@ -52,6 +52,8 @@ export interface EntradaDecisao {
   viva: ReservaVivaEntrada | null;
   agora: Date;
   leasePreEnvioMs: number;
+  /** `NfeEmitida.numero` (placeholder negativo = nunca numerada). */
+  numero?: number;
 }
 
 export interface DecisaoEntrada {
@@ -129,6 +131,14 @@ export function decidirEntrada(e: EntradaDecisao): DecisaoEntrada {
     }
     if (viva && TRANSMISSAO_ABERTA.has(viva.estado)) return decidirTransmissaoAberta(viva, agora);
     if (viva && CONSUMO_REGISTRADO.has(viva.estado)) return bloqueadaManual(viva.numero);
+    // Sem reserva e nunca numerada (queda entre o claim e a reserva): nada foi transmitido,
+    // então, passado o lease, retoma. Linha antiga numerada (V1) continua intocada (decisão 3).
+    if (!viva && typeof e.numero === "number" && e.numero <= 0) {
+      const idade = ms(agora) - ms(e.updatedAt);
+      if (Number.isFinite(idade) && idade > e.leasePreEnvioMs) {
+        return { acao: "RETOMAR_TRAVADA", mensagem: "Emissão travada antes do envio — retomando" };
+      }
+    }
     // Sem reserva: vencedor entre o claim e a reserva, ou linha antiga travada (decisão 3).
     return { acao: "EM_ANDAMENTO", mensagem: MENSAGEM_EM_ANDAMENTO };
   }

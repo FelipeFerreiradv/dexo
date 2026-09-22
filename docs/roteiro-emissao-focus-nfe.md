@@ -89,4 +89,10 @@ Para atendimento, registrar ID da nota, ambiente, código/mensagem fiscal e hor�
 
 ## Retorno ao estado anterior
 
+**Faça o rollback pela allowlist (`NFE_NUMERACAO_V2_CONFIG_IDS`) ou pela sub-flag Focus, nunca desligando `NFE_NUMERACAO_V2_ENABLED`.** Com o global desligado o ledger deixa de ser consultado (invariante de não tocar o banco fora da V2) e uma nota renumerada pela V2 volta a ser cancelada com a referência errada, o que a Focus recusa.
+
+Depois de tirar a config da allowlist, rascunhos e notas rejeitadas que já tenham número reservado pela V2 respondem 409 `NUMERACAO_EMITENTE_FORA_V2` em vez de emitir pelo V1 (isso é proposital: emitir pelo V1 deixaria o número órfão, e ele travaria a inutilização daquela faixa). Para liberar cada um: reative a V2 para a empresa e emita, ou exclua o rascunho com `?descartarNumero=true`. O mesmo 409 aparece se o emitente da nota for trocado para uma empresa fora da V2.
+
+Trocar ambiente ou token da empresa é bloqueado com 409 enquanto houver nota pendente de consulta (reserva em transmissão ou incerta). Resolva pelo botão **Consultar situação** antes de passar a empresa para produção — a Focus usa um token por ambiente, e a consulta de uma nota de homologação com token de produção só devolve 401.
+
 Retirar a configuração da allowlist interrompe novos despachos V2. Antes disso, reconciliar as notas em andamento e revisar o contador da Focus. Preservar reservas e tentativas; não apagar dados nem liberar legado automaticamente. O rollback de numeração exige conferir o contador interno do fornecedor.

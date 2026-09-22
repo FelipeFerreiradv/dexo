@@ -35,9 +35,12 @@ function setup(providerName:"SEFAZ_DIRECT"|"FOCUS_NFE") {
   const seed=(id:string)=>db.state.notas.set(id,{...base,id,key,numero:-1,status:"DRAFT"});
   const service=new NfeNumeracaoService(db);
   const storage={saveXmlTentativa:async()=>{if(state.failSave)throw new Error("disco");return "/tmp/signed.xml";}} as unknown as FiscalStorageService;
-  const uc=new NfeEmissaoV2Orchestrator({validar:()=>{},snapshot:()=>({}),autorizado:vi.fn(async()=>({} as never))},service,{findDraftById:async(_u:string,id:string)=>draft(id)} as NfeRepository,storage);
+  // Semântica real do NfeRepository: findDraftById só enxerga DRAFT/REJECTED; findNfeById, qualquer status.
+  const repo={findDraftById:async(_u:string,id:string)=>{const d=draft(id);return ["DRAFT","REJECTED"].includes(d.status)?d:null;},findNfeById:async(_u:string,id:string)=>db.state.notas.has(id)?draft(id):null} as unknown as NfeRepository;
+  const autorizado=vi.fn(async()=>({} as never));
+  const uc=new NfeEmissaoV2Orchestrator({validar:()=>{},snapshot:()=>({}),autorizado},service,repo,storage);
   const emit=async(id:string)=>{const n=db.state.notas.get(id)!;const proximo=n.numero>0?n.numero:([...db.state.sequences.values()][0]?.proximoNumero??((db.state.pisos.values().next().value??0)+1));state.key=chaveToString(montarChave({uf:"SP",ano:2026,mes:9,cnpj:config.cnpj,modelo:"55",serie:1,numero:proximo,tpEmis:1,cNF:"87654321"}));return uc.emitir(config.userId,draft(id),config);};
-  return {db,config,service,uc,draft,seed,emit};
+  return {db,config,service,uc,draft,seed,emit,autorizado};
 }
 beforeEach(()=>{state.code=100;state.calls=[];state.consulta=217;state.failPrepare=false;state.failSave=false;state.claimLose=false;vi.stubEnv("NFE_DEVOLUCAO_ENABLED","false");});
 afterEach(()=>{vi.unstubAllEnvs();});
@@ -54,6 +57,18 @@ describe.each(["SEFAZ_DIRECT","FOCUS_NFE"] as const)("orquestração %s",provide
     const w=setup(provider);w.seed("a");await Promise.all([w.emit("a"),w.emit("a")]);expect(state.calls).toHaveLength(1);
   });
   it("replay autorizado não transmite",async()=>{const w=setup(provider);w.seed("a");await w.emit("a");await w.emit("a");expect(state.calls).toHaveLength(1);});
+  it("autorização chega ao pós-autorização (XML/DANFE) e responde sucesso com a nota já AUTHORIZED",async()=>{
+    const w=setup(provider);w.seed("a");
+    const r=await w.emit("a");
+    expect(w.db.state.notas.get("a")?.status).toBe("AUTHORIZED");
+    expect(r).toMatchObject({success:true,status:"AUTHORIZED",numero:1});
+    expect(w.autorizado).toHaveBeenCalledTimes(1);
+  });
+  it("replay de nota AUTHORIZED responde a autorização sem erro",async()=>{
+    const w=setup(provider);w.seed("a");await w.emit("a");
+    await expect(w.emit("a")).resolves.toMatchObject({success:true,status:"AUTHORIZED"});
+    expect(w.autorizado).toHaveBeenCalledTimes(1);
+  });
   it("repetição sem correção é bloqueada antes do claim",async()=>{const w=setup(provider);w.seed("a");state.code=974;await w.emit("a");await expect(w.emit("a")).rejects.toMatchObject({code:"NUMERACAO_REPETICAO"});expect(state.calls).toHaveLength(1);});
 });
 it("falha local ou de armazenamento não cria tentativa nem transmite",async()=>{
@@ -61,8 +76,12 @@ it("falha local ou de armazenamento não cria tentativa nem transmite",async()=>
   expect(state.calls).toHaveLength(0);
 });
 it("timeout bloqueia reenvio até consulta madura; mantém o número",async()=>{
-  const w=setup("SEFAZ_DIRECT");w.seed("a");state.code=0;await w.emit("a");expect((await w.service.reservaViva(w.config.userId,"a"))?.estado).toBe("INCERTO");
-  await w.emit("a");expect(state.calls).toHaveLength(1);
+  const w=setup("SEFAZ_DIRECT");w.seed("a");state.code=0;
+  // A nota fica SENDING: a resposta tem de ser "em andamento", nunca 404/erro.
+  expect(await w.emit("a")).toMatchObject({success:false,status:"SENDING",emAndamento:true,numeracao:{estado:"INCERTO",numero:1}});
+  expect((await w.service.reservaViva(w.config.userId,"a"))?.estado).toBe("INCERTO");
+  expect(await w.emit("a")).toMatchObject({status:"SENDING",emAndamento:true});expect(state.calls).toHaveLength(1);
+  expect(await w.uc.consultar(w.config.userId,w.draft("a"),w.config)).toMatchObject({status:"SENDING",emAndamento:true});
   for(const t of w.db.state.tentativas.values())t.transmitidaEm=new Date(Date.now()-1000000);
   await w.uc.consultar(w.config.userId,w.draft("a"),w.config);
   expect((await w.service.reservaViva(w.config.userId,"a"))?.estado).toBe("RESERVADO");expect(state.calls).toHaveLength(1);

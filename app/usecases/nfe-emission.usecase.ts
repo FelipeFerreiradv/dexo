@@ -62,7 +62,8 @@ export interface EmissionResult {
   chaveAcesso: string | null;
   protocolo: string | null;
   mensagem: string;
-  numeracao?: NumeracaoMetadata;
+  /** Só na V2: null quando a nota não tem reserva viva (número consumido ou fora do ledger). */
+  numeracao?: NumeracaoMetadata | null;
   emAndamento?: boolean;
 }
 
@@ -107,9 +108,25 @@ export class NfeEmissionUseCase {
   }
   private async contextoV2(userId:string,nfeId:string) {
     if(process.env.NFE_NUMERACAO_V2_ENABLED!=="true")return null;
-    const draft=await this.nfeRepo.findDraftById(userId,nfeId);if(!draft)return null;
+    // Qualquer status: SENDING/AUTHORIZED de uma config V2 também são da V2 (consulta, replay).
+    const draft=await this.nfeRepo.findNfeById(userId,nfeId);if(!draft)return null;
     const config=draft.companyFiscalConfigId?await this.configRepo.findByIdForUser(draft.companyFiscalConfigId,userId):await this.configRepo.findByUserId(userId);
-    if(!config || !isNumeracaoV2ParaEmissao(config.id,draft.modelo==="65"?"65":"55",config.providerName))return null;
+    if(!config || !isNumeracaoV2ParaEmissao(config.id,draft.modelo==="65"?"65":"55",config.providerName)) {
+      // Config atual fora da V2 (troca de emitente, rollback da allowlist): o LEDGER manda.
+      // Nota com reserva V2 viva não cai no V1 em silêncio (renumeraria e deixaria o nº órfão).
+      // AUTORIZADO/CANCELADO: documento já registrado — segue como antes (V1 recusa / 404).
+      let viva=null;
+      try{viva=await this.v2().numeros.reservaViva(userId,nfeId);}catch(e){if(!tabelaFiscalAusente(e))throw e;}
+      if(viva && !["AUTORIZADO","CANCELADO"].includes(viva.estado)) {
+        const pendente=!["RESERVADO","REJEITADO"].includes(viva.estado);
+        throw new NumeracaoError("NUMERACAO_EMITENTE_FORA_V2",409,
+          `Esta NF-e tem o nº ${viva.numero} (série ${viva.serie}) ${pendente?"em transmissão":"reservado"} pela numeração V2 de outro emitente/configuração. `+
+          (pendente?"Volte o emitente original (ou reative a numeração V2 desta empresa) e use \"Consultar situação\" antes de qualquer outra ação."
+            :"Volte o emitente original (ou reative a numeração V2 desta empresa) para emitir, ou exclua o rascunho para descartar o número."),
+          {numero:viva.numero,serie:viva.serie,estado:viva.estado,companyFiscalConfigId:viva.companyFiscalConfigId});
+      }
+      return null;
+    }
     // Probe before claim. No fallback to V1 is allowed after any V2 mutation.
     try{await this.v2().numeros.reservaViva(userId,nfeId);}catch(e){if(tabelaFiscalAusente(e))return null;throw e;}
     return {draft,config};

@@ -589,11 +589,16 @@ export class NfeDraftUseCase {
       throw new Error("Rascunho não encontrado");
     }
 
-    if(await configNumeracao(userId,existing)) {
+    // Despacho pelo LEDGER: com a V2 ligada (global), reserva viva ⇒ exclusão pela V2
+    // mesmo que a config atual tenha saído da V2 (troca de emitente, rollback da
+    // allowlist) — senão o número fica órfão e trava a inutilização. Mantém a
+    // confirmação em PRODUÇÃO e o requerInutilizacao. Global desligado: nada muda (I8).
+    if(process.env.NFE_NUMERACAO_V2_ENABLED==="true") {
       const service=new NfeNumeracaoService();
       let ddl=true;
-      try{await service.reservaViva(userId,id);}catch(e){if(tabelaFiscalAusente(e))ddl=false;else throw e;}
-      if(ddl){await service.abandonarPorExclusao(userId,id,confirmarDescarte);return;}
+      let viva=null;
+      try{viva=await service.reservaViva(userId,id);}catch(e){if(tabelaFiscalAusente(e))ddl=false;else throw e;}
+      if(ddl && (viva || await configNumeracao(userId,existing))){await service.abandonarPorExclusao(userId,id,confirmarDescarte);return;}
     }
     await this.nfeRepo.deleteDraft(userId, id);
   }

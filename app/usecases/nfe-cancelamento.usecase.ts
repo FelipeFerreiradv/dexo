@@ -4,6 +4,9 @@ import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
 import { NfeDevolucaoRepository } from "../fiscal/devolucao/devolucao.repository";
 import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
 import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
+import { logNumeracao } from "../fiscal/numeracao/log";
+import { FocusNfeV2Client } from "../fiscal/providers/focus-nfe-v2.client";
+import { normalizarChaveAcesso } from "../fiscal/domain/chave-acesso-dv";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import {
@@ -111,12 +114,33 @@ export class NfeCancelamentoUseCase {
           modelo: nfe.modelo === "65" ? "65" : "55",
         });
 
-    let v2=isNumeracaoV2ParaEmissao(config.id,nfe.modelo==="65"?"65":"55",config.providerName);
+    const modelo=nfe.modelo==="65"?"65":"55";
+    let v2=isNumeracaoV2ParaEmissao(config.id,modelo,config.providerName);
     const numeros=new NfeNumeracaoService();
-    if(v2)try{await numeros.reservaViva(userId,nfeId);}catch(e){if(tabelaFiscalAusente(e))v2=false;else throw e;}
+    // Ledger (global ligado): a ref Focus e o CANCELADO vêm da reserva da NOTA, não da
+    // config atual — após rollback da allowlist/sub-flag a nota renumerada (ref `…n<nº>`)
+    // continua cancelável e o ledger não diverge. Global desligado: nenhuma consulta (I8).
+    let ledger=process.env.NFE_NUMERACAO_V2_ENABLED==="true";
+    let viva:Awaited<ReturnType<NfeNumeracaoService["reservaViva"]>>=null;
+    let ref=nfeId;
+    if(ledger)try{
+      viva=await numeros.reservaViva(userId,nfeId);
+      if(!isSefazDirect)ref=(await numeros.focusRefAutorizada(userId,nfeId))??nfeId;
+    }catch(e){if(tabelaFiscalAusente(e)){ledger=false;v2=false;viva=null;ref=nfeId;}else throw e;}
+    // Ramo V2 Focus (config na V2, ou nota com reserva V2 viva pelo ledger): cliente novo,
+    // sucesso só com status "cancelado" + cStat 135/155 — um falso sucesso levaria a reserva
+    // a CANCELADO, estado terminal. Nota legada (sem reserva) fora da V2 e flag global
+    // desligada seguem no provider V1, byte a byte (golden focus-v1-cancelar).
+    const v2Focus=!isSefazDirect && (v2 || !!viva);
     const executeCancel=async():Promise<CancelResult>=>{
-    const result = await provider.cancelar({
-      ref: v2?(await numeros.focusRefAutorizada(userId,nfeId))??nfeId:nfeId,
+    let detalhesFalha:Record<string,unknown>={};
+    const result = v2Focus
+      ? await new FocusNfeV2Client(config.ambiente==="PRODUCAO"?"PRODUCAO":"HOMOLOGACAO",modelo).cancelar(ref,justificativa.trim(),config.providerToken??"").then(r=>{
+          detalhesFalha={cStat:r.cStat,httpStatus:r.httpStatus,transporte:r.transporte,status:r.corpo?.status??null};
+          return {success:r.sucesso,protocolo:r.protocolo,mensagem:r.mensagem};
+        })
+      : await provider.cancelar({
+      ref,
       chaveAcesso: nfe.chaveAcesso,
       protocolo: nfe.protocoloAutorizacao,
       justificativa: justificativa.trim(),
@@ -126,6 +150,7 @@ export class NfeCancelamentoUseCase {
     if (!result.success) {
       await this.nfeRepo.addAuditLog(nfeId, userId, "CANCELAMENTO_REJEITADO", {
         mensagem: result.mensagem,
+        ...(v2Focus?detalhesFalha:{}),
       });
       return {
         success: false,
@@ -153,7 +178,15 @@ export class NfeCancelamentoUseCase {
       justificativa: justificativa.trim(),
       protocolo: result.protocolo,
     });
-    if(v2)await numeros.marcarCancelado(userId,nfeId);
+    // Só reserva AUTORIZADO vira CANCELADO. O cancelamento fiscal já foi efetivado:
+    // falha aqui não pode virar erro para o usuário (a nota já está CANCELLED) — só log.
+    if(ledger && viva && viva.estado!=="CANCELADO") {
+      const campos={userId,nfeId,numero:viva.numero,serie:viva.serie,estado:viva.estado};
+      if(viva.estado==="AUTORIZADO") {
+        try{await numeros.marcarCancelado(userId,nfeId);}
+        catch(e){logNumeracao("cancelamento_ledger_nao_marcado",{...campos,motivo:e instanceof Error?e.message:String(e)},"error");}
+      } else logNumeracao("cancelamento_ledger_divergente",campos,"warn");
+    }
 
     return {
       success: true,
@@ -165,9 +198,12 @@ export class NfeCancelamentoUseCase {
     };
     if(isDevolucaoAtiva(config.id)) {
       const devolucao=new NfeDevolucaoRepository();
+      // A devolução grava a chave da original com 44 dígitos (CHECK ^[0-9]{44}$); a Focus V1
+      // grava "NFe"+44. Lock e saldo usam a normalizada; o provider recebe a chave crua.
+      const chaveOriginal=normalizarChaveAcesso(nfe.chaveAcesso)??nfe.chaveAcesso;
       return prisma.$transaction(async tx=>{
-        await devolucao.lockOrigens(tx,userId,[nfe.chaveAcesso]);
-        const linhas=await devolucao.linhasSaldo(userId,nfe.chaveAcesso,tx);
+        await devolucao.lockOrigens(tx,userId,[chaveOriginal]);
+        const linhas=await devolucao.linhasSaldo(userId,chaveOriginal,tx);
         if(linhas.some(l=>["AUTHORIZED","VALIDATING","SIGNING","SENDING"].includes(l.statusDevolucao)))throw new DevolucaoError("ORIGINAL_COM_DEVOLUCAO");
         return executeCancel();
       },{timeout:600000,maxWait:5000});

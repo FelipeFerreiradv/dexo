@@ -78,7 +78,7 @@ export type NovaReserva = Pick<Reserva, "userId" | "companyFiscalConfigId" | "am
 export type ReservaPatch = Partial<Pick<Reserva, "motivo" | "requerInutilizacao" | "bloqueadoAte" | "leaseAte" | "consumidoEm" | "provedorUltimo" | "ultimaClasse" | "ultimoCStat" | "ultimoCodigoProvedor">>;
 export type TentativaPatch = Partial<Pick<Tentativa, "fase" | "httpStatus" | "transporte" | "cStat" | "codigoProvedor" | "classe" | "prova" | "mensagem" | "protocolo" | "numeroLido" | "serieLida" | "nRec" | "respondidaEm" | "consultadaEm">>;
 export type NovaTentativa = Pick<Tentativa, "reservaId" | "nfeId" | "userId" | "seq" | "provedor" | "ambiente" | "chaveAcesso" | "cNF" | "dhEmi" | "digestValue" | "xmlAssinadoPath" | "conteudoSha256" | "focusRef" | "transmitidaEm">;
-export type NotaPatch = { status: string; motivoRejeicao?: string | null; cStatRejeicao?: number | null; chaveAcesso?: string | null; protocoloAutorizacao?: string | null; dataAutorizacao?: Date; xmlAssinadoPath?: string | null; numero?: number; serie?: number };
+export type NotaPatch = { status: string; motivoRejeicao?: string | null; cStatRejeicao?: number | null; chaveAcesso?: string | null; protocoloAutorizacao?: string | null; dataAutorizacao?: Date; dataEmissao?: Date; xmlAssinadoPath?: string | null; numero?: number; serie?: number };
 export interface Sequencia { id: string; proximoNumero: number }
 export interface Ocupacao { emNota: boolean; inutilizado: boolean; reservado: boolean }
 

@@ -52,6 +52,19 @@ export type FocusV2InutilizacaoResposta = FocusV2Resposta & {
   protocolo: string | null;
 };
 
+/** cStat do evento de cancelamento homologado: 135 (no prazo) e 155 (fora do prazo). */
+const CSTAT_CANCELAMENTO_OK: readonly number[] = [135, 155];
+
+export type FocusV2CancelamentoResposta = FocusV2Resposta & {
+  /** Só com HTTP 200, `status === "cancelado"` E cStat 135/155. */
+  sucesso: boolean;
+  protocolo: string | null;
+  /** `status_sefaz` normalizado (null quando ausente/não numérico). */
+  cStat: number | null;
+  /** Texto para o usuário/auditoria (nunca contém o token). */
+  mensagem: string;
+};
+
 export class FocusNfeV2Client {
   private readonly baseUrl: string;
   private readonly path: "nfe" | "nfce";
@@ -88,9 +101,14 @@ export class FocusNfeV2Client {
     return this.requisitar(url, "POST", token, payload, this.postTimeoutMs);
   }
 
-  /** GET /v2/{nfe|nfce}/{ref}?completa=0 — situação da ref. Nunca lança. */
+  /**
+   * GET /v2/{nfe|nfce}/{ref}?completa=1 — situação da ref. Nunca lança.
+   * `completa=1` porque só assim a Focus devolve o protocolo de autorização
+   * (`protocolo` / `protocolo_nota_fiscal.numero_protocolo`) e a data de
+   * recebimento; com `completa=0` a autorização vem sem protocolo.
+   */
   async consultar(ref: string, token: string): Promise<FocusV2Resposta> {
-    const url = `${this.baseUrl}/v2/${this.path}/${encodeURIComponent(ref)}?completa=0`;
+    const url = `${this.baseUrl}/v2/${this.path}/${encodeURIComponent(ref)}?completa=1`;
     return this.requisitar(url, "GET", token, undefined, this.getTimeoutMs);
   }
 
@@ -129,9 +147,64 @@ export class FocusNfeV2Client {
     };
   }
 
+  /**
+   * DELETE /v2/{nfe|nfce}/{ref} — cancelamento da nota autorizada NAQUELA ref.
+   * `sucesso` só com HTTP 200, `status: "cancelado"` e `status_sefaz` 135/155.
+   * HTTP 200 com `erro_cancelamento` (SEFAZ recusou o evento) é FALHA — o V1
+   * trata qualquer 200 como sucesso. Status desconhecido, corpo ilegível ou
+   * falha de transporte também são falha (nunca marcar cancelada sem prova).
+   * Nunca lança.
+   */
+  async cancelar(
+    ref: string,
+    justificativa: string,
+    token: string,
+  ): Promise<FocusV2CancelamentoResposta> {
+    const url = `${this.baseUrl}/v2/${this.path}/${encodeURIComponent(ref)}`;
+    const resp = await this.requisitar(
+      url,
+      "DELETE",
+      token,
+      { justificativa },
+      this.postTimeoutMs,
+    );
+    const corpo = resp.corpo;
+    const cStat = normalizarCStat(corpo?.status_sefaz);
+    const sucesso =
+      resp.httpStatus === 200 &&
+      corpo !== null &&
+      corpo.status === "cancelado" &&
+      cStat !== null &&
+      CSTAT_CANCELAMENTO_OK.includes(cStat);
+    const textoProvedor = corpo?.mensagem_sefaz ?? corpo?.mensagem ?? null;
+    let mensagem: string;
+    if (sucesso) {
+      mensagem = textoProvedor ?? "Cancelamento homologado";
+    } else if (resp.transporte) {
+      mensagem =
+        "Sem resposta do provedor ao cancelar — consulte a situação da NF-e antes de tentar de novo";
+    } else if (corpo?.status === "erro_cancelamento") {
+      mensagem = textoProvedor ?? "Cancelamento recusado pela SEFAZ";
+    } else if (resp.httpStatus === 200) {
+      mensagem =
+        "Resposta do provedor sem confirmação do cancelamento — consulte a situação da NF-e antes de tentar de novo";
+    } else {
+      mensagem =
+        textoProvedor ??
+        `Cancelamento não aceito pelo provedor (HTTP ${resp.httpStatus ?? "?"})`;
+    }
+    return {
+      ...resp,
+      sucesso,
+      protocolo: corpo?.protocolo ?? corpo?.protocolo_sefaz ?? null,
+      cStat,
+      mensagem,
+    };
+  }
+
   private async requisitar(
     url: string,
-    metodo: "GET" | "POST",
+    metodo: "GET" | "POST" | "DELETE",
     token: string,
     body: unknown,
     timeoutMs: number,
@@ -294,6 +367,15 @@ function extrairCorpo(texto: string, token: string): FocusV2Corpo | null {
   }
   if ("chave_nfe" in bruto) {
     corpo.chave_nfe = normalizarChaveFocus(bruto.chave_nfe);
+  }
+  // Consulta completa: o protocolo também vem em protocolo_nota_fiscal.
+  const prot = bruto.protocolo_nota_fiscal;
+  if (prot && typeof prot === "object" && !Array.isArray(prot)) {
+    const p = prot as Record<string, unknown>;
+    if (corpo.protocolo == null && typeof p.numero_protocolo === "string" && p.numero_protocolo.trim()) {
+      corpo.protocolo = limpar(p.numero_protocolo.trim());
+    }
+    if (typeof p.data_recebimento === "string") corpo.data_recebimento = limpar(p.data_recebimento);
   }
   if (Array.isArray(bruto.erros)) {
     corpo.erros = bruto.erros
