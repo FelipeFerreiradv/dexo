@@ -16,7 +16,11 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vites
  *     -p 127.0.0.1:55432:5432 postgres:16 -c fsync=off -c max_connections=200
  *   DATABASE_URL=… DIRECT_URL=… prisma db push --skip-generate   (NO BANCO LOCAL)
  *   DEXO_IT_DATABASE_URL=postgresql://dexo:dexo_it_local@127.0.0.1:55432/dexo_it \
- *     npx vitest run --pool=forks tests/it
+ *     npx vitest run --pool=forks --no-file-parallelism tests/it
+ *
+ * `--no-file-parallelism`: os arquivos de tests/it dividem o banco, e o cron
+ * (findPendingRetries) é global — em paralelo, um arquivo pegaria as linhas
+ * do outro.
  */
 
 const IT_URL = process.env.DEXO_IT_DATABASE_URL ?? "";
@@ -176,6 +180,12 @@ function segurarCreateItem() {
   };
 }
 
+/**
+ * Limpeza GLOBAL de propósito: o cron (runPass → findPendingRetries) varre o
+ * banco inteiro, então qualquer linha agendada de fora deste arquivo seria
+ * publicada no meio de um teste e contaria nos POSTs. Só é seguro porque o
+ * arquivo recusa qualquer banco que não seja o local "dexo_it" (acima).
+ */
 async function limparBanco() {
   const p = M.prisma;
   await p.stockSyncJob.deleteMany({});
