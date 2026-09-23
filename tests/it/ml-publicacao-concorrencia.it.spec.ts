@@ -15,14 +15,16 @@ import { ehBancoDeTesteLocal } from "./banco-local";
  *   docker run -d --name dexo-it-pg -e POSTGRES_USER=dexo -e POSTGRES_PASSWORD=dexo_it_local \
  *     -e POSTGRES_DB=dexo_it -e PGDATA=/pgdata --tmpfs /pgdata:rw,size=1g \
  *     -p 127.0.0.1:55432:5432 postgres:16 -c fsync=off -c max_connections=200
- *   export DEXO_IT_DATABASE_URL=postgresql://dexo:dexo_it_local@127.0.0.1:55432/dexo_it
+ *   IT=postgresql://dexo:dexo_it_local@127.0.0.1:55432/dexo_it
  *   # Schema: numa worktree SEM .env e com as DUAS variáveis no banco local. O
  *   # `db push` usa o DIRECT_URL, e a CLI completa o que faltar com o .env do
  *   # diretório — no checkout principal, o de PRODUÇÃO (apagaria os índices
  *   # parciais fora do schema).
- *   DATABASE_URL=$DEXO_IT_DATABASE_URL DIRECT_URL=$DEXO_IT_DATABASE_URL \
- *     npx prisma db push --skip-generate
- *   npx vitest run --pool=forks --no-file-parallelism tests/it
+ *   DATABASE_URL=$IT DIRECT_URL=$IT npx prisma db push --skip-generate
+ *   DEXO_IT_DATABASE_URL=$IT npx vitest run --pool=forks --no-file-parallelism tests/it
+ *
+ * A variável vai SÓ no comando (sem `export`): exportada, uma suíte completa
+ * rodada depois no mesmo terminal ligaria estes arquivos em paralelo.
  *
  * `--no-file-parallelism`: os arquivos de tests/it dividem o banco, e o cron
  * (findPendingRetries) é global — em paralelo, um arquivo pegaria as linhas

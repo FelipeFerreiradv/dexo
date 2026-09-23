@@ -731,6 +731,31 @@ describe("revisão de fechamento (23/09): conferência antes da guarda de estoqu
     expect(dados[1].lastError).toMatch(/^\[TERMINAL\].*MLB_X/);
   });
 
+  it("pelo BOTÃO sobre pendente SEM [VERIFICAR] (anúncio publicado por fora, vinculado pelo autodetect) ⇒ encerra o pendente, mas não mexe no anúncio", async () => {
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+    (ListingRepository.findLinkByExternalListingId as any).mockResolvedValue({
+      id: "pl-por-fora",
+      productId: "prod-1",
+    });
+    const semMarcador = () => candidato({ lastError: "[TERMINAL][CORRIGIVEL] Falta o lado" });
+    // Caminho aguardado (determinístico)...
+    expect(
+      await ListingRetryService.reconcileBeforeRecreate(semMarcador(), conta("acct-1", "X")),
+    ).toBe("adopted");
+    // ...e o do botão, que completa em segundo plano: esvazia a fila antes de
+    // afirmar que NÃO completou (sem isso a asserção passava cedo demais).
+    expect(
+      await ListingRetryService.reconcileBeforeRecreate(semMarcador(), conta("acct-1", "X"), {
+        interactive: true,
+      }),
+    ).toBe("adopted");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ListingUseCase.completeAdoptedMLListing).not.toHaveBeenCalled();
+    const dados = (ListingRepository.updateListing as any).mock.calls[0];
+    expect(dados[0]).toBe("pl-1");
+    expect(dados[1].lastError).toMatch(/^\[TERMINAL\]/);
+  });
+
   it("item vinculado a OUTRO produto ⇒ não completa nada", async () => {
     (ListingRepository.findPendingRetries as any).mockResolvedValue([
       candidato({ lastError: "[VERIFICAR] x" }),
