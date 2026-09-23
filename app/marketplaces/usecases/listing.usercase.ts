@@ -4002,9 +4002,14 @@ export class ListingUseCase {
 
           // Republicação (PENDING_REPUBLISH_) segue gravando como sempre: o
           // sync reverte a linha para o anúncio original, e um marcador
-          // terminal ali ficaria numa linha VIVA.
+          // terminal ali ficaria numa linha VIVA. Linha REAPROVEITADA com id
+          // real (ex.: anúncio encerrado sendo publicado de novo) também: o
+          // re-arme e o botão só enxergam placeholders PENDING_, então um
+          // `[TERMINAL][CORRIGIVEL]` nela ficaria sem saída — ali vale o
+          // reagendamento de sempre.
           const republicacao =
-            !!listing.externalListingId?.startsWith("PENDING_REPUBLISH_");
+            !!listing.externalListingId?.startsWith("PENDING_REPUBLISH_") ||
+            !listing.externalListingId?.startsWith("PENDING_");
           const terminal = !republicacao && isTerminalMarker(marcador);
           const nextRetryMs = 60 * 1000;
           try {

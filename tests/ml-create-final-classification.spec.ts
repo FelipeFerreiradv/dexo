@@ -433,6 +433,22 @@ describe("salvaguardas", () => {
     expect(g.retryEnabled).toBe(true);
   });
 
+  it("linha REAPROVEITADA com id real (anúncio encerrado) ⇒ sem marcador, reagenda como antes", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-velha",
+      externalListingId: "MLB_ENCERRADO",
+      status: "closed",
+    });
+    mlResponde(() => {
+      throw erroMl("Validation error", [INMETRO_3702]);
+    });
+    const r = await criar();
+    expect(r.lastErrorMarker).toBeUndefined();
+    const g = gravacaoFinal();
+    expect(g.lastError.startsWith("[")).toBe(false);
+    expect(g.retryEnabled).toBe(true);
+  });
+
   it("registra o resultado estruturado no SystemLog (sem token)", async () => {
     mlResponde(() => {
       throw erroMl("Validation error", [INMETRO_3702]);
