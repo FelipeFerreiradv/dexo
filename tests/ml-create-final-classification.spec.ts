@@ -516,7 +516,9 @@ describe("salvaguardas", () => {
 });
 
 describe("pendente reaproveitado com retry desligado: reserva antes de publicar (revisão 23/09, rodada 2)", () => {
-  const RESERVA = new Date("2026-09-23T12:10:00.000Z");
+  // Reserva VIGENTE: relativa ao relógio. A data fixa que estava aqui
+  // (2026-09-23T12:10Z) venceu no próprio dia e o teste passou a falhar.
+  const RESERVA = new Date(Date.now() + 10 * 60_000);
   const pendente = (over: Record<string, unknown> = {}) => ({
     id: "l-pend",
     externalListingId: "PENDING_1",
