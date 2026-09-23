@@ -688,7 +688,7 @@ describe("origem das categorias no rascunho (hotfix de 23/09/2026)", () => {
   });
 
   it("lixo no storage é descartado sem invalidar o rascunho", () => {
-    const s = serializeProductForm(base) as Record<string, unknown>;
+    const s = serializeProductForm(base) as unknown as Record<string, unknown>;
     for (const lixo of ["manual", 42, ["ml"], { ml: "MANUAL" }, null]) {
       const volta = parseSnapshot({ ...s, categoryOrigins: lixo });
       expect(volta).not.toBeNull();
