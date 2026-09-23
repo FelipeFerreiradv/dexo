@@ -329,6 +329,36 @@ describe("bloqueio ANTES do POST /items", () => {
     expect(ListingRepository.createListing).not.toHaveBeenCalled();
   });
 
+  it("C3c: linha com o CRON PUBLICANDO (retry ligado + status pending) → bloqueio NÃO é gravado por cima", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      retryEnabled: true,
+      status: "pending",
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+    });
+    const r = await criar();
+    expect(r.success).toBe(false);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("C3d: linha só AGENDADA → o bloqueio vale e é gravado nela (o cron bateria na mesma recusa)", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      retryEnabled: true,
+      status: "error",
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+    });
+    await criar();
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
+      "l-pend",
+      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
+    );
+  });
+
   it("C3: linha PENDING_ existente → updateListing nela com os mesmos campos", async () => {
     process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({

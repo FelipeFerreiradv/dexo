@@ -125,6 +125,7 @@ describe("ListingRetryService — claim atômico por candidato", () => {
     expect(ListingRepository.claimRetryCandidate).toHaveBeenCalledWith(
       "pl-1",
       expect.any(Number),
+      expect.any(Object),
     );
     expect(ListingUseCase.createShopeeListing).not.toHaveBeenCalled();
   });

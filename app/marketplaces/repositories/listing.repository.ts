@@ -559,19 +559,113 @@ export class ListingRepository {
     listingId: string,
     leaseMs: number,
     now: Date = new Date(),
+    /**
+     * Linha com id REAL (anúncio encerrado publicado de novo): reserva só se
+     * o id ainda for este. Ausente = só placeholder `PENDING_` (linha que
+     * acabou de receber o id real não é mais reservável).
+     */
+    opts: { externalListingId?: string } = {},
   ): Promise<Date | null> {
     const ate = new Date(now.getTime() + leaseMs);
     const res = await prisma.productListing.updateMany({
       where: {
         id: listingId,
         retryEnabled: false,
-        // Linha que acabou de receber o id real não é mais reservável.
-        externalListingId: { startsWith: "PENDING_" },
+        externalListingId: opts.externalListingId
+          ? opts.externalListingId
+          : { startsWith: "PENDING_" },
         OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
       },
       data: { nextRetryAt: ate },
     });
     return res.count === 1 ? ate : null;
+  }
+
+  /**
+   * Assume uma linha que está só AGENDADA pelo cron (retry ligado, fora do
+   * voo dele e sem `[VERIFICAR]`): desliga o retry e reserva, numa instrução.
+   * O claim do cron exige retry ligado; o dele marca `pending` — um exclui o
+   * outro. Devolve o horário da reserva ou null.
+   */
+  static async takeOverScheduledRetry(
+    listingId: string,
+    leaseMs: number,
+    now: Date = new Date(),
+  ): Promise<Date | null> {
+    const ate = new Date(now.getTime() + leaseMs);
+    const res = await prisma.productListing.updateMany({
+      where: {
+        id: listingId,
+        retryEnabled: true,
+        status: { not: "pending" },
+        OR: [
+          { lastError: null },
+          { NOT: { lastError: { startsWith: "[VERIFICAR]" } } },
+        ],
+      },
+      data: { retryEnabled: false, nextRetryAt: ate },
+    });
+    return res.count === 1 ? ate : null;
+  }
+
+  /**
+   * O pendente que a criação reaproveitaria (o `PENDING_` mais novo do par —
+   * a mesma preferência do findByProductAndAccount), só com o que decide se
+   * ele está ocupado. Checagem barata do começo do create: recusar ali evita
+   * baixar e subir as fotos à toa.
+   */
+  static async findNewestMlPlaceholderState(
+    productId: string,
+    marketplaceAccountId: string,
+  ) {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        externalListingId: { startsWith: "PENDING_" },
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        externalListingId: true,
+        retryEnabled: true,
+        nextRetryAt: true,
+        status: true,
+        lastError: true,
+      },
+    });
+  }
+
+  /** Anúncio vivo do par? Só `{id, externalListingId, status}`. */
+  static async findLiveListingLite(
+    productId: string,
+    marketplaceAccountId: string,
+  ): Promise<{
+    id: string;
+    externalListingId: string | null;
+    status: string | null;
+  } | null> {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        status: { in: liveListingStatuses() },
+        NOT: { externalListingId: { startsWith: "PENDING_" } },
+      },
+      select: { id: true, externalListingId: true, status: true },
+    });
+  }
+
+  /**
+   * Devolve o status do candidato que o claim do cron marcou como `pending`
+   * e que ninguém regravou (a criação saiu sem escrever na linha). Condicional:
+   * se a criação gravou `error`/`active`, não mexe.
+   */
+  static async restoreCronClaimStatus(listingId: string): Promise<void> {
+    await prisma.productListing.updateMany({
+      where: { id: listingId, status: "pending" },
+      data: { status: "error" },
+    });
   }
 
   /**
@@ -635,6 +729,12 @@ export class ListingRepository {
   static async claimRetryCandidate(
     listingId: string,
     leaseMs: number,
+    /**
+     * ML: marca `pending` junto com o claim — é o que distingue "o cron está
+     * publicando" de "só agendada" (esta última pode ser assumida por um
+     * "Anunciar"). O cron devolve o status no fim (restoreCronClaimStatus).
+     */
+    opts: { markPublishing?: boolean } = {},
   ): Promise<Date | null> {
     const agora = new Date();
     const ate = new Date(agora.getTime() + leaseMs);
@@ -644,7 +744,10 @@ export class ListingRepository {
         retryEnabled: true,
         OR: [{ nextRetryAt: { lte: agora } }, { nextRetryAt: null }],
       },
-      data: { nextRetryAt: ate },
+      data: {
+        nextRetryAt: ate,
+        ...(opts.markPublishing ? { status: "pending" } : {}),
+      },
     });
     // O horário da reserva volta para o cron: é o passe dele no
     // createMLListing (só quem tem a reserva reaproveita a linha).

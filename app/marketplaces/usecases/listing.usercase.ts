@@ -1,5 +1,10 @@
 ﻿import { Platform } from "@prisma/client";
 import { liveListingStatuses } from "../lib/listing-live-statuses";
+import {
+  busyMessage,
+  isReusableMlPlaceholder,
+  placeholderDecision,
+} from "../lib/ml-placeholder-busy.logic";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
@@ -260,6 +265,8 @@ function reservadoPorOutro(
     externalListingId?: string | null;
     retryEnabled?: boolean | null;
     nextRetryAt?: Date | string | null;
+    status?: string | null;
+    lastError?: string | null;
   },
   minha?: { listingId: string; at: Date } | null,
   agora: number = Date.now(),
@@ -268,14 +275,11 @@ function reservadoPorOutro(
   if (!ext.startsWith("PENDING_") || ext.startsWith("PENDING_REPUBLISH_")) {
     return false;
   }
-  if (row.retryEnabled) return false;
-  const t = row.nextRetryAt ? new Date(row.nextRetryAt).getTime() : null;
-  if (t === null || t <= agora) return false;
-  return !(
-    !!minha &&
-    minha.listingId === row.id &&
-    new Date(minha.at).getTime() === t
-  );
+  // Mesma régua da criação: reserva de outro, cron em voo (`pending`) ou
+  // `[VERIFICAR]` pendente (gravar por cima apagaria a conferência pelo SKU).
+  // Linha só AGENDADA não conta — o bloqueio gravado nela vale (o cron
+  // bateria na mesma recusa).
+  return placeholderDecision(row, minha ?? null, agora) === "busy";
 }
 
 export class ListingUseCase {
@@ -2070,6 +2074,39 @@ export class ListingUseCase {
         };
       }
 
+      // 1.6. O pendente que esta criação reaproveitaria está ocupado (cron
+      // publicando, reserva de outro, conferência pelo SKU pendente)? Recusa
+      // AQUI, antes de baixar e subir as fotos — a reserva atômica de verdade
+      // continua no passo 3.1. Falha na leitura = segue (a 3.1 decide).
+      try {
+        const pendenteAtual =
+          await ListingRepository.findNewestMlPlaceholderState(productId, acc.id);
+        if (
+          pendenteAtual &&
+          isReusableMlPlaceholder(pendenteAtual) &&
+          placeholderDecision(pendenteAtual, opts?.reservation ?? null) === "busy"
+        ) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.in_progress_refused",
+              productId,
+              accountId: acc.id,
+              listingId: pendenteAtual.id,
+              stage: "early",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            code: "PUBLICATION_IN_PROGRESS",
+            listingId: pendenteAtual.id,
+            error: busyMessage(pendenteAtual),
+          };
+        }
+      } catch {
+        // segue: a reserva atômica do passo 3.1 é quem garante
+      }
+
       // 2. Buscar dados do produto
       const produtoCarregado =
         await ListingUseCase.productRepository.findById(productId);
@@ -2871,60 +2908,38 @@ export class ListingUseCase {
         };
       }
 
-      const pendenteNormal =
+      // Linha reaproveitada (placeholder PENDING_ ou anúncio ENCERRADO com id
+      // real) só é usada sob reserva — de quem chama (botão/cron), assumida
+      // de um agendamento, ou tomada agora. Sem isso botão, cron, outro
+      // "Anunciar", outro lote e o script de recuperação mandavam cada um o
+      // seu POST /items. Republicação (PENDING_REPUBLISH_) é do sync.
+      const ehReaproveitavel =
         !!listing &&
-        String(listing.externalListingId ?? "").startsWith("PENDING_") &&
         !String(listing.externalListingId ?? "").startsWith(
           "PENDING_REPUBLISH_",
         );
-      const minha = opts?.reservation;
-      const ehDeQuemChamou = (l: { id: string; nextRetryAt?: unknown }) => {
-        const proxima = l.nextRetryAt
-          ? new Date(l.nextRetryAt as string | Date).getTime()
-          : null;
-        return (
-          !!minha &&
-          minha.listingId === l.id &&
-          proxima !== null &&
-          proxima === new Date(minha.at).getTime()
-        );
-      };
-
-      // Pendente com retry LIGADO é do cron: agendado, ou já reservado por
-      // ele. Só o cron, com a própria reserva, passa. Qualquer outro
-      // ("Anunciar", lote) correria junto com ele — e, depois de um timeout,
-      // sem a conferência pelo SKU que o cron faz antes de recriar.
-      if (listing && pendenteNormal && listing.retryEnabled && !ehDeQuemChamou(listing)) {
-        console.warn(
-          JSON.stringify({
-            event: "ml.create_item.in_progress_refused",
-            productId,
-            accountId: acc.id,
-            listingId: listing.id,
-            reason: "retry_scheduled",
-          }),
-        );
-        return {
-          success: false,
-          skipped: true,
-          code: "PUBLICATION_IN_PROGRESS",
-          listingId: listing.id,
-          error:
-            "Já existe uma nova tentativa agendada para este anúncio — a Dexo publica sozinha em instantes.",
-        };
-      }
-
-      // Pendente com retry automático DESLIGADO é reaproveitado sob reserva
-      // atômica (a mesma do botão): enquanto esta criação roda, o botão, outro
-      // "Anunciar", outro lote e o script de recuperação o veem "em
-      // andamento" — sem isso cada um mandava o seu POST /items. Republicação
-      // (PENDING_REPUBLISH_) é do sync.
-      if (listing && pendenteNormal && !listing.retryEnabled) {
-        if (!ehDeQuemChamou(listing)) {
-          const at = await ListingRepository.claimInteractiveRetry(
-            listing.id,
-            CREATE_RESERVATION_MS,
+      if (listing && ehReaproveitavel) {
+        const decisao = placeholderDecision(listing, opts?.reservation ?? null);
+        if (decisao !== "owned") {
+          const idReal = !String(listing.externalListingId ?? "").startsWith(
+            "PENDING_",
           );
+          const at =
+            decisao === "takeover"
+              ? await ListingRepository.takeOverScheduledRetry(
+                  listing.id,
+                  CREATE_RESERVATION_MS,
+                )
+              : decisao === "free"
+                ? await ListingRepository.claimInteractiveRetry(
+                    listing.id,
+                    CREATE_RESERVATION_MS,
+                    new Date(),
+                    idReal
+                      ? { externalListingId: String(listing.externalListingId) }
+                      : {},
+                  )
+                : null;
           if (!at) {
             console.warn(
               JSON.stringify({
@@ -2939,8 +2954,7 @@ export class ListingUseCase {
               skipped: true,
               code: "PUBLICATION_IN_PROGRESS",
               listingId: listing.id,
-              error:
-                "Esta publicação já está em andamento. Aguarde alguns minutos e confira o anúncio.",
+              error: busyMessage(listing),
             };
           }
           reservaPropria = { listingId: listing.id, at };
@@ -3019,6 +3033,45 @@ export class ListingUseCase {
               }
             : {}),
         });
+      }
+
+      // Com a linha nas mãos: outra criação do mesmo produto pode ter
+      // terminado desde a guarda do começo (em OUTRA linha do par). Uma
+      // leitura enxuta; falha nela = segue (comportamento de antes).
+      if (listing?.id) {
+        let vivo: Awaited<
+          ReturnType<typeof ListingRepository.findLiveListingLite>
+        > = null;
+        try {
+          vivo = await ListingRepository.findLiveListingLite(productId, acc.id);
+        } catch {
+          vivo = null;
+        }
+        if (vivo && vivo.id !== listing.id) {
+          await ListingRepository.updateListing(listing.id, {
+            status: "error",
+            lastError: `[TERMINAL] Produto já tem anúncio nesta conta (${vivo.externalListingId}) — exclua este pendente ou encerre o anúncio existente antes de recriar`,
+            retryEnabled: false,
+            nextRetryAt: null,
+          });
+          reservaPropria = null;
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.duplicate_refused",
+              productId,
+              accountId: acc.id,
+              liveExternalListingId: vivo.externalListingId,
+              stage: "after_reservation",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            listingId: listing.id,
+            externalListingId: vivo.externalListingId ?? undefined,
+            error: `Produto já tem anúncio nesta conta (${vivo.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+          };
+        }
       }
 
       // Include shipping dimensions (ML exige string "HxWxL,weight") — clamp para limites aceitos.

@@ -19,6 +19,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     findPendingRetries: vi.fn(),
     claimRetryCandidate: vi.fn(),
     incrementRetryAttempts: vi.fn(),
+    restoreCronClaimStatus: vi.fn(async () => undefined),
     updateListing: vi.fn(),
     findByProductAndAccount: vi.fn(),
     findRetryStateById: vi.fn(),
@@ -513,5 +514,32 @@ describe("rodada 3 da revisão (23/09): a reserva do cron", () => {
     expect(Object.keys(dados)).toEqual(["nextRetryAt"]);
     expect(dados.nextRetryAt).toBeInstanceOf(Date);
     expect(opts).toEqual({ increment: false });
+  });
+});
+
+describe("rodada 4 da revisão (23/09): o claim do cron no ML marca 'pending' e devolve no fim", () => {
+  it("candidato do ML ⇒ claim com markPublishing e status devolvido no fim, mesmo quando a criação sai sem gravar", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([candidato()]);
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(
+      new Date("2026-09-23T12:10:00.000Z"),
+    );
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      skipped: true,
+      code: "PUBLICATION_IN_PROGRESS",
+      error: "em andamento",
+    });
+    await ListingRetryService.runOnce();
+    expect((ListingRepository.claimRetryCandidate as any).mock.calls[0][2]).toEqual({
+      markPublishing: true,
+    });
+    expect(ListingRepository.restoreCronClaimStatus).toHaveBeenCalledWith("pl-1");
+  });
+
+  it("claim perdido ⇒ nada a devolver", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([candidato()]);
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(null);
+    await ListingRetryService.runOnce();
+    expect(ListingRepository.restoreCronClaimStatus).not.toHaveBeenCalled();
   });
 });
