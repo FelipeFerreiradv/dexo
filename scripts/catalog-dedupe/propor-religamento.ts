@@ -93,15 +93,15 @@ function principal(): void {
     { titulo: string; sku: string | null; quantidade: number; status: string; fotos: string[]; link: string }
   >;
 
-  const tenantDaConta = new Map(
+  const tenantDaConta = new Map<string, string>(
     consultar(
       conexao,
       `SELECT ma.id, COALESCE(u."parentUserId", u.id) FROM "MarketplaceAccount" ma
          JOIN "User" u ON u.id = ma."userId"
         WHERE ma.id IN (${[...new Set(errados.map((e) => e.contaId))].map(aspas).join(",")});`,
-    ),
+    ).map((linha) => [linha[0], linha[1]] as [string, string]),
   );
-  const tenants = [...new Set([...tenantDaConta.values()])];
+  const tenants: string[] = [...new Set([...tenantDaConta.values()])];
 
   // As colunas de override vem do banco, nao de uma lista fixa: sao 22 hoje e a
   // proxima que nascer entraria em silencio na lista fixa.

@@ -215,6 +215,7 @@ export function LogsView() {
       // tinha nome para citar ao orientá-lo.
       ML_BACK_ONLINE_WITHOUT_STOCK: "Anúncio no ar sem estoque (Mercado Livre)",
       ML_LISTING_TITLE_DRIFT: "Anúncio está vendendo outra peça (Mercado Livre)",
+      ML_LISTING_RELINKED: "Anúncio religado na peça certa (Mercado Livre)",
       SHOPEE_BACK_ONLINE_WITHOUT_STOCK: "Anúncio no ar sem estoque (Shopee)",
       STOCK_SYNC_FAILED: "Falha na sincronização de estoque",
       STOCK_SYNC_DEFERRED_TOO_LONG: "Baixa de estoque aguardando reconexão",
