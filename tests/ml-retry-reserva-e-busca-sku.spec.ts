@@ -212,3 +212,45 @@ describe("decideReconcile", () => {
     ).toBe("B");
   });
 });
+
+describe("rodada 4 da revisão (23/09): cron x Anunciar sem perder as escolhas do lote", () => {
+  it("assumir linha só AGENDADA: exige retry ligado, fora do voo do cron e sem [VERIFICAR]; desliga o retry e reserva", async () => {
+    const r = await ListingRepository.takeOverScheduledRetry("pl-1", 600_000, NOW);
+    expect(r).toEqual(new Date(NOW.getTime() + 600_000));
+    const arg = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect(arg.where).toEqual({
+      id: "pl-1",
+      retryEnabled: true,
+      status: { not: "pending" },
+      OR: [{ lastError: null }, { NOT: { lastError: { startsWith: "[VERIFICAR]" } } }],
+    });
+    expect(arg.data).toEqual({
+      retryEnabled: false,
+      nextRetryAt: new Date(NOW.getTime() + 600_000),
+    });
+  });
+
+  it("claim do cron no ML marca 'pending' (o cron publicando); sem a opção, nada muda", async () => {
+    await ListingRepository.claimRetryCandidate("pl-1", 600_000, { markPublishing: true });
+    const comMarca = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect(comMarca.data.status).toBe("pending");
+    (prisma.productListing.updateMany as any).mockClear();
+    await ListingRepository.claimRetryCandidate("pl-1", 600_000);
+    const semMarca = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect("status" in semMarca.data).toBe(false);
+  });
+
+  it("devolver o status do claim é condicional (só se ninguém regravou)", async () => {
+    await ListingRepository.restoreCronClaimStatus("pl-1");
+    const arg = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect(arg).toEqual({ where: { id: "pl-1", status: "pending" }, data: { status: "error" } });
+  });
+
+  it("reserva de anúncio ENCERRADO confere o próprio id (não o prefixo PENDING_)", async () => {
+    await ListingRepository.claimInteractiveRetry("pl-1", 600_000, NOW, {
+      externalListingId: "MLB_ENCERRADO",
+    });
+    const arg = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect(arg.where.externalListingId).toBe("MLB_ENCERRADO");
+  });
+});

@@ -80,6 +80,8 @@ export class ListingRetryService {
     console.log(`[ListingRetryService] candidates=${candidates?.length || 0}`);
 
     for (const cand of candidates) {
+      // O claim do ML marca `pending` (cron publicando); devolvido no fim.
+      let marcouPublicando = false;
       try {
         console.log(`[ListingRetryService] processing candidate ${cand.id}`);
 
@@ -89,10 +91,15 @@ export class ListingRetryService {
         // deploy anterior). Sem o claim, dois processos leem o mesmo lote e
         // criam o mesmo anúncio duas vezes no ML. O UPDATE condicional é
         // atômico — quem perder a corrida pula o candidato.
+        const ehMl =
+          cand.marketplaceAccount?.platform === "MERCADO_LIVRE" &&
+          !cand.externalListingId?.startsWith("PENDING_SHP_");
         const claimed = await ListingRepository.claimRetryCandidate(
           cand.id,
           CLAIM_LEASE_MS,
+          ehMl ? { markPublishing: true } : {},
         );
+        marcouPublicando = ehMl && !!claimed;
         // A reserva do cron é o passe dele no createMLListing: linha com
         // retry ligado só é reaproveitada por quem a reservou.
         const reservaDoCron =
@@ -708,6 +715,14 @@ export class ListingRetryService {
           `Unexpected error while retrying placeholder ${cand.id}: ${errMsg(err)}`,
           { resource: "ProductListing", resourceId: cand.id },
         );
+      } finally {
+        if (marcouPublicando) {
+          try {
+            await ListingRepository.restoreCronClaimStatus(cand.id);
+          } catch {
+            // o próximo claim do cron regrava; a linha segue com retry
+          }
+        }
       }
     }
   }

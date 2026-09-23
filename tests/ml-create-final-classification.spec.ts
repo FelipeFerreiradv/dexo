@@ -22,6 +22,9 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     updateCompatDiagnostics: vi.fn(),
     claimInteractiveRetry: vi.fn(),
     releaseInteractiveRetry: vi.fn(async () => undefined),
+    takeOverScheduledRetry: vi.fn(),
+    findNewestMlPlaceholderState: vi.fn(async () => null),
+    findLiveListingLite: vi.fn(async () => null),
   },
 }));
 
@@ -441,6 +444,9 @@ describe("salvaguardas", () => {
       externalListingId: "MLB_ENCERRADO",
       status: "closed",
     });
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(
+      new Date(Date.now() + 600_000),
+    );
     mlResponde(() => {
       throw erroMl("Validation error", [INMETRO_3702]);
     });
@@ -507,6 +513,8 @@ describe("pendente reaproveitado com retry desligado: reserva antes de publicar 
     expect(ListingRepository.claimInteractiveRetry).toHaveBeenCalledWith(
       "l-pend",
       10 * 60 * 1000,
+      expect.any(Date),
+      {},
     );
     const ordem = [
       (ListingRepository.claimInteractiveRetry as any).mock.invocationCallOrder[0],
@@ -564,22 +572,102 @@ describe("pendente reaproveitado com retry desligado: reserva antes de publicar 
       undefined,
       { reservation: { listingId: "OUTRA", at: RESERVA } },
     );
-    expect(ListingRepository.claimInteractiveRetry).toHaveBeenCalled();
+    // Reserva vigente de outro: recusa sem nem tentar reservar.
+    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
     expect(MLApiService.createItem).not.toHaveBeenCalled();
     expect(r.skipped).toBe(true);
   });
 
-  it("linha do CRON (retry ligado) SEM a reserva dele ⇒ 'agendada', nada é enviado (Anunciar não corre junto com o cron)", async () => {
+  it("linha com o CRON PUBLICANDO (retry ligado + status pending) ⇒ 'agendada', nada é enviado", async () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
-      pendente({ retryEnabled: true, nextRetryAt: new Date(Date.now() + 60_000) }),
+      pendente({
+        retryEnabled: true,
+        status: "pending",
+        nextRetryAt: new Date(Date.now() + 60_000),
+      }),
     );
     const r = await criar();
     expect(MLApiService.createItem).not.toHaveBeenCalled();
-    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
+    expect(ListingRepository.takeOverScheduledRetry).not.toHaveBeenCalled();
     expect(r.skipped).toBe(true);
     expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
     expect(r.error).toMatch(/agendada/);
     expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("linha com [VERIFICAR] (a tentativa pode ter criado o item) ⇒ só o cron publica; Anunciar é recusado", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
+      pendente({
+        retryEnabled: true,
+        lastError: "[VERIFICAR] O Mercado Livre não respondeu a tempo.",
+        nextRetryAt: new Date(Date.now() + 60_000),
+      }),
+    );
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(ListingRepository.takeOverScheduledRetry).not.toHaveBeenCalled();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+  });
+
+  it("linha só AGENDADA (re-arme da edição, backoff) ⇒ o Anunciar ASSUME a linha e publica com as escolhas dele (como em main)", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
+      pendente({
+        retryEnabled: true,
+        status: "error",
+        lastError: "[TERMINAL][CORRIGIVEL] GTIN inválido",
+        nextRetryAt: new Date(Date.now() + 5 * 60_000),
+      }),
+    );
+    (ListingRepository.takeOverScheduledRetry as any).mockResolvedValue(RESERVA);
+    recusa();
+    await criar();
+    expect(ListingRepository.takeOverScheduledRetry).toHaveBeenCalledWith(
+      "l-pend",
+      10 * 60 * 1000,
+    );
+    expect(MLApiService.createItem).toHaveBeenCalled();
+  });
+
+  it("assunção perdida (o cron pegou a linha no mesmo instante) ⇒ recusa, sem POST", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
+      pendente({ retryEnabled: true, status: "error", nextRetryAt: new Date(Date.now() + 60_000) }),
+    );
+    (ListingRepository.takeOverScheduledRetry as any).mockResolvedValue(null);
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+  });
+
+  it("checagem ENXUTA do começo: pendente ocupado ⇒ recusa antes de subir foto ou montar o anúncio", async () => {
+    (ListingRepository.findNewestMlPlaceholderState as any).mockResolvedValue(
+      pendente({ nextRetryAt: new Date(Date.now() + 5 * 60_000) }),
+    );
+    const r = await criar();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+    expect(ListingRepository.findByProductAndAccount).not.toHaveBeenCalled();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+  });
+
+  it("com a linha nas mãos, outra criação já publicou o produto (outra linha do par) ⇒ encerra este pendente, sem POST", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(pendente());
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(RESERVA);
+    (ListingRepository.findLiveListingLite as any).mockResolvedValue({
+      id: "l-outra",
+      externalListingId: "MLB555",
+      status: "active",
+    });
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(true);
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
+      "l-pend",
+      expect.objectContaining({
+        status: "error",
+        retryEnabled: false,
+        nextRetryAt: null,
+        lastError: expect.stringMatching(/^\[TERMINAL\] Produto já tem anúncio/),
+      }),
+    );
   });
 
   it("linha do CRON com a reserva DELE ⇒ publica (sem reservar de novo)", async () => {
@@ -649,15 +737,38 @@ describe("pendente reaproveitado com retry desligado: reserva antes de publicar 
     expect(ListingRepository.updateListing).not.toHaveBeenCalled();
   });
 
-  it("linha com id real ENCERRADA continua podendo ser republicada", async () => {
+  it("linha com id real ENCERRADA: reservada pelo PRÓPRIO id antes de republicar (duas criações não publicam duas vezes)", async () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-velha",
       externalListingId: "MLB_ENCERRADO",
       status: "closed",
+      retryEnabled: false,
+      nextRetryAt: null,
     });
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(RESERVA);
     recusa();
     await criar();
+    expect(ListingRepository.claimInteractiveRetry).toHaveBeenCalledWith(
+      "l-velha",
+      10 * 60 * 1000,
+      expect.any(Date),
+      { externalListingId: "MLB_ENCERRADO" },
+    );
     expect(MLApiService.createItem).toHaveBeenCalled();
+  });
+
+  it("linha ENCERRADA já reservada por outra criação ⇒ recusa, sem POST", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-velha",
+      externalListingId: "MLB_ENCERRADO",
+      status: "closed",
+      retryEnabled: false,
+      nextRetryAt: null,
+    });
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(null);
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
   });
 
   it("erro inesperado depois de reservar ⇒ a reserva é desfeita (não fica 'Publicando agora')", async () => {
