@@ -589,6 +589,26 @@ export class ListingRepository {
    * pelo par, não pela linha clicada — com outro pendente ocupado, o botão
    * correria junto com quem o ocupa. Só `{id}`.
    */
+  /**
+   * O par (produto, conta) está no meio de uma REPUBLICAÇÃO UP (linha trocada
+   * para `PENDING_REPUBLISH_` pelo sync)? Consulta direta: o
+   * `findByProductAndAccount` devolve o `PENDING_` mais novo, que pode ser
+   * outro pendente antigo do par. Só `{id}`.
+   */
+  static async findRepublishPlaceholderInPair(
+    productId: string,
+    marketplaceAccountId: string,
+  ): Promise<{ id: string } | null> {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        externalListingId: { startsWith: "PENDING_REPUBLISH_" },
+      },
+      select: { id: true },
+    });
+  }
+
   static async findBusyMlPlaceholderInPair(
     productId: string,
     marketplaceAccountId: string,

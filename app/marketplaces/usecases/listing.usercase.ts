@@ -2686,8 +2686,21 @@ export class ListingUseCase {
             linhaDoPar = undefined;
           }
         }
-        const republicacao =
-          !!linhaDoPar?.externalListingId?.startsWith("PENDING_REPUBLISH_");
+        // A linha "mais nova" do par pode ser outro pendente (um [TERMINAL]
+        // antigo): a republicação é conferida pela própria marca.
+        let republicacao = !!linhaDoPar?.externalListingId?.startsWith(
+          "PENDING_REPUBLISH_",
+        );
+        if (checagem.blocked && !catalogoLigado && !republicacao) {
+          try {
+            republicacao = !!(await ListingRepository.findRepublishPlaceholderInPair(
+              productId,
+              acc.id,
+            ));
+          } catch {
+            republicacao = false;
+          }
+        }
         if (checagem.blocked && !catalogoLigado && republicacao) {
           console.warn(
             JSON.stringify({

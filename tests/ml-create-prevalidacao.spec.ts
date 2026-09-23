@@ -17,6 +17,9 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     createListing: vi.fn(),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
+    findRepublishPlaceholderInPair: vi.fn(async () => null),
+    claimInteractiveRetry: vi.fn(async () => new Date(Date.now() + 600_000)),
+    releaseInteractiveRetry: vi.fn(async () => undefined),
   },
 }));
 
@@ -339,6 +342,47 @@ describe("valores da ficha técnica antes do POST", () => {
     for (const c of (ListingRepository.updateListing as any).mock.calls) {
       expect(String(c[1]?.lastError ?? "")).not.toMatch(/CORRIGIVEL/);
     }
+  });
+
+  it("REPUBLICAÇÃO com um pendente ANTIGO mais novo no par ⇒ reconhecida pela consulta direta; não bloqueia", async () => {
+    // findByProductAndAccount devolve o PENDING_ mais novo (um [TERMINAL]
+    // velho), não a linha PENDING_REPUBLISH_ do anúncio vivo.
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-velha",
+      externalListingId: "PENDING_999",
+      retryEnabled: false,
+      nextRetryAt: null,
+    });
+    (ListingRepository.findRepublishPlaceholderInPair as any).mockResolvedValue({
+      id: "l-viva",
+    });
+    produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "30" } };
+    // ML fora do ar: o que importa é que o POST SAIU (o bloqueio de valor
+    // não o segurou) e que nada gravou o bloqueio de valor.
+    (MLApiService.createItem as any).mockRejectedValue(
+      erroMl("Service unavailable", [], 503),
+    );
+    await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      "Título novo",
+      "actor-1",
+    );
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    for (const c of (ListingRepository.updateListing as any).mock.calls) {
+      expect(String(c[1]?.lastError ?? "")).not.toMatch(/CORRIGIVEL/);
+    }
+  });
+
+  it("criação normal bloqueada ⇒ confere a republicação uma vez e grava o bloqueio", async () => {
+    produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "30" } };
+    const r = await criar();
+    expect(ListingRepository.findRepublishPlaceholderInPair).toHaveBeenCalledTimes(1);
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.lastErrorMarker).toBe("[TERMINAL][CORRIGIVEL]");
   });
 
   it("número sem unidade em campo OPCIONAL ⇒ bloqueia (3708 recusa o anúncio)", async () => {

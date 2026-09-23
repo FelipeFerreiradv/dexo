@@ -93,7 +93,8 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
   if (i.inFlight === "publishing") {
     return {
       classe: "em_andamento",
-      motivo: "Publicação em andamento agora — não mexer.",
+      motivo:
+        "Publicação em andamento, ou linha alterada há menos de 30 min — não mexer; rode de novo depois.",
     };
   }
   if (i.inFlight === "scheduled") {
@@ -162,4 +163,56 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
     classe: "publicavel",
     motivo: "Pré-validação sem bloqueio; o último erro não aponta dado a corrigir.",
   };
+}
+
+/**
+ * A linha está com outro agente agora? Puro para o teste travar a regra.
+ *
+ * - retry ligado com horário ⇒ `scheduled` (o cron vai pegar ou já pegou);
+ * - retry desligado com horário FUTURO ⇒ `publishing` (reserva do botão ou
+ *   da própria criação — o createMLListing reserva o pendente que
+ *   reaproveita);
+ * - linha alterada há menos de `recenteMs`, QUALQUER status ⇒ `publishing`:
+ *   uma publicação pode estar no meio da escada sem ter gravado nada ainda
+ *   (revisão de 23/09: o `status` continuava `error` e o script re-armava por
+ *   cima, e o cron criava o segundo anúncio). Conservador de propósito: rodar
+ *   de novo depois custa pouco.
+ */
+export function detectRecoverInFlight(i: {
+  retryEnabled: boolean;
+  nextRetryAt: Date | string | null;
+  updatedAt: Date | string;
+  now: number;
+  recenteMs: number;
+}): "publishing" | "scheduled" | null {
+  const proxima = i.nextRetryAt ? new Date(i.nextRetryAt).getTime() : null;
+  if (i.retryEnabled && proxima !== null) return "scheduled";
+  if (!i.retryEnabled && proxima !== null && proxima > i.now) return "publishing";
+  if (i.now - new Date(i.updatedAt).getTime() < i.recenteMs) return "publishing";
+  return null;
+}
+
+/**
+ * O que a pré-validação do script conta como bloqueio — o MESMO que a
+ * publicação de produção bloqueia (revisão de 23/09):
+ *  - validação de VALORES (severidade `block`): sempre (a publicação roda as
+ *    correções automáticas antes; o que sobra como `block` bloqueia);
+ *  - avaliador de obrigatórios (faltando OU valor inválido dele): só com
+ *    ML_REQUIRED_ATTRS_BLOCK=1 — sem a flag a publicação não bloqueia por ele.
+ * `blocking` do avaliador já traz os bloqueios de valor misturados; eles são
+ * separados pelo par (campo, mensagem).
+ */
+export function recoverPreflightBlocks(i: {
+  blocking: Array<{ attributeId?: string; reason?: string; message: string }>;
+  valueIssues?: Array<{ attributeId?: string; severity?: string; message: string }>;
+  requiredBlockEnabled: boolean;
+}): Array<{ message: string }> {
+  const deValor = (i.valueIssues ?? []).filter((v) => v.severity === "block");
+  const chave = (a: { attributeId?: string; message: string }) =>
+    `${a.attributeId ?? ""}|${a.message}`;
+  const chavesDeValor = new Set(deValor.map(chave));
+  const doAvaliador = i.requiredBlockEnabled
+    ? i.blocking.filter((b) => !chavesDeValor.has(chave(b)))
+    : [];
+  return [...doAvaliador, ...deValor].map((b) => ({ message: b.message }));
 }

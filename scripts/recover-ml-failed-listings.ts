@@ -9,6 +9,7 @@ import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 import { ListingRetryService } from "../app/marketplaces/services/listing-retry.service";
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
 import { decideReconcile } from "../app/marketplaces/lib/ml-reconcile.logic";
+import { REARM_DELAY_MS } from "../app/marketplaces/lib/ml-rearm.logic";
 import { sanitizeMLTitle } from "../app/marketplaces/lib/ml-title";
 import {
   isMlRequiredAttrsBlockEnabled,
@@ -20,6 +21,8 @@ import { ProductRepositoryPrisma } from "../app/repositories/product.repository"
 import { LAST_ERROR_MARKER } from "../app/marketplaces/lib/ml-error-normalizer";
 import {
   classifyRecoverRow,
+  detectRecoverInFlight,
+  recoverPreflightBlocks,
   type RecoverClass,
   type RecoverInput,
 } from "./lib/recover-ml-classify";
@@ -97,7 +100,10 @@ const since: Date | null = (() => {
 })();
 
 const ESCALONAMENTO_MS = 30_000;
-/** Pending mais novo que isto está sendo publicado agora (mesma régua do card). */
+/**
+ * Linha alterada há menos que isto pode estar no meio de uma publicação
+ * (mesma régua da "Publicação interrompida" do card) — não é tocada.
+ */
 const PUBLICANDO_AGORA_MS = 30 * 60_000;
 const TOKEN_FOLGA_MS = 5 * 60_000;
 
@@ -275,16 +281,13 @@ async function main() {
       acc.id,
     );
 
-    const agora = Date.now();
-    const proxima = p.nextRetryAt ? new Date(p.nextRetryAt).getTime() : null;
-    const inFlight: RecoverInput["inFlight"] =
-      p.retryEnabled && proxima !== null
-        ? "scheduled"
-        : (!p.retryEnabled && proxima !== null && proxima > agora) ||
-            (p.status === "pending" &&
-              agora - new Date(p.updatedAt).getTime() < PUBLICANDO_AGORA_MS)
-          ? "publishing"
-          : null;
+    const inFlight: RecoverInput["inFlight"] = detectRecoverInFlight({
+      retryEnabled: !!p.retryEnabled,
+      nextRetryAt: p.nextRetryAt,
+      updatedAt: p.updatedAt,
+      now: Date.now(),
+      recenteMs: PUBLICANDO_AGORA_MS,
+    });
 
     let remote: RecoverInput["remote"];
     if (inFlight) {
@@ -343,11 +346,11 @@ async function main() {
         );
         const bloqueios = catalogo
           ? []
-          : ev.blocking.filter(
-              (b) =>
-                b.reason === "invalid_value" ||
-                (b.reason === "missing" && isMlRequiredAttrsBlockEnabled()),
-            );
+          : recoverPreflightBlocks({
+              blocking: ev.blocking,
+              valueIssues: ev.valueIssues,
+              requiredBlockEnabled: isMlRequiredAttrsBlockEnabled(),
+            });
         preflight = {
           blocked: bloqueios.length > 0,
           message:
@@ -490,7 +493,11 @@ async function main() {
             lastError: null,
             retryEnabled: true,
             retryAttempts: 0,
-            nextRetryAt: new Date(Date.now() + 60_000 + ordem * ESCALONAMENTO_MS),
+            // Mesma folga do re-arme da edição (5 min): quem estiver no meio
+            // de uma publicação termina antes do cron olhar a linha.
+            nextRetryAt: new Date(
+              Date.now() + REARM_DELAY_MS + ordem * ESCALONAMENTO_MS,
+            ),
           });
           if (ok) ordem++;
           l.acao = ok ? "rearmado" : "pulado: linha mudou durante a execução";

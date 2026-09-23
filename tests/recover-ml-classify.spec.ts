@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyRecoverRow,
+  detectRecoverInFlight,
+  recoverPreflightBlocks,
   type RecoverInput,
 } from "../scripts/lib/recover-ml-classify";
 
@@ -149,5 +151,88 @@ describe("classifyRecoverRow", () => {
         base({ lastError: 'O campo GTIN do produto está em formato inválido ("original").' }),
       ).classe,
     ).toBe("publicavel");
+  });
+});
+
+describe("detectRecoverInFlight (revisão 23/09, rodada 2)", () => {
+  const AGORA = new Date("2026-09-23T12:00:00.000Z").getTime();
+  const MIN = 60_000;
+  const linha = (over: Record<string, unknown> = {}) => ({
+    retryEnabled: false,
+    nextRetryAt: null as Date | null,
+    updatedAt: new Date(AGORA - 2 * 60 * MIN),
+    now: AGORA,
+    recenteMs: 30 * MIN,
+    ...over,
+  });
+
+  it("status 'error' alterado há 2 min (publicação no meio da escada) ⇒ em andamento, não é tocado", () => {
+    expect(detectRecoverInFlight(linha({ updatedAt: new Date(AGORA - 2 * MIN) }))).toBe(
+      "publishing",
+    );
+  });
+
+  it("reserva vigente (botão ou a própria criação) ⇒ em andamento", () => {
+    expect(
+      detectRecoverInFlight(linha({ nextRetryAt: new Date(AGORA + 5 * MIN) })),
+    ).toBe("publishing");
+  });
+
+  it("retry ligado com horário ⇒ agendado (é do cron)", () => {
+    expect(
+      detectRecoverInFlight(
+        linha({ retryEnabled: true, nextRetryAt: new Date(AGORA - MIN) }),
+      ),
+    ).toBe("scheduled");
+  });
+
+  it("parada há 2 h, sem reserva e sem retry ⇒ livre para a recuperação", () => {
+    expect(detectRecoverInFlight(linha())).toBeNull();
+    expect(
+      detectRecoverInFlight(linha({ nextRetryAt: new Date(AGORA - 60 * MIN) })),
+    ).toBeNull();
+  });
+});
+
+describe("recoverPreflightBlocks — mesmo critério da publicação (revisão 23/09, rodada 2)", () => {
+  const valor = {
+    attributeId: "GTIN",
+    severity: "block",
+    message: "O campo GTIN aceita só código de barras.",
+  };
+  const doAvaliador = {
+    attributeId: "SIDE_POSITION",
+    reason: "invalid_value",
+    message: "Lado com valor de outra categoria.",
+  };
+
+  it("sem a flag: só os bloqueios da validação de VALORES contam", () => {
+    const r = recoverPreflightBlocks({
+      blocking: [doAvaliador, { attributeId: "GTIN", reason: "invalid_value", message: valor.message }],
+      valueIssues: [valor, { attributeId: "SIDE_POSITION", severity: "fix", message: "id trocado" }],
+      requiredBlockEnabled: false,
+    });
+    expect(r).toEqual([{ message: valor.message }]);
+  });
+
+  it("valor que a publicação CORRIGE sozinha (severidade fix) não bloqueia", () => {
+    const r = recoverPreflightBlocks({
+      blocking: [doAvaliador],
+      valueIssues: [{ attributeId: "SIDE_POSITION", severity: "fix", message: "id trocado" }],
+      requiredBlockEnabled: false,
+    });
+    expect(r).toEqual([]);
+  });
+
+  it("com a flag: avaliador de obrigatórios também conta, sem repetir o bloqueio de valor", () => {
+    const r = recoverPreflightBlocks({
+      blocking: [
+        { attributeId: "PART_NUMBER", reason: "missing", message: "Falta o Part Number." },
+        { attributeId: "GTIN", reason: "invalid_value", message: valor.message },
+      ],
+      valueIssues: [valor],
+      requiredBlockEnabled: true,
+    });
+    expect(r).toEqual([{ message: "Falta o Part Number." }, { message: valor.message }]);
   });
 });
