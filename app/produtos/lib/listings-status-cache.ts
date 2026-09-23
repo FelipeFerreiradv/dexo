@@ -27,6 +27,11 @@ export type ApiListing = {
   retryEnabled?: boolean | null;
   nextRetryAt?: string | null;
   updatedAt: string | null;
+  /**
+   * Só nas linhas do Mercado Livre, e só quando existe: o que o read-back do
+   * ML confirmou da compatibilidade veicular (ver listing-compat-summary.ts).
+   */
+  compatDiagnostics?: unknown;
 };
 
 /**

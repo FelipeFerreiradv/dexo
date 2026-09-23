@@ -38,6 +38,7 @@ import {
 } from "@/app/produtos/lib/listings-status-cache";
 import { derivePublicationState } from "@/app/produtos/lib/listing-publication-state";
 import { formatListingError } from "@/app/produtos/lib/listing-error-format";
+import { describeCompatDiagnostics } from "@/app/produtos/lib/listing-compat-summary";
 
 export type { ApiListing };
 
@@ -363,6 +364,10 @@ export function ProductListingsList({
               estado.state === "publishing"
                 ? "text-xs text-amber-700 dark:text-amber-400"
                 : "text-xs text-destructive";
+            // Só existe em linhas do ML que já passaram pelo read-back.
+            const compatSummary = pending
+              ? null
+              : describeCompatDiagnostics(listing.compatDiagnostics);
 
             return (
               <li
@@ -425,6 +430,19 @@ export function ProductListingsList({
                       }
                     >
                       {retentativa.message}
+                    </p>
+                  )}
+                  {compatSummary && (
+                    <p
+                      className={
+                        compatSummary.tone === "ok"
+                          ? "text-xs text-muted-foreground"
+                          : compatSummary.tone === "warning"
+                            ? "text-xs text-amber-700 dark:text-amber-400"
+                            : "text-xs text-muted-foreground italic"
+                      }
+                    >
+                      {compatSummary.text}
                     </p>
                   )}
                 </div>

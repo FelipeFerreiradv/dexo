@@ -85,6 +85,7 @@ import {
   sanitizeMLTitle,
 } from "../lib/ml-title";
 import { applyOemTags } from "../lib/ml-oem-tags.logic";
+import { buildCompatDiagnostics } from "../lib/ml-compat-diagnostics";
 import { buildShopeeAttributeList } from "../lib/shopee-attribute-mapper";
 import {
   applyOverridesToProduct,
@@ -4364,16 +4365,10 @@ export class ListingUseCase {
           // não pode derrubar uma publicação que deu certo.
           if (finalListingId) {
             try {
-              await ListingRepository.updateCompatDiagnostics(finalListingId, {
-                requested: compat.requested,
-                persisted: compat.persisted,
-                strategy: compat.strategy,
-                verified: compat.verified,
-                unresolved: compat.unresolved.length,
-                unresolvedSample: compat.unresolved.slice(0, 5),
-                unsupportedDomain: compat.unsupportedDomain,
-                at: new Date().toISOString(),
-              });
+              await ListingRepository.updateCompatDiagnostics(
+                finalListingId,
+                buildCompatDiagnostics(compat),
+              );
             } catch (diagErr) {
               console.warn(
                 `[ListingUseCase] Falha ao gravar diagnóstico de compat (${mlItem.id}):`,
@@ -8155,17 +8150,10 @@ export class ListingUseCase {
         }),
       );
 
-      await ListingRepository.updateCompatDiagnostics(args.listingId, {
-        requested: compat.requested,
-        persisted: compat.persisted,
-        strategy: compat.strategy,
-        verified: compat.verified,
-        unresolved: compat.unresolved.length,
-        unresolvedSample: compat.unresolved.slice(0, 5),
-        unsupportedDomain: compat.unsupportedDomain,
-        origin: args.origin,
-        at: new Date().toISOString(),
-      });
+      await ListingRepository.updateCompatDiagnostics(
+        args.listingId,
+        buildCompatDiagnostics(compat, { origin: args.origin }),
+      );
     } catch (err) {
       console.warn(
         `[ListingUseCase] Falha ao reenviar compatibilidades (${args.itemId}):`,
