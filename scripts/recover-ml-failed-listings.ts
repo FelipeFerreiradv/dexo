@@ -370,9 +370,9 @@ async function main() {
     }
 
     // Item remoto adotável que não é o vivo local: só é suspeito de ser órfão
-    // do POST perdido se não tiver vínculo em nenhuma linha desta conta
-    // (leitura; falha = trata como vinculado, o comportamento de antes).
-    let adoptableUnlinked = false;
+    // do POST perdido se não tiver vínculo em nenhuma linha desta conta. Só
+    // leitura; falha = "failed" (a linha fica sem escrita, nunca "exclua").
+    let adoptableLink: RecoverInput["adoptableLink"];
     if (
       liveLocal &&
       remote.status === "ok" &&
@@ -380,12 +380,14 @@ async function main() {
       remote.adoptable.id !== liveLocal.externalListingId
     ) {
       try {
-        adoptableUnlinked = !(await ListingRepository.findLinkByExternalListingId(
+        adoptableLink = (await ListingRepository.findLinkByExternalListingId(
           acc.id,
           remote.adoptable.id,
-        ));
+        ))
+          ? "linked"
+          : "unlinked";
       } catch {
-        adoptableUnlinked = false;
+        adoptableLink = "failed";
       }
     }
 
@@ -400,7 +402,7 @@ async function main() {
         ? { externalListingId: liveLocal.externalListingId, status: liveLocal.status }
         : null,
       remote,
-      adoptableUnlinked,
+      adoptableLink,
       preflight,
       lastError: p.lastError,
       editedAfterError,

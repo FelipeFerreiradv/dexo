@@ -16,7 +16,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     updateListing: vi.fn(),
     createListing: vi.fn(),
     createReservedPlaceholderIfAbsent: vi.fn(),
-    findRepublishingListingInPair: vi.fn(async () => null),
+    findRepublishingListingsInPair: vi.fn(async () => []),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
     claimInteractiveRetry: vi.fn(async () => new Date(Date.now() + 600_000)),
@@ -624,7 +624,7 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
     );
 
   it("'Anunciar' com a republicação em curso (ou interrompida) ⇒ recusa ANTES de montar o anúncio, apontando o anúncio antigo; sem POST", async () => {
-    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(REPUBLICANDO);
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([REPUBLICANDO]);
     const r = await criarComo();
     expect(MLApiService.createItem).not.toHaveBeenCalled();
     expect(r.success).toBe(false);
@@ -639,7 +639,7 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
   });
 
   it("a PRÓPRIA republicação (opts.republish) passa e publica", async () => {
-    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(REPUBLICANDO);
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([REPUBLICANDO]);
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       ...REPUBLICANDO,
       status: "pending",
@@ -647,12 +647,12 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
     });
     (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
     await criarComo({ republish: true });
-    expect(ListingRepository.findRepublishingListingInPair).not.toHaveBeenCalled();
+    expect(ListingRepository.findRepublishingListingsInPair).not.toHaveBeenCalled();
     expect(MLApiService.createItem).toHaveBeenCalled();
   });
 
   it("a leitura da marca FALHOU e o passo 3.1 escolheu a linha da republicação ⇒ recusa ali; sem POST e sem gravar na linha", async () => {
-    (ListingRepository.findRepublishingListingInPair as any).mockRejectedValue(new Error("pool"));
+    (ListingRepository.findRepublishingListingsInPair as any).mockRejectedValue(new Error("pool"));
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       ...REPUBLICANDO,
       status: "pending",
@@ -666,7 +666,7 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
   });
 
   it("linha ENCALHADA (processo morreu / revert id_taken, dias atrás) ⇒ 'Anunciar' segue como antes, agora SOB RESERVA, e publica nela (releitura de 23/09)", async () => {
-    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(ENCALHADA);
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([ENCALHADA]);
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue(ENCALHADA);
     (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
     const r = await criarComo();
@@ -681,8 +681,42 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
     expect((ListingRepository.updateListing as any).mock.calls[0][0]).toBe("l-encalhada");
   });
 
+  it("encalhada E outra EM CURSO no mesmo par ⇒ recusa (a encalhada não esconde a em curso — releitura final de 23/09)", async () => {
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([
+      ENCALHADA,
+      REPUBLICANDO,
+    ]);
+    const r = await criarComo();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.error).toMatch(/sendo republicado/);
+    expect(r.listingId).toBe("l-rep");
+  });
+
+  it("janela de 30 min: republicação trocada há 20 min ainda conta como EM CURSO (a subida de fotos não tem prazo)", async () => {
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([
+      { id: "l-lenta", externalListingId: `PENDING_REPUBLISH_MLB222_${Date.now() - 20 * 60_000}` },
+    ]);
+    const r = await criarComo();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.error).toMatch(/MLB222/);
+  });
+
+  it("encalhada reservada por um 'Anunciar' comum vira pendente COMUM (id PENDING_ novo): o timeout ganha [VERIFICAR] como qualquer pendente", async () => {
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([ENCALHADA]);
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(ENCALHADA);
+    (MLApiService.createItem as any).mockRejectedValue(new Error("ML createItem timeout after 15000ms"));
+    await criarComo();
+    const [id, dados] = (ListingRepository.updateListing as any).mock.calls[0];
+    expect(id).toBe("l-encalhada");
+    expect(dados.externalListingId).toMatch(/^PENDING_\d+_[a-z0-9]+$/);
+    const marcadores = (ListingRepository.updateListing as any).mock.calls
+      .map((c: any[]) => String(c[1]?.lastError ?? ""))
+      .filter((e: string) => e.startsWith("[VERIFICAR]"));
+    expect(marcadores.length).toBeGreaterThan(0);
+  });
+
   it("linha ENCALHADA já reservada por outro 'Anunciar' ⇒ recua (sem o segundo POST que main mandava)", async () => {
-    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(ENCALHADA);
+    (ListingRepository.findRepublishingListingsInPair as any).mockResolvedValue([ENCALHADA]);
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       ...ENCALHADA,
       nextRetryAt: new Date(Date.now() + 300_000),
@@ -695,7 +729,7 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
   it("sem republicação no par ⇒ caminho de sempre (a consulta devolve nada)", async () => {
     (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
     await criarComo();
-    expect(ListingRepository.findRepublishingListingInPair).toHaveBeenCalledWith("prod-1", "acct-1");
+    expect(ListingRepository.findRepublishingListingsInPair).toHaveBeenCalledWith("prod-1", "acct-1");
     expect(MLApiService.createItem).toHaveBeenCalled();
   });
 });

@@ -294,18 +294,25 @@ function reservadoPorOutro(
 }
 
 /**
+ * Janela em que uma republicação pode estar em curso. A mesma de "publicação
+ * interrompida" no card e no script de recuperação: bem acima de uma criação
+ * (a reserva é de 10 min), porque a subida de fotos não tem prazo próprio.
+ */
+const REPUBLICACAO_EM_CURSO_MS = 30 * 60 * 1000;
+
+/**
  * A republicação dona desta linha ainda pode estar em curso? O id carrega o
- * horário da troca (`PENDING_REPUBLISH_<id antigo>_<ts>`). Passada a janela de
- * uma criação (a mesma reserva de 10 min), é linha ENCALHADA — o processo
- * morreu no meio, ou o revert deu "id_taken" — e vale o comportamento de antes
- * (publicar nela tira a linha desse estado), agora sob reserva. Recusar para
- * sempre bloqueava o par sem saída (achado da releitura de 23/09).
+ * horário da troca (`PENDING_REPUBLISH_<id antigo>_<ts>`). Passada a janela, é
+ * linha ENCALHADA — o processo morreu no meio, ou o revert deu "id_taken" — e
+ * vale o comportamento de antes (publicar nela tira a linha desse estado),
+ * agora sob reserva. Recusar para sempre bloqueava o par sem saída (achado da
+ * releitura de 23/09).
  */
 function republicacaoEmCurso(externalListingId: string, now = Date.now()): boolean {
   const m = /^PENDING_REPUBLISH_.+_(\d+)$/.exec(externalListingId);
   if (!m) return false;
   const ts = Number(m[1]);
-  return Number.isFinite(ts) && now - ts < CREATE_RESERVATION_MS;
+  return Number.isFinite(ts) && now - ts < REPUBLICACAO_EM_CURSO_MS;
 }
 
 /**
@@ -2223,17 +2230,21 @@ export class ListingUseCase {
       // Linha ENCALHADA (fora da janela de uma criação) segue como antes — ver
       // republicacaoEmCurso. Falha na leitura = segue (o 3.1 ainda decide).
       if (opts?.republish !== true) {
-        let republicando: Awaited<
-          ReturnType<typeof ListingRepository.findRepublishingListingInPair>
-        > = null;
+        let doPar: Awaited<
+          ReturnType<typeof ListingRepository.findRepublishingListingsInPair>
+        > = [];
         try {
-          republicando = await ListingRepository.findRepublishingListingInPair(
+          doPar = await ListingRepository.findRepublishingListingsInPair(
             productId,
             acc.id,
           );
         } catch {
-          republicando = null;
+          doPar = [];
         }
+        const republicando =
+          doPar.find((r) => republicacaoEmCurso(r.externalListingId)) ??
+          doPar[0] ??
+          null;
         if (
           republicando &&
           republicacaoEmCurso(republicando.externalListingId)
@@ -3445,8 +3456,17 @@ export class ListingUseCase {
           }
         }
       }
+      // Linha de republicação ENCALHADA reservada por esta criação comum: vira
+      // um pendente comum (id PENDING_ novo) — daqui em diante o timeout ganha
+      // [VERIFICAR] e o erro de dado ganha o marcador, como em qualquer
+      // pendente (tratada como republicação, o cron reenviava o POST às cegas).
+      const idPendenteComum =
+        republicacaoEncalhada && reservaPropria?.listingId === listing?.id
+          ? `PENDING_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+          : null;
       if (listing && !criadaAgora) {
         await ListingRepository.updateListing(listing.id, {
+          ...(idPendenteComum ? { externalListingId: idPendenteComum } : {}),
           listingType: effectiveSettings.listingType ?? null,
           itemCondition: effectiveSettings.itemCondition ?? null,
           hasWarranty: effectiveSettings.hasWarranty ?? null,
@@ -3468,6 +3488,18 @@ export class ListingUseCase {
               }
             : {}),
         });
+        if (idPendenteComum) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.stale_republish_row_reused",
+              productId,
+              accountId: acc.id,
+              listingId: listing.id,
+              previousExternalListingId: listing.externalListingId,
+            }),
+          );
+          listing = { ...listing, externalListingId: idPendenteComum };
+        }
       }
 
       // Com a linha nas mãos: outra criação do mesmo produto pode ter

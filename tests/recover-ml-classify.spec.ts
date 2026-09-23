@@ -74,7 +74,7 @@ describe("classifyRecoverRow", () => {
       base({
         liveLocal: { externalListingId: "MLB5188503789", status: "active" },
         remote: { status: "ok", adoptable: { id: "MLB_ORFAO", status: "active" }, others: [] },
-        adoptableUnlinked: true,
+        adoptableLink: "unlinked",
       }),
     );
     expect(d.classe).toBe("duplicidade_possivel");
@@ -83,16 +83,28 @@ describe("classifyRecoverRow", () => {
   });
 
   it("vivo local e o outro item do ML está VINCULADO (outro produto/outra linha) ou não foi conferido ⇒ ja_publicado, como antes", () => {
-    for (const adoptableUnlinked of [false, undefined]) {
+    for (const adoptableLink of ["linked", undefined] as const) {
       const d = classifyRecoverRow(
         base({
           liveLocal: { externalListingId: "MLB5188503789", status: "active" },
           remote: { status: "ok", adoptable: { id: "MLB_DO_B", status: "active" }, others: [] },
-          adoptableUnlinked,
+          adoptableLink,
         }),
       );
       expect(d.classe).toBe("ja_publicado");
     }
+  });
+
+  it("vivo local e a leitura do vínculo do outro item FALHOU ⇒ nao_verificado (o --apply não escreve 'exclua este pendente')", () => {
+    const d = classifyRecoverRow(
+      base({
+        liveLocal: { externalListingId: "MLB5188503789", status: "active" },
+        remote: { status: "ok", adoptable: { id: "MLB_X", status: "active" }, others: [] },
+        adoptableLink: "failed",
+      }),
+    );
+    expect(d.classe).toBe("nao_verificado");
+    expect(d.motivo).toContain("MLB_X");
   });
 
   it("vivo local e o item achado no ML É o próprio vivo ⇒ ja_publicado", () => {

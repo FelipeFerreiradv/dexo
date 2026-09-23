@@ -52,11 +52,12 @@ export interface RecoverInput {
       }
     | { status: "search_failed" | "not_checked" | "skipped" };
   /**
-   * O item adotável do ML (≠ do vivo local) NÃO tem vínculo em nenhuma linha
-   * desta conta? Só `true` quando conferido. Vinculado (outro produto, outra
-   * linha) é anúncio conhecido — não é órfão do POST perdido deste pendente.
+   * Vínculo do item adotável do ML (≠ do vivo local) nas linhas desta conta.
+   * `unlinked` = conferido, sem vínculo (suspeito de órfão do POST perdido);
+   * `linked` = anúncio conhecido (outro produto, outra linha); `failed` = a
+   * leitura falhou — aí não dá para mandar excluir o pendente.
    */
-  adoptableUnlinked?: boolean;
+  adoptableLink?: "linked" | "unlinked" | "failed";
   /** Pré-validação atual do produto (mesmo motor do create). */
   preflight: { blocked: boolean; message: string | null } | null;
   lastError: string | null;
@@ -113,13 +114,19 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
     // O POST perdido DESTE pendente pode ter criado outro item (criado depois
     // dele, mesmo SKU/título) que ficou sem vínculo: "exclua este pendente"
     // apagaria a única pista de um anúncio que vende sem baixa de estoque.
-    const orfao =
+    const outro =
       i.remote.status === "ok" &&
       i.remote.adoptable &&
-      i.remote.adoptable.id !== i.liveLocal.externalListingId &&
-      i.adoptableUnlinked === true
+      i.remote.adoptable.id !== i.liveLocal.externalListingId
         ? i.remote.adoptable
         : null;
+    const orfao = outro && i.adoptableLink === "unlinked" ? outro : null;
+    if (outro && i.adoptableLink === "failed") {
+      return {
+        classe: "nao_verificado",
+        motivo: `Já existe anúncio ${i.liveLocal.status} nesta conta (${i.liveLocal.externalListingId}), mas não foi possível conferir se o ${outro.id} do ML tem vínculo na Dexo — rode de novo antes de excluir o pendente.`,
+      };
+    }
     if (orfao) {
       return {
         classe: "duplicidade_possivel",

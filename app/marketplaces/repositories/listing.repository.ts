@@ -537,21 +537,23 @@ export class ListingRepository {
   }
 
   /**
-   * Linha do par em REPUBLICAÇÃO (`PENDING_REPUBLISH_<id antigo>_<ts>`): o
+   * Linhas do par em REPUBLICAÇÃO (`PENDING_REPUBLISH_<id antigo>_<ts>`): o
    * anúncio antigo segue vivo no ML até o novo nascer — e para sempre, se a
-   * republicação caiu no meio. A guarda de anúncio vivo não a vê (`PENDING_`).
+   * republicação caiu no meio. A guarda de anúncio vivo não as vê
+   * (`PENDING_`). TODAS: uma encalhada não pode esconder outra em curso.
    */
-  static async findRepublishingListingInPair(
+  static async findRepublishingListingsInPair(
     productId: string,
     marketplaceAccountId: string,
   ) {
-    return prisma.productListing.findFirst({
+    return prisma.productListing.findMany({
       where: {
         productId,
         marketplaceAccountId,
         externalListingId: { startsWith: "PENDING_REPUBLISH_" },
       },
       select: { id: true, externalListingId: true },
+      take: 50,
     });
   }
 
