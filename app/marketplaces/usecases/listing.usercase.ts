@@ -4640,10 +4640,18 @@ export class ListingUseCase {
       };
     } catch (error) {
       console.error("[ListingUseCase] Error creating ML listing:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Erro desconhecido",
+      };
+    } finally {
+      // Em TODA saída: a reserva que esta chamada fez é desfeita se ninguém
+      // regravou por cima (condicional ao horário dela). Sucesso e falhas
+      // gravadas já trocaram o horário — aí não faz nada. Cobre também a
+      // gravação do erro que falhou em silêncio: sem isto a linha assumida
+      // de um agendamento saía da fila do cron para sempre.
       if (reservaPropria) {
         try {
-          // Linha assumida de um agendamento volta à fila do cron; a
-          // reservada volta a ficar livre.
           if (reservaPropria.assumida) {
             await ListingRepository.releaseTakenOverRetry(
               reservaPropria.listingId,
@@ -4656,13 +4664,9 @@ export class ListingUseCase {
             );
           }
         } catch {
-          // A reserva expira sozinha (10 min); o erro original é o que importa.
+          // A reserva expira sozinha (10 min).
         }
       }
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Erro desconhecido",
-      };
     }
   }
 
