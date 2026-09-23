@@ -3050,6 +3050,13 @@ export class MLApiService {
      * categoria — a correção é recategorizar, não reenviar.
      */
     unsupportedDomain?: string;
+    /** Pares marca/modelo cujo catálogo não foi lido inteiro (ver resolve). */
+    truncated?: Array<{
+      brand: string;
+      model: string;
+      fetched: number;
+      total: number | null;
+    }>;
     /**
      * Diagnóstico das posições. Ausente quando nenhuma foi pedida ou quando a
      * escada não chegou ao degrau que as carrega (só o degrau 1 as envia).
@@ -3090,6 +3097,16 @@ export class MLApiService {
 
     // Degrau 1 — catalog product IDs.
     let resolvedIds: string[] = [];
+    // Só entra no retorno quando houver algo — os resultados sem truncamento
+    // saem com as mesmas chaves de antes.
+    let truncatedExtra: {
+      truncated?: Array<{
+        brand: string;
+        model: string;
+        fetched: number;
+        total: number | null;
+      }>;
+    } = {};
     try {
       const resolved = await this.resolveCompatibilityCatalogProducts(
         accessToken,
@@ -3097,6 +3114,9 @@ export class MLApiService {
       );
       resolvedIds = resolved.catalogProductIds;
       unresolved = resolved.unresolved;
+      if (resolved.truncated && resolved.truncated.length > 0) {
+        truncatedExtra = { truncated: resolved.truncated };
+      }
     } catch (err) {
       errors.push(
         `resolve falhou: ${err instanceof Error ? err.message : String(err)}`,
@@ -3124,6 +3144,7 @@ export class MLApiService {
           errors,
           budgetExhausted,
           userProductId,
+          ...truncatedExtra,
           ...(r.positions ? { positions: r.positions } : {}),
         };
       }
@@ -3155,6 +3176,7 @@ export class MLApiService {
           errors,
           budgetExhausted,
           userProductId,
+          ...truncatedExtra,
           unsupportedDomain: dom,
         };
       }
@@ -3187,6 +3209,7 @@ export class MLApiService {
           errors,
           budgetExhausted,
           userProductId,
+          ...truncatedExtra,
         };
       }
       // Recusa por domínio pode aparecer só agora (o degrau 1 nem sempre a
@@ -3207,6 +3230,7 @@ export class MLApiService {
           errors,
           budgetExhausted,
           userProductId,
+          ...truncatedExtra,
           unsupportedDomain: dom,
         };
       }
@@ -3222,6 +3246,7 @@ export class MLApiService {
       errors,
       budgetExhausted,
       userProductId,
+      ...truncatedExtra,
     };
   }
 
@@ -3250,6 +3275,17 @@ export class MLApiService {
       year?: number | null;
       reason: string;
     }>;
+    /**
+     * Pares marca/modelo cujo catálogo não foi lido inteiro (parou antes do
+     * `total` do ML). Com eles, um ano "não encontrado" pode existir no ML.
+     * Opcional só para quem simula este método em teste.
+     */
+    truncated?: Array<{
+      brand: string;
+      model: string;
+      fetched: number;
+      total: number | null;
+    }>;
   }> {
     const catalogProductIds = new Set<string>();
     const unresolved: Array<{
@@ -3257,6 +3293,12 @@ export class MLApiService {
       model: string;
       year?: number | null;
       reason: string;
+    }> = [];
+    const truncated: Array<{
+      brand: string;
+      model: string;
+      fetched: number;
+      total: number | null;
     }> = [];
 
     // Cache leve por chamada para evitar refetch repetido do mesmo par marca/modelo.
@@ -3508,6 +3550,12 @@ export class MLApiService {
       } else {
         cachedProducts = [];
         fetchErr = null;
+        // Ids já vistos: se uma página não trouxer NENHUM id novo, o ML está
+        // devolvendo a mesma página (era o que acontecia quando o offset ia
+        // só no corpo) — parar em vez de gastar as 30 chamadas idênticas.
+        const seenIds = new Set<string>();
+        let lastTotal: number | null = null;
+        let stoppedEarly = false;
         try {
           for (let page = 0; page < maxPages; page++) {
             const chunk = await this.searchCatalogCompatibilityChunks(
@@ -3520,15 +3568,42 @@ export class MLApiService {
             );
             const results = chunk.results ?? [];
             if (results.length === 0) break;
-            cachedProducts.push(...results);
+            let novos = 0;
+            for (const r of results) {
+              const id = r?.id ? String(r.id) : "";
+              if (id && seenIds.has(id)) continue;
+              if (id) seenIds.add(id);
+              cachedProducts.push(r);
+              novos += 1;
+            }
             const total = chunk.paging?.total;
+            if (typeof total === "number") lastTotal = total;
+            if (novos === 0) {
+              stoppedEarly = true;
+              break;
+            }
             if (typeof total === "number" && (page + 1) * pageSize >= total) {
               break;
             }
             if (results.length < pageSize) break;
+            if (page === maxPages - 1) stoppedEarly = true;
           }
         } catch (err) {
           fetchErr = err;
+        }
+        // Catálogo lido só em parte: "ano não encontrado" deixa de ser prova de
+        // que o ML não tem o ano — vai para o diagnóstico como `truncated`.
+        if (
+          fetchErr === null &&
+          (stoppedEarly ||
+            (lastTotal !== null && cachedProducts.length < lastTotal))
+        ) {
+          truncated.push({
+            brand: brandName,
+            model: modelName,
+            fetched: cachedProducts.length,
+            total: lastTotal,
+          });
         }
         productsByBrandModel.set(bmKey, {
           products: cachedProducts,
@@ -3674,6 +3749,7 @@ export class MLApiService {
     return {
       catalogProductIds: Array.from(catalogProductIds),
       unresolved,
+      truncated,
     };
   }
 
@@ -3930,11 +4006,17 @@ export class MLApiService {
       offset?: number;
     },
   ): Promise<MLCatalogCompatibilityChunkResponse> {
+    const limit = params.limit ?? 50;
+    const offset = params.offset ?? 0;
+    // `limit`/`offset` no corpo são IGNORADOS pelo ML — a paginação real é
+    // pela query string (sonda 22/09/2026: offset 0 e 1500 no corpo devolviam
+    // os mesmos 50 produtos; `?offset=50` devolvia os 50 seguintes). Ficam no
+    // corpo também, inofensivos, para o corpo seguir idêntico ao de antes.
     const body: Record<string, unknown> = {
       site_id: "MLB",
       domain_id: ML_COMPAT_DOMAIN_ID,
-      limit: params.limit ?? 50,
-      offset: params.offset ?? 0,
+      limit,
+      offset,
     };
     if (params.knownAttributes && params.knownAttributes.length > 0) {
       // O endpoint chunks espera `value_ids: [string]` (plural, array),
@@ -3958,10 +4040,20 @@ export class MLApiService {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
           },
+          params: { limit, offset },
           timeout: 20000,
         },
       );
-      return response.data ?? {};
+      const data = response.data ?? {};
+      // O total vem na RAIZ (`total`); os laços leem `paging.total`. Sem isto
+      // eles nunca paravam cedo e faziam 20-40 chamadas por marca/modelo.
+      if (
+        typeof data.total === "number" &&
+        typeof data.paging?.total !== "number"
+      ) {
+        data.paging = { ...(data.paging ?? {}), total: data.total };
+      }
+      return data;
     } catch (error) {
       // Diagnóstico: body + status + response crua. "Invalid arguments" do ML
       // é um erro genérico que esconde o campo realmente problemático.
@@ -4051,6 +4143,9 @@ export class MLApiService {
     const pageSize = 50;
     const maxPages = 40; // teto de segurança (2000 produtos)
     const seen = new Map<string, MLCompatibilityModelOption>();
+    // Página sem produto novo = o ML repetiu a página; parar (ver
+    // searchCatalogCompatibilityChunks sobre a paginação).
+    const seenProductIds = new Set<string>();
     let brandName = brand.name ?? "";
 
     for (let page = 0; page < maxPages; page++) {
@@ -4061,6 +4156,14 @@ export class MLApiService {
       });
       const results = chunk.results ?? [];
       if (results.length === 0) break;
+      const novos = results.filter((p) => {
+        const id = p?.id ? String(p.id) : "";
+        if (!id) return true;
+        if (seenProductIds.has(id)) return false;
+        seenProductIds.add(id);
+        return true;
+      }).length;
+      if (novos === 0) break;
 
       for (const product of results) {
         const brandAttr = findProductAttribute(product, ML_ATTR.BRAND);
@@ -4113,6 +4216,8 @@ export class MLApiService {
     const pageSize = 50;
     const maxPages = 20;
     const seen = new Map<string, MLCompatibilityVehicleOption>();
+    // Página sem produto novo = o ML repetiu a página; parar.
+    const seenProductIds = new Set<string>();
 
     for (let page = 0; page < maxPages; page++) {
       const chunk = await this.searchCatalogCompatibilityChunks(accessToken, {
@@ -4125,6 +4230,14 @@ export class MLApiService {
       });
       const results = chunk.results ?? [];
       if (results.length === 0) break;
+      const novos = results.filter((p) => {
+        const id = p?.id ? String(p.id) : "";
+        if (!id) return true;
+        if (seenProductIds.has(id)) return false;
+        seenProductIds.add(id);
+        return true;
+      }).length;
+      if (novos === 0) break;
 
       for (const product of results) {
         const vehicle = mapCatalogProductToVehicle(product);
