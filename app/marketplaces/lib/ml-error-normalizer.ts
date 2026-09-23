@@ -47,6 +47,12 @@ export interface NormalizedMLError {
   retryable: boolean;
   userActionRequired: boolean;
   timedOut: boolean;
+  /**
+   * AUTH que só a pessoa resolve (403 de permissão / PolicyAgent). 401 de
+   * token vencido no meio da publicação NÃO é: o retry renova o token e
+   * publica (era assim antes do marcador, e continua sendo).
+   */
+  authPermanent: boolean;
   step: string | null;
   categoryId: string | null;
 }
@@ -68,6 +74,13 @@ const NETWORK_TRANSIENT_CODES = new Set([
   "EHOSTUNREACH",
 ]);
 const NETWORK_TIMEOUT_CODES = new Set(["ECONNABORTED", "ETIMEDOUT"]);
+
+/**
+ * Conexão que CAIU depois de aberta: o POST pode ter chegado ao ML e criado o
+ * item antes de a resposta se perder. Diferente de ECONNREFUSED/ENOTFOUND
+ * (nunca conectou — nada foi criado).
+ */
+const NETWORK_MAYBE_SENT_CODES = new Set(["ECONNRESET", "EPIPE"]);
 
 /** Mensagem do `ListingUseCase.withTimeout`: "Timeout (label) after 15000ms". */
 const WITH_TIMEOUT_RE = /^Timeout \(.+\) after \d+ms$/;
@@ -118,13 +131,21 @@ export function lastErrorMarkerFor(n: {
   kind: MLErrorKind;
   httpStatus: number | null;
   timedOut: boolean;
+  networkCode?: string | null;
+  authPermanent?: boolean;
 }): LastErrorMarker | null {
   if (n.kind === "VALIDATION") return LAST_ERROR_MARKER.CORRIGIVEL;
-  if (n.kind === "AUTH") return LAST_ERROR_MARKER.RECONECTAR;
+  // Token vencido: sem marcador ⇒ o retry renova e tenta de novo (como antes).
+  if (n.kind === "AUTH") {
+    return n.authPermanent === false ? null : LAST_ERROR_MARKER.RECONECTAR;
+  }
   if (
     n.timedOut ||
     n.kind === "UNKNOWN" ||
-    (n.kind === "TRANSIENT" && n.httpStatus !== null && n.httpStatus >= 500)
+    (n.kind === "TRANSIENT" && n.httpStatus !== null && n.httpStatus >= 500) ||
+    (n.kind === "TRANSIENT" &&
+      !!n.networkCode &&
+      NETWORK_MAYBE_SENT_CODES.has(n.networkCode))
   ) {
     return LAST_ERROR_MARKER.VERIFICAR;
   }
@@ -154,6 +175,9 @@ export function humanMessageForKind(
       return "O Mercado Livre recusou o anúncio sem detalhar o motivo. Revise o cadastro do produto e tente publicar novamente.";
     }
     case "AUTH":
+      if (!n.authPermanent) {
+        return `O acesso da conta ${ctx.accountName ? `"${ctx.accountName}" ` : ""}ao Mercado Livre expirou durante a publicação. A Dexo renova o acesso e tenta de novo automaticamente.`;
+      }
       return `A conta ${ctx.accountName ? `"${ctx.accountName}" ` : ""}do Mercado Livre precisa ser reconectada — o Mercado Livre recusou a autorização. Reconecte a conta em Integrações e tente publicar novamente.`;
     case "RATE_LIMIT":
       return "O Mercado Livre limitou as requisições neste momento. A Dexo vai tentar publicar de novo automaticamente.";
@@ -262,10 +286,18 @@ export function normalizeMLError(input: {
     kind = "UNKNOWN";
   }
 
+  const authPermanent =
+    kind === "AUTH" &&
+    (httpStatus === 403 ||
+      /PolicyAgent|PA_UNAUTHORIZED/i.test(
+        `${message} ${JSON.stringify(body ?? "")}`,
+      ));
+
   return {
     provider: "mercadolivre",
     operation: input.operation ?? "create_item",
     kind,
+    authPermanent,
     httpStatus,
     networkCode,
     code: typeof body?.error === "string" ? body.error : null,
@@ -273,8 +305,11 @@ export function normalizeMLError(input: {
     causeCodes,
     fields: extractFields(errorCauses),
     retryable:
-      kind === "TRANSIENT" || kind === "RATE_LIMIT" || kind === "UNKNOWN",
-    userActionRequired: kind === "VALIDATION" || kind === "AUTH",
+      kind === "TRANSIENT" ||
+      kind === "RATE_LIMIT" ||
+      kind === "UNKNOWN" ||
+      (kind === "AUTH" && !authPermanent),
+    userActionRequired: kind === "VALIDATION" || authPermanent,
     timedOut,
     step: input.step ?? null,
     categoryId: input.categoryId ?? null,

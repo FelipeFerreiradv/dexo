@@ -15,7 +15,8 @@ import {
   LAST_ERROR_MARKER,
   isTerminalMarker,
 } from "../lib/ml-error-normalizer";
-import { pickReconciledItem } from "../lib/ml-reconcile.logic";
+import { decideReconcile } from "../lib/ml-reconcile.logic";
+import { sanitizeMLTitle } from "../lib/ml-title";
 import { normalizeListingStatus } from "../lib/listing-status";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
@@ -374,7 +375,10 @@ export class ListingRetryService {
               `[ListingRetryService] falha ao renovar token da conta ${account.id}: ${errMsg(refreshErr)}`,
             );
             await ListingRepository.incrementRetryAttempts(cand.id, {
-              lastError: `Token do Mercado Livre expirado e não foi possível renovar — reconecte a conta "${account.accountName || account.id}" em Integrações`,
+              lastError: manterVerificar(
+                cand.lastError,
+                `Token do Mercado Livre expirado e não foi possível renovar — reconecte a conta "${account.accountName || account.id}" em Integrações`,
+              ),
               nextRetryAt: shouldRetry
                 ? new Date(Date.now() + nextDelay * 1000)
                 : null,
@@ -404,7 +408,7 @@ export class ListingRetryService {
           const nextDelay =
             BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
           await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: errMsg(capErr),
+            lastError: manterVerificar(cand.lastError, errMsg(capErr)),
             nextRetryAt: new Date(Date.now() + nextDelay * 1000),
             retryEnabled: attempts < MAX_ATTEMPTS,
           });
@@ -486,6 +490,7 @@ export class ListingRetryService {
             cand as any,
             account as any,
           );
+          // adopted / ambiguous / search_failed: nada a criar nesta passada.
           if (conferencia !== "not_found") continue;
         }
 
@@ -624,7 +629,7 @@ export class ListingRetryService {
           const attempts = (cand.retryAttempts || 0) + 1;
           const shouldRetry = attempts < MAX_ATTEMPTS;
           await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: errMsg(err),
+            lastError: manterVerificar(cand.lastError, errMsg(err)),
             nextRetryAt: shouldRetry ? new Date(Date.now() + 60 * 1000) : null,
             retryEnabled: shouldRetry,
           });
@@ -654,17 +659,18 @@ export class ListingRetryService {
     cand: {
       id: string;
       createdAt: Date;
+      productId?: string;
       retryAttempts?: number | null;
       lastError?: string | null;
       marketplaceAccountId?: string;
-      product?: { sku?: string | null } | null;
+      product?: { sku?: string | null; name?: string | null } | null;
     },
     account: {
       id: string;
       accessToken: string;
       externalUserId?: string | null;
     },
-  ): Promise<"adopted" | "search_failed" | "not_found"> {
+  ): Promise<"adopted" | "ambiguous" | "search_failed" | "not_found"> {
     const sku = (cand.product?.sku || "").trim();
     const sellerId = (account.externalUserId || "").trim();
     // Sem SKU ou sem vendedor não há como conferir: segue como sempre foi.
@@ -691,14 +697,43 @@ export class ListingRetryService {
         }),
       );
       await ListingRepository.incrementRetryAttempts(cand.id, {
-        lastError: cand.lastError ?? `${LAST_ERROR_MARKER.VERIFICAR} conferência pendente`,
+        // Sempre COM o marcador: a próxima passada precisa conferir de novo
+        // antes de criar (sem ele, recriava às cegas o item que talvez exista).
+        lastError: comVerificar(
+          cand.lastError ||
+            "Não foi possível conferir no Mercado Livre se o anúncio já existe.",
+        ),
         nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
         retryEnabled: shouldRetry,
       });
       return "search_failed";
     }
 
-    const achado = pickReconciledItem(items, new Date(cand.createdAt));
+    const decisao = decideReconcile(items, {
+      placeholderCreatedAt: new Date(cand.createdAt),
+      sku,
+      desiredTitle: cand.product?.name
+        ? sanitizeMLTitle(cand.product.name, sku)
+        : null,
+    });
+    if (decisao.kind === "ambiguous") {
+      await ListingRepository.updateListing(cand.id, {
+        status: "error",
+        lastError: `[TERMINAL] Há um anúncio no Mercado Livre (${decisao.item.id}) com o mesmo SKU, criado agora, mas com outro título ("${String(decisao.item.title ?? "").slice(0, 80)}"). Confira no Mercado Livre se é este produto antes de publicar de novo.`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      console.warn(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "ambiguous",
+          listingId: cand.id,
+          externalListingId: decisao.item.id,
+        }),
+      );
+      return "ambiguous";
+    }
+    const achado = decisao.kind === "adopt" ? decisao.item : null;
     if (!achado) {
       console.log(
         JSON.stringify({
@@ -713,10 +748,25 @@ export class ListingRetryService {
 
     // Já existe OUTRA linha para este anúncio nesta conta (unique): não duplica
     // o vínculo — encerra o placeholder apontando para ele.
-    const jaVinculado = await ListingRepository.findByExternalListingId(
+    const jaVinculado = await ListingRepository.findLinkByExternalListingId(
       account.id,
       achado.id,
     );
+    if (
+      jaVinculado &&
+      jaVinculado.id !== cand.id &&
+      cand.productId &&
+      jaVinculado.productId !== cand.productId
+    ) {
+      // Vinculado a OUTRO produto: não é este — a pessoa confere.
+      await ListingRepository.updateListing(cand.id, {
+        status: "error",
+        lastError: `[TERMINAL] O anúncio ${achado.id}, com o mesmo SKU, está vinculado a outro produto. Confira no Mercado Livre antes de publicar de novo.`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      return "ambiguous";
+    }
     if (jaVinculado && jaVinculado.id !== cand.id) {
       await ListingRepository.updateListing(cand.id, {
         status: "error",
@@ -770,4 +820,29 @@ export class ListingRetryService {
     this.intervalId = null;
     this.running = false;
   }
+}
+
+/**
+ * Texto com o `[VERIFICAR]` na frente (tirando outros marcadores): a próxima
+ * passada confere no ML antes de criar.
+ */
+export function comVerificar(texto: string): string {
+  const limpo = String(texto ?? "").replace(/^(\[[A-Z]+\])+\s*/, "");
+  return `${LAST_ERROR_MARKER.VERIFICAR} ${limpo}`.substring(0, 490);
+}
+
+/**
+ * Regrava `lastError` sem perder o `[VERIFICAR]`: se a linha estava marcada
+ * (a tentativa anterior pode ter criado o item no ML), o texto novo mantém o
+ * marcador — senão a passada seguinte recriava sem conferir.
+ */
+export function manterVerificar(
+  anterior: string | null | undefined,
+  texto: string,
+): string {
+  const limpo = String(texto ?? "").replace(/^\[VERIFICAR\]\s*/, "");
+  if (typeof anterior === "string" && anterior.startsWith(LAST_ERROR_MARKER.VERIFICAR)) {
+    return `${LAST_ERROR_MARKER.VERIFICAR} ${limpo}`.substring(0, 490);
+  }
+  return String(texto ?? "");
 }

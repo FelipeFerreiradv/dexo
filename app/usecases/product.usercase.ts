@@ -30,6 +30,7 @@ import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-stat
 import { ListingRepository } from "../marketplaces/repositories/listing.repository";
 import {
   isPublishRelevantProductChange,
+  mlCategoryChanged,
   REARM_DELAY_MS,
 } from "../marketplaces/lib/ml-rearm.logic";
 
@@ -976,6 +977,24 @@ export class ProductUseCase {
 
     const updated = await this.productRepository.update(id, data, userId);
 
+    // Categoria do ML trocada: nenhum pendente do ML deste produto volta a
+    // tentar a categoria antiga (cron e botão usam a do produto). Best-effort.
+    if (
+      mlCategoryChanged(
+        data as unknown as Record<string, unknown>,
+        product as unknown as Record<string, unknown>,
+      )
+    ) {
+      try {
+        await ListingRepository.clearRequestedCategoryForMlPlaceholders(id);
+      } catch (catErr) {
+        console.warn(
+          "[ProductUseCase] falha ao limpar a categoria dos pendentes do ML:",
+          catErr instanceof Error ? catErr.message : String(catErr),
+        );
+      }
+    }
+
     // Anúncio do ML recusado por DADO (`[TERMINAL][CORRIGIVEL]`) volta para a
     // fila quando a edição mexe no que pode mudar o resultado — publica sozinho
     // depois da correção. Best-effort: falhar aqui não derruba a edição.
@@ -986,9 +1005,17 @@ export class ProductUseCase {
       )
     ) {
       try {
+        // Trocou a categoria do ML na correção: o pendente não pode voltar a
+        // tentar a categoria da tentativa recusada.
+        const categoriaMudou = mlCategoryChanged(
+          data as unknown as Record<string, unknown>,
+          product as unknown as Record<string, unknown>,
+        );
         const rearmados = await ListingRepository.rearmCorrectableMlPlaceholders(
           id,
           REARM_DELAY_MS,
+          new Date(),
+          categoriaMudou ? { clearRequestedCategory: true } : {},
         );
         if (rearmados > 0) {
           console.log(

@@ -23,6 +23,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     findByProductAndAccount: vi.fn(),
     findRetryStateById: vi.fn(),
     findByExternalListingId: vi.fn(),
+    findLinkByExternalListingId: vi.fn(),
   },
 }));
 
@@ -98,6 +99,7 @@ beforeEach(() => {
     retryEnabled: true,
   });
   (ListingRepository.findByExternalListingId as any).mockResolvedValue(null);
+  (ListingRepository.findLinkByExternalListingId as any).mockResolvedValue(null);
 });
 
 describe("[VERIFICAR] — confere no ML antes de recriar", () => {
@@ -178,8 +180,9 @@ describe("[VERIFICAR] — confere no ML antes de recriar", () => {
     (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
       { id: "MLB_X", status: "active", dateCreated: "2026-09-22T19:35:00.000Z" },
     ]);
-    (ListingRepository.findByExternalListingId as any).mockResolvedValue({
+    (ListingRepository.findLinkByExternalListingId as any).mockResolvedValue({
       id: "outra-linha",
+      productId: "prod-1",
     });
 
     await ListingRetryService.runOnce();
@@ -188,6 +191,130 @@ describe("[VERIFICAR] — confere no ML antes de recriar", () => {
     const dados = (ListingRepository.updateListing as any).mock.calls[0][1];
     expect(dados.lastError).toMatch(/^\[TERMINAL\].*MLB_X/);
     expect(dados.retryEnabled).toBe(false);
+  });
+
+  it("item com o mesmo SKU mas OUTRO título ⇒ ambíguo: nem adota nem recria", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
+      {
+        id: "MLB_OUTRO",
+        status: "active",
+        title: "Farol Dianteiro Gol G5",
+        dateCreated: "2026-09-22T19:35:00.000Z",
+      },
+    ]);
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+    const dados = (ListingRepository.updateListing as any).mock.calls[0][1];
+    expect(dados.lastError).toMatch(/^\[TERMINAL\] Há um anúncio .*MLB_OUTRO/);
+    expect(dados.retryEnabled).toBe(false);
+    expect(dados).not.toHaveProperty("externalListingId");
+  });
+
+  it("título equivalente (o ML anexa atributos ao título do item UP) ⇒ adota", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
+      {
+        id: "MLB_UP",
+        status: "active",
+        title: "Sensor MAF Dianteiro Original",
+        dateCreated: "2026-09-22T19:35:00.000Z",
+      },
+    ]);
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
+      "pl-1",
+      expect.objectContaining({ externalListingId: "MLB_UP" }),
+    );
+  });
+
+  it("item ENCERRADO criado na janela (linha reaproveitada) ⇒ não adota; cria", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
+      { id: "MLB_FECHADO", status: "closed", dateCreated: "2026-09-22T19:35:00.000Z" },
+    ]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({ success: true });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).toHaveBeenCalledTimes(1);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalledWith(
+      "pl-1",
+      expect.objectContaining({ externalListingId: "MLB_FECHADO" }),
+    );
+  });
+
+  it("campo de SKU do item é OUTRO código ⇒ não é deste produto; cria", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
+      {
+        id: "MLB_Z",
+        status: "active",
+        sellerCustomField: "9999",
+        dateCreated: "2026-09-22T19:35:00.000Z",
+      },
+    ]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({ success: true });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).toHaveBeenCalledTimes(1);
+  });
+
+  it("item vinculado a OUTRO produto ⇒ ambíguo, nada é criado nem vinculado", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
+      { id: "MLB_Y", status: "active", dateCreated: "2026-09-22T19:35:00.000Z" },
+    ]);
+    (ListingRepository.findLinkByExternalListingId as any).mockResolvedValue({
+      id: "linha-de-outro",
+      productId: "prod-OUTRO",
+    });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+    const dados = (ListingRepository.updateListing as any).mock.calls[0][1];
+    expect(dados.lastError).toMatch(/vinculado a outro produto/);
+  });
+
+  it("busca falhou numa linha SEM marcador ⇒ ganha [VERIFICAR] (a próxima passada confere)", async () => {
+    (MLApiService.findItemsBySellerSku as any).mockRejectedValue(new Error("503"));
+    const r = await ListingRetryService.reconcileBeforeRecreate(
+      candidato({ lastError: "Erro antigo sem marcador" }),
+      conta("acct-1", "X"),
+    );
+    expect(r).toBe("search_failed");
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.lastError).toBe("[VERIFICAR] Erro antigo sem marcador");
+  });
+
+  it("falha do capability check NÃO apaga o [VERIFICAR] da linha", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] timeout anterior" }),
+    ]);
+    (MLApiService.getSellerItemIds as any).mockRejectedValue(new Error("rede caiu"));
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.lastError).toBe("[VERIFICAR] rede caiu");
   });
 
   it("sem marcador ⇒ não consulta o ML (caminho de sempre)", async () => {

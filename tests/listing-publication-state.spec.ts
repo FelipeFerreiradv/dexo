@@ -126,6 +126,51 @@ describe("derivePublicationState", () => {
     ).toBe("publishing");
   });
 
+  it("re-armada pela edição: marcador velho + retry ligado ⇒ 'nova tentativa agendada', SEM botão", () => {
+    const v = derivePublicationState(
+      {
+        status: "error",
+        externalListingId: "PENDING_1",
+        lastError: "[TERMINAL][CORRIGIVEL] O campo GTIN…",
+        retryEnabled: true,
+        nextRetryAt: new Date(NOW.getTime() + 5 * 60_000),
+      },
+      NOW,
+    );
+    expect(v.state).toBe("retry_scheduled");
+    expect(v.canRetry).toBe(false);
+  });
+
+  it("reservada pelo botão (retry desligado, horário no futuro) ⇒ 'publicando agora', SEM botão", () => {
+    const v = derivePublicationState(
+      {
+        status: "error",
+        externalListingId: "PENDING_1",
+        lastError: "[TERMINAL][CORRIGIVEL] O campo GTIN…",
+        retryEnabled: false,
+        nextRetryAt: new Date(NOW.getTime() + 9 * 60_000),
+      },
+      NOW,
+    );
+    expect(v.state).toBe("publishing");
+    expect(v.canRetry).toBe(false);
+  });
+
+  it("reserva vencida (processo caiu) ⇒ volta a pedir correção com botão", () => {
+    const v = derivePublicationState(
+      {
+        status: "error",
+        externalListingId: "PENDING_1",
+        lastError: "[TERMINAL][CORRIGIVEL] O campo GTIN…",
+        retryEnabled: false,
+        nextRetryAt: new Date(NOW.getTime() - 1000),
+      },
+      NOW,
+    );
+    expect(v.state).toBe("needs_fix");
+    expect(v.canRetry).toBe(true);
+  });
+
   it("pending parado há mais de 30 min sem retry = interrompida", () => {
     expect(
       derivePublicationState(

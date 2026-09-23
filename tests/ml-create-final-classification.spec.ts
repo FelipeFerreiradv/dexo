@@ -326,9 +326,26 @@ describe("falhas que NÃO são de dado", () => {
     expect(g.retryEnabled).toBe(true);
   });
 
-  it("401 ⇒ [TERMINAL][RECONECTAR], sem retry", async () => {
+  // Mudança intencional (revisão de 23/09/2026): 401 de token vencido no meio
+  // da publicação volta a REAGENDAR (o retry renova o token e publica), como
+  // antes do erro estruturado. Só a recusa de PERMISSÃO (403/PolicyAgent)
+  // pede reconexão e para o retry.
+  it("401 (token vencido) ⇒ sem marcador, retry agendado", async () => {
     mlResponde(() => {
       throw erroMl("invalid access token", [], 401);
+    });
+    const r = await criar();
+    expect(r.errorKind).toBe("AUTH");
+    expect(r.lastErrorMarker).toBeUndefined();
+    expect(r.error).toMatch(/"LOJA".*expirou/);
+    const g = gravacaoFinal();
+    expect(g.lastError.startsWith("[")).toBe(false);
+    expect(g.retryEnabled).toBe(true);
+  });
+
+  it("403 PolicyAgent ⇒ [TERMINAL][RECONECTAR], sem retry", async () => {
+    mlResponde(() => {
+      throw erroMl("PolicyAgent: PA_UNAUTHORIZED_RESULT_FROM_POLICIES", [], 403);
     });
     const r = await criar();
     expect(r.errorKind).toBe("AUTH");
@@ -336,6 +353,55 @@ describe("falhas que NÃO são de dado", () => {
     const g = gravacaoFinal();
     expect(g.lastError.startsWith("[TERMINAL][RECONECTAR] ")).toBe(true);
     expect(g.retryEnabled).toBe(false);
+  });
+
+  it("conexão caída (ECONNRESET) numa tentativa e recusa por dado na última ⇒ [VERIFICAR] (pode ter criado)", async () => {
+    let n = 0;
+    (MLApiService.createItem as any).mockImplementation(async () => {
+      n += 1;
+      if (n === 1) {
+        const e: any = new Error("socket hang up");
+        e.code = "ECONNRESET";
+        throw e;
+      }
+      throw erroMl("Validation error", [INMETRO_3702]);
+    });
+    const r = await criar();
+    expect(r.lastErrorMarker).toBe("[VERIFICAR]");
+    const g = gravacaoFinal();
+    expect(g.lastError.startsWith("[VERIFICAR] ")).toBe(true);
+    expect(g.retryEnabled).toBe(true);
+  });
+
+  it("ML_ERROR_DETAIL_DISABLED=1 sem causa reconhecida ⇒ texto cru do ML, como em main", async () => {
+    process.env.ML_ERROR_DETAIL_DISABLED = "1";
+    try {
+      mlResponde(() => {
+        throw erroMl("Validation error", [
+          { cause_id: 9999, type: "error", message: "Something odd" },
+        ]);
+      });
+      const r = await criar();
+      expect(r.error).toMatch(/^Erro ao criar item: /);
+    } finally {
+      delete process.env.ML_ERROR_DETAIL_DISABLED;
+    }
+  });
+
+  it("ML_ERROR_CLASSIFICATION_DISABLED=1 ⇒ recusa por dado volta a reagendar (comportamento anterior)", async () => {
+    process.env.ML_ERROR_CLASSIFICATION_DISABLED = "1";
+    try {
+      mlResponde(() => {
+        throw erroMl("Validation error", [INMETRO_3702]);
+      });
+      const r = await criar();
+      expect(r.lastErrorMarker).toBeUndefined();
+      const g = gravacaoFinal();
+      expect(g.lastError.startsWith("[")).toBe(false);
+      expect(g.retryEnabled).toBe(true);
+    } finally {
+      delete process.env.ML_ERROR_CLASSIFICATION_DISABLED;
+    }
   });
 });
 

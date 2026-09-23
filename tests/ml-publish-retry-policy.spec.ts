@@ -11,7 +11,10 @@ import {
   RECONCILE_TOLERANCE_MS,
 } from "../app/marketplaces/lib/ml-reconcile.logic";
 import { placeholderMlSettings } from "../app/marketplaces/lib/ml-placeholder-settings";
-import { isPublishRelevantProductChange } from "../app/marketplaces/lib/ml-rearm.logic";
+import {
+  isPublishRelevantProductChange,
+  mlCategoryChanged,
+} from "../app/marketplaces/lib/ml-rearm.logic";
 import {
   describeMLCause,
   pickActionableMLErrorForCategory,
@@ -41,6 +44,48 @@ describe("marcador por classe de erro", () => {
     ).toBe(LAST_ERROR_MARKER.VERIFICAR);
   });
 
+  it("token vencido (401) ⇒ sem marcador: o retry renova e publica (como antes)", () => {
+    expect(
+      lastErrorMarkerFor({
+        kind: "AUTH",
+        httpStatus: 401,
+        timedOut: false,
+        authPermanent: false,
+      }),
+    ).toBeNull();
+    expect(
+      lastErrorMarkerFor({
+        kind: "AUTH",
+        httpStatus: 403,
+        timedOut: false,
+        authPermanent: true,
+      }),
+    ).toBe(LAST_ERROR_MARKER.RECONECTAR);
+  });
+
+  it("conexão que caiu DEPOIS de aberta (ECONNRESET/EPIPE) ⇒ [VERIFICAR]; nunca conectou ⇒ sem marcador", () => {
+    for (const networkCode of ["ECONNRESET", "EPIPE"]) {
+      expect(
+        lastErrorMarkerFor({
+          kind: "TRANSIENT",
+          httpStatus: null,
+          timedOut: false,
+          networkCode,
+        }),
+      ).toBe(LAST_ERROR_MARKER.VERIFICAR);
+    }
+    for (const networkCode of ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]) {
+      expect(
+        lastErrorMarkerFor({
+          kind: "TRANSIENT",
+          httpStatus: null,
+          timedOut: false,
+          networkCode,
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("429 e rede caída ⇒ sem marcador (nada foi criado, retry comum)", () => {
     expect(
       lastErrorMarkerFor({ kind: "RATE_LIMIT", httpStatus: 429, timedOut: false }),
@@ -62,7 +107,7 @@ describe("mensagem humana por classe (nunca JSON)", () => {
   const base = normalizeMLError({ err: new Error("x") });
   it.each([
     ["VALIDATION", /recusou o anúncio/],
-    ["AUTH", /reconectada/],
+    ["AUTH", /expirou.*tenta de novo/],
     ["RATE_LIMIT", /limitou/],
     ["TRANSIENT", /indisponível/],
     ["UNKNOWN", /não detalhou/],
@@ -70,6 +115,12 @@ describe("mensagem humana por classe (nunca JSON)", () => {
     const msg = humanMessageForKind({ ...base, kind });
     expect(msg).toMatch(re);
     expect(msg).not.toMatch(/[{}]/);
+  });
+
+  it("AUTH de permissão (403/PolicyAgent) pede reconexão", () => {
+    expect(
+      humanMessageForKind({ ...base, kind: "AUTH", authPermanent: true }),
+    ).toMatch(/reconectada/);
   });
 
   it("validação cita a causa do ML e o código", () => {
@@ -335,6 +386,30 @@ describe("re-armar só quando a edição pode mudar o resultado", () => {
         antes,
       ),
     ).toBe(false);
+  });
+
+  it("vazio é vazio: [] / {} / null / ausente não re-armam (salvamento só de estoque do modal)", () => {
+    expect(
+      isPublishRelevantProductChange(
+        { compatibilities: [], compatibilityPositions: [], imageUrls: [] },
+        { name: "X" },
+      ),
+    ).toBe(false);
+    expect(isPublishRelevantProductChange({ attributes: {} }, { attributes: null })).toBe(false);
+    expect(
+      isPublishRelevantProductChange(
+        { compatibilities: [{ brand: "VW", model: "Gol" }] },
+        { name: "X" },
+      ),
+    ).toBe(true);
+  });
+
+  it("mlCategoryChanged: só quando a categoria do ML vem e é outra", () => {
+    const antes = { mlCategoryId: "MLB1", mlCategory: "Faróis" };
+    expect(mlCategoryChanged({}, antes)).toBe(false);
+    expect(mlCategoryChanged({ mlCategoryId: "MLB1" }, antes)).toBe(false);
+    expect(mlCategoryChanged({ mlCategoryId: "MLB2" }, antes)).toBe(true);
+    expect(mlCategoryChanged({ mlCategory: "Lanternas" }, antes)).toBe(true);
   });
 
   it("preço Decimal (toNumber) compara pelo número", () => {

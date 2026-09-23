@@ -504,6 +504,10 @@ export interface MLOrderBillingInfo {
   } | null;
 }
 
+/** Busca por seller_sku: 100 por página, no máximo 5 páginas (500 anúncios). */
+export const ML_SELLER_SKU_SEARCH_PAGE = 100;
+export const ML_SELLER_SKU_SEARCH_MAX_PAGES = 5;
+
 export class MLApiService {
   // cache simples para app access token obtido via client_credentials
   private static appToken: { token: string; exp: number } | null = null;
@@ -1794,17 +1798,43 @@ export class MLApiService {
       sellerCustomField: string | null;
     }>
   > {
-    const search = await axios.get<{ results?: string[] }>(
-      `${ML_CONSTANTS.API_URL}/users/${encodeURIComponent(sellerId)}/items/search`,
-      {
-        params: { seller_sku: sku },
-        headers: { Authorization: `Bearer ${accessToken}` },
-        timeout: 15000,
-      },
-    );
-    const ids = (search.data?.results ?? []).filter(
-      (id): id is string => typeof id === "string" && !!id,
-    );
+    // Paginada: o ML devolve 50 por padrão e no máximo 100 por página (medido
+    // em 22/09/2026: limit=200 volta limit=100), com o total em
+    // `paging.total`. Ler só a 1ª página fazia "não achei" parecer "não
+    // existe" para SKU repetido em muitos anúncios — e a reconciliação
+    // recriava. Acima do teto, LANÇA: quem chama trata como "não deu para
+    // conferir" e não cria nada (R7: teto com sinalização).
+    const ids: string[] = [];
+    for (let pagina = 0; pagina < ML_SELLER_SKU_SEARCH_MAX_PAGES; pagina++) {
+      const search = await axios.get<{
+        results?: string[];
+        paging?: { total?: number };
+      }>(
+        `${ML_CONSTANTS.API_URL}/users/${encodeURIComponent(sellerId)}/items/search`,
+        {
+          params: {
+            seller_sku: sku,
+            limit: ML_SELLER_SKU_SEARCH_PAGE,
+            offset: pagina * ML_SELLER_SKU_SEARCH_PAGE,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 15000,
+        },
+      );
+      const lote = (search.data?.results ?? []).filter(
+        (id): id is string => typeof id === "string" && !!id,
+      );
+      ids.push(...lote);
+      const total = Number(search.data?.paging?.total);
+      const lidos = (pagina + 1) * ML_SELLER_SKU_SEARCH_PAGE;
+      if (lote.length < ML_SELLER_SKU_SEARCH_PAGE) break;
+      if (Number.isFinite(total) && lidos >= total) break;
+      if (pagina === ML_SELLER_SKU_SEARCH_MAX_PAGES - 1) {
+        throw new Error(
+          `seller_sku_search_truncated: SKU ${sku} tem mais de ${lidos} anúncios na conta (total=${Number.isFinite(total) ? total : "?"})`,
+        );
+      }
+    }
     if (ids.length === 0) return [];
 
     const out: Array<{

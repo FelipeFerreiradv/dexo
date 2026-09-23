@@ -44,6 +44,7 @@ import {
 import {
   humanMessageForKind,
   isTerminalMarker,
+  LAST_ERROR_MARKER,
   lastErrorMarkerFor,
   normalizeMLError,
   type MLRawCause,
@@ -3884,12 +3885,26 @@ export class ListingUseCase {
             step: ultimaNaPedida.step,
             categoryId: ultimaNaPedida.categoryId,
           });
-          const algumTimeout = attemptLog.some(
-            (a) => normalizeMLError({ err: a.err }).timedOut,
-          );
-          const classe = algumTimeout
-            ? { ...normalizado, kind: "UNKNOWN" as const, timedOut: true }
-            : normalizado;
+          // Qualquer tentativa da passada que PODE ter criado o item no ML
+          // (timeout, conexão que caiu depois de aberta, 5xx) torna a falha
+          // inteira "conferir antes de recriar" — mesmo que a última tentativa
+          // tenha sido uma recusa por dado.
+          const algumTimeout = attemptLog.some((a) => {
+            const n = normalizeMLError({ err: a.err });
+            return (
+              n.timedOut ||
+              lastErrorMarkerFor(n) === LAST_ERROR_MARKER.VERIFICAR
+            );
+          });
+          // Se a própria última tentativa já pede conferência (timeout, 5xx,
+          // conexão caída), ela fala por si (ex.: "ML indisponível"); se a
+          // conferência vem de uma tentativa ANTERIOR, a falha inteira vira
+          // "pode ter criado — conferir antes de recriar".
+          const classe =
+            algumTimeout &&
+            lastErrorMarkerFor(normalizado) !== LAST_ERROR_MARKER.VERIFICAR
+              ? { ...normalizado, kind: "UNKNOWN" as const, timedOut: true }
+              : normalizado;
           // Recusa por dado só é terminal quando a ficha foi montada COM o
           // catálogo de atributos da categoria. Sem catálogo (serviço de
           // atributos indisponível nesta tentativa — fail-open), o próprio
@@ -3898,20 +3913,27 @@ export class ListingUseCase {
           const catalogoDisponivel =
             !!categoryAttrsForBuild && categoryAttrsForBuild.length > 0;
           const marcadorBruto = lastErrorMarkerFor(classe);
+          // ML_ERROR_CLASSIFICATION_DISABLED=1: sem marcador ⇒ toda falha volta
+          // a reagendar como antes do erro estruturado (a mensagem humana fica).
           const marcador =
-            classe.kind === "VALIDATION" && !catalogoDisponivel
+            process.env.ML_ERROR_CLASSIFICATION_DISABLED === "1" ||
+            (classe.kind === "VALIDATION" && !catalogoDisponivel)
               ? null
               : marcadorBruto;
           const primeiraCausa =
             (((ultimaNaPedida.err as any)?.mlError?.cause ?? []) as MLRawCause[])
               .find((c) => (c?.type ?? "error").toLowerCase() === "error") ??
             null;
+          // ML_ERROR_DETAIL_DISABLED=1 restaura o texto de antes: sem causa
+          // reconhecida, a mensagem crua do ML (como era em main).
           const mensagem =
             actionable ??
-            humanMessageForKind(classe, {
-              accountName: acc.accountName,
-              firstCause: primeiraCausa,
-            });
+            (process.env.ML_ERROR_DETAIL_DISABLED === "1"
+              ? errMsg
+              : humanMessageForKind(classe, {
+                  accountName: acc.accountName,
+                  firstCause: primeiraCausa,
+                }));
 
           // Log estruturado: responde "quantos falham, por qual código, em
           // qual categoria/conta, desde quando". Sem token e sem payload.
