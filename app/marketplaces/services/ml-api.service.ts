@@ -504,6 +504,12 @@ export interface MLOrderBillingInfo {
   } | null;
 }
 
+/**
+ * Máximo de produtos de catálogo por chamada de compatibilidade
+ * (documentação "Compatibilidades Autopeças" do ML, 14/07/2026).
+ */
+export const ML_COMPAT_MAX_PRODUCTS_PER_CALL = 200;
+
 export class MLApiService {
   // cache simples para app access token obtido via client_credentials
   private static appToken: { token: string; exp: number } | null = null;
@@ -2343,6 +2349,29 @@ export class MLApiService {
         ...(positions ? { positions } : {}),
       };
     };
+
+    // Acima do limite do ML por chamada: lotes de 200, sem a queda para "um
+    // id por chamada" (seriam centenas de PUTs — um "Gol" sem ano resolve 757
+    // produtos). Um lote recusado não derruba os outros; recusa PERMANENTE
+    // (domínio/categoria) para tudo. Até 200: o caminho de sempre, abaixo.
+    if (unique.length > ML_COMPAT_MAX_PRODUCTS_PER_CALL) {
+      let enviados = 0;
+      for (
+        let i = 0;
+        i < unique.length;
+        i += ML_COMPAT_MAX_PRODUCTS_PER_CALL
+      ) {
+        const lote = unique.slice(i, i + ML_COMPAT_MAX_PRODUCTS_PER_CALL);
+        const r = await postBatch(lote);
+        if (r.ok) {
+          enviados += lote.length;
+          continue;
+        }
+        if (r.error) errors.push(r.error);
+        if (r.error && isPermanentCompatRejection(r.error)) break;
+      }
+      return finish(enviados, enviados === unique.length);
+    }
 
     // Tentativa 1: batch único.
     const batch = await postBatch(unique);
