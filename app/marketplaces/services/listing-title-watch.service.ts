@@ -41,7 +41,11 @@ import { conferirVinculoNaVenda } from "@/app/marketplaces/lib/conferencia-vincu
 
 const INTERVALO_MS = 60 * 60 * 1000;
 const FATIAS = Number(process.env.LISTING_TITLE_WATCH_SLICES ?? 24);
-const MAX_POR_TICK = Number(process.env.LISTING_TITLE_WATCH_MAX ?? 900);
+// A base tem ~164 mil anuncios ML ativos: com 24 fatias, uma fatia e ~6.900.
+// Um teto abaixo disso nao "anda mais devagar" — ele deixa o FIM de cada fatia
+// sem verificacao em TODAS as passadas, que e exatamente a doenca do cursor em
+// memoria que esta vigilia existe para nao ter.
+const MAX_POR_TICK = Number(process.env.LISTING_TITLE_WATCH_MAX ?? 9000);
 const DEDUPE_MS = 24 * 60 * 60 * 1000;
 
 type Candidato = {
