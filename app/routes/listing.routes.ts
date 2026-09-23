@@ -871,6 +871,10 @@ export async function listingRoutes(app: FastifyInstance) {
             retryEnabled: true,
             nextRetryAt: true,
             updatedAt: true,
+            // O que o read-back do ML confirmou da compatibilidade veicular.
+            // Existia desde agosto mas nenhuma tela lia. Objeto pequeno (≤ 5
+            // amostras), e só sai na resposta das linhas do Mercado Livre.
+            compatDiagnostics: true,
             marketplaceAccount: {
               select: {
                 id: true,
@@ -943,6 +947,11 @@ export async function listingRoutes(app: FastifyInstance) {
             // o payload de ML/Shopee/Magalu/OLX segue byte a byte o de antes.
             ...(l.marketplaceAccount?.platform === "FACEBOOK"
               ? { fbCatalogId: l.marketplaceAccount?.fbCatalogId ?? null }
+              : {}),
+            // Mesmo critério: só no Mercado Livre, e só quando existe.
+            ...(l.marketplaceAccount?.platform === "MERCADO_LIVRE" &&
+            l.compatDiagnostics
+              ? { compatDiagnostics: l.compatDiagnostics }
               : {}),
           })),
         });

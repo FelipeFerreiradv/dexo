@@ -8,6 +8,11 @@ import {
   criarCacheDeToken,
   type MLTokenSnapshot,
 } from "./lib/ml-token-cache";
+import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
+import {
+  buildCompatDiagnostics,
+  compatDiagnosticsNeedsResend,
+} from "../app/marketplaces/lib/ml-compat-diagnostics";
 
 /**
  * Reenvia as compatibilidades veiculares (brand/model/year) cadastradas
@@ -35,6 +40,15 @@ import {
  *       sem esta flag o script é dry-run)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --only-missing  (só envia
  *       para anúncios cujo HAS_COMPATIBILITIES não é "Sim" — pula os que já têm)
+ *   --only-unresolved  só anúncios cujo compatDiagnostics mostra perda (veículo
+ *       não resolvido / catálogo truncado / nada gravado)
+ *   --since=30d        só produtos criados nos últimos N dias (ou data ISO)
+ *   --resolve          no dry-run, resolve os veículos no catálogo do ML (só
+ *       leitura) e mostra quantos entrariam
+ *
+ * ⚠️ O user padrão é de OUTRO cliente: passe sempre --user=… e a conta
+ *   (--all-accounts / --account-id). Rode NA VPS — renovar token da máquina
+ *   local derruba a conta (client_id diferente).
  *
  * Como funciona:
  *  1. Busca produtos do user que têm pelo menos 1 ProductCompatibility cadastrada.
@@ -74,6 +88,35 @@ const onlyMissing = args.includes("--only-missing");
  */
 const apply = args.includes("--apply");
 const dryRun = !apply;
+/**
+ * Só anúncios cujo diagnóstico gravado mostra perda (veículo não resolvido,
+ * catálogo truncado ou nada gravado) — ver `compatDiagnosticsNeedsResend`. É o
+ * recorte do defeito de paginação corrigido em 22/09/2026.
+ */
+const onlyUnresolved = args.includes("--only-unresolved");
+/**
+ * Janela por data de criação do PRODUTO: `--since=30d` (dias) ou uma data ISO.
+ * Ausente = todos, como sempre foi.
+ */
+const sinceArg = args.find((a) => a.startsWith("--since="))?.split("=")[1];
+const since: Date | null = (() => {
+  if (!sinceArg) return null;
+  const dias = /^(\d+)d$/.exec(sinceArg);
+  const d = dias
+    ? new Date(Date.now() - Number(dias[1]) * 24 * 60 * 60 * 1000)
+    : new Date(sinceArg);
+  if (Number.isNaN(d.getTime())) {
+    console.error(`[backfill-compat] --since inválido: ${sinceArg}`);
+    process.exit(1);
+  }
+  return d;
+})();
+/**
+ * No dry-run, resolve de verdade os veículos contra o catálogo do ML (só
+ * buscas, nenhuma escrita) e mostra quantos entrariam — em vez de só contar as
+ * linhas do cadastro.
+ */
+const resolveInDryRun = args.includes("--resolve");
 /**
  * Só relatório: compara o que o banco tem com o que o ML devolve na LEITURA de
  * compatibilidades e lista as divergências. Não escreve nada, nem com --apply.
@@ -236,10 +279,20 @@ async function main(): Promise<void> {
     `[backfill-compat] Conta(s) alvo: ${target.label}${target.ids.length === 1 ? "" : ` [${target.ids.length} contas]`}`,
   );
 
+  if (since) {
+    console.log(`[backfill-compat] produtos criados desde ${since.toISOString()}`);
+  }
+  if (onlyUnresolved) {
+    console.log(
+      "[backfill-compat] --only-unresolved: só anúncios com perda no diagnóstico",
+    );
+  }
+
   const products = await prisma.product.findMany({
     where: {
       userId,
       compatibilities: { some: {} },
+      ...(since ? { createdAt: { gte: since } } : {}),
     },
     include: {
       compatibilities: true,
@@ -248,6 +301,11 @@ async function main(): Promise<void> {
           marketplaceAccountId: { in: target.ids },
           marketplaceAccount: { platform: "MERCADO_LIVRE" },
           externalListingId: { startsWith: "MLB" },
+          // O recorte reenvia anúncio sem diagnóstico; encerrado nunca grava
+          // nada (persisted=0 ⇒ "reenviar" de novo a cada execução).
+          ...(onlyUnresolved
+            ? { status: { in: ["active", "paused", "under_review"] } }
+            : {}),
         },
         include: { marketplaceAccount: true },
         orderBy: [{ status: "asc" }, { createdAt: "desc" }],
@@ -337,6 +395,14 @@ async function main(): Promise<void> {
         continue;
       }
       const lprefix = `  ${prefix} listing=${listing.externalListingId} (status=${listing.status})`;
+      if (
+        onlyUnresolved &&
+        !compatDiagnosticsNeedsResend(
+          (listing as { compatDiagnostics?: unknown }).compatDiagnostics,
+        )
+      ) {
+        continue;
+      }
       try {
         const token = await getValidToken(listing.marketplaceAccount);
 
@@ -404,22 +470,55 @@ async function main(): Promise<void> {
         }
 
         if (dryRun) {
-          console.log(
-            `${lprefix}: [dry-run] would send ${vehicles.length} compat entries`,
-          );
+          if (resolveInDryRun) {
+            // Só buscas no catálogo (POST products_search é leitura).
+            const r = await MLApiService.resolveCompatibilityCatalogProducts(
+              token,
+              vehicles,
+            );
+            console.log(
+              `${lprefix}: [dry-run] resolveria ${r.catalogProductIds.length} veiculo(s) do catalogo ML` +
+                ` (nao resolvidos: ${r.unresolved.length}` +
+                `${r.truncated && r.truncated.length > 0 ? `, catalogo truncado em ${r.truncated.length} par(es)` : ""})`,
+            );
+            totalCompatSent += r.catalogProductIds.length;
+          } else {
+            console.log(
+              `${lprefix}: [dry-run] would send ${vehicles.length} compat entries`,
+            );
+            totalCompatSent += vehicles.length;
+          }
           listingsOk++;
-          totalCompatSent += vehicles.length;
           continue;
         }
 
         // Escada verificada: cada estratégia só vale se o read-back confirmar
         // veículos gravados. Antes usávamos direto o caminho por atributos,
         // que o ML aceita com 200 e ignora (ids:[]).
+        // A posição (lado/eixo) é do produto e vai junto, como na criação.
+        const positions = Array.isArray(product.compatibilityPositions)
+          ? (product.compatibilityPositions as unknown[]).filter(
+              (p): p is string => typeof p === "string",
+            )
+          : undefined;
         const result = await MLApiService.applyCompatibilitiesVerified(
           token,
           listing.externalListingId,
           vehicles,
+          positions && positions.length > 0 ? positions : undefined,
         );
+
+        // Grava o que o read-back confirmou, para o card do anúncio refletir.
+        try {
+          await ListingRepository.updateCompatDiagnostics(
+            listing.id,
+            buildCompatDiagnostics(result, { origin: "backfill" }),
+          );
+        } catch (diagErr) {
+          console.warn(
+            `${lprefix}: diagnostico nao gravado — ${diagErr instanceof Error ? diagErr.message : String(diagErr)}`,
+          );
+        }
 
         if (result.ok) {
           console.log(

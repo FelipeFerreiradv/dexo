@@ -33,6 +33,7 @@ import {
   writeListingsCache,
   type ApiListing,
 } from "@/app/produtos/lib/listings-status-cache";
+import { describeCompatDiagnostics } from "@/app/produtos/lib/listing-compat-summary";
 
 export type { ApiListing };
 
@@ -291,6 +292,10 @@ export function ProductListingsList({
               listing.accountName?.trim() || "Conta sem nome";
             const externalId = listing.externalListingId?.trim();
             const pending = isPending(listing);
+            // Só existe em linhas do ML que já passaram pelo read-back.
+            const compatSummary = pending
+              ? null
+              : describeCompatDiagnostics(listing.compatDiagnostics);
 
             return (
               <li
@@ -321,6 +326,19 @@ export function ProductListingsList({
                   {listing.lastError && (
                     <p className="text-xs text-destructive">
                       {listing.lastError}
+                    </p>
+                  )}
+                  {compatSummary && (
+                    <p
+                      className={
+                        compatSummary.tone === "ok"
+                          ? "text-xs text-muted-foreground"
+                          : compatSummary.tone === "warning"
+                            ? "text-xs text-amber-700 dark:text-amber-400"
+                            : "text-xs text-muted-foreground italic"
+                      }
+                    >
+                      {compatSummary.text}
                     </p>
                   )}
                 </div>
