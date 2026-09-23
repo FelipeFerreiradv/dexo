@@ -569,19 +569,95 @@ describe("pendente reaproveitado com retry desligado: reserva antes de publicar 
     expect(r.skipped).toBe(true);
   });
 
-  it("linha do CRON (retry ligado) e republicação ⇒ sem reserva (cada um tem a própria trava)", async () => {
-    for (const linha of [
+  it("linha do CRON (retry ligado) SEM a reserva dele ⇒ 'agendada', nada é enviado (Anunciar não corre junto com o cron)", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
       pendente({ retryEnabled: true, nextRetryAt: new Date(Date.now() + 60_000) }),
+    );
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(true);
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+    expect(r.error).toMatch(/agendada/);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("linha do CRON com a reserva DELE ⇒ publica (sem reservar de novo)", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
+      pendente({ retryEnabled: true, nextRetryAt: RESERVA }),
+    );
+    recusa();
+    await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { reservation: { listingId: "l-pend", at: new Date(RESERVA.getTime()) } },
+    );
+    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
+    expect(MLApiService.createItem).toHaveBeenCalled();
+  });
+
+  it("republicação (PENDING_REPUBLISH_) ⇒ sem reserva (o sync tem a própria trava)", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(
       pendente({ externalListingId: "PENDING_REPUBLISH_MLB1_1" }),
-    ]) {
-      vi.clearAllMocks();
-      (ListingRepository.findByProductAndAccount as any).mockResolvedValue(linha);
-      (ListingRepository.updateListing as any).mockResolvedValue({});
-      recusa();
-      await criar();
-      expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
-      expect(MLApiService.createItem).toHaveBeenCalled();
-    }
+    );
+    recusa();
+    await criar();
+    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
+    expect(MLApiService.createItem).toHaveBeenCalled();
+  });
+
+  it("1ª publicação: a linha NASCE reservada (segundo 'Anunciar' a vê em andamento)", async () => {
+    recusa();
+    const antes = Date.now();
+    await criar();
+    const criada = (ListingRepository.createListing as any).mock.calls[0][0];
+    expect(criada.retryEnabled).toBe(false);
+    expect(criada.nextRetryAt).toBeInstanceOf(Date);
+    expect(criada.nextRetryAt.getTime()).toBeGreaterThanOrEqual(antes + 9 * 60_000);
+  });
+
+  it("1ª publicação com erro inesperado ⇒ a reserva da linha nova é desfeita", async () => {
+    // Erro fora dos ramos tratados, logo depois de criar a linha.
+    vi.spyOn(ListingUseCase as any, "sanitizePackageDimensions").mockImplementation(() => {
+      throw new Error("inesperado");
+    });
+    const r = await criar();
+    expect(r.success).toBe(false);
+    const criada = (ListingRepository.createListing as any).mock.calls[0][0];
+    expect(ListingRepository.releaseInteractiveRetry).toHaveBeenCalledWith(
+      "l-novo",
+      criada.nextRetryAt,
+    );
+  });
+
+  it("a linha escolhida já é anúncio VIVO (outra criação terminou no meio desta) ⇒ recusa, sem POST", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-viva",
+      externalListingId: "MLB777",
+      status: "active",
+    });
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(true);
+    expect(r.error).toMatch(/já tem anúncio/);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("linha com id real ENCERRADA continua podendo ser republicada", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-velha",
+      externalListingId: "MLB_ENCERRADO",
+      status: "closed",
+    });
+    recusa();
+    await criar();
+    expect(MLApiService.createItem).toHaveBeenCalled();
   });
 
   it("erro inesperado depois de reservar ⇒ a reserva é desfeita (não fica 'Publicando agora')", async () => {

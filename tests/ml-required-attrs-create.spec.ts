@@ -278,6 +278,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Reserva que o cron passa ao createMLListing (claimRetryCandidate). */
+const RESERVA_DO_CRON = new Date("2026-09-23T12:10:00.000Z");
+
 describe("bloqueio ANTES do POST /items", () => {
   it("C1: flag 1 + PART_NUMBER obrigatório ausente → terminal com M1, sem createItem e sem upload", async () => {
     process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
@@ -907,8 +910,9 @@ describe("ficha da Revisão individual (D2/D6)", () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-pend",
       externalListingId: "PENDING_1",
-      // Linha do CRON: retry ligado (o cron só pega essas; a criação não a reserva).
+      // Linha do CRON: retry ligado e reservada por ele (o cron passa a reserva).
       retryEnabled: true,
+      nextRetryAt: RESERVA_DO_CRON,
       attributesOverride: { SIDE: SIDE_OVERRIDE, COLOR: { value_name: "Preto" } },
     });
     const r = await ListingUseCase.createMLListing(
@@ -920,6 +924,7 @@ describe("ficha da Revisão individual (D2/D6)", () => {
       undefined,
       undefined,
       { SIDE: SIDE_OVERRIDE, COLOR: { value_name: "Preto" } },
+      { reservation: { listingId: "l-pend", at: RESERVA_DO_CRON } },
     );
     expect(r.terminal).toBeUndefined();
     const payload = (MLApiService.createItem as any).mock.calls[0][1];
@@ -963,8 +968,9 @@ describe("ficha da Revisão individual (D2/D6)", () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-novo",
       externalListingId: "PENDING_1",
-      // Linha do CRON: retry ligado (o cron só pega essas; a criação não a reserva).
+      // Linha do CRON: retry ligado e reservada por ele (o cron passa a reserva).
       retryEnabled: true,
+      nextRetryAt: RESERVA_DO_CRON,
       attributesOverride: placeholder.attributesOverride,
     });
     const r2 = await ListingUseCase.createMLListing(
@@ -976,6 +982,7 @@ describe("ficha da Revisão individual (D2/D6)", () => {
       undefined,
       undefined,
       placeholder.attributesOverride,
+      { reservation: { listingId: "l-novo", at: RESERVA_DO_CRON } },
     );
     expect(r2.terminal).toBeUndefined();
     const payload2 = (MLApiService.createItem as any).mock.calls[0][1];

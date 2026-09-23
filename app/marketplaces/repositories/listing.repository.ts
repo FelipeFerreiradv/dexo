@@ -1,4 +1,5 @@
 import prisma from "../../lib/prisma";
+import { liveListingStatuses } from "../lib/listing-live-statuses";
 import type { Prisma } from "@prisma/client";
 import { campoJson } from "../../lib/prisma-json-null";
 
@@ -442,17 +443,7 @@ export class ListingRepository {
     productId: string,
     marketplaceAccountId: string,
   ) {
-    const liveStatuses =
-      process.env.LISTING_STATUS_SYNC_DISABLED === "1"
-        ? ["active", "paused"]
-        : [
-            "active",
-            "paused",
-            "under_review",
-            "reviewing",
-            "unlist",
-            "inactive",
-          ];
+    const liveStatuses = liveListingStatuses();
     return prisma.productListing.findFirst({
       where: {
         productId,
@@ -661,16 +652,23 @@ export class ListingRepository {
    * preso para sempre (o cron nunca mais rodaria); e segurar uma transação
    * pela passada inteira esbarra no idle_in_transaction_session_timeout.
    */
-  static async claimRetryCandidate(listingId: string, leaseMs: number) {
+  static async claimRetryCandidate(
+    listingId: string,
+    leaseMs: number,
+  ): Promise<Date | null> {
+    const agora = new Date();
+    const ate = new Date(agora.getTime() + leaseMs);
     const res = await prisma.productListing.updateMany({
       where: {
         id: listingId,
         retryEnabled: true,
-        OR: [{ nextRetryAt: { lte: new Date() } }, { nextRetryAt: null }],
+        OR: [{ nextRetryAt: { lte: agora } }, { nextRetryAt: null }],
       },
-      data: { nextRetryAt: new Date(Date.now() + leaseMs) },
+      data: { nextRetryAt: ate },
     });
-    return res.count === 1;
+    // O horário da reserva volta para o cron: é o passe dele no
+    // createMLListing (só quem tem a reserva reaproveita a linha).
+    return res.count === 1 ? ate : null;
   }
 
   /**
