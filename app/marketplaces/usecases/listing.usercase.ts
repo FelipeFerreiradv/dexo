@@ -3216,6 +3216,9 @@ export class ListingUseCase {
         ? built.retryOverrides
         : null;
 
+      // Linha que esta chamada acabou de CRIAR (a única que não recebe o
+      // update de configurações abaixo — já nasceu com elas).
+      let criadaAgora = false;
       if (!listing) {
         // retryEnabled=false: o fluxo primário é responsável pelo próprio
         // sucesso/erro. Só o catch habilita retry explicitamente se a
@@ -3275,28 +3278,63 @@ export class ListingUseCase {
           };
         }
         if ("existing" in criacao) {
-          console.warn(
-            JSON.stringify({
-              event: "ml.create_item.in_progress_refused",
-              productId,
-              accountId: acc.id,
-              listingId: criacao.existing.id,
-              stage: "first_placeholder_lock",
-            }),
+          // A linha do par apareceu entre a leitura acima e o lock (outra
+          // criação, ou o bloqueio de campo obrigatório de outro "Anunciar",
+          // que grava a linha já terminal e livre). Mesma regra do
+          // reaproveitamento: só a OCUPADA faz recuar — livre é reservada e
+          // agendada é assumida, e esta publicação segue nela.
+          const existente = criacao.existing;
+          const decisaoLock = placeholderDecision(
+            existente,
+            opts?.reservation ?? null,
           );
-          return {
-            success: false,
-            skipped: true,
-            code: "PUBLICATION_IN_PROGRESS",
-            listingId: criacao.existing.id,
-            error: busyMessage(criacao.existing),
+          const atLock =
+            decisaoLock === "takeover"
+              ? await ListingRepository.takeOverScheduledRetry(
+                  existente.id,
+                  CREATE_RESERVATION_MS,
+                )
+              : decisaoLock === "free"
+                ? await ListingRepository.claimInteractiveRetry(
+                    existente.id,
+                    CREATE_RESERVATION_MS,
+                    new Date(),
+                    {},
+                  )
+                : null;
+          if (!atLock) {
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.in_progress_refused",
+                productId,
+                accountId: acc.id,
+                listingId: existente.id,
+                stage: "first_placeholder_lock",
+              }),
+            );
+            return {
+              success: false,
+              skipped: true,
+              code: "PUBLICATION_IN_PROGRESS",
+              listingId: existente.id,
+              error: busyMessage(existente),
+            };
+          }
+          reservaPropria = {
+            listingId: existente.id,
+            at: atLock,
+            assumida: decisaoLock === "takeover",
           };
+          listing = existente;
+        } else {
+          listing = criacao.created;
+          criadaAgora = true;
+          if (listing?.id) {
+            reservaPropria = { listingId: listing.id, at: reservaNova };
+          }
         }
-        listing = criacao.created;
-        if (listing?.id) {
-          reservaPropria = { listingId: listing.id, at: reservaNova };
-        }
-      } else {
+      }
+      if (listing && !criadaAgora) {
         await ListingRepository.updateListing(listing.id, {
           listingType: effectiveSettings.listingType ?? null,
           itemCondition: effectiveSettings.itemCondition ?? null,

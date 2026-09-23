@@ -634,3 +634,115 @@ describe("anúncio ADOTADO é completado (compatibilidade + estoque)", () => {
     expect(ListingUseCase.completeAdoptedMLListing).not.toHaveBeenCalled();
   });
 });
+
+describe("revisão de fechamento (23/09): conferência antes da guarda de estoque; vínculo do mesmo produto", () => {
+  const ITEM = {
+    id: "MLB_X",
+    status: "active",
+    dateCreated: "2026-09-22T19:35:00.000Z",
+    permalink: "https://ml/x",
+  };
+  const semEstoque = (lastError: string | null) =>
+    candidato({ lastError, product: { ...candidato().product, stock: 0 } });
+  const gravouSemEstoque = () =>
+    (ListingRepository.incrementRetryAttempts as any).mock.calls.some(
+      (c: any[]) => /^\[TERMINAL\] Produto sem estoque/.test(String(c[1]?.lastError)),
+    );
+
+  it("[VERIFICAR] com estoque 0 (a peça vendeu depois do POST perdido) ⇒ confere ANTES: adota e completa; nada de terminal 'sem estoque'", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      semEstoque("[VERIFICAR] O Mercado Livre não respondeu a tempo."),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+
+    await ListingRetryService.runOnce();
+
+    expect(MLApiService.findItemsBySellerSku).toHaveBeenCalled();
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
+      "pl-1",
+      expect.objectContaining({ externalListingId: "MLB_X" }),
+    );
+    // o job de estoque da adoção é quem zera/pausa o item no ML
+    expect(ListingUseCase.completeAdoptedMLListing).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: "MLB_X", listingId: "pl-1", productId: "prod-1" }),
+    );
+    expect(gravouSemEstoque()).toBe(false);
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+  });
+
+  it("[VERIFICAR] com estoque 0 e nada no ML ⇒ aí sim a guarda marca terminal 'sem estoque'", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      semEstoque("[VERIFICAR] x"),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([]);
+
+    await ListingRetryService.runOnce();
+
+    expect(MLApiService.findItemsBySellerSku).toHaveBeenCalled();
+    expect(gravouSemEstoque()).toBe(true);
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+  });
+
+  it("[VERIFICAR] com estoque 0 e a busca falhou ⇒ reagenda COM o marcador (não vira terminal às cegas)", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      semEstoque("[VERIFICAR] x"),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockRejectedValue(new Error("ECONNRESET"));
+
+    await ListingRetryService.runOnce();
+
+    expect(gravouSemEstoque()).toBe(false);
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.lastError.startsWith("[VERIFICAR]")).toBe(true);
+  });
+
+  it("sem [VERIFICAR] e estoque 0 ⇒ guarda como antes, sem consultar o ML", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      semEstoque("Instabilidade no Mercado Livre (503)."),
+    ]);
+
+    await ListingRetryService.runOnce();
+
+    expect(MLApiService.findItemsBySellerSku).not.toHaveBeenCalled();
+    expect(gravouSemEstoque()).toBe(true);
+  });
+
+  it("item já vinculado em OUTRA linha do MESMO produto (webhook/autodetect chegou antes) ⇒ completa ESSA linha", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+    (ListingRepository.findLinkByExternalListingId as any).mockResolvedValue({
+      id: "pl-auto",
+      productId: "prod-1",
+    });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.completeAdoptedMLListing).toHaveBeenCalledWith({
+      accessToken: "tok-acct-1",
+      itemId: "MLB_X",
+      listingId: "pl-auto",
+      productId: "prod-1",
+    });
+    // o pendente é encerrado apontando para o vínculo, como antes
+    const dados = (ListingRepository.updateListing as any).mock.calls[0];
+    expect(dados[0]).toBe("pl-1");
+    expect(dados[1].lastError).toMatch(/^\[TERMINAL\].*MLB_X/);
+  });
+
+  it("item vinculado a OUTRO produto ⇒ não completa nada", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] x" }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+    (ListingRepository.findLinkByExternalListingId as any).mockResolvedValue({
+      id: "pl-outro",
+      productId: "prod-OUTRO",
+    });
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingUseCase.completeAdoptedMLListing).not.toHaveBeenCalled();
+  });
+});

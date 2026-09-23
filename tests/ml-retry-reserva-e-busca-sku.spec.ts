@@ -356,10 +356,32 @@ describe("criação EXCLUSIVA da 1ª linha do par (lock de transação)", () => 
     expect(where.status.in).toContain("active");
   });
 
-  it("transação com folga explícita (fila do pool) — nunca o padrão de 2 s/5 s", async () => {
+  // ⚠️ Mudança intencional (revisão de fechamento, 23/09): maxWait era 10 s,
+  // menor que o pool_timeout do client (30 s) — com o pool cheio a 1ª linha
+  // falhava (P2028) onde o create simples de antes esperava e criava.
+  it("transação com folga explícita: espera a conexão o mesmo tanto que o pool (PRISMA_POOL_TIMEOUT, padrão 30 s)", async () => {
     tx.productListing.findFirst.mockResolvedValue(null);
     await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
     const opcoes = (prisma.$transaction as any).mock.calls.at(-1)[1];
-    expect(opcoes).toEqual({ maxWait: 10_000, timeout: 15_000 });
+    expect(opcoes).toEqual({ maxWait: 30_000, timeout: 15_000 });
+
+    const antes = process.env.PRISMA_POOL_TIMEOUT;
+    process.env.PRISMA_POOL_TIMEOUT = "45";
+    try {
+      await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
+      expect((prisma.$transaction as any).mock.calls.at(-1)[1]).toEqual({
+        maxWait: 45_000,
+        timeout: 15_000,
+      });
+    } finally {
+      if (antes === undefined) delete process.env.PRISMA_POOL_TIMEOUT;
+      else process.env.PRISMA_POOL_TIMEOUT = antes;
+    }
+  });
+
+  it("a linha existente volta INTEIRA (quem chama decide e pode publicar nela)", async () => {
+    tx.productListing.findFirst.mockResolvedValue({ id: "outra", externalListingId: "PENDING_0" });
+    await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
+    expect(tx.productListing.findFirst.mock.calls[0][0].select).toBeUndefined();
   });
 });
