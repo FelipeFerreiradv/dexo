@@ -1,4 +1,5 @@
 ﻿import { Platform } from "@prisma/client";
+import { liveListingStatuses } from "../lib/listing-live-statuses";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
@@ -166,7 +167,9 @@ export interface CreateListingResult {
   // pelo id do candidato não veria. `code` e `missingAttributes` deixam o
   // relatório da massa mostrar o campo exato. Opcionais e aditivos.
   terminal?: boolean;
-  code?: "ML_REQUIRED_ATTRIBUTES_MISSING";
+  // PUBLICATION_IN_PROGRESS: o par já tem publicação agendada ou em andamento
+  // (reserva de outro agente) — nada foi enviado; o cron não conta tentativa.
+  code?: "ML_REQUIRED_ATTRIBUTES_MISSING" | "PUBLICATION_IN_PROGRESS";
   missingAttributes?: Array<{
     id: string;
     name: string;
@@ -2839,30 +2842,85 @@ export class ListingUseCase {
         acc.id,
       );
 
-      // Pendente com retry automático DESLIGADO é reaproveitado sob reserva
-      // atômica (a mesma do botão): enquanto esta criação roda, o botão, outro
-      // "Anunciar", outro lote e o script de recuperação o veem "em
-      // andamento" — sem isso cada um mandava o seu POST /items. Linha com
-      // retry ligado é do cron (tem claim próprio); republicação
-      // (PENDING_REPUBLISH_) é do sync.
+      // A linha escolhida já virou anúncio VIVO desde a guarda do começo
+      // (outra criação do mesmo produto terminou no meio desta): criar agora
+      // publicaria o segundo e sobrescreveria o id do primeiro.
       if (
         listing &&
+        !String(listing.externalListingId ?? "").startsWith("PENDING_") &&
+        liveListingStatuses().includes(
+          String(listing.status ?? "").toLowerCase(),
+        )
+      ) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.duplicate_refused",
+            productId,
+            accountId: acc.id,
+            liveExternalListingId: listing.externalListingId,
+            liveStatus: listing.status,
+            stage: "placeholder",
+          }),
+        );
+        return {
+          success: false,
+          skipped: true,
+          listingId: listing.id,
+          externalListingId: listing.externalListingId,
+          error: `Produto já tem anúncio nesta conta (${listing.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+        };
+      }
+
+      const pendenteNormal =
+        !!listing &&
         String(listing.externalListingId ?? "").startsWith("PENDING_") &&
         !String(listing.externalListingId ?? "").startsWith(
           "PENDING_REPUBLISH_",
-        ) &&
-        !listing.retryEnabled
-      ) {
-        const minha = opts?.reservation;
-        const proxima = listing.nextRetryAt
-          ? new Date(listing.nextRetryAt).getTime()
+        );
+      const minha = opts?.reservation;
+      const ehDeQuemChamou = (l: { id: string; nextRetryAt?: unknown }) => {
+        const proxima = l.nextRetryAt
+          ? new Date(l.nextRetryAt as string | Date).getTime()
           : null;
-        const ehDeQuemChamou =
+        return (
           !!minha &&
-          minha.listingId === listing.id &&
+          minha.listingId === l.id &&
           proxima !== null &&
-          proxima === new Date(minha.at).getTime();
-        if (!ehDeQuemChamou) {
+          proxima === new Date(minha.at).getTime()
+        );
+      };
+
+      // Pendente com retry LIGADO é do cron: agendado, ou já reservado por
+      // ele. Só o cron, com a própria reserva, passa. Qualquer outro
+      // ("Anunciar", lote) correria junto com ele — e, depois de um timeout,
+      // sem a conferência pelo SKU que o cron faz antes de recriar.
+      if (listing && pendenteNormal && listing.retryEnabled && !ehDeQuemChamou(listing)) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.in_progress_refused",
+            productId,
+            accountId: acc.id,
+            listingId: listing.id,
+            reason: "retry_scheduled",
+          }),
+        );
+        return {
+          success: false,
+          skipped: true,
+          code: "PUBLICATION_IN_PROGRESS",
+          listingId: listing.id,
+          error:
+            "Já existe uma nova tentativa agendada para este anúncio — a Dexo publica sozinha em instantes.",
+        };
+      }
+
+      // Pendente com retry automático DESLIGADO é reaproveitado sob reserva
+      // atômica (a mesma do botão): enquanto esta criação roda, o botão, outro
+      // "Anunciar", outro lote e o script de recuperação o veem "em
+      // andamento" — sem isso cada um mandava o seu POST /items. Republicação
+      // (PENDING_REPUBLISH_) é do sync.
+      if (listing && pendenteNormal && !listing.retryEnabled) {
+        if (!ehDeQuemChamou(listing)) {
           const at = await ListingRepository.claimInteractiveRetry(
             listing.id,
             CREATE_RESERVATION_MS,
@@ -2879,6 +2937,7 @@ export class ListingUseCase {
             return {
               success: false,
               skipped: true,
+              code: "PUBLICATION_IN_PROGRESS",
               listingId: listing.id,
               error:
                 "Esta publicação já está em andamento. Aguarde alguns minutos e confira o anúncio.",
@@ -2903,6 +2962,11 @@ export class ListingUseCase {
         // sucesso/erro. Só o catch habilita retry explicitamente se a
         // chamada falhar. Evita race com ListingRetryService.runOnce
         // rodando em paralelo ao fluxo de criação.
+        //
+        // A linha NASCE reservada (mesma reserva do reaproveitamento): um
+        // segundo "Anunciar" do mesmo produto (duplo clique, lotes
+        // sobrepostos) a acharia livre e mandaria outro POST /items.
+        const reservaNova = new Date(Date.now() + CREATE_RESERVATION_MS);
         listing = await ListingRepository.createListing({
           productId,
           marketplaceAccountId: acc.id,
@@ -2911,7 +2975,7 @@ export class ListingUseCase {
           permalink: null,
           status: "pending",
           retryAttempts: 0,
-          nextRetryAt: null,
+          nextRetryAt: reservaNova,
           lastError: null,
           retryEnabled: false,
           createdByUserId: actorId ?? null,
@@ -2929,6 +2993,9 @@ export class ListingUseCase {
             ? { attributesOverride: fichaParaRetentativa }
             : {}),
         });
+        if (listing?.id) {
+          reservaPropria = { listingId: listing.id, at: reservaNova };
+        }
       } else {
         await ListingRepository.updateListing(listing.id, {
           listingType: effectiveSettings.listingType ?? null,
@@ -4512,10 +4579,14 @@ export class ListingUseCase {
     } catch (error) {
       console.error("[ListingUseCase] Error creating ML listing:", error);
       if (reservaPropria) {
-        await ListingRepository.releaseInteractiveRetry(
-          reservaPropria.listingId,
-          reservaPropria.at,
-        ).catch(() => undefined);
+        try {
+          await ListingRepository.releaseInteractiveRetry(
+            reservaPropria.listingId,
+            reservaPropria.at,
+          );
+        } catch {
+          // A reserva expira sozinha (10 min); o erro original é o que importa.
+        }
       }
       return {
         success: false,

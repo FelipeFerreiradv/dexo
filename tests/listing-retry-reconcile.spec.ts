@@ -483,3 +483,35 @@ describe("rodada 2 da revisão (23/09): estados que ficavam errados", () => {
     expect(dados.lastError).toMatch(/^\[TERMINAL\]\[CORRIGIVEL\]/);
   });
 });
+
+describe("rodada 3 da revisão (23/09): a reserva do cron", () => {
+  const LEASE = new Date("2026-09-23T12:10:00.000Z");
+
+  it("o cron passa a PRÓPRIA reserva ao createMLListing (só ele reaproveita a linha com retry ligado)", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([candidato()]);
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(LEASE);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({ success: true });
+    await ListingRetryService.runOnce();
+    const args = (ListingUseCase.createMLListing as any).mock.calls[0];
+    expect(args[8]).toEqual({ reservation: { listingId: "pl-1", at: LEASE } });
+  });
+
+  it("'em andamento' (outra publicação do par) ⇒ volta à fila SEM gastar tentativa e SEM trocar o erro", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "Erro anterior da linha" }),
+    ]);
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(LEASE);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      skipped: true,
+      code: "PUBLICATION_IN_PROGRESS",
+      error: "Esta publicação já está em andamento.",
+    });
+    await ListingRetryService.runOnce();
+    const [id, dados, opts] = (ListingRepository.incrementRetryAttempts as any).mock.calls[0];
+    expect(id).toBe("pl-1");
+    expect(Object.keys(dados)).toEqual(["nextRetryAt"]);
+    expect(dados.nextRetryAt).toBeInstanceOf(Date);
+    expect(opts).toEqual({ increment: false });
+  });
+});

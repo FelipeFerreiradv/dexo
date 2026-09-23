@@ -93,6 +93,12 @@ export class ListingRetryService {
           cand.id,
           CLAIM_LEASE_MS,
         );
+        // A reserva do cron é o passe dele no createMLListing: linha com
+        // retry ligado só é reaproveitada por quem a reservou.
+        const reservaDoCron =
+          claimed instanceof Date
+            ? { reservation: { listingId: cand.id, at: claimed } }
+            : undefined;
         if (!claimed) {
           console.log(
             `[ListingRetryService] skipping ${cand.id} (claimed por outro processo ou estado mudou)`,
@@ -517,30 +523,70 @@ export class ListingRetryService {
           !!fichaGuardada &&
           typeof fichaGuardada === "object" &&
           !Array.isArray(fichaGuardada)
-            ? await ListingUseCase.createMLListing(
-                account.userId,
-                cand.productId,
-                cand.requestedCategoryId || undefined,
-                account.id,
-                settingsDoPlaceholder, // mlSettings
-                undefined, // titleOverride
-                undefined, // actorId
-                fichaGuardada as Record<string, unknown>,
-              )
-            : settingsDoPlaceholder
+            ? reservaDoCron
               ? await ListingUseCase.createMLListing(
                   account.userId,
                   cand.productId,
                   cand.requestedCategoryId || undefined,
                   account.id,
-                  settingsDoPlaceholder,
+                  settingsDoPlaceholder, // mlSettings
+                  undefined, // titleOverride
+                  undefined, // actorId
+                  fichaGuardada as Record<string, unknown>,
+                  reservaDoCron,
                 )
               : await ListingUseCase.createMLListing(
                   account.userId,
                   cand.productId,
                   cand.requestedCategoryId || undefined,
                   account.id,
-                );
+                  settingsDoPlaceholder, // mlSettings
+                  undefined, // titleOverride
+                  undefined, // actorId
+                  fichaGuardada as Record<string, unknown>,
+                )
+            : reservaDoCron
+              ? await ListingUseCase.createMLListing(
+                  account.userId,
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account.id,
+                  settingsDoPlaceholder,
+                  undefined,
+                  undefined,
+                  undefined,
+                  reservaDoCron,
+                )
+              : settingsDoPlaceholder
+                ? await ListingUseCase.createMLListing(
+                    account.userId,
+                    cand.productId,
+                    cand.requestedCategoryId || undefined,
+                    account.id,
+                    settingsDoPlaceholder,
+                  )
+                : await ListingUseCase.createMLListing(
+                    account.userId,
+                    cand.productId,
+                    cand.requestedCategoryId || undefined,
+                    account.id,
+                  );
+
+        // Outra publicação do mesmo par em andamento (ou agendada noutra
+        // linha): não é falha deste candidato. Volta à fila sem gastar
+        // tentativa e sem trocar o erro — o [VERIFICAR] tem de seguir na
+        // linha para a próxima passada conferir antes de recriar.
+        if (
+          !result.success &&
+          (result as { code?: string }).code === "PUBLICATION_IN_PROGRESS"
+        ) {
+          await ListingRepository.incrementRetryAttempts(
+            cand.id,
+            { nextRetryAt: new Date(Date.now() + 60 * 1000) },
+            { increment: false },
+          );
+          continue;
+        }
 
         if (result.success) {
           console.log(

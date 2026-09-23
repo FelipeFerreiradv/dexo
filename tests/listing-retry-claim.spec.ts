@@ -190,8 +190,10 @@ describe("ListingRepository.claimRetryCandidate — contrato do UPDATE condicion
     const before = Date.now();
     const ok = await RealRepo.claimRetryCandidate("l1", 600_000);
 
-    expect(ok).toBe(true);
+    // Mudança intencional (rodada 3 da revisão, 23/09): devolve o HORÁRIO da
+    // reserva — é o passe do cron no createMLListing.
     const arg = spy.mock.calls[0][0] as any;
+    expect(ok).toEqual(arg.data.nextRetryAt);
     // Elegibilidade: mesmo predicado da fila — retry ligado e lease vencido.
     expect(arg.where).toMatchObject({ id: "l1", retryEnabled: true });
     expect(arg.where.OR).toHaveLength(2);
@@ -216,7 +218,7 @@ describe("ListingRepository.claimRetryCandidate — contrato do UPDATE condicion
       .spyOn(prisma.productListing, "updateMany")
       .mockResolvedValue({ count: 0 } as any);
 
-    expect(await RealRepo.claimRetryCandidate("l1", 600_000)).toBe(false);
+    expect(await RealRepo.claimRetryCandidate("l1", 600_000)).toBeNull();
     spy.mockRestore();
   });
 });
