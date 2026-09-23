@@ -26,6 +26,9 @@ export interface MLUserInfo {
   email: string;
   first_name?: string;
   last_name?: string;
+  // Tags da conta (ex.: "user_product_seller"). Opcional: o GET /users/me
+  // devolve, mas quem só usa id/nickname não depende disso.
+  tags?: string[];
 }
 
 export interface PKCEData {

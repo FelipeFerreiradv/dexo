@@ -34,6 +34,19 @@ export interface NormalizedMLAttribute {
   catalogRequiredTag?: boolean;
   conditionalRequiredTag?: boolean;
   fixedTag?: boolean;
+  /**
+   * Metadados que a validação de VALORES (ml-attribute-value-validation.logic)
+   * lê. Opcionais: linha antiga do cache de 24h não os tem ⇒ a regra que
+   * depende de cada um não roda (comportamento de antes).
+   *   - allowedUnits/defaultUnit: `allowed_units`/`default_unit` de atributo
+   *     `number_unit` (o ML recusa número sem unidade com 3708);
+   *   - multivaluedTag: `tags.multivalued` (395 "too many values");
+   *   - readOnlyTag: `tags.read_only` (o ML ignora o valor, aviso 303).
+   */
+  allowedUnits?: string[];
+  defaultUnit?: string;
+  multivaluedTag?: boolean;
+  readOnlyTag?: boolean;
 }
 
 export interface RawMLAttribute {
@@ -43,6 +56,8 @@ export interface RawMLAttribute {
   tags?: Record<string, unknown>;
   values?: Array<{ id: string; name: string }>;
   value_max_length?: number;
+  allowed_units?: Array<{ id?: string; name?: string }>;
+  default_unit?: string;
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -77,6 +92,17 @@ function normalize(raw: RawMLAttribute): NormalizedMLAttribute {
       typeof raw.value_max_length === "number"
         ? raw.value_max_length
         : undefined,
+    allowedUnits: Array.isArray(raw.allowed_units)
+      ? raw.allowed_units
+          .map((u) => String(u?.id ?? u?.name ?? "").trim())
+          .filter(Boolean)
+      : undefined,
+    defaultUnit:
+      typeof raw.default_unit === "string" && raw.default_unit.trim()
+        ? raw.default_unit.trim()
+        : undefined,
+    multivaluedTag: Boolean(tags.multivalued),
+    readOnlyTag: Boolean(tags.read_only),
   };
 }
 

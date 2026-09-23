@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -19,13 +20,19 @@ import {
 import { getApiBaseUrl } from "@/lib/api";
 
 import {
+  INMETRO_ATTR_ID,
+  INMETRO_HINT,
   OEM_FIELD_ATTR_ID,
   OEM_MAX_LENGTH,
   getVisibleAttributes,
   isListAttribute,
+  isPictureAttribute,
+  joinNumberUnit,
   positionNeedsInput,
   sectionFieldCount,
   shouldRenderSection,
+  splitNumberUnit,
+  usesUnitSelector,
   type MLAttributeValue,
   type MLDynamicAttribute,
 } from "./ml-dynamic-attributes.logic";
@@ -97,6 +104,11 @@ export function MLDynamicAttributesSection({
   const [error, setError] = useState<string | null>(null);
   // A ficha técnica começa RECOLHIDA: só abre quando o usuário clica no cabeçalho.
   const [fichaOpen, setFichaOpen] = useState(false);
+  // Unidade escolhida ANTES de digitar o número (o valor gravado é "30 cm";
+  // sem número não há o que gravar, então a escolha fica aqui até lá).
+  const [unidadeEscolhida, setUnidadeEscolhida] = useState<
+    Record<string, string>
+  >({});
 
   useEffect(() => {
     let cancelled = false;
@@ -305,6 +317,118 @@ export function MLDynamicAttributesSection({
               );
             }
 
+            // Campo do tipo imagem: a Dexo não envia imagem por aqui e o ML
+            // recusa texto (422). Travado; valor antigo pode ser apagado.
+            if (isPictureAttribute(attr)) {
+              const atual = (current.value_name ?? current.value_id ?? "").trim();
+              return (
+                <div key={attr.id} className="space-y-1">
+                  <Label>{attr.name}</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Campo de imagem do Mercado Livre — não é preenchido pela
+                    ficha técnica.
+                  </p>
+                  {atual && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-amber-700">
+                        Valor inválido: &quot;{atual}&quot;. O Mercado Livre
+                        recusa texto neste campo.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => updateAttr(attr.id, null)}
+                        disabled={disabled || isReadOnly(attr.id)}
+                      >
+                        Remover valor inválido
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
+            // Número com unidade: o ML recusa número sem unidade (3708).
+            // Sem as unidades do catálogo (cache antigo) cai no campo de
+            // sempre, abaixo.
+            if (usesUnitSelector(attr)) {
+              const unidades = attr.allowedUnits ?? [];
+              const partes = splitNumberUnit(current.value_name, unidades);
+              const unidadeAtual =
+                partes.unit ??
+                (partes.number
+                  ? ""
+                  : (unidadeEscolhida[attr.id] ?? attr.defaultUnit ?? ""));
+              const gravar = (numero: string, unidade: string) => {
+                const valor = joinNumberUnit(numero, unidade || null);
+                updateAttr(attr.id, valor ? { value_name: valor } : null);
+              };
+              return (
+                <div key={attr.id} className="space-y-1">
+                  <Label htmlFor={`ml-attr-${attr.id}`}>
+                    {attr.name}
+                    {attr.required && (
+                      <span className="ml-0.5 text-red-600">*</span>
+                    )}
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id={`ml-attr-${attr.id}`}
+                      type="number"
+                      inputMode="decimal"
+                      value={partes.number}
+                      onChange={(e) => {
+                        const numero = e.target.value;
+                        if (!numero || !numero.trim()) {
+                          updateAttr(attr.id, null);
+                          return;
+                        }
+                        gravar(
+                          numero,
+                          partes.unit ??
+                            unidadeEscolhida[attr.id] ??
+                            attr.defaultUnit ??
+                            unidades[0],
+                        );
+                      }}
+                      disabled={disabled || isReadOnly(attr.id)}
+                      placeholder={attr.required ? "Obrigatório" : "Opcional"}
+                    />
+                    <Select
+                      value={unidadeAtual}
+                      onValueChange={(u) => {
+                        setUnidadeEscolhida((prev) => ({ ...prev, [attr.id]: u }));
+                        if (partes.number) gravar(partes.number, u);
+                      }}
+                      disabled={disabled || isReadOnly(attr.id)}
+                    >
+                      <SelectTrigger
+                        className="w-28"
+                        aria-label={`Unidade de ${attr.name.toLowerCase()}`}
+                      >
+                        <SelectValue placeholder="Unidade" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {unidades.map((u) => (
+                          <SelectItem key={u} value={u}>
+                            {u}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {partes.number && !partes.unit && (
+                    <p className="text-xs text-amber-700">
+                      {partes.invalidUnit
+                        ? `A unidade "${partes.invalidUnit}" não é aceita nesta categoria. Escolha uma unidade.`
+                        : "Escolha a unidade — sem ela o Mercado Livre recusa o anúncio."}
+                    </p>
+                  )}
+                </div>
+              );
+            }
+
             const inputType =
               attr.valueType === "number" || attr.valueType === "number_unit"
                 ? "number"
@@ -333,6 +457,9 @@ export function MLDynamicAttributesSection({
                   disabled={disabled || isReadOnly(attr.id)}
                   placeholder={attr.required ? "Obrigatório" : "Opcional"}
                 />
+                {attr.id === INMETRO_ATTR_ID && (
+                  <p className="text-xs text-muted-foreground">{INMETRO_HINT}</p>
+                )}
               </div>
             );
           })}

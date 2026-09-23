@@ -44,10 +44,22 @@ import {
 import {
   humanMessageForKind,
   isTerminalMarker,
+  LAST_ERROR_MARKER,
   lastErrorMarkerFor,
   normalizeMLError,
   type MLRawCause,
 } from "../lib/ml-error-normalizer";
+import {
+  packagePlausibilityWarnings,
+  summarizeValueBlocks,
+  validateMLAttributeValues,
+  type ValueIssue,
+} from "../lib/ml-attribute-value-validation.logic";
+import {
+  isUserProductSeller,
+  maySuggestAnotherCategory,
+  shouldRetryWithTitle,
+} from "../lib/ml-publish-ladder.logic";
 import {
   isMlRequiredAttrsBlockEnabled,
   evaluateMLRequiredAttributes,
@@ -664,6 +676,11 @@ export class ListingUseCase {
     MLRequiredAttributesEvaluation & {
       categoryId: string | null;
       legacyMissingRequired: string[];
+      /**
+       * Achados da validação de VALORES (mesma do create). Opcional: ausente
+       * quando a categoria não resolve ou ML_VALUE_VALIDATION_DISABLED=1.
+       */
+      valueIssues?: ValueIssue[];
     }
   > {
     const chave =
@@ -704,14 +721,53 @@ export class ListingUseCase {
       categoryAttrs,
       attributeOverrides: i.attributeOverrides,
     });
+    const avaliacao = evaluateMLRequiredAttributes({
+      categoryAttributes: categoryAttrs,
+      payloadAttributes: built.attributes,
+      catalogListing: false,
+    });
+    // Mesma validação de VALORES do create: a tela e a publicação concordam.
+    // Bloqueio de valor entra em `blocking` (reason invalid_value) e decide o
+    // status só quando não havia outro bloqueio — a mensagem de obrigatório
+    // continua a mesma de sempre quando os dois acontecem.
+    if (process.env.ML_VALUE_VALIDATION_DISABLED === "1") {
+      return {
+        ...avaliacao,
+        categoryId: cat.categoryIdForML,
+        legacyMissingRequired: built.preflight.missingRequired,
+      };
+    }
+    const valores = validateMLAttributeValues(
+      this.withOemAsTags(built.attributes) ?? [],
+      categoryAttrs,
+    );
+    const bloqueiosDeValor = valores.issues
+      .filter((i) => i.severity === "block")
+      .map((i) => ({
+        attributeId: i.attributeId,
+        attributeName: i.attributeName,
+        reason: "invalid_value" as const,
+        message: i.message,
+      }));
+    if (bloqueiosDeValor.length === 0) {
+      return {
+        ...avaliacao,
+        categoryId: cat.categoryIdForML,
+        legacyMissingRequired: built.preflight.missingRequired,
+        valueIssues: valores.issues,
+      };
+    }
     return {
-      ...evaluateMLRequiredAttributes({
-        categoryAttributes: categoryAttrs,
-        payloadAttributes: built.attributes,
-        catalogListing: false,
-      }),
+      ...avaliacao,
+      status: "blocked",
+      blocking: [...avaliacao.blocking, ...bloqueiosDeValor],
+      message:
+        avaliacao.status === "blocked"
+          ? avaliacao.message
+          : summarizeValueBlocks(valores.issues),
       categoryId: cat.categoryIdForML,
       legacyMissingRequired: built.preflight.missingRequired,
+      valueIssues: valores.issues,
     };
   }
 
@@ -1243,9 +1299,15 @@ export class ListingUseCase {
     effectiveSettings: MLListingSettings;
     externalSku?: string | null;
     actorId?: string;
+    /**
+     * Prefixo do `lastError`. Ausente = `[TERMINAL]` de sempre (obrigatório
+     * faltando, flag ML_REQUIRED_ATTRS_BLOCK). A validação de VALORES passa
+     * `[TERMINAL][CORRIGIVEL]`, que a edição do produto re-arma.
+     */
+    marker?: string;
   }): Promise<string | undefined> {
     try {
-      const lastError = `[TERMINAL] ${i.message}`;
+      const lastError = `${i.marker ?? "[TERMINAL]"} ${i.message}`;
       const row = await ListingRepository.findByProductAndAccount(
         i.productId,
         i.accountId,
@@ -1635,6 +1697,11 @@ export class ListingUseCase {
     basePayload: MLItemCreatePayload,
     product: any,
     newCategoryId: string,
+    /**
+     * `upFamilyFirst`: vendedor User Products — family_name e sem title em
+     * qualquer categoria. Ausente = regra da allowlist de sempre.
+     */
+    opts?: { upFamilyFirst?: boolean },
   ): MLItemCreatePayload {
     const normalized =
       this.normalizeMLCategoryId(newCategoryId) || newCategoryId;
@@ -1647,8 +1714,11 @@ export class ListingUseCase {
       (a) => !baseAttrIds.has(a.id) && a.id.startsWith("SELLER_PACKAGE_"),
     );
 
-    const includeFamilyName = this.shouldIncludeFamilyName(normalized);
-    const noTitleFlow = this.noTitleWithFamilyName(normalized);
+    const upFamily =
+      !!opts?.upFamilyFirst && !this.shouldIncludeFamilyName(normalized);
+    const includeFamilyName =
+      this.shouldIncludeFamilyName(normalized) || upFamily;
+    const noTitleFlow = this.noTitleWithFamilyName(normalized) || upFamily;
     const familyNameValue = this.buildMLTitle(product);
     const titleValue = (basePayload as any).title || this.buildMLTitle(product);
 
@@ -1838,9 +1908,13 @@ export class ListingUseCase {
       }
       // Pre-check: validar que o seller pode criar anÃºncios (detectar restriÃ§Ãµes antes de montar payload)
       let sellerId: string | undefined;
+      // Tags da conta (mesmo GET /users/me de sempre). `user_product_seller`
+      // decide o family_name de primeira; falha aqui = comportamento de antes.
+      let sellerTags: string[] | undefined;
       try {
         const mlUserInfo = await MLOAuthService.getUserInfo(acc.accessToken);
         sellerId = mlUserInfo?.id?.toString();
+        sellerTags = Array.isArray(mlUserInfo?.tags) ? mlUserInfo.tags : undefined;
         if (sellerId) {
           try {
             // chamada leve para confirmar capacidade de listar (pede 1 id apenas)
@@ -2473,6 +2547,85 @@ export class ListingUseCase {
         }
       }
 
+      // ─── Valores da ficha técnica × catálogo da categoria ────────────────
+      // O bloco acima só olha "o obrigatório está presente". Aqui entram os
+      // VALORES que o ML recusa e a Dexo consegue ver antes do POST (lista de
+      // outra categoria, valor fixo divergente, número sem unidade, GTIN com
+      // número de peça, atributo de imagem com texto, OEM repetido). Correção
+      // só quando a própria categoria determina o valor; o resto bloqueia com
+      // `[TERMINAL][CORRIGIVEL]` — a edição do produto re-arma. Roda antes do
+      // upload de imagens e do placeholder: bloqueio não gasta upload nem a
+      // escada de retentativas. Catálogo indisponível = não mexe em nada.
+      //
+      // Anúncio de catálogo ligado: a tentativa de catálogo não leva
+      // atributos e pode publicar — aplica as correções, mas não bloqueia
+      // (mesma exceção do bloco de obrigatórios).
+      //
+      // ML_VALUE_VALIDATION_DISABLED=1 desliga tudo (payload de antes).
+      let atributosValidados: MLItemCreatePayload["attributes"] | undefined;
+      if (process.env.ML_VALUE_VALIDATION_DISABLED !== "1") {
+        const checagem = validateMLAttributeValues(
+          this.withOemAsTags(attributes) ?? [],
+          categoryAttrsForBuild,
+        );
+        if (checagem.issues.length > 0) {
+          console.log(
+            JSON.stringify({
+              event: "ml.attribute_values.evaluated",
+              productId: product.id,
+              accountId: acc.id,
+              categoryId: categoryIdForML,
+              blocked: checagem.blocked,
+              issues: checagem.issues.map(
+                (i) => `${i.severity}:${i.code}:${i.attributeId}`,
+              ),
+            }),
+          );
+        }
+        const catalogoLigado = shouldSkipMlRequiredBlockForCatalog(
+          (product as any).mlCatalogProductId,
+        );
+        if (checagem.blocked && !catalogoLigado) {
+          const msg =
+            summarizeValueBlocks(checagem.issues) ??
+            "A ficha técnica tem valores que o Mercado Livre não aceita.";
+          const listingIdTerminal = await this.persistMlRequiredAttrsTerminal({
+            productId,
+            accountId: acc.id,
+            categoryIdForML,
+            message: msg,
+            effectiveSettings,
+            externalSku: product.sku,
+            actorId,
+            marker: LAST_ERROR_MARKER.CORRIGIVEL,
+          });
+          return {
+            success: false,
+            listingId: listingIdTerminal,
+            error: msg,
+            errorKind: "VALIDATION",
+            lastErrorMarker: LAST_ERROR_MARKER.CORRIGIVEL,
+          };
+        }
+        atributosValidados = checagem.attributes as MLItemCreatePayload["attributes"];
+      }
+      const avisosPacote = packagePlausibilityWarnings({
+        heightCm: product.heightCm,
+        widthCm: product.widthCm,
+        lengthCm: product.lengthCm,
+        weightKg: product.weightKg,
+      });
+      if (avisosPacote.length > 0) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.package.implausible",
+            productId: product.id,
+            categoryId: categoryIdForML,
+            warnings: avisosPacote,
+          }),
+        );
+      }
+
       // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
       // Nunca usar originalCategoryId pois pode ser ID sintético do catálogo estático.
       // Patch (bulk import 2026-05-09): se o produto tem `attributes.familyName`
@@ -2493,6 +2646,18 @@ export class ListingUseCase {
       const familyNameValue = explicitFamilyName ?? this.buildMLTitle(product);
       const noTitleWithFamily = this.noTitleWithFamilyName(resolvedCategoryId);
       const forceNoTitleFlow = includeFamilyName && noTitleWithFamily;
+      // Vendedor "User Products" (tag user_product_seller): o ML só aceita item
+      // novo com family_name e sem title. A 1ª tentativa passa a ir assim —
+      // é o corpo que o degrau family_name já mandava depois do 369 certo.
+      // Sem a tag, nada muda (payload byte-idêntico). forceNoTitleFlow /
+      // noTitleFlow ficam como estavam: são da allowlist de categorias.
+      // ML_UP_FAMILY_FIRST_DISABLED=1 volta ao fluxo anterior.
+      const upFamilyFirst =
+        process.env.ML_UP_FAMILY_FIRST_DISABLED !== "1" &&
+        !includeFamilyName &&
+        !!familyNameValue &&
+        isUserProductSeller(sellerTags);
+      if (upFamilyFirst) includeFamilyName = true;
 
       // Upload da imagem diretamente para o ML (mais confiável do que source URL)
       let picturesArray: MLItemCreatePayload["pictures"];
@@ -2692,7 +2857,7 @@ export class ListingUseCase {
         // `attributes` (a variável) fica como está — o `attrSnapshot` de
         // diagnóstico depende dela no formato singular. Só o que vai no wire
         // ganha a forma de lista do OEM.
-        attributes: this.withOemAsTags(attributes),
+        attributes: atributosValidados ?? this.withOemAsTags(attributes),
         seller_custom_field: product.sku,
         description: {
           plain_text: descriptionText,
@@ -2740,7 +2905,7 @@ export class ListingUseCase {
           payload.family_name = familyNameValue;
         }
       }
-      if (forceNoTitleFlow) {
+      if (forceNoTitleFlow || upFamilyFirst) {
         delete (payload as any).title;
       }
 
@@ -2756,6 +2921,7 @@ export class ListingUseCase {
         finalTitle: finalTitleForLog,
         descriptionSource,
         family_name_sent: includeFamilyName,
+        up_family_first: upFamilyFirst,
         category: {
           id: resolvedCategoryId,
           fullPath: resolvedCategory.fullPath,
@@ -3146,6 +3312,7 @@ export class ListingUseCase {
                 payload,
                 product,
                 normalizedNew,
+                { upFamilyFirst },
               );
 
               try {
@@ -3281,6 +3448,55 @@ export class ListingUseCase {
             ) {
               isTitleInvalid = true;
             }
+          }
+        }
+
+        // Degrau reverso do family_name de primeira (vendedor User Products):
+        // se o ML pediu `title` ou recusou o `family_name`, manda UMA vez o
+        // corpo de antes (com título, sem family_name). Deu certo ⇒ o resto do
+        // fluxo segue como o de uma criação sem family_name. Qualquer outra
+        // recusa segue a escada normal.
+        if (
+          !mlItem &&
+          upFamilyFirst &&
+          shouldRetryWithTitle(parsedMl?.cause, errMsg)
+        ) {
+          try {
+            console.warn(
+              "[ListingUseCase] family_name de primeira recusado; retentando com title (sem family_name)",
+            );
+            const comTitulo: MLItemCreatePayload = {
+              ...payload,
+              title: this.buildMLTitle(product),
+            };
+            delete (comTitulo as any).family_name;
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, comTitulo),
+              timeoutMs,
+              "ML createItem up_reverse_title",
+            );
+            if (mlItem) {
+              includeFamilyName = false;
+              delete (payload as any).family_name;
+              (payload as any).title = comTitulo.title;
+            }
+          } catch (revErr: any) {
+            recordAttemptCause(revErr, "up_reverse_title", categoryIdForML);
+            recordSameCategoryCause(revErr);
+            const revMl = revErr?.mlError || null;
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.retry_failed",
+                step: "up_reverse_title",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                cause: Array.isArray(revMl?.cause) ? revMl.cause : [],
+                mlMessage:
+                  revMl?.message ||
+                  (revErr instanceof Error ? revErr.message : String(revErr)),
+                mlError: revMl?.error || null,
+              }),
+            );
           }
         }
 
@@ -3423,7 +3639,27 @@ export class ListingUseCase {
             }),
           );
         }
-        if (!mlItem && !faltouObrigatorio) {
+        // Só por erro DE CATEGORIA na categoria pedida (category_id / domínio
+        // / condição). Por erro de dado a categoria sugerida publicava fora da
+        // escolha da pessoa ou devolvia a recusa da categoria errada.
+        // ML_SUGGESTED_CATEGORY_ANY_ERROR=1 = qualquer erro (como antes).
+        const podeCategoriaSugerida = maySuggestAnotherCategory({
+          requestedCategoryCauses: attemptLog
+            .filter((a) => (a.categoryId ?? null) === (categoriaPedidaML ?? null))
+            .map((a) => (a.err as any)?.mlError?.cause),
+          anyErrorOverride: process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR === "1",
+        });
+        if (!mlItem && !faltouObrigatorio && !podeCategoriaSugerida) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.suggested_category.skipped",
+              reason: "no_category_error",
+              productId: product.id,
+              categoryId: categoriaPedidaML,
+            }),
+          );
+        }
+        if (!mlItem && !faltouObrigatorio && podeCategoriaSugerida) {
           try {
             const siteId = (categoryIdForML || "MLB").slice(0, 3);
             const suggestedId = await MLApiService.suggestCategoryId(
@@ -3446,6 +3682,7 @@ export class ListingUseCase {
                 payload,
                 product,
                 normalizedNew,
+                { upFamilyFirst },
               );
 
               try {
