@@ -872,6 +872,50 @@ export class MLApiService {
    * @param accessToken Token de acesso OAuth
    * @param itemId ID do item
    */
+  /**
+   * Irmao do `getItemsStockSnapshot`, com o TITULO junto.
+   *
+   * Existe separado de proposito: `getItemsStatuses` e compartilhado pelo
+   * webhook de item, pelo `live=1` e pelo sweep de status — acrescentar campo
+   * la mudaria o custo de tres caminhos quentes por causa de um so.
+   */
+  static async getItemsTitleSnapshot(
+    accessToken: string,
+    itemIds: string[],
+  ): Promise<
+    Array<{ id: string; status: string; title: string; available_quantity: number }>
+  > {
+    if (itemIds.length === 0) return [];
+
+    const results: Array<{
+      id: string;
+      status: string;
+      title: string;
+      available_quantity: number;
+    }> = [];
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const chunk = itemIds.slice(i, i + 20);
+      const url = `${ML_CONSTANTS.API_URL}/items?ids=${chunk.join(",")}&attributes=id,status,title,available_quantity`;
+      const response = await axios.get<MLMultigetResponse[]>(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 10000,
+      });
+      for (const item of response.data) {
+        if (item.code === 200 && item.body?.id && item.body?.status) {
+          results.push({
+            id: item.body.id,
+            status: item.body.status,
+            title: String((item.body as any)?.title ?? ""),
+            available_quantity: Number(
+              (item.body as any)?.available_quantity ?? 0,
+            ),
+          });
+        }
+      }
+    }
+    return results;
+  }
+
   static async getItemDetails(
     accessToken: string,
     itemId: string,

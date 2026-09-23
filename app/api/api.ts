@@ -290,6 +290,7 @@ import { ListingRetryService } from "../marketplaces/services/listing-retry.serv
 import { StockSyncRetryService } from "../marketplaces/services/stock-sync-retry.service";
 import { StockReconciliationService } from "../marketplaces/services/stock-reconciliation.service";
 import { ListingStatusSweepService } from "../marketplaces/services/listing-status-sweep.service";
+import { ListingTitleWatchService } from "../marketplaces/services/listing-title-watch.service";
 import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
 import { OrderReturnPendencyReconcilerService } from "../marketplaces/services/order-return-pendency-reconciler.service";
 import { RembgAlertService } from "../marketplaces/services/rembg-alert.service";
@@ -383,6 +384,7 @@ async function gracefulShutdown(signal: string, exitCode = 0) {
     (StockSyncRetryService as any).stop?.();
     (StockReconciliationService as any).stop?.();
     (ListingStatusSweepService as any).stop?.();
+    (ListingTitleWatchService as any).stop?.();
     (OrderIngestionReconcilerService as any).stop?.();
     (OrderReturnPendencyReconcilerService as any).stop?.();
     (RembgAlertService as any).stop?.();
@@ -441,6 +443,10 @@ try {
       if (process.env.LISTING_STATUS_SYNC_DISABLED !== "1") {
         ListingStatusSweepService.start();
       }
+      // vigia se o anuncio ainda vende a peca que a Dexo acha que ele vende.
+      // Opt-IN: o proprio start() diz no boot se subiu ligada ou desligada,
+      // porque a vigilia de disponibilidade passou semanas muda nos dois casos.
+      ListingTitleWatchService.start();
       // re-tenta as pendências de ingestão de pedido (OrderIngestionIssue):
       // é o que faz um pedido quarentenado entrar sozinho assim que o cliente
       // vincula o anúncio ao produto, sem ninguém rodar script

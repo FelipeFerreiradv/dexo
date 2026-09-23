@@ -8,6 +8,13 @@
  * a taxa caiu para menos de 2%. Com `--todos` a varredura deixa de estimar e
  * passa a NOMEAR cada anuncio errado, que e o que da para consertar.
  *
+ * ⚠️ JA EXISTE UM PARENTE: `scripts/conferir-anuncio-vs-produto-ml.ts` (14/09)
+ * faz a mesma comparacao titulo x nome, com cache resumivel. Este aqui nasceu
+ * depois por engano meu — nao procurei antes. Ficou por dois motivos concretos:
+ * ele nunca RENOVA token (le do banco e rele no 401, enquanto o outro passa por
+ * `MLOAuthService`), e amostra por CONTA, que e o que torna a taxa confiavel.
+ * Para varrer um cliente inteiro, os dois servem; para medir taxa, use este.
+ *
  * SOMENTE LEITURA: consulta com `default_transaction_read_only = on`, GET no
  * Mercado Livre com token que JA esta valido, nunca renova e nunca imprime o
  * token.
