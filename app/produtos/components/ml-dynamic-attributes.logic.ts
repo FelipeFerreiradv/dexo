@@ -19,6 +19,12 @@ export type MLDynamicAttribute = {
   valueMaxLength?: number;
   /** Sinal do próprio ML (tags.hidden) de que o atributo não deve ser exibido. */
   hidden?: boolean;
+  /**
+   * Unidades aceitas em atributo `number_unit` (`allowed_units` do ML) e a
+   * padrão. Ausentes (cache antigo do catálogo) = campo numérico de sempre.
+   */
+  allowedUnits?: string[];
+  defaultUnit?: string;
 };
 
 /**
@@ -56,10 +62,34 @@ export const FIXED_FIELD_ATTRS = new Set([
  */
 export function getVisibleAttributes(
   attrs: MLDynamicAttribute[],
+  /**
+   * Ids que o produto tem PREENCHIDOS. Atributo `hidden` com valor continua
+   * visível: a publicação pode recusar esse valor (ex.: GTIN "906062426R") e a
+   * mensagem pede para corrigi-lo na ficha — escondido, a pessoa não teria
+   * como. Ausente = regra de sempre.
+   */
+  idsComValor?: ReadonlySet<string>,
 ): MLDynamicAttribute[] {
   return attrs.filter(
-    (a) => !FIXED_FIELD_ATTRS.has(a.id) && !(a.hidden && !a.required),
+    (a) =>
+      !FIXED_FIELD_ATTRS.has(a.id) &&
+      (!(a.hidden && !a.required) || !!idsComValor?.has(a.id)),
   );
+}
+
+/**
+ * Ids com valor no mapa da ficha (value_id ou value_name não vazios). Usado
+ * para manter visível um atributo `hidden` que o produto preencheu.
+ */
+export function attributeIdsWithValue(
+  value: Record<string, MLAttributeValue> | null | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const [id, v] of Object.entries(value ?? {})) {
+    const tem = (s?: string) => typeof s === "string" && s.trim().length > 0;
+    if (v && (tem(v.value_id) || tem(v.value_name))) ids.add(id);
+  }
+  return ids;
 }
 
 /**
@@ -129,3 +159,64 @@ export function positionNeedsInput(
   const has = (s?: string) => typeof s === "string" && s.trim().length > 0;
   return !cur || (!has(cur.value_id) && !has(cur.value_name));
 }
+
+/**
+ * Campo do tipo imagem (`picture_id`, ex.: QR code regulatório). A Dexo não
+ * envia imagem por aqui, e qualquer texto digitado é recusado pelo ML (422
+ * "invalid picture ID"). A ficha mostra o campo travado e, se já houver valor,
+ * oferece apagá-lo.
+ */
+export function isPictureAttribute(attr: MLDynamicAttribute): boolean {
+  return attr.valueType === "picture_id";
+}
+
+/** Número + seletor de unidade: só com as unidades aceitas em mãos. */
+export function usesUnitSelector(attr: MLDynamicAttribute): boolean {
+  return (
+    attr.valueType === "number_unit" &&
+    Array.isArray(attr.allowedUnits) &&
+    attr.allowedUnits.length > 0
+  );
+}
+
+const semAcentoMinusculo = (s: string) =>
+  s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+
+/**
+ * "30 cm" → { number: "30", unit: "cm" }. Unidade ausente ou fora da lista
+ * aceita volta `unit: null` (e `invalidUnit` com o que estava escrito), para a
+ * tela pedir a unidade em vez de fingir que ela existe.
+ */
+export function splitNumberUnit(
+  raw: string | undefined | null,
+  allowedUnits: readonly string[],
+): { number: string; unit: string | null; invalidUnit?: string } {
+  const texto = typeof raw === "string" ? raw.trim() : "";
+  if (!texto) return { number: "", unit: null };
+  const m = /^(-?\d+(?:[.,]\d+)?)\s*(.*)$/.exec(texto);
+  if (!m) return { number: "", unit: null, invalidUnit: texto };
+  const numero = m[1].replace(",", ".");
+  const unidade = m[2].trim();
+  if (!unidade) return { number: numero, unit: null };
+  const aceita = allowedUnits.find(
+    (u) => semAcentoMinusculo(u) === semAcentoMinusculo(unidade),
+  );
+  return aceita
+    ? { number: numero, unit: aceita }
+    : { number: numero, unit: null, invalidUnit: unidade };
+}
+
+/** Valor gravado: "30 cm" (formato que o ML aceita). Sem número = limpar. */
+export function joinNumberUnit(
+  number: string,
+  unit: string | null | undefined,
+): string | null {
+  const n = (number ?? "").trim();
+  if (!n) return null;
+  return unit ? `${n} ${unit}` : n;
+}
+
+/** Registro do INMETRO: o campo mais recusado nos logs (3702). */
+export const INMETRO_ATTR_ID = "INMETRO_CERTIFICATION_REGISTRATION_NUMBER";
+export const INMETRO_HINT =
+  "Só o número do registro/certificação do INMETRO (vem na etiqueta ou no certificado da peça). Deixe vazio se a peça não tiver: nome da peça, \"0\" ou \"1111\" são recusados pelo Mercado Livre.";

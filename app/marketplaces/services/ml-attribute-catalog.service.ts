@@ -34,6 +34,19 @@ export interface NormalizedMLAttribute {
   catalogRequiredTag?: boolean;
   conditionalRequiredTag?: boolean;
   fixedTag?: boolean;
+  /**
+   * Metadados que a validação de VALORES (ml-attribute-value-validation.logic)
+   * lê. Opcionais: linha antiga do cache de 24h não os tem ⇒ a regra que
+   * depende de cada um não roda (comportamento de antes).
+   *   - allowedUnits/defaultUnit: `allowed_units`/`default_unit` de atributo
+   *     `number_unit` (o ML recusa número sem unidade com 3708);
+   *   - multivaluedTag: `tags.multivalued` (395 "too many values");
+   *   - readOnlyTag: `tags.read_only` (o ML ignora o valor, aviso 303).
+   */
+  allowedUnits?: string[];
+  defaultUnit?: string;
+  multivaluedTag?: boolean;
+  readOnlyTag?: boolean;
 }
 
 export interface RawMLAttribute {
@@ -43,13 +56,28 @@ export interface RawMLAttribute {
   tags?: Record<string, unknown>;
   values?: Array<{ id: string; name: string }>;
   value_max_length?: number;
+  allowed_units?: Array<{ id?: string; name?: string }>;
+  default_unit?: string;
 }
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const memoryCache = new Map<
   string,
-  { attrs: NormalizedMLAttribute[]; expiresAt: number }
+  { attrs: NormalizedMLAttribute[]; expiresAt: number; legacyOk?: boolean }
 >();
+
+/**
+ * Linha gravada ANTES dos metadados de valor (unidades, multivalued,
+ * read_only): nenhum atributo tem `readOnlyTag` definido. Tratada como
+ * vencida uma vez — sem isso, por até 24-48 h um GTIN read_only inválido era
+ * BLOQUEADO em vez de sair do payload (a regra não sabia que era read_only).
+ */
+function formatoAntigo(attrs: NormalizedMLAttribute[]): boolean {
+  return attrs.length > 0 && attrs.every((a) => a.readOnlyTag === undefined);
+}
+
+/** Enquanto a API do ML falhar, a linha antiga serve por este tempo. */
+const LEGACY_RETRY_MS = 10 * 60 * 1000;
 
 function normalize(raw: RawMLAttribute): NormalizedMLAttribute {
   const tags = (raw.tags || {}) as Record<string, unknown>;
@@ -77,6 +105,17 @@ function normalize(raw: RawMLAttribute): NormalizedMLAttribute {
       typeof raw.value_max_length === "number"
         ? raw.value_max_length
         : undefined,
+    allowedUnits: Array.isArray(raw.allowed_units)
+      ? raw.allowed_units
+          .map((u) => String(u?.id ?? u?.name ?? "").trim())
+          .filter(Boolean)
+      : undefined,
+    defaultUnit:
+      typeof raw.default_unit === "string" && raw.default_unit.trim()
+        ? raw.default_unit.trim()
+        : undefined,
+    multivaluedTag: Boolean(tags.multivalued),
+    readOnlyTag: Boolean(tags.read_only),
   };
 }
 
@@ -99,8 +138,13 @@ export class MLAttributeCatalogService {
     if (!categoryId) return [];
     const now = Date.now();
     const mem = memoryCache.get(categoryId);
-    if (mem && mem.expiresAt > now) return mem.attrs;
+    if (mem && mem.expiresAt > now && (mem.legacyOk || !formatoAntigo(mem.attrs))) {
+      return mem.attrs;
+    }
 
+    // Linha válida mas de formato antigo: tenta renovar; se o ML falhar,
+    // devolve ela mesma (nunca [] — isso desligaria o preflight inteiro).
+    let reserva: NormalizedMLAttribute[] | null = null;
     try {
       const row = await (prisma as any).mLCategoryAttributeCache.findUnique({
         where: { categoryId },
@@ -109,8 +153,11 @@ export class MLAttributeCatalogService {
         const attrs = Array.isArray(row.attributes)
           ? (row.attributes as NormalizedMLAttribute[])
           : [];
-        memoryCache.set(categoryId, { attrs, expiresAt: now + CACHE_TTL_MS });
-        return attrs;
+        if (!formatoAntigo(attrs)) {
+          memoryCache.set(categoryId, { attrs, expiresAt: now + CACHE_TTL_MS });
+          return attrs;
+        }
+        reserva = attrs;
       }
     } catch (err) {
       console.warn(
@@ -165,8 +212,17 @@ export class MLAttributeCatalogService {
           event: "ml.attr_catalog.fetch_failed",
           categoryId,
           message: err instanceof Error ? err.message : String(err),
+          servedLegacy: !!reserva,
         }),
       );
+      if (reserva) {
+        memoryCache.set(categoryId, {
+          attrs: reserva,
+          expiresAt: now + LEGACY_RETRY_MS,
+          legacyOk: true,
+        });
+        return reserva;
+      }
       return [];
     }
   }

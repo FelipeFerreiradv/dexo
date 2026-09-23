@@ -56,6 +56,17 @@ import {
   type MLRawCause,
 } from "../lib/ml-error-normalizer";
 import {
+  packagePlausibilityWarnings,
+  summarizeValueBlocks,
+  validateMLAttributeValues,
+  type ValueIssue,
+} from "../lib/ml-attribute-value-validation.logic";
+import {
+  isUserProductSeller,
+  maySuggestAnotherCategory,
+  shouldRetryWithTitle,
+} from "../lib/ml-publish-ladder.logic";
+import {
   isMlRequiredAttrsBlockEnabled,
   evaluateMLRequiredAttributes,
   issuesFromMissingAttributeIds,
@@ -280,6 +291,47 @@ function reservadoPorOutro(
   // Linha só AGENDADA não conta — o bloqueio gravado nela vale (o cron
   // bateria na mesma recusa).
   return placeholderDecision(row, minha ?? null, agora) === "busy";
+}
+
+/**
+ * Janela em que uma republicação pode estar em curso. A mesma de "publicação
+ * interrompida" no card e no script de recuperação: bem acima de uma criação
+ * (a reserva é de 10 min), porque a subida de fotos não tem prazo próprio.
+ */
+const REPUBLICACAO_EM_CURSO_MS = 30 * 60 * 1000;
+
+/**
+ * A republicação dona desta linha ainda pode estar em curso? O id carrega o
+ * horário da troca (`PENDING_REPUBLISH_<id antigo>_<ts>`). Passada a janela, é
+ * linha ENCALHADA — o processo morreu no meio, ou o revert deu "id_taken" — e
+ * vale o comportamento de antes (publicar nela tira a linha desse estado),
+ * agora sob reserva. Recusar para sempre bloqueava o par sem saída (achado da
+ * releitura de 23/09).
+ */
+function republicacaoEmCurso(externalListingId: string, now = Date.now()): boolean {
+  const m = /^PENDING_REPUBLISH_.+_(\d+)$/.exec(externalListingId);
+  if (!m) return false;
+  const ts = Number(m[1]);
+  return Number.isFinite(ts) && now - ts < REPUBLICACAO_EM_CURSO_MS;
+}
+
+/**
+ * Recusa de "Anunciar" com o anúncio do par em republicação. Sem `code`: para o
+ * cron é uma falha comum (gasta tentativa e para no teto) — quando a
+ * republicação termina, a guarda de anúncio vivo encerra o pendente.
+ */
+function republishInProgressRefusal(row: {
+  id: string;
+  externalListingId: string;
+}): { listingId: string; externalListingId?: string; error: string } {
+  const m = /^PENDING_REPUBLISH_(.+)_(\d+)$/.exec(row.externalListingId);
+  const antigo = m ? m[1] : undefined;
+  const qual = antigo ? ` (${antigo})` : "";
+  return {
+    listingId: row.id,
+    externalListingId: antigo,
+    error: `Produto já tem anúncio nesta conta${qual}, sendo republicado agora. Aguarde alguns minutos e confira o anúncio.`,
+  };
 }
 
 export class ListingUseCase {
@@ -709,6 +761,11 @@ export class ListingUseCase {
     MLRequiredAttributesEvaluation & {
       categoryId: string | null;
       legacyMissingRequired: string[];
+      /**
+       * Achados da validação de VALORES (mesma do create). Opcional: ausente
+       * quando a categoria não resolve ou ML_VALUE_VALIDATION_DISABLED=1.
+       */
+      valueIssues?: ValueIssue[];
     }
   > {
     const chave =
@@ -749,14 +806,53 @@ export class ListingUseCase {
       categoryAttrs,
       attributeOverrides: i.attributeOverrides,
     });
+    const avaliacao = evaluateMLRequiredAttributes({
+      categoryAttributes: categoryAttrs,
+      payloadAttributes: built.attributes,
+      catalogListing: false,
+    });
+    // Mesma validação de VALORES do create: a tela e a publicação concordam.
+    // Bloqueio de valor entra em `blocking` (reason invalid_value) e decide o
+    // status só quando não havia outro bloqueio — a mensagem de obrigatório
+    // continua a mesma de sempre quando os dois acontecem.
+    if (process.env.ML_VALUE_VALIDATION_DISABLED === "1") {
+      return {
+        ...avaliacao,
+        categoryId: cat.categoryIdForML,
+        legacyMissingRequired: built.preflight.missingRequired,
+      };
+    }
+    const valores = validateMLAttributeValues(
+      this.withOemAsTags(built.attributes) ?? [],
+      categoryAttrs,
+    );
+    const bloqueiosDeValor = valores.issues
+      .filter((i) => i.severity === "block")
+      .map((i) => ({
+        attributeId: i.attributeId,
+        attributeName: i.attributeName,
+        reason: "invalid_value" as const,
+        message: i.message,
+      }));
+    if (bloqueiosDeValor.length === 0) {
+      return {
+        ...avaliacao,
+        categoryId: cat.categoryIdForML,
+        legacyMissingRequired: built.preflight.missingRequired,
+        valueIssues: valores.issues,
+      };
+    }
     return {
-      ...evaluateMLRequiredAttributes({
-        categoryAttributes: categoryAttrs,
-        payloadAttributes: built.attributes,
-        catalogListing: false,
-      }),
+      ...avaliacao,
+      status: "blocked",
+      blocking: [...avaliacao.blocking, ...bloqueiosDeValor],
+      message:
+        avaliacao.status === "blocked"
+          ? avaliacao.message
+          : summarizeValueBlocks(valores.issues),
       categoryId: cat.categoryIdForML,
       legacyMissingRequired: built.preflight.missingRequired,
+      valueIssues: valores.issues,
     };
   }
 
@@ -1288,15 +1384,34 @@ export class ListingUseCase {
     effectiveSettings: MLListingSettings;
     externalSku?: string | null;
     actorId?: string;
+    /**
+     * Prefixo do `lastError`. Ausente = `[TERMINAL]` de sempre (obrigatório
+     * faltando, flag ML_REQUIRED_ATTRS_BLOCK). A validação de VALORES passa
+     * `[TERMINAL][CORRIGIVEL]`, que a edição do produto re-arma.
+     */
+    marker?: string;
+    /**
+     * Linha do par já lida pelo chamador (`null` = não existe). Ausente = lê
+     * aqui. Evita a segunda leitura idêntica no bloqueio de valores.
+     */
+    knownRow?: {
+      id: string;
+      externalListingId: string | null;
+      retryEnabled?: boolean | null;
+      nextRetryAt?: Date | string | null;
+    } | null;
     /** Reserva de quem chama (ver `opts.reservation` do createMLListing). */
     reservation?: { listingId: string; at: Date } | null;
   }): Promise<string | undefined> {
     try {
-      const lastError = `[TERMINAL] ${i.message}`;
-      const row = await ListingRepository.findByProductAndAccount(
-        i.productId,
-        i.accountId,
-      );
+      const lastError = `${i.marker ?? "[TERMINAL]"} ${i.message}`;
+      const row =
+        i.knownRow !== undefined
+          ? i.knownRow
+          : await ListingRepository.findByProductAndAccount(
+              i.productId,
+              i.accountId,
+            );
       if (row?.externalListingId?.startsWith("PENDING_REPUBLISH_")) {
         return row.id;
       }
@@ -1305,7 +1420,14 @@ export class ListingUseCase {
       if (row && reservadoPorOutro(row, i.reservation)) {
         return row.id;
       }
-      if (row) {
+      // Linha com id REAL (anúncio encerrado sendo publicado de novo): o
+      // re-arme da edição e o botão "Tentar publicar novamente" só enxergam
+      // placeholders PENDING_, então um `[TERMINAL][CORRIGIVEL]` nela ficaria
+      // sem saída. O bloqueio de VALOR vai para um placeholder próprio e o
+      // anúncio encerrado segue intacto no histórico.
+      const idReal =
+        !!row && !String(row.externalListingId ?? "").startsWith("PENDING_");
+      if (row && !(idReal && i.marker === LAST_ERROR_MARKER.CORRIGIVEL)) {
         await ListingRepository.updateListing(row.id, {
           status: "error",
           lastError,
@@ -1687,6 +1809,11 @@ export class ListingUseCase {
     basePayload: MLItemCreatePayload,
     product: any,
     newCategoryId: string,
+    /**
+     * `upFamilyFirst`: vendedor User Products — family_name e sem title em
+     * qualquer categoria. Ausente = regra da allowlist de sempre.
+     */
+    opts?: { upFamilyFirst?: boolean },
   ): MLItemCreatePayload {
     const normalized =
       this.normalizeMLCategoryId(newCategoryId) || newCategoryId;
@@ -1699,8 +1826,11 @@ export class ListingUseCase {
       (a) => !baseAttrIds.has(a.id) && a.id.startsWith("SELLER_PACKAGE_"),
     );
 
-    const includeFamilyName = this.shouldIncludeFamilyName(normalized);
-    const noTitleFlow = this.noTitleWithFamilyName(normalized);
+    const upFamily =
+      !!opts?.upFamilyFirst && !this.shouldIncludeFamilyName(normalized);
+    const includeFamilyName =
+      this.shouldIncludeFamilyName(normalized) || upFamily;
+    const noTitleFlow = this.noTitleWithFamilyName(normalized) || upFamily;
     const familyNameValue = this.buildMLTitle(product);
     const titleValue = (basePayload as any).title || this.buildMLTitle(product);
 
@@ -1761,7 +1891,16 @@ export class ListingUseCase {
      * reservado por OUTRO (botão, outro "Anunciar", outro lote) não é
      * reaproveitado — seria um segundo POST /items do mesmo produto.
      */
-    opts?: { reservation?: { listingId: string; at: Date } },
+    opts?: {
+      reservation?: { listingId: string; at: Date };
+      /**
+       * Republicação UP (troca de título de anúncio vivo), dita por quem
+       * chama (SyncUseCase.republishUpListing). Explícito: deduzir pela linha
+       * do banco confundia com um `PENDING_REPUBLISH_` órfão e desligava a
+       * validação de valores do par inteiro.
+       */
+      republish?: boolean;
+    },
   ): Promise<CreateListingResult> {
     // Reserva que ESTA chamada fez no pendente reaproveitado; o catch geral a
     // desfaz (os fins normais gravam o próprio agendamento por cima).
@@ -1905,9 +2044,13 @@ export class ListingUseCase {
       }
       // Pre-check: validar que o seller pode criar anÃºncios (detectar restriÃ§Ãµes antes de montar payload)
       let sellerId: string | undefined;
+      // Tags da conta (mesmo GET /users/me de sempre). `user_product_seller`
+      // decide o family_name de primeira; falha aqui = comportamento de antes.
+      let sellerTags: string[] | undefined;
       try {
         const mlUserInfo = await MLOAuthService.getUserInfo(acc.accessToken);
         sellerId = mlUserInfo?.id?.toString();
+        sellerTags = Array.isArray(mlUserInfo?.tags) ? mlUserInfo.tags : undefined;
         if (sellerId) {
           try {
             // chamada leve para confirmar capacidade de listar (pede 1 id apenas)
@@ -2077,6 +2220,61 @@ export class ListingUseCase {
           externalListingId: liveListing.externalListingId,
           error: `Produto já tem anúncio ${liveDesc} nesta conta (${liveListing.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
         };
+      }
+
+      // 1.5b. Anúncio do par em REPUBLICAÇÃO: a linha dele vira
+      // `PENDING_REPUBLISH_<id antigo>_<ts>` até o item novo nascer, e o antigo
+      // segue vivo no ML — a guarda acima não o vê. Um "Anunciar" agora
+      // publicaria um segundo item (com a republicação interrompida, o antigo
+      // ficaria órfão, vendendo sem baixa). Só a própria republicação passa.
+      // Linha ENCALHADA (fora da janela de uma criação) segue como antes — ver
+      // republicacaoEmCurso. Falha na leitura = segue (o 3.1 ainda decide).
+      if (opts?.republish !== true) {
+        let doPar: Awaited<
+          ReturnType<typeof ListingRepository.findRepublishingListingsInPair>
+        > = [];
+        try {
+          doPar = await ListingRepository.findRepublishingListingsInPair(
+            productId,
+            acc.id,
+          );
+        } catch {
+          doPar = [];
+        }
+        const republicando =
+          doPar.find((r) => republicacaoEmCurso(r.externalListingId)) ??
+          doPar[0] ??
+          null;
+        if (
+          republicando &&
+          republicacaoEmCurso(republicando.externalListingId)
+        ) {
+          const recusa = republishInProgressRefusal(republicando);
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.republish_in_progress_refused",
+              productId,
+              accountId: acc.id,
+              listingId: republicando.id,
+              oldExternalListingId: recusa.externalListingId,
+              stage: "early",
+            }),
+          );
+          return { success: false, skipped: true, ...recusa };
+        }
+        if (republicando) {
+          // Encalhada: segue (antes também seguia). Fica no log para o Suporte
+          // conferir se o anúncio antigo ainda está vivo no ML.
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.stale_republish_row",
+              productId,
+              accountId: acc.id,
+              listingId: republicando.id,
+              externalListingId: republicando.externalListingId,
+            }),
+          );
+        }
       }
 
       // 1.6. O pendente que esta criação reaproveitaria está ocupado (cron
@@ -2574,6 +2772,127 @@ export class ListingUseCase {
         }
       }
 
+      // ─── Valores da ficha técnica × catálogo da categoria ────────────────
+      // O bloco acima só olha "o obrigatório está presente". Aqui entram os
+      // VALORES que o ML recusa e a Dexo consegue ver antes do POST (lista de
+      // outra categoria, valor fixo divergente, número sem unidade, GTIN com
+      // número de peça, atributo de imagem com texto, OEM repetido). Correção
+      // só quando a própria categoria determina o valor; o resto bloqueia com
+      // `[TERMINAL][CORRIGIVEL]` — a edição do produto re-arma. Roda antes do
+      // upload de imagens e do placeholder: bloqueio não gasta upload nem a
+      // escada de retentativas. Catálogo indisponível = não mexe em nada.
+      //
+      // Anúncio de catálogo ligado: a tentativa de catálogo não leva
+      // atributos e pode publicar — aplica as correções, mas não bloqueia
+      // (mesma exceção do bloco de obrigatórios).
+      //
+      // ML_VALUE_VALIDATION_DISABLED=1 desliga tudo (payload de antes).
+      let atributosValidados: MLItemCreatePayload["attributes"] | undefined;
+      if (process.env.ML_VALUE_VALIDATION_DISABLED !== "1") {
+        const checagem = validateMLAttributeValues(
+          this.withOemAsTags(attributes) ?? [],
+          categoryAttrsForBuild,
+        );
+        if (checagem.issues.length > 0) {
+          console.log(
+            JSON.stringify({
+              event: "ml.attribute_values.evaluated",
+              productId: product.id,
+              accountId: acc.id,
+              categoryId: categoryIdForML,
+              blocked: checagem.blocked,
+              issues: checagem.issues.map(
+                (i) => `${i.severity}:${i.code}:${i.attributeId}`,
+              ),
+            }),
+          );
+        }
+        const catalogoLigado = shouldSkipMlRequiredBlockForCatalog(
+          (product as any).mlCatalogProductId,
+        );
+        // REPUBLICAÇÃO de um anúncio vivo (troca de título UP disparada pela
+        // edição do produto, `opts.republish`): lá o bloqueio não aparece em
+        // lugar nenhum — o sync reverte a linha e só registra log — e o
+        // título novo nunca chegaria ao ML, nem nos casos que o ML aceita com
+        // aviso (parte dos números sem unidade). Então a republicação segue
+        // como antes: o POST vai e o ML decide; as correções determinísticas
+        // continuam valendo. A linha do par só é lida no caminho bloqueado de
+        // uma criação normal (para gravar o bloqueio).
+        let linhaDoPar:
+          | {
+              id: string;
+              externalListingId: string | null;
+              retryEnabled?: boolean | null;
+              nextRetryAt?: Date | string | null;
+            }
+          | null
+          | undefined;
+        const republicacao = opts?.republish === true;
+        if (checagem.blocked && !catalogoLigado && !republicacao) {
+          try {
+            linhaDoPar = await ListingRepository.findByProductAndAccount(
+              productId,
+              acc.id,
+            );
+          } catch {
+            linhaDoPar = undefined;
+          }
+        }
+        if (checagem.blocked && !catalogoLigado && republicacao) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.attribute_values.block_skipped_republish",
+              productId: product.id,
+              accountId: acc.id,
+              categoryId: categoryIdForML,
+              issues: checagem.issues
+                .filter((i) => i.severity === "block")
+                .map((i) => `${i.code}:${i.attributeId}`),
+            }),
+          );
+        } else if (checagem.blocked && !catalogoLigado) {
+          const msg =
+            summarizeValueBlocks(checagem.issues) ??
+            "A ficha técnica tem valores que o Mercado Livre não aceita.";
+          const listingIdTerminal = await this.persistMlRequiredAttrsTerminal({
+            productId,
+            accountId: acc.id,
+            categoryIdForML,
+            message: msg,
+            effectiveSettings,
+            externalSku: product.sku,
+            actorId,
+            marker: LAST_ERROR_MARKER.CORRIGIVEL,
+            knownRow: linhaDoPar,
+            reservation: opts?.reservation,
+          });
+          return {
+            success: false,
+            listingId: listingIdTerminal,
+            error: msg,
+            errorKind: "VALIDATION",
+            lastErrorMarker: LAST_ERROR_MARKER.CORRIGIVEL,
+          };
+        }
+        atributosValidados = checagem.attributes as MLItemCreatePayload["attributes"];
+      }
+      const avisosPacote = packagePlausibilityWarnings({
+        heightCm: product.heightCm,
+        widthCm: product.widthCm,
+        lengthCm: product.lengthCm,
+        weightKg: product.weightKg,
+      });
+      if (avisosPacote.length > 0) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.package.implausible",
+            productId: product.id,
+            categoryId: categoryIdForML,
+            warnings: avisosPacote,
+          }),
+        );
+      }
+
       // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
       // Nunca usar originalCategoryId pois pode ser ID sintético do catálogo estático.
       // Patch (bulk import 2026-05-09): se o produto tem `attributes.familyName`
@@ -2594,6 +2913,18 @@ export class ListingUseCase {
       const familyNameValue = explicitFamilyName ?? this.buildMLTitle(product);
       const noTitleWithFamily = this.noTitleWithFamilyName(resolvedCategoryId);
       const forceNoTitleFlow = includeFamilyName && noTitleWithFamily;
+      // Vendedor "User Products" (tag user_product_seller): o ML só aceita item
+      // novo com family_name e sem title. A 1ª tentativa passa a ir assim —
+      // é o corpo que o degrau family_name já mandava depois do 369 certo.
+      // Sem a tag, nada muda (payload byte-idêntico). forceNoTitleFlow /
+      // noTitleFlow ficam como estavam: são da allowlist de categorias.
+      // ML_UP_FAMILY_FIRST_DISABLED=1 volta ao fluxo anterior.
+      const upFamilyFirst =
+        process.env.ML_UP_FAMILY_FIRST_DISABLED !== "1" &&
+        !includeFamilyName &&
+        !!familyNameValue &&
+        isUserProductSeller(sellerTags);
+      if (upFamilyFirst) includeFamilyName = true;
 
       // Upload da imagem diretamente para o ML (mais confiável do que source URL)
       let picturesArray: MLItemCreatePayload["pictures"];
@@ -2793,7 +3124,7 @@ export class ListingUseCase {
         // `attributes` (a variável) fica como está — o `attrSnapshot` de
         // diagnóstico depende dela no formato singular. Só o que vai no wire
         // ganha a forma de lista do OEM.
-        attributes: this.withOemAsTags(attributes),
+        attributes: atributosValidados ?? this.withOemAsTags(attributes),
         seller_custom_field: product.sku,
         description: {
           plain_text: descriptionText,
@@ -2841,7 +3172,7 @@ export class ListingUseCase {
           payload.family_name = familyNameValue;
         }
       }
-      if (forceNoTitleFlow) {
+      if (forceNoTitleFlow || upFamilyFirst) {
         delete (payload as any).title;
       }
 
@@ -2857,6 +3188,7 @@ export class ListingUseCase {
         finalTitle: finalTitleForLog,
         descriptionSource,
         family_name_sent: includeFamilyName,
+        up_family_first: upFamilyFirst,
         category: {
           id: resolvedCategoryId,
           fullPath: resolvedCategory.fullPath,
@@ -2918,11 +3250,37 @@ export class ListingUseCase {
       // de um agendamento, ou tomada agora. Sem isso botão, cron, outro
       // "Anunciar", outro lote e o script de recuperação mandavam cada um o
       // seu POST /items. Republicação (PENDING_REPUBLISH_) é do sync.
-      const ehReaproveitavel =
+      const linhaDeRepublicacao =
         !!listing &&
-        !String(listing.externalListingId ?? "").startsWith(
-          "PENDING_REPUBLISH_",
+        String(listing.externalListingId ?? "").startsWith("PENDING_REPUBLISH_");
+      // Linha de republicação ENCALHADA escolhida por um "Anunciar" comum:
+      // publica nela como antes, mas sob reserva (antes, sem nenhuma).
+      const republicacaoEncalhada =
+        linhaDeRepublicacao &&
+        opts?.republish !== true &&
+        !republicacaoEmCurso(String(listing?.externalListingId ?? ""));
+      const ehReaproveitavel =
+        !!listing && (!linhaDeRepublicacao || republicacaoEncalhada);
+      // A linha escolhida é a de uma republicação EM CURSO e quem chama não é
+      // ela (a leitura do 1.5b falhou ou a marca apareceu depois): recusa —
+      // cair no update abaixo publicaria um segundo item e sobrescreveria o id.
+      if (listing && !ehReaproveitavel && opts?.republish !== true) {
+        const recusa = republishInProgressRefusal({
+          id: listing.id,
+          externalListingId: String(listing.externalListingId ?? ""),
+        });
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.republish_in_progress_refused",
+            productId,
+            accountId: acc.id,
+            listingId: listing.id,
+            oldExternalListingId: recusa.externalListingId,
+            stage: "placeholder",
+          }),
         );
+        return { success: false, skipped: true, ...recusa };
+      }
       if (listing && ehReaproveitavel) {
         const decisao = placeholderDecision(listing, opts?.reservation ?? null);
         if (decisao !== "owned") {
@@ -3098,8 +3456,17 @@ export class ListingUseCase {
           }
         }
       }
+      // Linha de republicação ENCALHADA reservada por esta criação comum: vira
+      // um pendente comum (id PENDING_ novo) — daqui em diante o timeout ganha
+      // [VERIFICAR] e o erro de dado ganha o marcador, como em qualquer
+      // pendente (tratada como republicação, o cron reenviava o POST às cegas).
+      const idPendenteComum =
+        republicacaoEncalhada && reservaPropria?.listingId === listing?.id
+          ? `PENDING_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+          : null;
       if (listing && !criadaAgora) {
         await ListingRepository.updateListing(listing.id, {
+          ...(idPendenteComum ? { externalListingId: idPendenteComum } : {}),
           listingType: effectiveSettings.listingType ?? null,
           itemCondition: effectiveSettings.itemCondition ?? null,
           hasWarranty: effectiveSettings.hasWarranty ?? null,
@@ -3121,6 +3488,18 @@ export class ListingUseCase {
               }
             : {}),
         });
+        if (idPendenteComum) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.stale_republish_row_reused",
+              productId,
+              accountId: acc.id,
+              listingId: listing.id,
+              previousExternalListingId: listing.externalListingId,
+            }),
+          );
+          listing = { ...listing, externalListingId: idPendenteComum };
+        }
       }
 
       // Com a linha nas mãos: outra criação do mesmo produto pode ter
@@ -3459,6 +3838,7 @@ export class ListingUseCase {
                 payload,
                 product,
                 normalizedNew,
+                { upFamilyFirst },
               );
 
               try {
@@ -3594,6 +3974,55 @@ export class ListingUseCase {
             ) {
               isTitleInvalid = true;
             }
+          }
+        }
+
+        // Degrau reverso do family_name de primeira (vendedor User Products):
+        // se o ML pediu `title` ou recusou o `family_name`, manda UMA vez o
+        // corpo de antes (com título, sem family_name). Deu certo ⇒ o resto do
+        // fluxo segue como o de uma criação sem family_name. Qualquer outra
+        // recusa segue a escada normal.
+        if (
+          !mlItem &&
+          upFamilyFirst &&
+          shouldRetryWithTitle(parsedMl?.cause, errMsg)
+        ) {
+          try {
+            console.warn(
+              "[ListingUseCase] family_name de primeira recusado; retentando com title (sem family_name)",
+            );
+            const comTitulo: MLItemCreatePayload = {
+              ...payload,
+              title: this.buildMLTitle(product),
+            };
+            delete (comTitulo as any).family_name;
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, comTitulo),
+              timeoutMs,
+              "ML createItem up_reverse_title",
+            );
+            if (mlItem) {
+              includeFamilyName = false;
+              delete (payload as any).family_name;
+              (payload as any).title = comTitulo.title;
+            }
+          } catch (revErr: any) {
+            recordAttemptCause(revErr, "up_reverse_title", categoryIdForML);
+            recordSameCategoryCause(revErr);
+            const revMl = revErr?.mlError || null;
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.retry_failed",
+                step: "up_reverse_title",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                cause: Array.isArray(revMl?.cause) ? revMl.cause : [],
+                mlMessage:
+                  revMl?.message ||
+                  (revErr instanceof Error ? revErr.message : String(revErr)),
+                mlError: revMl?.error || null,
+              }),
+            );
           }
         }
 
@@ -3736,7 +4165,27 @@ export class ListingUseCase {
             }),
           );
         }
-        if (!mlItem && !faltouObrigatorio) {
+        // Só por erro DE CATEGORIA na categoria pedida (category_id / domínio
+        // / condição). Por erro de dado a categoria sugerida publicava fora da
+        // escolha da pessoa ou devolvia a recusa da categoria errada.
+        // ML_SUGGESTED_CATEGORY_ANY_ERROR=1 = qualquer erro (como antes).
+        const podeCategoriaSugerida = maySuggestAnotherCategory({
+          requestedCategoryCauses: attemptLog
+            .filter((a) => (a.categoryId ?? null) === (categoriaPedidaML ?? null))
+            .map((a) => (a.err as any)?.mlError?.cause),
+          anyErrorOverride: process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR === "1",
+        });
+        if (!mlItem && !faltouObrigatorio && !podeCategoriaSugerida) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.suggested_category.skipped",
+              reason: "no_category_error",
+              productId: product.id,
+              categoryId: categoriaPedidaML,
+            }),
+          );
+        }
+        if (!mlItem && !faltouObrigatorio && podeCategoriaSugerida) {
           try {
             const siteId = (categoryIdForML || "MLB").slice(0, 3);
             const suggestedId = await MLApiService.suggestCategoryId(
@@ -3759,6 +4208,7 @@ export class ListingUseCase {
                 payload,
                 product,
                 normalizedNew,
+                { upFamilyFirst },
               );
 
               try {

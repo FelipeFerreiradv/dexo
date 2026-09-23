@@ -178,6 +178,7 @@ const ENV_KEYS = [
   "ML_REQUIRED_ATTRS_BLOCK",
   "LISTING_PREFLIGHT",
   "ML_CATALOG_LISTING_ENABLED",
+  "ML_SUGGESTED_CATEGORY_ANY_ERROR",
 ] as const;
 const envAntes: Record<string, string | undefined> = {};
 
@@ -230,6 +231,7 @@ beforeEach(async () => {
   delete process.env.ML_REQUIRED_ATTRS_BLOCK;
   delete process.env.LISTING_PREFLIGHT;
   delete process.env.ML_CATALOG_LISTING_ENABLED;
+  delete process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR;
 
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -551,6 +553,12 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
     ]);
 
   it("C12: erro de título sem 147 → escada e categoria sugerida iguais às de hoje", async () => {
+    // Mudança intencional (PR-3, 22/09/2026): sem o kill-switch
+    // ML_SUGGESTED_CATEGORY_ANY_ERROR=1 a categoria sugerida pelo ML só roda
+    // por erro DE CATEGORIA (category_id / domínio / condição). Este teste
+    // cobre a escada antiga, que continua disponível pelo kill-switch; o
+    // padrão novo está em tests/ml-create-prevalidacao.spec.ts.
+    process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR = "1";
     const rodar = async () => {
       vi.clearAllMocks();
       (MarketplaceRepository.findByIdAndUser as any).mockResolvedValue(ACCOUNT);
@@ -586,6 +594,12 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
   });
 
   it("C13: flag ausente + 147 → categoria sugerida é tentada (hoje)", async () => {
+    // Mudança intencional (PR-3, 22/09/2026): sem o kill-switch
+    // ML_SUGGESTED_CATEGORY_ANY_ERROR=1 a categoria sugerida pelo ML só roda
+    // por erro DE CATEGORIA (category_id / domínio / condição). Este teste
+    // cobre a escada antiga, que continua disponível pelo kill-switch; o
+    // padrão novo está em tests/ml-create-prevalidacao.spec.ts.
+    process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR = "1";
     (MLApiService.createItem as any).mockRejectedValue(erro147());
     const r = await criar();
     expect(MLApiService.suggestCategoryId).toHaveBeenCalled();
@@ -604,7 +618,21 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
       externalListingId: "PENDING_REPUBLISH_9",
     });
     (MLApiService.createItem as any).mockRejectedValue(erro147());
-    const r = await criar();
+    // ⚠️ Mudança intencional (#361, revisão de fechamento): a linha
+    // PENDING_REPUBLISH_ só é escrita por SyncUseCase.republishUpListing,
+    // que chama com { republish: true } — sem o flag, a criação agora recusa
+    // (um "Anunciar" comum ali publicava um segundo item).
+    const r = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      undefined,
+      "actor-1",
+      undefined,
+      { republish: true },
+    );
     expect(r.success).toBe(false);
     expect(r.terminal).toBe(true);
     expect(gravacoesTerminais()).toEqual([]);
@@ -794,6 +822,12 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
   });
 
   it("D1(g): sugerida pede family_name e o 147 vem só da retentativa sugerida+family → não terminal, reagenda", async () => {
+    // Mudança intencional (PR-3, 22/09/2026): sem o kill-switch
+    // ML_SUGGESTED_CATEGORY_ANY_ERROR=1 a categoria sugerida pelo ML só roda
+    // por erro DE CATEGORIA (category_id / domínio / condição). Este teste
+    // cobre a escada antiga, que continua disponível pelo kill-switch; o
+    // padrão novo está em tests/ml-create-prevalidacao.spec.ts.
+    process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR = "1";
     process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
     (MLApiService.suggestCategoryId as any).mockResolvedValue("MLB999");
     (MLApiService.createItem as any).mockImplementation(async (_t: string, p: any) => {
@@ -866,6 +900,12 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
   });
 
   it("D1: 147 que cita OUTRA categoria na 1ª tentativa não conta", async () => {
+    // Mudança intencional (PR-3, 22/09/2026): sem o kill-switch
+    // ML_SUGGESTED_CATEGORY_ANY_ERROR=1 a categoria sugerida pelo ML só roda
+    // por erro DE CATEGORIA (category_id / domínio / condição). Este teste
+    // cobre a escada antiga, que continua disponível pelo kill-switch; o
+    // padrão novo está em tests/ml-create-prevalidacao.spec.ts.
+    process.env.ML_SUGGESTED_CATEGORY_ANY_ERROR = "1";
     process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
     (MLApiService.createItem as any).mockRejectedValue(erro147("MLB7777"));
     const r = await criar();

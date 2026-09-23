@@ -7060,6 +7060,11 @@ export class SyncUseCase {
         accountId,
         mlSettings,
         newTitle,
+        undefined,
+        undefined,
+        // Diz à criação que é republicação: o bloqueio de valores da ficha não
+        // tem onde aparecer aqui (a linha é revertida) — o ML decide.
+        { republish: true },
       );
     } catch (createErr) {
       // Reverter o placeholder para o ID original — o anúncio antigo

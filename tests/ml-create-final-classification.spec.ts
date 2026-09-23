@@ -189,6 +189,20 @@ const criar = () =>
     "actor-1",
   );
 
+/** Como a republicação UP chama (SyncUseCase.republishUpListing). */
+const criarRepublicacao = () =>
+  ListingUseCase.createMLListing(
+    "user-1",
+    "prod-1",
+    "MLB46723",
+    "acct-1",
+    undefined,
+    undefined,
+    "actor-1",
+    undefined,
+    { republish: true },
+  );
+
 /** Última gravação de erro na linha. */
 const gravacaoFinal = () => {
   const calls = (ListingRepository.updateListing as any).mock.calls.filter(
@@ -438,7 +452,11 @@ describe("salvaguardas", () => {
     mlResponde(() => {
       throw erroMl("Validation error", [INMETRO_3702]);
     });
-    const r = await criar();
+    // ⚠️ Mudança intencional (#361, revisão de fechamento): a linha
+    // PENDING_REPUBLISH_ só é escrita por SyncUseCase.republishUpListing,
+    // que chama com { republish: true } — sem o flag, a criação agora recusa
+    // (um "Anunciar" comum ali publicava um segundo item).
+    const r = await criarRepublicacao();
     expect(r.lastErrorMarker).toBeUndefined();
     const g = gravacaoFinal();
     expect(g.lastError.startsWith("[")).toBe(false);
@@ -702,7 +720,11 @@ describe("pendente reaproveitado com retry desligado: reserva antes de publicar 
       pendente({ externalListingId: "PENDING_REPUBLISH_MLB1_1" }),
     );
     recusa();
-    await criar();
+    // ⚠️ Mudança intencional (#361, revisão de fechamento): a linha
+    // PENDING_REPUBLISH_ só é escrita por SyncUseCase.republishUpListing,
+    // que chama com { republish: true } — sem o flag, a criação agora recusa
+    // (um "Anunciar" comum ali publicava um segundo item).
+    await criarRepublicacao();
     expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
     expect(MLApiService.createItem).toHaveBeenCalled();
   });
