@@ -896,10 +896,26 @@ export class MLApiService {
     for (let i = 0; i < itemIds.length; i += 20) {
       const chunk = itemIds.slice(i, i + 20);
       const url = `${ML_CONSTANTS.API_URL}/items?ids=${chunk.join(",")}&attributes=id,status,title,available_quantity`;
-      const response = await axios.get<MLMultigetResponse[]>(url, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        timeout: 10000,
-      });
+      // Pausa curta e uma retentativa com espera: esta chamada percorre a base
+      // inteira em rajada (milhares de itens por passada), e o Mercado Livre
+      // tolera rajada curta mas cobra rajada longa. Sem isto a vigilia comeca a
+      // tomar 429 e perde justamente o fim de cada fatia.
+      if (i > 0) await new Promise((r) => setTimeout(r, 150));
+      let response;
+      try {
+        response = await axios.get<MLMultigetResponse[]>(url, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000,
+        });
+      } catch (erro) {
+        const status = (erro as { response?: { status?: number } })?.response?.status;
+        if (status !== 429 && !(status && status >= 500)) throw erro;
+        await new Promise((r) => setTimeout(r, 2000));
+        response = await axios.get<MLMultigetResponse[]>(url, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000,
+        });
+      }
       for (const item of response.data) {
         if (item.code === 200 && item.body?.id && item.body?.status) {
           results.push({
