@@ -99,9 +99,28 @@ describe("buildCompatDiagnostics", () => {
       verified: true,
       unresolved: 0,
       unresolvedSample: [],
+      // Novo (rodada 2 da revisão): quantas buscas no catálogo FALHARAM.
+      lookupFailed: 0,
       unsupportedDomain: undefined,
       at: NOW.toISOString(),
     });
+  });
+
+  it("grava quantos produtos do catálogo a busca resolveu e quantas buscas falharam", () => {
+    const d = buildCompatDiagnostics(
+      {
+        ...base,
+        catalogResolved: 7,
+        unresolved: [
+          { brand: "Fiat", model: "Palio", year: 2001, reason: "lookup failed: 429" },
+          { brand: "Fiat", model: "Palio", year: 2002, reason: "no catalog products for 2002 (ML returned 0 for brand+model)" },
+        ],
+      },
+      { now: NOW },
+    );
+    expect(d.resolved).toBe(7);
+    expect(d.lookupFailed).toBe(1);
+    expect(d.unresolved).toBe(2);
   });
 
   it("origem do reenvio continua gravada", () => {
@@ -198,6 +217,8 @@ describe("describeCompatDiagnostics", () => {
       requested: 1,
       persisted: 0,
       verified: true,
+      resolved: 0,
+      lookupFailed: 0,
       unresolved: 1,
       unresolvedSample: [{ brand: "Ford", model: "Fiesta", year: 2002 }],
     });
@@ -262,12 +283,59 @@ describe("describeCompatDiagnostics", () => {
       requested: 2,
       persisted: 0,
       verified: false,
+      resolved: 0,
+      lookupFailed: 0,
       unresolved: 2,
       unresolvedSample: [{ brand: "Fiat", model: "Argo", year: 2017 }],
     });
     expect(s?.text).toBe(
       "Nenhum veículo foi encontrado no catálogo do Mercado Livre (ex.: Fiat Argo 2017).",
     );
+  });
+
+  it("Gol achado + Palio 2000-2005 não achado, envio falhou ⇒ NÃO diz 'nenhum encontrado' (unresolved conta ano)", () => {
+    for (const verified of [true, false]) {
+      const s = describeCompatDiagnostics({
+        v: 2,
+        requested: 2,
+        persisted: 0,
+        verified,
+        resolved: 4,
+        lookupFailed: 0,
+        unresolved: 6,
+        unresolvedSample: [{ brand: "Fiat", model: "Palio", year: 2000 }],
+      });
+      expect(s?.text).not.toMatch(/Nenhum veículo foi encontrado/);
+    }
+  });
+
+  it("busca no catálogo falhou (429) ⇒ diz que a BUSCA falhou, não que o veículo não existe", () => {
+    const s = describeCompatDiagnostics({
+      v: 2,
+      requested: 1,
+      persisted: 0,
+      verified: false,
+      resolved: 0,
+      lookupFailed: 6,
+      unresolved: 6,
+      unresolvedSample: [{ brand: "Fiat", model: "Palio", year: 2000 }],
+    });
+    expect(s).toEqual({
+      tone: "muted",
+      text: "A busca de veículos no catálogo do Mercado Livre falhou; a compatibilidade não foi enviada.",
+    });
+  });
+
+  it("sem o número de resolvidos (formato sem o campo) não afirma 'nenhum encontrado'", () => {
+    const s = describeCompatDiagnostics({
+      v: 2,
+      requested: 1,
+      persisted: 0,
+      verified: true,
+      unresolved: 3,
+      unresolvedSample: [{ brand: "Ford", model: "Fiesta", year: 2002 }],
+    });
+    expect(s?.text).toBe("O Mercado Livre não confirmou nenhum veículo.");
   });
 
   it("diagnóstico ANTIGO não afirma 'não encontrado no catálogo' (veio da busca quebrada)", () => {

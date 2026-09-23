@@ -76,11 +76,23 @@ export function describeCompatDiagnostics(diag: unknown): CompatSummary | null {
         };
   }
 
-  // Nenhum veículo existia no catálogo do ML: nada foi enviado.
-  if (persisted === 0 && requested > 0 && unresolved >= requested) {
+  // "Nenhum veículo existe no catálogo do ML" só com prova: a busca resolveu
+  // ZERO e nenhuma busca falhou. (`unresolved` conta veículo×ano; comparar
+  // com `requested`, que conta veículos, afirmava isso com o Gol achado.)
+  const resolvidos = typeof d.resolved === "number" ? d.resolved : null;
+  const buscasFalhas = typeof d.lookupFailed === "number" ? d.lookupFailed : 0;
+  const nadaNoCatalogo =
+    persisted === 0 && requested > 0 && resolvidos === 0 && buscasFalhas === 0;
+  if (nadaNoCatalogo && unresolved > 0) {
     return {
       tone: "warning",
       text: `Nenhum veículo foi encontrado no catálogo do Mercado Livre${exemplo(d.unresolvedSample)}.`,
+    };
+  }
+  if (persisted === 0 && buscasFalhas > 0) {
+    return {
+      tone: "muted",
+      text: "A busca de veículos no catálogo do Mercado Livre falhou; a compatibilidade não foi enviada.",
     };
   }
 
@@ -98,7 +110,7 @@ export function describeCompatDiagnostics(diag: unknown): CompatSummary | null {
     return {
       tone: "warning",
       text:
-        unresolved > 0
+        nadaNoCatalogo && unresolved > 0
           ? `Nenhum veículo foi encontrado no catálogo do Mercado Livre${exemplo(d.unresolvedSample)}.`
           : "O Mercado Livre não confirmou nenhum veículo.",
     };

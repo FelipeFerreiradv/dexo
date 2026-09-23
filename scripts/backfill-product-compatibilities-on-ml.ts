@@ -301,6 +301,11 @@ async function main(): Promise<void> {
           marketplaceAccountId: { in: target.ids },
           marketplaceAccount: { platform: "MERCADO_LIVRE" },
           externalListingId: { startsWith: "MLB" },
+          // O recorte reenvia anúncio sem diagnóstico; encerrado nunca grava
+          // nada (persisted=0 ⇒ "reenviar" de novo a cada execução).
+          ...(onlyUnresolved
+            ? { status: { in: ["active", "paused", "under_review"] } }
+            : {}),
         },
         include: { marketplaceAccount: true },
         orderBy: [{ status: "asc" }, { createdAt: "desc" }],

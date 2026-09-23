@@ -3079,6 +3079,12 @@ export class MLApiService {
      * categoria — a correção é recategorizar, não reenviar.
      */
     unsupportedDomain?: string;
+    /**
+     * Quantos produtos do catálogo de compatibilidade a busca resolveu (antes
+     * de enviar). Com ele o diagnóstico distingue "nada existe no catálogo"
+     * de "achou, mas o envio falhou". Ausente quando a busca nem rodou.
+     */
+    catalogResolved?: number;
     /** Pares marca/modelo cujo catálogo não foi lido inteiro (ver resolve). */
     truncated?: Array<{
       brand: string;
@@ -3174,6 +3180,7 @@ export class MLApiService {
           budgetExhausted,
           userProductId,
           ...truncatedExtra,
+          catalogResolved: resolvedIds.length,
           ...(r.positions ? { positions: r.positions } : {}),
         };
       }
@@ -3206,6 +3213,7 @@ export class MLApiService {
           budgetExhausted,
           userProductId,
           ...truncatedExtra,
+          catalogResolved: resolvedIds.length,
           unsupportedDomain: dom,
         };
       }
@@ -3239,6 +3247,7 @@ export class MLApiService {
           budgetExhausted,
           userProductId,
           ...truncatedExtra,
+          catalogResolved: resolvedIds.length,
         };
       }
       // Recusa por domínio pode aparecer só agora (o degrau 1 nem sempre a
@@ -3260,6 +3269,7 @@ export class MLApiService {
           budgetExhausted,
           userProductId,
           ...truncatedExtra,
+          catalogResolved: resolvedIds.length,
           unsupportedDomain: dom,
         };
       }
@@ -3276,6 +3286,7 @@ export class MLApiService {
       budgetExhausted,
       userProductId,
       ...truncatedExtra,
+      catalogResolved: resolvedIds.length,
     };
   }
 

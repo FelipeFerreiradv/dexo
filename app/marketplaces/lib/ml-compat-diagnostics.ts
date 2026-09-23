@@ -23,6 +23,8 @@ export interface CompatVerifiedLike {
     reason: string;
   }>;
   unsupportedDomain?: string;
+  /** Produtos do catálogo que a busca resolveu antes do envio. */
+  catalogResolved?: number;
   truncated?: Array<{
     brand: string;
     model: string;
@@ -81,6 +83,16 @@ export function buildCompatDiagnostics(
     verified: compat.verified,
     unresolved: compat.unresolved.length,
     unresolvedSample: compat.unresolved.slice(0, 5),
+    // `unresolved` conta veículo×ANO e `requested` conta veículos: não dá para
+    // concluir "nada existe no catálogo" comparando os dois. Estes dois dizem:
+    // quantos o catálogo resolveu, e quantas buscas FALHARAM (429, rede) —
+    // falha de busca não é "não existe".
+    ...(typeof compat.catalogResolved === "number"
+      ? { resolved: compat.catalogResolved }
+      : {}),
+    lookupFailed: compat.unresolved.filter((u) =>
+      /^lookup failed/i.test(String(u?.reason ?? "")),
+    ).length,
     unsupportedDomain: compat.unsupportedDomain,
     ...(extra.origin ? { origin: extra.origin } : {}),
     ...(compat.truncated && compat.truncated.length > 0
