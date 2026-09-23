@@ -36,7 +36,9 @@ describe.skipIf(!LOCAL_OK)(
       // O client só vai para `prisma` DEPOIS de conferir o banco: o afterAll
       // roda mesmo quando o beforeAll lança, e limparia o banco recusado.
       const cliente = (await import("../../app/lib/prisma")).default;
-      const [{ current_database: banco }] = await cliente.$queryRaw`SELECT current_database()`;
+      const [{ current_database: banco }] = await cliente.$queryRaw<
+        Array<{ current_database: string }>
+      >`SELECT current_database()`;
       if (!/dexo_it/.test(banco)) {
         await cliente.$disconnect();
         throw new Error(`banco inesperado: ${banco}`);
