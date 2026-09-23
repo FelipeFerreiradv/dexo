@@ -44,6 +44,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
+import { DECIMAL_10_2_MAX } from "@/app/lib/money/markup";
 import {
   Dialog,
   DialogContent,
@@ -226,6 +227,9 @@ const productSchema = z.object({
   price: z
     .number({ invalid_type_error: "Preço deve ser um número" })
     .min(0, "Preço deve ser maior ou igual a zero")
+    // Teto da coluna `Decimal(10,2)`; o campo de moeda deixa digitar até
+    // R$ 999 milhões e o servidor recusaria.
+    .max(DECIMAL_10_2_MAX, "Preço acima do limite permitido (R$ 99.999.999,99)")
     .multipleOf(0.01, "Preço deve ter no máximo 2 casas decimais"),
   stock: z
     .number({ invalid_type_error: "Estoque deve ser um número" })
@@ -1381,12 +1385,18 @@ export function CreateProductDialog({
   }, [defaultDescription, setValue]);
 
   // Calcula margem automaticamente (Preço Venda - Preço Custo) / Preço Custo * 100
+  // (prévia na tela — o valor gravado é recalculado pelo servidor).
   useEffect(() => {
     if (watchCostPrice && watchPrice && watchCostPrice > 0) {
       const markup = ((watchPrice - watchCostPrice) / watchCostPrice) * 100;
       setValue("markup", Math.round(markup * 100) / 100); // 2 casas decimais
+    } else if (getValues("markup") != null) {
+      // Custo ou preço apagado: a margem anterior não vale mais. Antes ela
+      // ficava "velha" no formulário — apagar o custo no campo de moeda passa
+      // por R$ 0,01 e deixava um markup de milhões de %.
+      setValue("markup", null);
     }
-  }, [watchCostPrice, watchPrice, setValue]);
+  }, [watchCostPrice, watchPrice, setValue, getValues]);
 
   // Lazy-load ML categories only when user navigates to ML step (avoids 12k+ item fetch on dialog open)
   // Guarda o MODO de nicho já carregado (null = nada válido; false = filtrado;

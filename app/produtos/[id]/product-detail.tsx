@@ -23,6 +23,7 @@ import {
 
 import { getApiBaseUrl } from "@/lib/api";
 import { getStockDisplay } from "@/app/produtos/lib/product-format";
+import { resolveDisplayMarkup } from "@/app/lib/money/markup";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -275,6 +276,9 @@ export function ProductDetail({ productId }: { productId: string }) {
   const isOutOfStock = product.stock === 0;
   // BLOCO G — o que o badge e a linha "Estoque" exibem.
   const estoque = getStockDisplay(product.stock, product.reservedStock);
+  // Markup gravado, ou calculado na hora quando a coluna ficou vazia (fora do
+  // limite do banco) — ver app/lib/money/markup.ts.
+  const displayMarkup = resolveDisplayMarkup(product);
   const allListingsClosed = detailedListings.length > 0 && detailedListings.every(
     (l) => ["closed", "deleted", "seller_deleted", "inactive"].includes(l.status),
   );
@@ -377,9 +381,9 @@ export function ProductDetail({ productId }: { productId: string }) {
               Custo: {formatPrice(product.costPrice)}
             </p>
           )}
-          {product.markup !== undefined && (
+          {displayMarkup !== null && (
             <p className="text-sm text-muted-foreground">
-              Markup: {product.markup}%
+              Markup: {displayMarkup}%
             </p>
           )}
         </div>
@@ -400,8 +404,8 @@ export function ProductDetail({ productId }: { productId: string }) {
             {product.costPrice !== undefined && (
               <InfoRow label="Preço de custo" value={formatPrice(product.costPrice)} />
             )}
-            {product.markup !== undefined && (
-              <InfoRow label="Markup" value={`${product.markup}%`} />
+            {displayMarkup !== null && (
+              <InfoRow label="Markup" value={`${displayMarkup}%`} />
             )}
             {/* BLOCO G — com peça comprometida mostra "1 em estoque · 1
                 reservada"; sem reserva, o texto é o de sempre. */}

@@ -19,6 +19,10 @@ import {
 } from "../lib/product-listing-category";
 import { normalizeSku } from "../lib/sku";
 import {
+  NumericOverflowError,
+  isPrismaNumericOverflow,
+} from "./numeric-overflow-error";
+import {
   tokenizeSearch,
   reduceVariants,
   isCodeLikeQuery,
@@ -1137,6 +1141,9 @@ class ProductRepositoryPrisma implements ProductRepository {
 
       if (isSkuUniqueViolation(error)) {
         throw new Error("Produto com esse sku já existe");
+      }
+      if (isPrismaNumericOverflow(error)) {
+        throw new NumericOverflowError();
       }
 
       throw new Error(
@@ -2262,6 +2269,9 @@ class ProductRepositoryPrisma implements ProductRepository {
       // erro muda — nenhuma edição que passa hoje deixa de passar.
       if (isSkuUniqueViolation(error)) {
         throw new Error("Produto com esse sku já existe");
+      }
+      if (isPrismaNumericOverflow(error)) {
+        throw new NumericOverflowError();
       }
       throw new Error(error instanceof Error ? error.message : String(error));
     }

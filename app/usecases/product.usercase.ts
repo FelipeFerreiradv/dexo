@@ -23,6 +23,7 @@ import {
 import { User } from "../interfaces/user.interface";
 import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
+import { deriveMarkupForUpdate } from "../lib/money/markup";
 import { getVehicleBrands } from "../lib/vehicle-catalog";
 import { maskCorruptVehicleCategoriesInProducts } from "../marketplaces/services/category-resolution.service";
 import { AccountSemaphore } from "../marketplaces/services/account-semaphore";
@@ -969,7 +970,24 @@ export class ProductUseCase {
       throw new Error("Produto não encontrado");
     }
 
-    const updated = await this.productRepository.update(id, data, userId);
+    // Markup é derivado de preço e custo e calculado AQUI (o produto já está
+    // carregado): o valor do navegador podia vir velho ou maior do que a coluna
+    // comporta. Não calculável/fora da coluna ⇒ null; a tela calcula na hora.
+    const derivedMarkup = deriveMarkupForUpdate(data, product);
+    if (derivedMarkup.touch && derivedMarkup.reason === "OUT_OF_RANGE") {
+      console.warn(
+        JSON.stringify({
+          event: "product.markup.out_of_range",
+          productId: id,
+          op: "update",
+        }),
+      );
+    }
+    const writeData: ProductUpdate = derivedMarkup.touch
+      ? { ...data, markup: derivedMarkup.value }
+      : data;
+
+    const updated = await this.productRepository.update(id, writeData, userId);
 
     // Limpa overrides dos anúncios para os campos que o usuário editou no
     // produto. Sem isso, anúncios com priceOverride (criados via "Editar

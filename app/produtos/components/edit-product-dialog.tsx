@@ -45,6 +45,7 @@ import {
 import { ChannelCategoryPicker } from "./channel-category-picker";
 import { LockedMarketplaceField } from "./locked-marketplace-field";
 import { getApiBaseUrl } from "@/lib/api";
+import { DECIMAL_10_2_MAX } from "@/app/lib/money/markup";
 import {
   Dialog,
   DialogContent,
@@ -102,6 +103,9 @@ const productEditSchema = z.object({
   price: z
     .number({ invalid_type_error: "Preço deve ser um número" })
     .min(0, "Preço deve ser maior ou igual a zero")
+    // Teto da coluna `Decimal(10,2)`; o campo de moeda deixa digitar até
+    // R$ 999 milhões e o servidor recusaria.
+    .max(DECIMAL_10_2_MAX, "Preço acima do limite permitido (R$ 99.999.999,99)")
     .multipleOf(0.01, "Preço deve ter no máximo 2 casas decimais"),
   stock: z
     .number({ invalid_type_error: "Estoque deve ser um número" })
@@ -604,6 +608,7 @@ export function EditProductDialog({
     handleSubmit,
     formState: { errors },
     setValue,
+    getValues,
     reset,
     control,
     watch,
@@ -1583,13 +1588,17 @@ export function EditProductDialog({
     }
   }, [defaultDescription, product.description, setValue]);
 
-  // Cálculo automático da margem
+  // Cálculo automático da margem (prévia — o servidor recalcula ao salvar)
   useEffect(() => {
     if (watchCostPrice && watchPrice && watchCostPrice > 0) {
       const markup = ((watchPrice - watchCostPrice) / watchCostPrice) * 100;
       setValue("markup", Math.round(markup * 100) / 100);
+    } else if (getValues("markup") != null) {
+      // Custo ou preço apagado: a margem anterior não vale mais (antes ficava
+      // "velha" no formulário e era enviada assim).
+      setValue("markup", null);
     }
-  }, [watchCostPrice, watchPrice, setValue]);
+  }, [watchCostPrice, watchPrice, setValue, getValues]);
 
   // Debounced auto-fill for edit dialog as well
   // Only run when dialog is open to avoid racing with `reset()` that sets

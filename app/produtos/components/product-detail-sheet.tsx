@@ -45,6 +45,7 @@ import {
   LISTING_STATUS_LABELS,
 } from "@/app/produtos/lib/listing-status-labels";
 import { getStockDisplay } from "@/app/produtos/lib/product-format";
+import { resolveDisplayMarkup } from "@/app/lib/money/markup";
 
 type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
 
@@ -547,8 +548,10 @@ export function ProductDetailSheet({
                     icon={<TrendingUp className="size-4" />}
                     label="Markup"
                     value={
-                      merged.markup !== undefined && merged.markup !== null
-                        ? `${Number(merged.markup).toFixed(2)}%`
+                      // Gravado, ou calculado na hora quando a coluna ficou
+                      // vazia (fora do limite do banco).
+                      resolveDisplayMarkup(merged) !== null
+                        ? `${Number(resolveDisplayMarkup(merged)).toFixed(2)}%`
                         : undefined
                     }
                   />
