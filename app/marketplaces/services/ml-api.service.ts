@@ -504,6 +504,10 @@ export interface MLOrderBillingInfo {
   } | null;
 }
 
+/** Busca por seller_sku: 100 por página, no máximo 5 páginas (500 anúncios). */
+export const ML_SELLER_SKU_SEARCH_PAGE = 100;
+export const ML_SELLER_SKU_SEARCH_MAX_PAGES = 5;
+
 /**
  * Máximo de produtos de catálogo por chamada de compatibilidade
  * (documentação "Compatibilidades Autopeças" do ML, 14/07/2026).
@@ -1766,10 +1770,119 @@ export class MLApiService {
         const err = new Error(`Erro ao criar item: ${errorMessage}`);
         // attach parsed ML payload for callers to inspect
         (err as any).mlError = errorData || null;
+        // Status HTTP e código de rede: o normalizador (ml-error-normalizer)
+        // separa erro de dado (4xx) de falha passageira (5xx, rede) e de
+        // timeout — que pode ter criado o item. A mensagem não muda.
+        (err as any).mlHttpStatus = error.response?.status ?? null;
+        (err as any).mlNetworkCode = error.code ?? null;
         throw err;
       }
       throw error;
     }
+  }
+
+  /**
+   * Anúncios da conta com este SKU (`seller_sku`), em QUALQUER status que a
+   * busca devolve — medido em 22/09/2026: sem filtro de status a busca traz
+   * active, paused, closed e under_review; com `status=` o under_review some.
+   *
+   * Uso: antes de recriar um anúncio cuja tentativa anterior pode ter criado o
+   * item no ML sem a Dexo saber (timeout, 5xx). Lança em erro de rede/HTTP —
+   * quem chama NÃO pode tratar "não consegui ver" como "não existe".
+   */
+  static async findItemsBySellerSku(
+    accessToken: string,
+    sellerId: string,
+    sku: string,
+  ): Promise<
+    Array<{
+      id: string;
+      status: string | null;
+      dateCreated: string | null;
+      title: string | null;
+      permalink: string | null;
+      sellerCustomField: string | null;
+    }>
+  > {
+    // Paginada: o ML devolve 50 por padrão e no máximo 100 por página (medido
+    // em 22/09/2026: limit=200 volta limit=100), com o total em
+    // `paging.total`. Ler só a 1ª página fazia "não achei" parecer "não
+    // existe" para SKU repetido em muitos anúncios — e a reconciliação
+    // recriava. Acima do teto, LANÇA: quem chama trata como "não deu para
+    // conferir" e não cria nada (R7: teto com sinalização).
+    const ids: string[] = [];
+    for (let pagina = 0; pagina < ML_SELLER_SKU_SEARCH_MAX_PAGES; pagina++) {
+      const search = await axios.get<{
+        results?: string[];
+        paging?: { total?: number };
+      }>(
+        `${ML_CONSTANTS.API_URL}/users/${encodeURIComponent(sellerId)}/items/search`,
+        {
+          params: {
+            seller_sku: sku,
+            limit: ML_SELLER_SKU_SEARCH_PAGE,
+            offset: pagina * ML_SELLER_SKU_SEARCH_PAGE,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 15000,
+        },
+      );
+      const lote = (search.data?.results ?? []).filter(
+        (id): id is string => typeof id === "string" && !!id,
+      );
+      ids.push(...lote);
+      const total = Number(search.data?.paging?.total);
+      const lidos = (pagina + 1) * ML_SELLER_SKU_SEARCH_PAGE;
+      if (lote.length < ML_SELLER_SKU_SEARCH_PAGE) break;
+      if (Number.isFinite(total) && lidos >= total) break;
+      if (pagina === ML_SELLER_SKU_SEARCH_MAX_PAGES - 1) {
+        throw new Error(
+          `seller_sku_search_truncated: SKU ${sku} tem mais de ${lidos} anúncios na conta (total=${Number.isFinite(total) ? total : "?"})`,
+        );
+      }
+    }
+    if (ids.length === 0) return [];
+
+    const out: Array<{
+      id: string;
+      status: string | null;
+      dateCreated: string | null;
+      title: string | null;
+      permalink: string | null;
+      sellerCustomField: string | null;
+    }> = [];
+    // Multiget do ML aceita até 20 ids por chamada.
+    for (let i = 0; i < ids.length; i += 20) {
+      const chunk = ids.slice(i, i + 20);
+      const r = await axios.get<
+        Array<{ code?: number; body?: Record<string, unknown> }>
+      >(`${ML_CONSTANTS.API_URL}/items`, {
+        params: {
+          ids: chunk.join(","),
+          attributes:
+            "id,status,date_created,title,permalink,seller_custom_field",
+        },
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 15000,
+      });
+      for (const entry of r.data ?? []) {
+        const b = entry?.body;
+        if (!b || typeof b.id !== "string") continue;
+        out.push({
+          id: b.id,
+          status: typeof b.status === "string" ? b.status : null,
+          dateCreated:
+            typeof b.date_created === "string" ? b.date_created : null,
+          title: typeof b.title === "string" ? b.title : null,
+          permalink: typeof b.permalink === "string" ? b.permalink : null,
+          sellerCustomField:
+            typeof b.seller_custom_field === "string"
+              ? b.seller_custom_field
+              : null,
+        });
+      }
+    }
+    return out;
   }
 
   /**

@@ -169,6 +169,60 @@ const isDuplicatedAttributeValue = (cause: MLCause) =>
   cause?.code === "item.attribute.values.name.duplicated" ||
   cause?.cause_id === 402;
 
+/* -------------------------------------------------------------------------
+ * Causas medidas em produção — 22/09/2026 (logs pm2 de 16 a 22/09).
+ *
+ * As retentativas com `family_name` (que a escada JÁ faz) falharam 388 vezes,
+ * NENHUMA por family_name. Estas são as causas reais que ficavam escondidas
+ * atrás do JSON da 1ª tentativa, com produtos distintos:
+ *
+ *   19  3702  valor inválido em "Número de registro/certificação INMETRO"
+ *             (o campo foi preenchido com palavras de busca)
+ *   10  3708  número em formato inválido ("Largura", "Comprimento"…) — valor
+ *             sem unidade num atributo number_unit
+ *    8  3510  valor de lista recusado (já tratado acima)
+ *    6  5401  medidas do pacote implausíveis para o produto (904 cm de altura,
+ *             116 kg num suporte, 3×2×1 cm num teto)
+ *    5   422  atributo do tipo IMAGEM preenchido com texto ("1", "0")
+ *    2  3709  "Unidades por kit" exigido pelo "Formato de venda"
+ * ------------------------------------------------------------------------- */
+
+/** `O valor que você inseriu em "Largura" está incorreto.` */
+const QUOTED_FIELD_RE = /["“]([^"”]+)["”]/;
+/** `Attribute REGULATORY_INFORMATION_QR_CODE of type picture has an invalid picture ID (1)` */
+const PICTURE_ATTR_RE =
+  /attribute\s+([A-Z0-9_]+)\s+of type picture has an invalid picture id\s*\(([^)]*)\)/i;
+
+const isInvalidSanitaryRegistry = (cause: MLCause) =>
+  cause?.code === "item.attribute.invalid_sanitary_registry_value" ||
+  cause?.cause_id === 3702;
+
+const isInvalidNumberFormat = (cause: MLCause) =>
+  cause?.code === "item.attribute.number_invalid_format" ||
+  cause?.cause_id === 3708;
+
+const isInvalidPictureAttribute = (cause: MLCause) =>
+  PICTURE_ATTR_RE.test(String(cause?.message || ""));
+
+const isInvalidSaleUnits = (cause: MLCause) =>
+  cause?.code === "item.attribute.invalid_sale_units" || cause?.cause_id === 3709;
+
+const isInvalidPackageDimensions = (cause: MLCause) =>
+  cause?.code === "item.attribute.invalid.seller.package.dimensions" ||
+  cause?.cause_id === 5401;
+
+const isMissingCatalogRequired = (cause: MLCause) =>
+  cause?.code === "item.attribute.missing_catalog_required" ||
+  cause?.cause_id === 3704;
+
+const isIdentifierInvalidByCatalog = (cause: MLCause) =>
+  cause?.code === "item.attribute.product_identifier.invalid_by_domain_catalog" ||
+  cause?.cause_id === 7712;
+
+/** Mensagem que o ML já manda em português, sem código nem id. */
+const isPortugueseSentence = (message: string) =>
+  /[áéíóúâêôãõç]/i.test(message) && !/[{}[\]]/.test(message);
+
 /*
  * `shipping.lost_me1_by_user` (4053) NÃO entra na lista de propósito.
  *
@@ -192,12 +246,18 @@ const isDuplicatedAttributeValue = (cause: MLCause) =>
  * descobrir qual valor a categoria aceita.
  */
 function prioridadeDaCausa(cause: MLCause): number {
-  if (isMissingRequiredAttrs(cause)) return 0;
+  if (isMissingRequiredAttrs(cause) || isMissingCatalogRequired(cause)) return 0;
   if (isMissingPackageDimensions(cause)) return 1;
   if (
     isInvalidProductIdentifier(cause) ||
     isInvalidAttributeValue(cause) ||
-    isDuplicatedAttributeValue(cause)
+    isDuplicatedAttributeValue(cause) ||
+    isInvalidSanitaryRegistry(cause) ||
+    isInvalidNumberFormat(cause) ||
+    isInvalidPictureAttribute(cause) ||
+    isInvalidSaleUnits(cause) ||
+    isInvalidPackageDimensions(cause) ||
+    isIdentifierInvalidByCatalog(cause)
   ) {
     return 2;
   }
@@ -260,6 +320,112 @@ export function describeMLCause(
     );
   }
 
+  if (isInvalidSanitaryRegistry(cause)) {
+    const campo = QUOTED_FIELD_RE.exec(message)?.[1] ?? "registro/certificação";
+    return (
+      `O campo "${campo}" da ficha técnica está com um valor que o Mercado Livre não aceita. ` +
+      "Esse campo espera só o número do registro (sem palavras de busca) — se a peça não " +
+      "tiver registro, deixe-o em branco. Corrija na ficha técnica e tente publicar novamente."
+    );
+  }
+
+  if (isInvalidNumberFormat(cause)) {
+    const campo = QUOTED_FIELD_RE.exec(message)?.[1] ?? "numérico";
+    return (
+      `O campo "${campo}" da ficha técnica está em formato que o Mercado Livre não aceita. ` +
+      'Informe um número com a unidade (ex.: "10 cm") ou apague o campo, e tente publicar novamente.'
+    );
+  }
+
+  if (isInvalidPictureAttribute(cause)) {
+    const m = PICTURE_ATTR_RE.exec(message);
+    const campo = m?.[1] ? labelFor(m[1]) : "do tipo imagem";
+    const valor = m?.[2]?.trim();
+    return (
+      `O campo ${campo} da ficha técnica é do tipo IMAGEM e está preenchido com texto` +
+      `${valor ? ` ("${valor}")` : ""}. Apague o valor desse campo na ficha técnica e tente publicar novamente.`
+    );
+  }
+
+  if (isInvalidPackageDimensions(cause)) {
+    return (
+      "O Mercado Livre recusou as medidas do pacote: altura, largura, comprimento ou peso não parecem " +
+      "corresponder a esta peça (ex.: centímetros digitados como milímetros, ou peso muito alto). " +
+      "Confira as medidas e o peso no cadastro do produto e tente publicar novamente."
+    );
+  }
+
+  if (isInvalidSaleUnits(cause) || isMissingCatalogRequired(cause)) {
+    // O ML já manda estas em português e com o nome do campo.
+    return isPortugueseSentence(message)
+      ? `${message.trim()} Corrija na ficha técnica e tente publicar novamente.`
+      : "O Mercado Livre exige um campo da ficha técnica que está em branco. Preencha-o e tente publicar novamente.";
+  }
+
+  if (isIdentifierInvalidByCatalog(cause)) {
+    return (
+      "O código de barras (GTIN) informado não corresponde a um produto desta categoria no catálogo " +
+      "do Mercado Livre. Confira o código ou apague o campo GTIN e tente publicar novamente."
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Tentativa de criação com a categoria em que ela foi feita. A escada tenta
+ * OUTRAS categorias (sugestão do domain_discovery, desvio por
+ * condition.invalid); uma causa de lá fala de um campo que a categoria
+ * escolhida pela pessoa talvez nem tenha.
+ */
+export interface MLAttemptCauses {
+  causes: MLCause[];
+  categoryId: string | null;
+}
+
+/**
+ * Como `pickActionableMLError`, mas dá prioridade às tentativas feitas na
+ * categoria PEDIDA. Causa de outra categoria só entra se a pedida não trouxe
+ * nada reconhecível — e a mensagem diz que era outra categoria.
+ *
+ * Medido (22/09/2026): produto na categoria MLB63736 falhava por um atributo
+ * do tipo imagem preenchido com "1"; a escada tentava uma categoria sugerida
+ * onde VEHICLE_TYPE é fixo em "Linha Pesada", e a vendedora lia "O Mercado
+ * Livre não aceita o valor de VEHICLE_TYPE nesta categoria" — um diagnóstico
+ * de uma categoria que ela nunca escolheu.
+ */
+export function pickActionableMLErrorForCategory(
+  attempts: MLAttemptCauses[],
+  requestedCategoryId: string | null | undefined,
+  opts?: { somenteObrigatorios?: boolean },
+): string | null {
+  const req = String(requestedCategoryId || "").toUpperCase();
+  const daPedida = attempts.filter(
+    (a) => !req || String(a.categoryId || "").toUpperCase() === req,
+  );
+  const naPedida = pickActionableMLError(
+    daPedida.map((a) => a.causes),
+    requestedCategoryId || undefined,
+    opts,
+  );
+  if (naPedida) return naPedida;
+
+  const outras = attempts.filter(
+    (a) => req && String(a.categoryId || "").toUpperCase() !== req,
+  );
+  for (let i = outras.length - 1; i >= 0; i--) {
+    const msg = pickActionableMLError(
+      [outras[i].causes],
+      outras[i].categoryId || undefined,
+      opts,
+    );
+    if (msg) {
+      return (
+        `Na categoria ${requestedCategoryId} o Mercado Livre não aceitou o anúncio, e a ` +
+        `alternativa sugerida pelo próprio ML (${outras[i].categoryId}) também falhou: ${msg}`
+      );
+    }
+  }
   return null;
 }
 

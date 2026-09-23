@@ -18,6 +18,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     findByProductAndAccount: vi.fn(),
     updateListing: vi.fn(),
     createListing: vi.fn(),
+    createReservedPlaceholderIfAbsent: vi.fn(),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
   },
@@ -201,6 +202,28 @@ const gravacoesTerminais = () => [
   ),
 ];
 
+/**
+ * Terminais DESTA funcionalidade (campo obrigatório, `[TERMINAL] <msg>`),
+ * sem contar `[TERMINAL][CORRIGIVEL]` — o terminal por recusa de DADO que o
+ * PR-2 (22/09/2026) introduziu para qualquer 400 na categoria pedida com o
+ * catálogo disponível, e que a edição do produto re-arma.
+ */
+const gravacoesTerminaisDeObrigatorio = () =>
+  gravacoesTerminais().filter(
+    (c: any[]) =>
+      !String((c[1] ?? c[0])?.lastError ?? "").startsWith(
+        "[TERMINAL][CORRIGIVEL]",
+      ),
+  );
+
+/** Gravação do terminal corrigível na linha (PR-2). */
+const gravouCorrigivel = () =>
+  (ListingRepository.updateListing as any).mock.calls.some(
+    (c: any[]) =>
+      String(c[1]?.lastError ?? "").startsWith("[TERMINAL][CORRIGIVEL]") &&
+      c[1]?.retryEnabled === false,
+  );
+
 beforeEach(async () => {
   vi.clearAllMocks();
   for (const k of ENV_KEYS) envAntes[k] = process.env[k];
@@ -217,6 +240,11 @@ beforeEach(async () => {
   (MarketplaceRepository.findByIdAndUser as any).mockResolvedValue(ACCOUNT);
   (ListingRepository.findLiveByProductAndAccount as any).mockResolvedValue(null);
   (ListingRepository.findByProductAndAccount as any).mockResolvedValue(null);
+  // Criação exclusiva da 1ª linha do par (lock de transação): nos testes
+  // unitários delega ao createListing mockado — as asserções de sempre valem.
+  (ListingRepository.createReservedPlaceholderIfAbsent as any).mockImplementation(
+    async (d: any) => ({ created: await (ListingRepository.createListing as any)(d) }),
+  );
   (ListingRepository.createListing as any).mockImplementation(async (d: any) => ({
     id: "l-novo",
     ...d,
@@ -254,6 +282,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Reserva que o cron passa ao createMLListing (claimRetryCandidate). */
+const RESERVA_DO_CRON = new Date("2026-09-23T12:10:00.000Z");
+
 describe("bloqueio ANTES do POST /items", () => {
   it("C1: flag 1 + PART_NUMBER obrigatório ausente → terminal com M1, sem createItem e sem upload", async () => {
     process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
@@ -288,6 +319,50 @@ describe("bloqueio ANTES do POST /items", () => {
       createdByUserId: "actor-1",
     });
     expect(r.listingId).toBe("l-novo");
+  });
+
+  it("C3b: linha PENDING_ reservada por OUTRO (publicação em andamento) → bloqueio NÃO é gravado por cima da reserva", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      retryEnabled: false,
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+    });
+    const r = await criar();
+    expect(r.success).toBe(false);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+    expect(ListingRepository.createListing).not.toHaveBeenCalled();
+  });
+
+  it("C3c: linha com o CRON PUBLICANDO (retry ligado + status pending) → bloqueio NÃO é gravado por cima", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      retryEnabled: true,
+      status: "pending",
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+    });
+    const r = await criar();
+    expect(r.success).toBe(false);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("C3d: linha só AGENDADA → o bloqueio vale e é gravado nela (o cron bateria na mesma recusa)", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      retryEnabled: true,
+      status: "error",
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+    });
+    await criar();
+    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
+      "l-pend",
+      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
+    );
   });
 
   it("C3: linha PENDING_ existente → updateListing nela com os mesmos campos", async () => {
@@ -515,7 +590,11 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
     const r = await criar();
     expect(MLApiService.suggestCategoryId).toHaveBeenCalled();
     expect(r.terminal).toBeUndefined();
-    expect(gravacoesTerminais()).toEqual([]);
+    expect(gravacoesTerminaisDeObrigatorio()).toEqual([]);
+    // Mudança intencional (PR-2, 22/09/2026): 147 na categoria PEDIDA, com o
+    // catálogo disponível, é recusa de dado — não retenta às cegas; a edição
+    // do produto re-arma. Antes reagendava 5x o mesmo corpo recusado.
+    expect(gravouCorrigivel()).toBe(true);
   });
 
   it("C14: republicação (PENDING_REPUBLISH_) + 147 → sem gravação terminal, retorno success false", async () => {
@@ -677,11 +756,12 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
       ),
     ).toBe(true);
     expect(r.terminal).toBeUndefined();
-    expect(gravacoesTerminais()).toEqual([]);
-    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
-      "l-novo",
-      expect.objectContaining({ retryEnabled: true }),
-    );
+    // O 147 da SUGERIDA continua não virando terminal de campo obrigatório.
+    expect(gravacoesTerminaisDeObrigatorio()).toEqual([]);
+    // Mudança intencional (PR-2, 22/09/2026): a categoria PEDIDA recusou a
+    // condição (400) — recusa de dado, terminal corrigível (a edição re-arma),
+    // em vez de reagendar o mesmo corpo.
+    expect(gravouCorrigivel()).toBe(true);
   });
 
   it("D1(f): category_id.invalid e 147 só na FOLHA re-resolvida → não terminal, reagenda", async () => {
@@ -706,11 +786,11 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
       ),
     ).toBe(true);
     expect(r.terminal).toBeUndefined();
-    expect(gravacoesTerminais()).toEqual([]);
-    expect(ListingRepository.updateListing).toHaveBeenCalledWith(
-      "l-novo",
-      expect.objectContaining({ retryEnabled: true }),
-    );
+    // O 147 da FOLHA re-resolvida continua não virando terminal de obrigatório.
+    expect(gravacoesTerminaisDeObrigatorio()).toEqual([]);
+    // Mudança intencional (PR-2, 22/09/2026): a categoria PEDIDA foi recusada
+    // (category_id.invalid, 400) — recusa de dado, terminal corrigível.
+    expect(gravouCorrigivel()).toBe(true);
   });
 
   it("D1(g): sugerida pede family_name e o 147 vem só da retentativa sugerida+family → não terminal, reagenda", async () => {
@@ -840,6 +920,9 @@ describe("ficha da Revisão individual (D2/D6)", () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-pend",
       externalListingId: "PENDING_1",
+      // Linha do CRON: retry ligado e reservada por ele (o cron passa a reserva).
+      retryEnabled: true,
+      nextRetryAt: RESERVA_DO_CRON,
       attributesOverride: { SIDE: SIDE_OVERRIDE, COLOR: { value_name: "Preto" } },
     });
     const r = await ListingUseCase.createMLListing(
@@ -851,6 +934,7 @@ describe("ficha da Revisão individual (D2/D6)", () => {
       undefined,
       undefined,
       { SIDE: SIDE_OVERRIDE, COLOR: { value_name: "Preto" } },
+      { reservation: { listingId: "l-pend", at: RESERVA_DO_CRON } },
     );
     expect(r.terminal).toBeUndefined();
     const payload = (MLApiService.createItem as any).mock.calls[0][1];
@@ -894,6 +978,9 @@ describe("ficha da Revisão individual (D2/D6)", () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-novo",
       externalListingId: "PENDING_1",
+      // Linha do CRON: retry ligado e reservada por ele (o cron passa a reserva).
+      retryEnabled: true,
+      nextRetryAt: RESERVA_DO_CRON,
       attributesOverride: placeholder.attributesOverride,
     });
     const r2 = await ListingUseCase.createMLListing(
@@ -905,6 +992,7 @@ describe("ficha da Revisão individual (D2/D6)", () => {
       undefined,
       undefined,
       placeholder.attributesOverride,
+      { reservation: { listingId: "l-novo", at: RESERVA_DO_CRON } },
     );
     expect(r2.terminal).toBeUndefined();
     const payload2 = (MLApiService.createItem as any).mock.calls[0][1];

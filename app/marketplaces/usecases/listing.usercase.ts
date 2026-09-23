@@ -1,4 +1,10 @@
 ﻿import { Platform } from "@prisma/client";
+import { liveListingStatuses } from "../lib/listing-live-statuses";
+import {
+  busyMessage,
+  isReusableMlPlaceholder,
+  placeholderDecision,
+} from "../lib/ml-placeholder-busy.logic";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { withAvailableStock } from "@/app/financeiro/lib/stock-reservation";
@@ -36,11 +42,19 @@ import {
   type MLPreflightResult,
 } from "../services/listing-preflight.service";
 import {
-  pickActionableMLError,
+  pickActionableMLErrorForCategory,
   isMissingRequiredAttrsForCategory,
   findMissingRequiredAttributeIds,
   type MLCause,
 } from "../services/ml-error-message.service";
+import {
+  humanMessageForKind,
+  isTerminalMarker,
+  LAST_ERROR_MARKER,
+  lastErrorMarkerFor,
+  normalizeMLError,
+  type MLRawCause,
+} from "../lib/ml-error-normalizer";
 import {
   isMlRequiredAttrsBlockEnabled,
   evaluateMLRequiredAttributes,
@@ -158,12 +172,23 @@ export interface CreateListingResult {
   // pelo id do candidato não veria. `code` e `missingAttributes` deixam o
   // relatório da massa mostrar o campo exato. Opcionais e aditivos.
   terminal?: boolean;
-  code?: "ML_REQUIRED_ATTRIBUTES_MISSING";
+  // PUBLICATION_IN_PROGRESS: o par já tem publicação agendada ou em andamento
+  // (reserva de outro agente) — nada foi enviado; o cron não conta tentativa.
+  code?: "ML_REQUIRED_ATTRIBUTES_MISSING" | "PUBLICATION_IN_PROGRESS";
   missingAttributes?: Array<{
     id: string;
     name: string;
     reason: "missing" | "invalid_value";
   }>;
+  /**
+   * Classe da falha do ML (ml-error-normalizer) e o marcador que foi gravado
+   * no começo do `lastError` da linha (`[TERMINAL][CORRIGIVEL]`,
+   * `[TERMINAL][RECONECTAR]`, `[VERIFICAR]`). `error` vem SEM o marcador —
+   * é o texto para a pessoa. O cron usa o marcador ao gravar na linha do
+   * candidato (que pode não ser a linha que o create escolheu). Opcionais.
+   */
+  errorKind?: "VALIDATION" | "TRANSIENT" | "RATE_LIMIT" | "AUTH" | "UNKNOWN";
+  lastErrorMarker?: string;
 }
 
 export interface MLListingSettings {
@@ -220,6 +245,41 @@ export interface ListingFullEditInput extends MLListingSettings {
     version?: string | null;
   }> | null;
   sourceVehicleOverride?: string | null;
+}
+
+/**
+ * Reserva que a criação faz no pendente reaproveitado (retry desligado).
+ * Cobre a escada inteira com folga; os fins normais gravam por cima e o erro
+ * inesperado a desfaz. Mesma ordem de grandeza da reserva do botão.
+ */
+const CREATE_RESERVATION_MS = 10 * 60 * 1000;
+
+/**
+ * Pendente PENDING_ com publicação em andamento de OUTRO agente (retry
+ * desligado e reserva vigente que não é a de quem chama). Gravar um bloqueio
+ * por cima apagaria a reserva e liberaria um segundo POST /items.
+ */
+function reservadoPorOutro(
+  row: {
+    id: string;
+    externalListingId?: string | null;
+    retryEnabled?: boolean | null;
+    nextRetryAt?: Date | string | null;
+    status?: string | null;
+    lastError?: string | null;
+  },
+  minha?: { listingId: string; at: Date } | null,
+  agora: number = Date.now(),
+): boolean {
+  const ext = String(row.externalListingId ?? "");
+  if (!ext.startsWith("PENDING_") || ext.startsWith("PENDING_REPUBLISH_")) {
+    return false;
+  }
+  // Mesma régua da criação: reserva de outro, cron em voo (`pending`) ou
+  // `[VERIFICAR]` pendente (gravar por cima apagaria a conferência pelo SKU).
+  // Linha só AGENDADA não conta — o bloqueio gravado nela vale (o cron
+  // bateria na mesma recusa).
+  return placeholderDecision(row, minha ?? null, agora) === "busy";
 }
 
 export class ListingUseCase {
@@ -1228,6 +1288,8 @@ export class ListingUseCase {
     effectiveSettings: MLListingSettings;
     externalSku?: string | null;
     actorId?: string;
+    /** Reserva de quem chama (ver `opts.reservation` do createMLListing). */
+    reservation?: { listingId: string; at: Date } | null;
   }): Promise<string | undefined> {
     try {
       const lastError = `[TERMINAL] ${i.message}`;
@@ -1236,6 +1298,11 @@ export class ListingUseCase {
         i.accountId,
       );
       if (row?.externalListingId?.startsWith("PENDING_REPUBLISH_")) {
+        return row.id;
+      }
+      // Outro agente está publicando esta linha agora: o bloqueio volta para
+      // quem chamou, mas não é gravado por cima da reserva dele.
+      if (row && reservadoPorOutro(row, i.reservation)) {
         return row.id;
       }
       if (row) {
@@ -1688,7 +1755,22 @@ export class ListingUseCase {
      * outros fluxos, que leem a ficha do próprio `product.attributes`.
      */
     attributeOverrides?: Record<string, unknown> | null,
+    /**
+     * Reserva de quem chama: o botão "Tentar publicar novamente" reserva a
+     * linha antes e passa a reserva aqui para poder reaproveitá-la. Pendente
+     * reservado por OUTRO (botão, outro "Anunciar", outro lote) não é
+     * reaproveitado — seria um segundo POST /items do mesmo produto.
+     */
+    opts?: { reservation?: { listingId: string; at: Date } },
   ): Promise<CreateListingResult> {
+    // Reserva que ESTA chamada fez no pendente reaproveitado; o catch geral a
+    // desfaz (os fins normais gravam o próprio agendamento por cima).
+    let reservaPropria: {
+      listingId: string;
+      at: Date;
+      /** Veio de uma linha AGENDADA pelo cron (takeOverScheduledRetry). */
+      assumida?: boolean;
+    } | null = null;
     try {
       let account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
@@ -1995,6 +2077,39 @@ export class ListingUseCase {
           externalListingId: liveListing.externalListingId,
           error: `Produto já tem anúncio ${liveDesc} nesta conta (${liveListing.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
         };
+      }
+
+      // 1.6. O pendente que esta criação reaproveitaria está ocupado (cron
+      // publicando, reserva de outro, conferência pelo SKU pendente)? Recusa
+      // AQUI, antes de baixar e subir as fotos — a reserva atômica de verdade
+      // continua no passo 3.1. Falha na leitura = segue (a 3.1 decide).
+      try {
+        const pendenteAtual =
+          await ListingRepository.findNewestMlPlaceholderState(productId, acc.id);
+        if (
+          pendenteAtual &&
+          isReusableMlPlaceholder(pendenteAtual) &&
+          placeholderDecision(pendenteAtual, opts?.reservation ?? null) === "busy"
+        ) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.in_progress_refused",
+              productId,
+              accountId: acc.id,
+              listingId: pendenteAtual.id,
+              stage: "early",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            code: "PUBLICATION_IN_PROGRESS",
+            listingId: pendenteAtual.id,
+            error: busyMessage(pendenteAtual),
+          };
+        }
+      } catch {
+        // segue: a reserva atômica do passo 3.1 é quem garante
       }
 
       // 2. Buscar dados do produto
@@ -2417,6 +2532,7 @@ export class ListingUseCase {
               effectiveSettings,
               externalSku: product.sku,
               actorId,
+              reservation: opts?.reservation,
             });
             console.warn(
               JSON.stringify({
@@ -2768,6 +2884,92 @@ export class ListingUseCase {
         acc.id,
       );
 
+      // A linha escolhida já virou anúncio VIVO desde a guarda do começo
+      // (outra criação do mesmo produto terminou no meio desta): criar agora
+      // publicaria o segundo e sobrescreveria o id do primeiro.
+      if (
+        listing &&
+        !String(listing.externalListingId ?? "").startsWith("PENDING_") &&
+        liveListingStatuses().includes(
+          String(listing.status ?? "").toLowerCase(),
+        )
+      ) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.duplicate_refused",
+            productId,
+            accountId: acc.id,
+            liveExternalListingId: listing.externalListingId,
+            liveStatus: listing.status,
+            stage: "placeholder",
+          }),
+        );
+        return {
+          success: false,
+          skipped: true,
+          listingId: listing.id,
+          externalListingId: listing.externalListingId,
+          error: `Produto já tem anúncio nesta conta (${listing.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+        };
+      }
+
+      // Linha reaproveitada (placeholder PENDING_ ou anúncio ENCERRADO com id
+      // real) só é usada sob reserva — de quem chama (botão/cron), assumida
+      // de um agendamento, ou tomada agora. Sem isso botão, cron, outro
+      // "Anunciar", outro lote e o script de recuperação mandavam cada um o
+      // seu POST /items. Republicação (PENDING_REPUBLISH_) é do sync.
+      const ehReaproveitavel =
+        !!listing &&
+        !String(listing.externalListingId ?? "").startsWith(
+          "PENDING_REPUBLISH_",
+        );
+      if (listing && ehReaproveitavel) {
+        const decisao = placeholderDecision(listing, opts?.reservation ?? null);
+        if (decisao !== "owned") {
+          const idReal = !String(listing.externalListingId ?? "").startsWith(
+            "PENDING_",
+          );
+          const at =
+            decisao === "takeover"
+              ? await ListingRepository.takeOverScheduledRetry(
+                  listing.id,
+                  CREATE_RESERVATION_MS,
+                )
+              : decisao === "free"
+                ? await ListingRepository.claimInteractiveRetry(
+                    listing.id,
+                    CREATE_RESERVATION_MS,
+                    new Date(),
+                    idReal
+                      ? { externalListingId: String(listing.externalListingId) }
+                      : {},
+                  )
+                : null;
+          if (!at) {
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.in_progress_refused",
+                productId,
+                accountId: acc.id,
+                listingId: listing.id,
+              }),
+            );
+            return {
+              success: false,
+              skipped: true,
+              code: "PUBLICATION_IN_PROGRESS",
+              listingId: listing.id,
+              error: busyMessage(listing),
+            };
+          }
+          reservaPropria = {
+            listingId: listing.id,
+            at,
+            assumida: decisao === "takeover",
+          };
+        }
+      }
+
       // Ficha da Revisão individual que ENTROU nesta criação (só com
       // ML_REQUIRED_ATTRS_BLOCK=1). Fica guardada no placeholder porque o cron
       // de retentativa recria sem a ficha do job: sem isto, um lado preenchido
@@ -2778,12 +2980,23 @@ export class ListingUseCase {
         ? built.retryOverrides
         : null;
 
+      // Linha que esta chamada acabou de CRIAR (a única que não recebe o
+      // update de configurações abaixo — já nasceu com elas).
+      let criadaAgora = false;
       if (!listing) {
         // retryEnabled=false: o fluxo primário é responsável pelo próprio
         // sucesso/erro. Só o catch habilita retry explicitamente se a
         // chamada falhar. Evita race com ListingRetryService.runOnce
         // rodando em paralelo ao fluxo de criação.
-        listing = await ListingRepository.createListing({
+        //
+        // A linha NASCE reservada (mesma reserva do reaproveitamento): um
+        // segundo "Anunciar" do mesmo produto (duplo clique, lotes
+        // sobrepostos) a acharia livre e mandaria outro POST /items.
+        const reservaNova = new Date(Date.now() + CREATE_RESERVATION_MS);
+        // Criação EXCLUSIVA por par (lock de transação): outra publicação do
+        // mesmo produto que tenha criado a linha enquanto esta montava o
+        // anúncio faz esta recuar, sem POST.
+        const criacao = await ListingRepository.createReservedPlaceholderIfAbsent({
           productId,
           marketplaceAccountId: acc.id,
           externalListingId: `PENDING_${Date.now()}`,
@@ -2791,7 +3004,7 @@ export class ListingUseCase {
           permalink: null,
           status: "pending",
           retryAttempts: 0,
-          nextRetryAt: null,
+          nextRetryAt: reservaNova,
           lastError: null,
           retryEnabled: false,
           createdByUserId: actorId ?? null,
@@ -2809,7 +3022,83 @@ export class ListingUseCase {
             ? { attributesOverride: fichaParaRetentativa }
             : {}),
         });
-      } else {
+        if ("live" in criacao) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.duplicate_refused",
+              productId,
+              accountId: acc.id,
+              liveExternalListingId: criacao.live.externalListingId,
+              liveStatus: criacao.live.status,
+              stage: "first_placeholder_lock",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            listingId: criacao.live.id,
+            externalListingId: criacao.live.externalListingId,
+            error: `Produto já tem anúncio nesta conta (${criacao.live.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+          };
+        }
+        if ("existing" in criacao) {
+          // A linha do par apareceu entre a leitura acima e o lock (outra
+          // criação, ou o bloqueio de campo obrigatório de outro "Anunciar",
+          // que grava a linha já terminal e livre). Mesma regra do
+          // reaproveitamento: só a OCUPADA faz recuar — livre é reservada e
+          // agendada é assumida, e esta publicação segue nela.
+          const existente = criacao.existing;
+          const decisaoLock = placeholderDecision(
+            existente,
+            opts?.reservation ?? null,
+          );
+          const atLock =
+            decisaoLock === "takeover"
+              ? await ListingRepository.takeOverScheduledRetry(
+                  existente.id,
+                  CREATE_RESERVATION_MS,
+                )
+              : decisaoLock === "free"
+                ? await ListingRepository.claimInteractiveRetry(
+                    existente.id,
+                    CREATE_RESERVATION_MS,
+                    new Date(),
+                    {},
+                  )
+                : null;
+          if (!atLock) {
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.in_progress_refused",
+                productId,
+                accountId: acc.id,
+                listingId: existente.id,
+                stage: "first_placeholder_lock",
+              }),
+            );
+            return {
+              success: false,
+              skipped: true,
+              code: "PUBLICATION_IN_PROGRESS",
+              listingId: existente.id,
+              error: busyMessage(existente),
+            };
+          }
+          reservaPropria = {
+            listingId: existente.id,
+            at: atLock,
+            assumida: decisaoLock === "takeover",
+          };
+          listing = existente;
+        } else {
+          listing = criacao.created;
+          criadaAgora = true;
+          if (listing?.id) {
+            reservaPropria = { listingId: listing.id, at: reservaNova };
+          }
+        }
+      }
+      if (listing && !criadaAgora) {
         await ListingRepository.updateListing(listing.id, {
           listingType: effectiveSettings.listingType ?? null,
           itemCondition: effectiveSettings.itemCondition ?? null,
@@ -2832,6 +3121,45 @@ export class ListingUseCase {
               }
             : {}),
         });
+      }
+
+      // Com a linha nas mãos: outra criação do mesmo produto pode ter
+      // terminado desde a guarda do começo (em OUTRA linha do par). Uma
+      // leitura enxuta; falha nela = segue (comportamento de antes).
+      if (listing?.id) {
+        let vivo: Awaited<
+          ReturnType<typeof ListingRepository.findLiveListingLite>
+        > = null;
+        try {
+          vivo = await ListingRepository.findLiveListingLite(productId, acc.id);
+        } catch {
+          vivo = null;
+        }
+        if (vivo && vivo.id !== listing.id) {
+          await ListingRepository.updateListing(listing.id, {
+            status: "error",
+            lastError: `[TERMINAL] Produto já tem anúncio nesta conta (${vivo.externalListingId}) — exclua este pendente ou encerre o anúncio existente antes de recriar`,
+            retryEnabled: false,
+            nextRetryAt: null,
+          });
+          reservaPropria = null;
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.duplicate_refused",
+              productId,
+              accountId: acc.id,
+              liveExternalListingId: vivo.externalListingId,
+              stage: "after_reservation",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            listingId: listing.id,
+            externalListingId: vivo.externalListingId ?? undefined,
+            error: `Produto já tem anúncio nesta conta (${vivo.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+          };
+        }
       }
 
       // Include shipping dimensions (ML exige string "HxWxL,weight") — clamp para limites aceitos.
@@ -3030,9 +3358,38 @@ export class ListingUseCase {
         const attemptCauses: MLCause[][] = [
           Array.isArray(parsedMl?.cause) ? parsedMl.cause : [],
         ];
-        const recordAttemptCause = (retryErr: any) => {
+        // Registro de CADA tentativa da escada, com a categoria em que foi
+        // feita. `err`/`errMsg`/`parsedMl` acima são da 1ª tentativa — para
+        // vendedor "User Products" ela SEMPRE leva 369 (family_name), então
+        // classificar por eles diria "erro de dado" mesmo quando a última
+        // tentativa estourou o tempo (e pode ter criado o item no ML). A
+        // classificação final usa a ÚLTIMA tentativa na categoria pedida, e
+        // qualquer timeout na passada vira "conferir antes de recriar".
+        const attemptLog: Array<{
+          step: string;
+          categoryId: string | null;
+          err: unknown;
+        }> = [{ step: "initial", categoryId: categoryIdForML ?? null, err }];
+        const recordAttempt = (
+          step: string,
+          categoryId: string | null | undefined,
+          e: unknown,
+        ) => {
+          if (e && typeof e === "object") {
+            // Mesmo erro relançado por dois catches aninhados conta uma vez.
+            if ((e as any).__dexoAttemptRecorded) return;
+            (e as any).__dexoAttemptRecorded = true;
+          }
+          attemptLog.push({ step, categoryId: categoryId ?? null, err: e });
+        };
+        const recordAttemptCause = (
+          retryErr: any,
+          step = "retry",
+          categoryId: string | null = categoryIdForML ?? null,
+        ) => {
           const causes = retryErr?.mlError?.cause;
           if (Array.isArray(causes)) attemptCauses.push(causes);
+          recordAttempt(step, categoryId, retryErr);
         };
 
         // ─── Obrigatórios do ML depois do POST (ML_REQUIRED_ATTRS_BLOCK=1) ───
@@ -3104,11 +3461,16 @@ export class ListingUseCase {
                 normalizedNew,
               );
 
-              mlItem = await this.withTimeout(
-                MLApiService.createItem(acc.accessToken, retryPayload),
-                timeoutMs,
-                "ML createItem condition retry",
-              );
+              try {
+                mlItem = await this.withTimeout(
+                  MLApiService.createItem(acc.accessToken, retryPayload),
+                  timeoutMs,
+                  "ML createItem condition retry",
+                );
+              } catch (e) {
+                recordAttempt("condition_retry", normalizedNew, e);
+                throw e;
+              }
 
               if (mlItem) {
                 resolvedCategoryId = normalizedNew;
@@ -3148,11 +3510,16 @@ export class ListingUseCase {
               ...payload,
               category_id: categoryIdForML,
             };
-            mlItem = await this.withTimeout(
-              MLApiService.createItem(acc.accessToken, retryPayload),
-              timeoutMs,
-              "ML createItem retry category",
-            );
+            try {
+              mlItem = await this.withTimeout(
+                MLApiService.createItem(acc.accessToken, retryPayload),
+                timeoutMs,
+                "ML createItem retry category",
+              );
+            } catch (e) {
+              recordAttempt("category_leaf_retry", categoryIdForML, e);
+              throw e;
+            }
             console.warn(
               `[ListingUseCase] Retentativa com categoria leaf ${categoryIdForML} bem-sucedida`,
             );
@@ -3207,7 +3574,7 @@ export class ListingUseCase {
             const famMsg =
               famErr instanceof Error ? famErr.message : String(famErr);
             const famMl = famErr?.mlError || null;
-            recordAttemptCause(famErr);
+            recordAttemptCause(famErr, "family_name", categoryIdForML);
             recordSameCategoryCause(famErr);
             console.warn(
               JSON.stringify({
@@ -3255,7 +3622,7 @@ export class ListingUseCase {
             // categorias da allowlist (as que exigem family_name sem title)
             // sumia antes de chegar ao `pickActionableMLError` — justo o
             // caminho em que ela é a única informação útil.
-            recordAttemptCause(noTitleErr);
+            recordAttemptCause(noTitleErr, "no_title", categoryIdForML);
             recordSameCategoryCause(noTitleErr);
             console.warn(
               "[ListingUseCase] Retentativa sem title falhou:",
@@ -3291,7 +3658,7 @@ export class ListingUseCase {
             );
           } catch (retryTitleErr: any) {
             const stMl = retryTitleErr?.mlError || null;
-            recordAttemptCause(retryTitleErr);
+            recordAttemptCause(retryTitleErr, "safe_title", categoryIdForML);
             recordSameCategoryCause(retryTitleErr);
             console.warn(
               JSON.stringify({
@@ -3332,7 +3699,7 @@ export class ListingUseCase {
             );
           } catch (dynErr: any) {
             const dynMl = dynErr?.mlError || null;
-            recordAttemptCause(dynErr);
+            recordAttemptCause(dynErr, "dynamic_no_title", categoryIdForML);
             recordSameCategoryCause(dynErr);
             console.warn(
               JSON.stringify({
@@ -3406,7 +3773,7 @@ export class ListingUseCase {
                 // adicionando family_name e removendo title.
                 const innerMl =
                   innerErr && innerErr.mlError ? innerErr.mlError : null;
-                recordAttemptCause(innerErr);
+                recordAttemptCause(innerErr, "suggested_category", normalizedNew);
                 const innerMsg = JSON.stringify(
                   innerMl || innerErr?.message || "",
                 ).toLowerCase();
@@ -3429,7 +3796,7 @@ export class ListingUseCase {
                       "ML createItem suggested+family",
                     );
                   } catch (innerErr2: any) {
-                    recordAttemptCause(innerErr2);
+                    recordAttemptCause(innerErr2, "suggested_family", normalizedNew);
                     const inner2Msg = JSON.stringify(
                       (innerErr2 && innerErr2.mlError) ||
                         innerErr2?.message ||
@@ -3444,11 +3811,19 @@ export class ListingUseCase {
                           this.buildMLTitle(product),
                       } as any;
                       delete (noTitleRetry as any).title;
-                      mlItem = await this.withTimeout(
-                        MLApiService.createItem(acc.accessToken, noTitleRetry),
-                        timeoutMs,
-                        "ML createItem suggested+noTitle",
-                      );
+                      try {
+                        mlItem = await this.withTimeout(
+                          MLApiService.createItem(
+                            acc.accessToken,
+                            noTitleRetry,
+                          ),
+                          timeoutMs,
+                          "ML createItem suggested+noTitle",
+                        );
+                      } catch (e) {
+                        recordAttempt("suggested_no_title", normalizedNew, e);
+                        throw e;
+                      }
                     } else {
                       throw innerErr2;
                     }
@@ -3790,39 +4165,176 @@ export class ListingUseCase {
 
         // If we recovered and have mlItem, continue normal flow; otherwise rethrow
         if (!mlItem) {
-          // A escada esgotou. `err` é o erro da PRIMEIRA tentativa — em
-          // categorias de catálogo isso é sempre `family_name`, que a escada
-          // já resolveu e que o operador não tem como corrigir. A causa que
-          // ele resolve (ex.: PART_NUMBER em branco) só aparece nas
-          // retentativas. Reporta a mais acionável; sem nenhuma reconhecida,
-          // mantém a mensagem de hoje.
-          const actionable = pickActionableMLError(
-            attemptCauses,
-            categoryIdForML,
+          // A escada esgotou. `err` é o erro da PRIMEIRA tentativa — em conta
+          // "User Products" isso é sempre `family_name`, que a escada já
+          // resolveu. A causa que a pessoa resolve só aparece nas
+          // retentativas, e só vale a da categoria que ELA escolheu (a escada
+          // também tenta categorias sugeridas pelo ML).
+          const actionable = pickActionableMLErrorForCategory(
+            attemptLog.map((a) => ({
+              causes: Array.isArray((a.err as any)?.mlError?.cause)
+                ? ((a.err as any).mlError.cause as MLCause[])
+                : [],
+              categoryId: a.categoryId,
+            })),
+            categoriaPedidaML,
             {
               somenteObrigatorios: process.env.ML_ERROR_DETAIL_DISABLED === "1",
             },
           );
-          if (actionable) {
-            console.warn(
-              JSON.stringify({
-                event: "ml.create_item.actionable_error",
-                productId: product.id,
-                categoryId: categoryIdForML,
-                actionable,
-                originalMessage: errMsg,
-              }),
+
+          // Classe da falha: pela ÚLTIMA tentativa na categoria pedida; um
+          // timeout em QUALQUER tentativa vira "conferir antes de recriar".
+          const mesmaCategoria = (c: string | null) =>
+            String(c || "").toUpperCase() ===
+            String(categoriaPedidaML || "").toUpperCase();
+          const ultimaNaPedida =
+            [...attemptLog].reverse().find((a) => mesmaCategoria(a.categoryId)) ??
+            attemptLog[attemptLog.length - 1];
+          const normalizado = normalizeMLError({
+            err: ultimaNaPedida.err,
+            operation: "create_item",
+            step: ultimaNaPedida.step,
+            categoryId: ultimaNaPedida.categoryId,
+          });
+          // Qualquer tentativa da passada que PODE ter criado o item no ML
+          // (timeout, conexão que caiu depois de aberta, 5xx) torna a falha
+          // inteira "conferir antes de recriar" — mesmo que a última tentativa
+          // tenha sido uma recusa por dado.
+          const algumTimeout = attemptLog.some((a) => {
+            const n = normalizeMLError({ err: a.err });
+            return (
+              n.timedOut ||
+              lastErrorMarkerFor(n) === LAST_ERROR_MARKER.VERIFICAR
             );
+          });
+          // Se a própria última tentativa já pede conferência (timeout, 5xx,
+          // conexão caída), ela fala por si (ex.: "ML indisponível"); se a
+          // conferência vem de uma tentativa ANTERIOR, a falha inteira vira
+          // "pode ter criado — conferir antes de recriar".
+          const classe =
+            algumTimeout &&
+            lastErrorMarkerFor(normalizado) !== LAST_ERROR_MARKER.VERIFICAR
+              ? { ...normalizado, kind: "UNKNOWN" as const, timedOut: true }
+              : normalizado;
+          // Recusa por dado só é terminal quando a ficha foi montada COM o
+          // catálogo de atributos da categoria. Sem catálogo (serviço de
+          // atributos indisponível nesta tentativa — fail-open), o próprio
+          // corpo saiu incompleto e a retentativa, com o catálogo de volta,
+          // costuma passar: continua reagendando como sempre.
+          const catalogoDisponivel =
+            !!categoryAttrsForBuild && categoryAttrsForBuild.length > 0;
+          const marcadorBruto = lastErrorMarkerFor(classe);
+          // ML_ERROR_CLASSIFICATION_DISABLED=1: sem marcador ⇒ toda falha volta
+          // a reagendar como antes do erro estruturado (a mensagem humana fica).
+          const marcador =
+            process.env.ML_ERROR_CLASSIFICATION_DISABLED === "1" ||
+            (classe.kind === "VALIDATION" && !catalogoDisponivel)
+              ? null
+              : marcadorBruto;
+          const primeiraCausa =
+            (((ultimaNaPedida.err as any)?.mlError?.cause ?? []) as MLRawCause[])
+              .find((c) => (c?.type ?? "error").toLowerCase() === "error") ??
+            null;
+          // ML_ERROR_DETAIL_DISABLED=1 restaura o texto de antes: sem causa
+          // reconhecida, a mensagem crua do ML (como era em main).
+          const mensagem =
+            actionable ??
+            (process.env.ML_ERROR_DETAIL_DISABLED === "1"
+              ? errMsg
+              : humanMessageForKind(classe, {
+                  accountName: acc.accountName,
+                  firstCause: primeiraCausa,
+                }));
+
+          // Log estruturado: responde "quantos falham, por qual código, em
+          // qual categoria/conta, desde quando". Sem token e sem payload.
+          const resumoTentativas = attemptLog.map((a) => {
+            const n = normalizeMLError({ err: a.err });
+            return {
+              step: a.step,
+              categoryId: a.categoryId,
+              kind: n.kind,
+              httpStatus: n.httpStatus,
+              causeIds: n.causeIds,
+              timedOut: n.timedOut,
+            };
+          });
+          console.warn(
+            JSON.stringify({
+              event: "ml.publish.outcome",
+              outcome: "failed",
+              productId: product.id,
+              accountId: acc.id,
+              listingId: listing.id,
+              requestedCategoryId: categoriaPedidaML,
+              kind: classe.kind,
+              httpStatus: classe.httpStatus,
+              causeIds: classe.causeIds,
+              causeCodes: classe.causeCodes,
+              fields: classe.fields,
+              retryable: classe.retryable,
+              userActionRequired: classe.userActionRequired,
+              timedOut: classe.timedOut,
+              marker: marcador,
+              actionable: !!actionable,
+              attempts: resumoTentativas,
+            }),
+          );
+          // Best-effort de verdade: registrar o log nunca pode derrubar o
+          // fluxo de publicação (nem se o serviço lançar ou não devolver
+          // Promise).
+          try {
+            void Promise.resolve(
+              SystemLogService.logError("CREATE_LISTING", mensagem, {
+                userId,
+                resource: "ProductListing",
+                resourceId: listing.id,
+                details: {
+                  event: "ml.publish.failed",
+                  provider: "mercadolivre",
+                  operation: "create_item",
+                  productId: product.id,
+                  accountId: acc.id,
+                  requestedCategoryId: categoriaPedidaML,
+                  kind: classe.kind,
+                  httpStatus: classe.httpStatus,
+                  causeIds: classe.causeIds,
+                  causeCodes: classe.causeCodes,
+                  fields: classe.fields,
+                  timedOut: classe.timedOut,
+                  attempts: resumoTentativas,
+                },
+              }),
+            ).catch(() => undefined);
+          } catch {
+            /* log é best-effort */
           }
 
-          // marcar placeholder com erro genÃ©rico para retry e exibir ao usuÃ¡rio
+          // Republicação (PENDING_REPUBLISH_) segue gravando como sempre: o
+          // sync reverte a linha para o anúncio original, e um marcador
+          // terminal ali ficaria numa linha VIVA. Linha REAPROVEITADA com id
+          // real (ex.: anúncio encerrado sendo publicado de novo) também: o
+          // re-arme e o botão só enxergam placeholders PENDING_, então um
+          // `[TERMINAL][CORRIGIVEL]` nela ficaria sem saída — ali vale o
+          // reagendamento de sempre.
+          const republicacao =
+            !!listing.externalListingId?.startsWith("PENDING_REPUBLISH_") ||
+            !listing.externalListingId?.startsWith("PENDING_");
+          const terminal = !republicacao && isTerminalMarker(marcador);
           const nextRetryMs = 60 * 1000;
           try {
             await ListingRepository.updateListing(listing.id, {
               status: "error",
-              lastError: actionable || errMsg,
-              retryEnabled: true,
-              nextRetryAt: new Date(Date.now() + nextRetryMs),
+              lastError: republicacao
+                ? mensagem
+                : marcador
+                  ? `${marcador} ${mensagem}`
+                  : mensagem,
+              retryEnabled: !terminal,
+              nextRetryAt: terminal
+                ? null
+                : new Date(Date.now() + nextRetryMs),
               requestedCategoryId: payload.category_id || null,
             });
           } catch (updateErr) {
@@ -3832,19 +4344,16 @@ export class ListingUseCase {
             );
           }
 
-          if (actionable) {
-            // Retorno (em vez de throw) para a mensagem chegar ao usuário sem
-            // virar "Erro desconhecido" no catch externo. `mlError` preserva o
-            // erro bruto do ML para diagnóstico.
-            return {
-              success: false,
-              listingId: listing.id,
-              error: actionable,
-              mlError: errMsg,
-            };
-          }
-
-          throw err;
+          // Retorno (nunca mais throw do erro cru): a mensagem chega à pessoa
+          // sem JSON. `mlError` preserva o erro bruto para diagnóstico.
+          return {
+            success: false,
+            listingId: listing.id,
+            error: mensagem,
+            mlError: errMsg,
+            errorKind: classe.kind,
+            ...(republicacao || !marcador ? {} : { lastErrorMarker: marcador }),
+          };
         }
       }
 
@@ -4214,6 +4723,29 @@ export class ListingUseCase {
         success: false,
         error: error instanceof Error ? error.message : "Erro desconhecido",
       };
+    } finally {
+      // Em TODA saída: a reserva que esta chamada fez é desfeita se ninguém
+      // regravou por cima (condicional ao horário dela). Sucesso e falhas
+      // gravadas já trocaram o horário — aí não faz nada. Cobre também a
+      // gravação do erro que falhou em silêncio: sem isto a linha assumida
+      // de um agendamento saía da fila do cron para sempre.
+      if (reservaPropria) {
+        try {
+          if (reservaPropria.assumida) {
+            await ListingRepository.releaseTakenOverRetry(
+              reservaPropria.listingId,
+              reservaPropria.at,
+            );
+          } else {
+            await ListingRepository.releaseInteractiveRetry(
+              reservaPropria.listingId,
+              reservaPropria.at,
+            );
+          }
+        } catch {
+          // A reserva expira sozinha (10 min).
+        }
+      }
     }
   }
 
@@ -7877,6 +8409,101 @@ export class ListingUseCase {
    * Best-effort: qualquer falha só gera warning — não pode derrubar a edição
    * nem o re-sync que a chamou.
    */
+  /**
+   * Completa um anúncio ADOTADO pela conferência (o item já existia no ML:
+   * a tentativa anterior deu timeout depois de criar). Ele não passou pelo
+   * pós-criação do createMLListing — que roda só quando o POST responde.
+   *
+   *  - Compatibilidade veicular: vai DEPOIS do POST, então o item adotado
+   *    nunca a recebeu. Mesma escada aditiva da criação
+   *    (applyCompatibilitiesVerified: só acrescenta) + diagnóstico.
+   *  - Estoque: se a peça vendeu entre a criação e a adoção, a quantidade do
+   *    item é velha. Enfileira o sync de estoque pela fila durável de sempre
+   *    (StockSyncJob, com retry) — nunca empurra direto.
+   *
+   * Não reativa item pausado nem mexe em descrição/tipo/título (o POST já os
+   * levou; reativar poria no ar uma quantidade velha). Best-effort: nada aqui
+   * derruba a adoção. ML_ADOPT_COMPLETE_DISABLED=1 desliga.
+   */
+  static async completeAdoptedMLListing(a: {
+    accessToken: string;
+    itemId: string;
+    listingId: string;
+    productId: string;
+  }): Promise<void> {
+    if (process.env.ML_ADOPT_COMPLETE_DISABLED === "1") return;
+    if (!a.itemId || a.itemId.startsWith("PENDING_")) return;
+
+    try {
+      const { StockReconciliationService } = await import(
+        "../services/stock-reconciliation.service"
+      );
+      await StockReconciliationService.enqueueListingStockSync(
+        a.listingId,
+        a.productId,
+      );
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] estoque pós-adoção não enfileirado (${a.itemId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    try {
+      const prisma = (await import("../../lib/prisma")).default;
+      const p = await prisma.product.findUnique({
+        where: { id: a.productId },
+        select: {
+          compatibilityPositions: true,
+          compatibilities: {
+            select: { brand: true, model: true, yearFrom: true, yearTo: true },
+          },
+        },
+      });
+      const vehicles = (p?.compatibilities ?? [])
+        .filter((v) => v.brand && v.model)
+        .map((v) => ({
+          brand: v.brand,
+          model: v.model,
+          yearFrom: v.yearFrom ?? null,
+          yearTo: v.yearTo ?? null,
+        }));
+      if (vehicles.length === 0) return;
+      const posicoes = Array.isArray(p?.compatibilityPositions)
+        ? (p!.compatibilityPositions as unknown[]).filter(
+            (x): x is string => typeof x === "string",
+          )
+        : [];
+      const compat = await MLApiService.applyCompatibilitiesVerified(
+        a.accessToken,
+        a.itemId,
+        vehicles as any,
+        posicoes.length > 0 ? posicoes : undefined,
+      );
+      console.log(
+        JSON.stringify({
+          event: "ml.compat.verified",
+          origin: "adoption",
+          itemId: a.itemId,
+          listingId: a.listingId,
+          requested: compat.requested,
+          persisted: compat.persisted,
+          strategy: compat.strategy,
+          verified: compat.verified,
+        }),
+      );
+      await ListingRepository.updateCompatDiagnostics(
+        a.listingId,
+        buildCompatDiagnostics(compat, { origin: "adoption" }),
+      );
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] compatibilidade pós-adoção falhou (${a.itemId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   static async resendCompatibilitiesIfNeeded(args: {
     accessToken: string;
     itemId: string;

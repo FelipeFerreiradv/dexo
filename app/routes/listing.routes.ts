@@ -24,7 +24,26 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
 import prisma from "../lib/prisma";
-import { ML_REQUIRED_ATTRS_ERROR_CODE } from "../marketplaces/lib/ml-required-attributes.logic";
+import {
+  ML_REQUIRED_ATTRS_ERROR_CODE,
+  isMlRequiredAttrsBlockEnabled,
+} from "../marketplaces/lib/ml-required-attributes.logic";
+import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { ListingRepository } from "../marketplaces/repositories/listing.repository";
+import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+import { placeholderMlSettings } from "../marketplaces/lib/ml-placeholder-settings";
+
+/**
+ * Reserva do botão "Tentar publicar novamente": maior que a escada inteira de
+ * createItem (~3 min) com folga; vence sozinha se o processo cair no meio.
+ */
+const RETRY_ML_LEASE_MS = 10 * 60 * 1000;
+/**
+ * Quanto o botão espera a publicação antes de responder "ainda publicando".
+ * Abaixo dos 60 s do proxy: a escada completa pode passar disso, e a resposta
+ * cortada pelo proxy parecia erro e convidava a clicar de novo.
+ */
+const RETRY_ML_WAIT_MS = 25 * 1000;
 
 /**
  * Enriquece a config de aumento percentual escalonado entre contas antes de
@@ -758,6 +777,230 @@ export async function listingRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         console.error("[Listing Routes] Error patching status:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/:id/retry-ml
+   * "Tentar publicar novamente" de um anúncio do ML que ainda não existe
+   * (placeholder PENDING_…), com as configurações que a criação guardou na
+   * linha (Premium, frete grátis, garantia…).
+   *
+   * Segurança contra duplicata:
+   *  - linha com retry automático LIGADO é do cron (agendada ou em execução):
+   *    409, nada é criado;
+   *  - RESERVA atômica da linha (`claimInteractiveRetry`): dois cliques, ou o
+   *    clique e o cron, nunca rodam o create ao mesmo tempo;
+   *  - SEMPRE confere no ML pelo SKU antes de criar (publicação interrompida
+   *    ou antiga pode ter criado o item): achou ⇒ adota; achou com outro
+   *    título ⇒ a pessoa confere; não deu para conferir ⇒ não cria;
+   *  - o `createMLListing` ainda recusa se já houver anúncio vivo na conta.
+   */
+  app.post<{ Params: { id: string } }>(
+    "/:id/retry-ml",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const row = await (prisma as any).productListing.findFirst({
+          where: { id, product: { userId } },
+          include: {
+            marketplaceAccount: true,
+            product: { select: { sku: true, name: true } },
+          },
+        });
+        if (!row) {
+          return reply.status(404).send({ error: "Anúncio não encontrado" });
+        }
+        if (row.marketplaceAccount?.platform !== "MERCADO_LIVRE") {
+          return reply
+            .status(400)
+            .send({ error: "Disponível só para anúncios do Mercado Livre" });
+        }
+        const ext = String(row.externalListingId || "");
+        if (!ext.startsWith("PENDING_") || ext.startsWith("PENDING_REPUBLISH_")) {
+          return reply.status(409).send({
+            error:
+              "Este anúncio já existe no Mercado Livre — use a edição do anúncio.",
+          });
+        }
+
+        if (row.retryEnabled) {
+          return reply.status(409).send({
+            error:
+              "Já existe uma nova tentativa agendada para este anúncio — a Dexo publica sozinha em instantes.",
+          });
+        }
+        // A criação escolhe a linha pelo PAR (produto, conta): outro pendente
+        // do par agendado ou em andamento correria junto com este clique.
+        const ocupado = await ListingRepository.findBusyMlPlaceholderInPair(
+          row.productId,
+          row.marketplaceAccountId,
+          id,
+        );
+        if (ocupado) {
+          return reply.status(409).send({
+            error:
+              "Já existe uma publicação agendada ou em andamento para este produto nesta conta. Aguarde alguns minutos e confira o anúncio.",
+          });
+        }
+        const reserva = await ListingRepository.claimInteractiveRetry(
+          id,
+          RETRY_ML_LEASE_MS,
+        );
+        if (!reserva) {
+          return reply.status(409).send({
+            error:
+              "Esta publicação já está em andamento. Aguarde alguns minutos e confira o anúncio.",
+          });
+        }
+
+        // A reserva só é liberada quando a publicação TERMINA de verdade — se a
+        // resposta sair antes (espera esgotada), quem libera é o fim da tarefa.
+        let liberarNoFim = true;
+        try {
+          // Token fresco para a conferência (o create renova o dele sozinho).
+          const conta = row.marketplaceAccount;
+          if (
+            conta?.expiresAt &&
+            new Date(conta.expiresAt).getTime() < Date.now() + 60_000 &&
+            conta.refreshToken
+          ) {
+            try {
+              const novo = await MLOAuthService.refreshAccessTokenForAccount(
+                conta.id,
+                conta.refreshToken,
+              );
+              await MarketplaceRepository.updateTokens(conta.id, {
+                accessToken: novo.accessToken,
+                refreshToken: novo.refreshToken,
+                expiresAt: new Date(Date.now() + novo.expiresIn * 1000),
+              });
+              conta.accessToken = novo.accessToken;
+            } catch {
+              return reply.status(503).send({
+                error:
+                  "Não foi possível renovar o acesso à conta do Mercado Livre agora. Tente de novo em instantes; se persistir, reconecte a conta em Integrações.",
+              });
+            }
+          }
+
+          const conferencia = await ListingRetryService.reconcileBeforeRecreate(
+            row,
+            conta,
+            { interactive: true },
+          );
+          if (conferencia === "adopted") {
+            return reply.status(200).send({
+              success: true,
+              reconciled: true,
+              message:
+                "O anúncio já tinha sido criado no Mercado Livre e foi vinculado.",
+            });
+          }
+          if (conferencia === "ambiguous") {
+            return reply.status(409).send({
+              error:
+                "Há um anúncio com o mesmo SKU no Mercado Livre que pode ser deste produto. Confira no Mercado Livre antes de publicar de novo.",
+            });
+          }
+          if (conferencia === "search_failed") {
+            return reply.status(503).send({
+              error:
+                "Não foi possível conferir no Mercado Livre se o anúncio já existe. Nada foi publicado; tente de novo em instantes.",
+            });
+          }
+
+          // Mesma ficha que o cron repassa com ML_REQUIRED_ATTRS_BLOCK=1.
+          const ficha = row.attributesOverride;
+          const fichaGuardada =
+            isMlRequiredAttrsBlockEnabled() &&
+            !!ficha &&
+            typeof ficha === "object" &&
+            !Array.isArray(ficha)
+              ? (ficha as Record<string, unknown>)
+              : undefined;
+          const publicacao = (
+            fichaGuardada
+              ? ListingUseCase.createMLListing(
+                  userId,
+                  row.productId,
+                  row.requestedCategoryId || undefined,
+                  row.marketplaceAccountId,
+                  placeholderMlSettings(row),
+                  undefined,
+                  request.user!.id,
+                  fichaGuardada,
+                  { reservation: { listingId: id, at: reserva } },
+                )
+              : ListingUseCase.createMLListing(
+                  userId,
+                  row.productId,
+                  row.requestedCategoryId || undefined,
+                  row.marketplaceAccountId,
+                  placeholderMlSettings(row),
+                  undefined,
+                  request.user!.id,
+                  undefined,
+                  { reservation: { listingId: id, at: reserva } },
+                )
+          ).finally(() =>
+            ListingRepository.releaseInteractiveRetry(id, reserva).catch(
+              () => undefined,
+            ),
+          );
+          liberarNoFim = false;
+          publicacao.catch((err) =>
+            console.error(
+              "[Listing Routes] publicação em segundo plano falhou:",
+              err instanceof Error ? err.message : err,
+            ),
+          );
+          const ESPERA = Symbol("espera");
+          let relogio: ReturnType<typeof setTimeout> | undefined;
+          const espera = new Promise<typeof ESPERA>((resolve) => {
+            relogio = setTimeout(
+              () => resolve(ESPERA),
+              Number(process.env.ML_RETRY_BUTTON_WAIT_MS) || RETRY_ML_WAIT_MS,
+            );
+          });
+          const result = await Promise.race([publicacao, espera]).finally(() => {
+            if (relogio) clearTimeout(relogio);
+          });
+          if (result === ESPERA) {
+            return reply.status(202).send({
+              success: true,
+              pending: true,
+              message:
+                "A publicação continua em andamento no Mercado Livre. Reabra a lista em alguns minutos para ver o resultado.",
+            });
+          }
+          if (!result.success) {
+            return reply.status(422).send({
+              error: result.error || "O Mercado Livre recusou o anúncio.",
+              errorKind: result.errorKind,
+            });
+          }
+          return reply.status(200).send({
+            success: true,
+            externalListingId: result.externalListingId,
+            permalink: result.permalink,
+          });
+        } finally {
+          if (liberarNoFim) {
+            await ListingRepository.releaseInteractiveRetry(id, reserva).catch(
+              () => undefined,
+            );
+          }
+        }
+      } catch (error) {
+        console.error("[Listing Routes] Error retrying ML listing:", error);
         return reply.status(500).send({
           error: "Erro interno do servidor",
           message: error instanceof Error ? error.message : "Erro desconhecido",

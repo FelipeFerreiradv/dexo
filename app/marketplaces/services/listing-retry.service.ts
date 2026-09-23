@@ -10,6 +10,14 @@ import {
   classifyOlxRemoveError,
 } from "./listing-removal.helpers";
 import { isMlRequiredAttrsBlockEnabled } from "../lib/ml-required-attributes.logic";
+import { placeholderMlSettings } from "../lib/ml-placeholder-settings";
+import {
+  LAST_ERROR_MARKER,
+  isTerminalMarker,
+} from "../lib/ml-error-normalizer";
+import { decideReconcile } from "../lib/ml-reconcile.logic";
+import { sanitizeMLTitle } from "../lib/ml-title";
+import { normalizeListingStatus } from "../lib/listing-status";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -72,6 +80,8 @@ export class ListingRetryService {
     console.log(`[ListingRetryService] candidates=${candidates?.length || 0}`);
 
     for (const cand of candidates) {
+      // O claim do ML marca `pending` (cron publicando); devolvido no fim.
+      let marcouPublicando = false;
       try {
         console.log(`[ListingRetryService] processing candidate ${cand.id}`);
 
@@ -81,10 +91,25 @@ export class ListingRetryService {
         // deploy anterior). Sem o claim, dois processos leem o mesmo lote e
         // criam o mesmo anúncio duas vezes no ML. O UPDATE condicional é
         // atômico — quem perder a corrida pula o candidato.
+        // Só placeholder PENDING_ do ML: marcar `pending` numa linha com id
+        // REAL a esconderia das guardas de anúncio vivo (status fora da lista)
+        // e o cron poderia publicar um segundo anúncio do mesmo produto.
+        const ehMl =
+          cand.marketplaceAccount?.platform === "MERCADO_LIVRE" &&
+          !!cand.externalListingId?.startsWith("PENDING_") &&
+          !cand.externalListingId?.startsWith("PENDING_SHP_");
         const claimed = await ListingRepository.claimRetryCandidate(
           cand.id,
           CLAIM_LEASE_MS,
+          ehMl ? { markPublishing: true } : {},
         );
+        marcouPublicando = ehMl && !!claimed;
+        // A reserva do cron é o passe dele no createMLListing: linha com
+        // retry ligado só é reaproveitada por quem a reservou.
+        const reservaDoCron =
+          claimed instanceof Date
+            ? { reservation: { listingId: cand.id, at: claimed } }
+            : undefined;
         if (!claimed) {
           console.log(
             `[ListingRetryService] skipping ${cand.id} (claimed por outro processo ou estado mudou)`,
@@ -367,7 +392,10 @@ export class ListingRetryService {
               `[ListingRetryService] falha ao renovar token da conta ${account.id}: ${errMsg(refreshErr)}`,
             );
             await ListingRepository.incrementRetryAttempts(cand.id, {
-              lastError: `Token do Mercado Livre expirado e não foi possível renovar — reconecte a conta "${account.accountName || account.id}" em Integrações`,
+              lastError: manterVerificar(
+                cand.lastError,
+                `Token do Mercado Livre expirado e não foi possível renovar — reconecte a conta "${account.accountName || account.id}" em Integrações`,
+              ),
               nextRetryAt: shouldRetry
                 ? new Date(Date.now() + nextDelay * 1000)
                 : null,
@@ -396,9 +424,15 @@ export class ListingRetryService {
           const attempts = (cand.retryAttempts || 0) + 1;
           const nextDelay =
             BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
+          // Última tentativa: sem horário. Retry desligado COM horário futuro
+          // é a marca de "publicação em andamento" (reserva do botão/criação)
+          // e deixava o card em "Publicando agora" por 15 min sem nada rodar.
           await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: errMsg(capErr),
-            nextRetryAt: new Date(Date.now() + nextDelay * 1000),
+            lastError: manterVerificar(cand.lastError, errMsg(capErr)),
+            nextRetryAt:
+              attempts < MAX_ATTEMPTS
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
             retryEnabled: attempts < MAX_ATTEMPTS,
           });
 
@@ -415,6 +449,28 @@ export class ListingRetryService {
         );
 
         const product = cand.product as any;
+
+        // Anti-duplicata: a tentativa anterior terminou em timeout/5xx e pode
+        // ter criado o item no ML sem a Dexo saber. Confere na conta ANTES de
+        // criar de novo; achou ⇒ adota o item, não cria.
+        //
+        // ANTES da guarda de estoque/preço: a conferência não cria nada, só
+        // adota. A peça de 1 unidade que vendeu entre o POST perdido e esta
+        // passada tem stock=0 — a guarda marcava terminal, apagava o
+        // [VERIFICAR] e o item criado ficava à venda no ML sem vínculo (o sync
+        // de estoque da adoção nunca rodava). Adotado, o job de estoque da
+        // adoção acerta a quantidade dele.
+        if (
+          typeof cand.lastError === "string" &&
+          cand.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR)
+        ) {
+          const conferencia = await this.reconcileBeforeRecreate(
+            cand as any,
+            account as any,
+          );
+          // adopted / ambiguous / search_failed: nada a criar nesta passada.
+          if (conferencia !== "not_found") continue;
+        }
 
         // Guard terminal: stock/price inválidos nunca serão aceitos pelo ML
         // (item.stock.invalid / item.price.invalid). O createMLListing valida o
@@ -468,7 +524,11 @@ export class ListingRetryService {
         //
         // createMLListing REUSA a linha existente (findByProductAndAccount),
         // entao o placeholder deste candidato e atualizado no lugar.
+
         const { ListingUseCase } = await import("../usecases/listing.usercase");
+        // Configurações escolhidas na criação (tipo de anúncio, frete, garantia),
+        // guardadas no placeholder. Sem nenhuma ⇒ chamada igual à de sempre.
+        const settingsDoPlaceholder = placeholderMlSettings(cand as any);
         // Com ML_REQUIRED_ATTRS_BLOCK=1, a ficha que a criação original guardou
         // no placeholder (lado/posição e obrigatórios preenchidos na Revisão
         // individual) volta para esta retentativa. Sem ela, o bloqueio de
@@ -482,22 +542,70 @@ export class ListingRetryService {
           !!fichaGuardada &&
           typeof fichaGuardada === "object" &&
           !Array.isArray(fichaGuardada)
-            ? await ListingUseCase.createMLListing(
-                account.userId,
-                cand.productId,
-                cand.requestedCategoryId || undefined,
-                account.id,
-                undefined, // mlSettings
-                undefined, // titleOverride
-                undefined, // actorId
-                fichaGuardada as Record<string, unknown>,
-              )
-            : await ListingUseCase.createMLListing(
-                account.userId,
-                cand.productId,
-                cand.requestedCategoryId || undefined,
-                account.id,
-              );
+            ? reservaDoCron
+              ? await ListingUseCase.createMLListing(
+                  account.userId,
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account.id,
+                  settingsDoPlaceholder, // mlSettings
+                  undefined, // titleOverride
+                  undefined, // actorId
+                  fichaGuardada as Record<string, unknown>,
+                  reservaDoCron,
+                )
+              : await ListingUseCase.createMLListing(
+                  account.userId,
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account.id,
+                  settingsDoPlaceholder, // mlSettings
+                  undefined, // titleOverride
+                  undefined, // actorId
+                  fichaGuardada as Record<string, unknown>,
+                )
+            : reservaDoCron
+              ? await ListingUseCase.createMLListing(
+                  account.userId,
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account.id,
+                  settingsDoPlaceholder,
+                  undefined,
+                  undefined,
+                  undefined,
+                  reservaDoCron,
+                )
+              : settingsDoPlaceholder
+                ? await ListingUseCase.createMLListing(
+                    account.userId,
+                    cand.productId,
+                    cand.requestedCategoryId || undefined,
+                    account.id,
+                    settingsDoPlaceholder,
+                  )
+                : await ListingUseCase.createMLListing(
+                    account.userId,
+                    cand.productId,
+                    cand.requestedCategoryId || undefined,
+                    account.id,
+                  );
+
+        // Outra publicação do mesmo par em andamento (ou agendada noutra
+        // linha): não é falha deste candidato. Volta à fila sem gastar
+        // tentativa e sem trocar o erro — o [VERIFICAR] tem de seguir na
+        // linha para a próxima passada conferir antes de recriar.
+        if (
+          !result.success &&
+          (result as { code?: string }).code === "PUBLICATION_IN_PROGRESS"
+        ) {
+          await ListingRepository.incrementRetryAttempts(
+            cand.id,
+            { nextRetryAt: new Date(Date.now() + 60 * 1000) },
+            { increment: false },
+          );
+          continue;
+        }
 
         if (result.success) {
           console.log(
@@ -522,6 +630,39 @@ export class ListingRetryService {
           );
           await ListingRepository.incrementRetryAttempts(cand.id, {
             lastError: `[TERMINAL] ${(result.error || "").substring(0, 480)}`,
+            retryEnabled: false,
+            nextRetryAt: null,
+          });
+          continue;
+        }
+
+        // Erro de DADO (ou conta a reconectar): repetir o mesmo corpo só repete
+        // a recusa. Grava no candidato, pelo id, com o marcador que o create
+        // devolveu — `[TERMINAL][CORRIGIVEL]` é re-armado quando a pessoa edita
+        // o produto (ProductUseCase.update).
+        if (isTerminalMarker(result.lastErrorMarker)) {
+          console.warn(
+            `[ListingRetryService] ML retry terminal (${result.errorKind}) for ${cand.id}: ${result.error}`,
+          );
+          // Candidato com id REAL (anúncio encerrado publicado de novo) e o
+          // bloqueio gravado num placeholder PENDING_ próprio: o marcador fica
+          // lá, onde o re-arme e o botão enxergam. Aqui só sai da fila — com o
+          // marcador, esta linha ficaria sem saída.
+          if (
+            !String(cand.externalListingId ?? "").startsWith("PENDING_") &&
+            result.listingId &&
+            result.listingId !== cand.id
+          ) {
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+            continue;
+          }
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            lastError: `${result.lastErrorMarker} ${result.error || ""}`
+              .trim()
+              .substring(0, 490),
             retryEnabled: false,
             nextRetryAt: null,
           });
@@ -554,7 +695,12 @@ export class ListingRetryService {
           `[ListingRetryService] ML retry failed for ${cand.id} (tentativa ${attempts}/${MAX_ATTEMPTS}): ${result.error}`,
         );
         await ListingRepository.incrementRetryAttempts(cand.id, {
-          lastError: (result.error || "erro desconhecido").substring(0, 490),
+          // `[VERIFICAR]` segue na linha: a próxima passada confere no ML
+          // antes de criar de novo (a tentativa pode ter criado o item).
+          lastError: (result.lastErrorMarker
+            ? `${result.lastErrorMarker} ${result.error || "erro desconhecido"}`
+            : result.error || "erro desconhecido"
+          ).substring(0, 490),
           nextRetryAt: shouldRetry
             ? new Date(Date.now() + nextDelay * 1000)
             : null,
@@ -569,7 +715,7 @@ export class ListingRetryService {
           const attempts = (cand.retryAttempts || 0) + 1;
           const shouldRetry = attempts < MAX_ATTEMPTS;
           await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: errMsg(err),
+            lastError: manterVerificar(cand.lastError, errMsg(err)),
             nextRetryAt: shouldRetry ? new Date(Date.now() + 60 * 1000) : null,
             retryEnabled: shouldRetry,
           });
@@ -581,8 +727,241 @@ export class ListingRetryService {
           `Unexpected error while retrying placeholder ${cand.id}: ${errMsg(err)}`,
           { resource: "ProductListing", resourceId: cand.id },
         );
+      } finally {
+        if (marcouPublicando) {
+          try {
+            await ListingRepository.restoreCronClaimStatus(
+              cand.id,
+              String(cand.status ?? "error"),
+            );
+          } catch {
+            // o próximo claim do cron regrava; a linha segue com retry
+          }
+        }
       }
     }
+  }
+
+  /**
+   * Antes de RECRIAR um anúncio cuja tentativa anterior terminou em timeout ou
+   * 5xx: busca na conta os anúncios com o SKU do produto e, se um deles foi
+   * criado a partir do placeholder, ADOTA-o (vincula o id real) em vez de
+   * criar outro. Resultado:
+   *  - "adopted": vinculado, nada a criar;
+   *  - "search_failed": não deu para conferir — reagenda SEM criar (criar às
+   *    cegas é exatamente o risco de duplicata);
+   *  - "not_found": nenhum item novo; segue para a criação normal.
+   */
+  static async reconcileBeforeRecreate(
+    cand: {
+      id: string;
+      createdAt: Date;
+      productId?: string;
+      retryAttempts?: number | null;
+      lastError?: string | null;
+      marketplaceAccountId?: string;
+      product?: { sku?: string | null; name?: string | null } | null;
+    },
+    account: {
+      id: string;
+      accessToken: string;
+      externalUserId?: string | null;
+    },
+    /**
+     * `interactive` = botão "Tentar publicar novamente": busca que falha não
+     * grava nada (nem tentativa, nem marcador, nem agendamento) — a pessoa
+     * tenta de novo; o cron é quem agenda.
+     */
+    opts: { interactive?: boolean } = {},
+  ): Promise<"adopted" | "ambiguous" | "search_failed" | "not_found"> {
+    const sku = (cand.product?.sku || "").trim();
+    const sellerId = (account.externalUserId || "").trim();
+    // Sem SKU ou sem vendedor não há como conferir: segue como sempre foi.
+    if (!sku || !sellerId) return "not_found";
+
+    let items: Awaited<ReturnType<typeof MLApiService.findItemsBySellerSku>>;
+    try {
+      items = await MLApiService.findItemsBySellerSku(
+        account.accessToken,
+        sellerId,
+        sku,
+      );
+    } catch (err) {
+      if (opts.interactive) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.publish.reconcile",
+            outcome: "search_failed",
+            interactive: true,
+            listingId: cand.id,
+            error: errMsg(err),
+          }),
+        );
+        return "search_failed";
+      }
+      const attempts = (cand.retryAttempts || 0) + 1;
+      const shouldRetry = attempts < MAX_ATTEMPTS;
+      const nextDelay =
+        BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
+      console.warn(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "search_failed",
+          listingId: cand.id,
+          error: errMsg(err),
+        }),
+      );
+      await ListingRepository.incrementRetryAttempts(cand.id, {
+        // Sempre COM o marcador: a próxima passada precisa conferir de novo
+        // antes de criar (sem ele, recriava às cegas o item que talvez exista).
+        lastError: comVerificar(
+          cand.lastError ||
+            "Não foi possível conferir no Mercado Livre se o anúncio já existe.",
+        ),
+        nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+        retryEnabled: shouldRetry,
+      });
+      return "search_failed";
+    }
+
+    const decisao = decideReconcile(items, {
+      placeholderCreatedAt: new Date(cand.createdAt),
+      sku,
+      desiredTitle: cand.product?.name
+        ? sanitizeMLTitle(cand.product.name, sku)
+        : null,
+    });
+    if (decisao.kind === "ambiguous") {
+      await ListingRepository.updateListing(cand.id, {
+        status: "error",
+        lastError: `[TERMINAL] Há um anúncio no Mercado Livre (${decisao.item.id}) com o mesmo SKU, criado agora, mas com outro título ("${String(decisao.item.title ?? "").slice(0, 80)}"). Confira no Mercado Livre se é este produto antes de publicar de novo.`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      console.warn(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "ambiguous",
+          listingId: cand.id,
+          externalListingId: decisao.item.id,
+        }),
+      );
+      return "ambiguous";
+    }
+    const achado = decisao.kind === "adopt" ? decisao.item : null;
+    if (!achado) {
+      console.log(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "not_found",
+          listingId: cand.id,
+          remoteCandidates: items.length,
+        }),
+      );
+      return "not_found";
+    }
+
+    // O item adotado não passou pelo pós-criação (compatibilidade; estoque
+    // do momento da criação). O botão não espera a escada de compatibilidade;
+    // o cron espera (o lease dele cobre).
+    const completarAdocao = async (listingId: string, productId: string) => {
+      const completar = (async () => {
+        try {
+          const { ListingUseCase } = await import(
+            "../usecases/listing.usercase"
+          );
+          await ListingUseCase.completeAdoptedMLListing({
+            accessToken: account.accessToken,
+            itemId: achado.id,
+            listingId,
+            productId,
+          });
+        } catch (e) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.publish.reconcile.complete_failed",
+              listingId,
+              error: errMsg(e),
+            }),
+          );
+        }
+      })();
+      if (!opts.interactive) await completar;
+    };
+
+    // Já existe OUTRA linha para este anúncio nesta conta (unique): não duplica
+    // o vínculo — encerra o placeholder apontando para ele.
+    const jaVinculado = await ListingRepository.findLinkByExternalListingId(
+      account.id,
+      achado.id,
+    );
+    if (
+      jaVinculado &&
+      jaVinculado.id !== cand.id &&
+      cand.productId &&
+      jaVinculado.productId !== cand.productId
+    ) {
+      // Vinculado a OUTRO produto: não é este — a pessoa confere.
+      await ListingRepository.updateListing(cand.id, {
+        status: "error",
+        lastError: `[TERMINAL] O anúncio ${achado.id}, com o mesmo SKU, está vinculado a outro produto. Confira no Mercado Livre antes de publicar de novo.`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      return "ambiguous";
+    }
+    if (jaVinculado && jaVinculado.id !== cand.id) {
+      await ListingRepository.updateListing(cand.id, {
+        status: "error",
+        lastError: `[TERMINAL] O anúncio ${achado.id} já existe no Mercado Livre e já está vinculado — exclua este pendente.`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      console.warn(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "already_linked",
+          listingId: cand.id,
+          externalListingId: achado.id,
+        }),
+      );
+      // Com [VERIFICAR] (o POST deste pendente pode ter criado o item), o item
+      // é o do POST perdido — só que o webhook `items` (autodetect) ou um
+      // pedido o vincularam antes em outra linha do mesmo produto, que também
+      // nunca passou pelo pós-criação. Sem o marcador (o botão sobre um
+      // pendente velho acha um anúncio que o vendedor publicou por fora) não
+      // é da Dexo: não mexe nele. Uma vez só: o pendente sai daqui [TERMINAL].
+      const doPostPerdido =
+        typeof cand.lastError === "string" &&
+        cand.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR);
+      const produtoDoVinculo = jaVinculado.productId || cand.productId;
+      if (doPostPerdido && produtoDoVinculo) {
+        await completarAdocao(jaVinculado.id, produtoDoVinculo);
+      }
+      return "adopted";
+    }
+
+    await ListingRepository.updateListing(cand.id, {
+      externalListingId: achado.id,
+      status:
+        normalizeListingStatus("MERCADO_LIVRE", achado.status) ?? "active",
+      permalink: achado.permalink ?? null,
+      lastError: null,
+      retryEnabled: false,
+      nextRetryAt: null,
+      retryAttempts: 0,
+    });
+    console.warn(
+      JSON.stringify({
+        event: "ml.publish.reconcile",
+        outcome: "adopted",
+        listingId: cand.id,
+        externalListingId: achado.id,
+        remoteStatus: achado.status,
+      }),
+    );
+    if (cand.productId) await completarAdocao(cand.id, cand.productId);
+    return "adopted";
   }
 
   static start(intervalMs = 60 * 1000) {
@@ -598,4 +977,29 @@ export class ListingRetryService {
     this.intervalId = null;
     this.running = false;
   }
+}
+
+/**
+ * Texto com o `[VERIFICAR]` na frente (tirando outros marcadores): a próxima
+ * passada confere no ML antes de criar.
+ */
+export function comVerificar(texto: string): string {
+  const limpo = String(texto ?? "").replace(/^(\[[A-Z]+\])+\s*/, "");
+  return `${LAST_ERROR_MARKER.VERIFICAR} ${limpo}`.substring(0, 490);
+}
+
+/**
+ * Regrava `lastError` sem perder o `[VERIFICAR]`: se a linha estava marcada
+ * (a tentativa anterior pode ter criado o item no ML), o texto novo mantém o
+ * marcador — senão a passada seguinte recriava sem conferir.
+ */
+export function manterVerificar(
+  anterior: string | null | undefined,
+  texto: string,
+): string {
+  const limpo = String(texto ?? "").replace(/^\[VERIFICAR\]\s*/, "");
+  if (typeof anterior === "string" && anterior.startsWith(LAST_ERROR_MARKER.VERIFICAR)) {
+    return `${LAST_ERROR_MARKER.VERIFICAR} ${limpo}`.substring(0, 490);
+  }
+  return String(texto ?? "");
 }

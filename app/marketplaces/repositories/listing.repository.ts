@@ -1,4 +1,5 @@
 import prisma from "../../lib/prisma";
+import { liveListingStatuses } from "../lib/listing-live-statuses";
 import type { Prisma } from "@prisma/client";
 import { campoJson } from "../../lib/prisma-json-null";
 
@@ -6,10 +7,115 @@ import { campoJson } from "../../lib/prisma-json-null";
  * Repositório para gerenciar ProductListings
  * Conexão entre Product local e anúncios no Mercado Livre
  */
+/** Espera por conexão do pool (ms) — a mesma do client (app/lib/prisma.ts). */
+function esperaConexaoMs(): number {
+  const s = Number(process.env.PRISMA_POOL_TIMEOUT);
+  return (Number.isFinite(s) && s > 0 ? s : 30) * 1000;
+}
+
 export class ListingRepository {
   /**
    * Cria uma nova conexão entre produto e anúncio ML
    */
+  /** Mapeamento único do `data` de criação (createListing e a exclusiva). */
+  private static buildCreateData(
+    data: Parameters<typeof ListingRepository.createListing>[0],
+  ) {
+    return {
+      productId: data.productId,
+      marketplaceAccountId: data.marketplaceAccountId,
+      externalListingId: data.externalListingId,
+      externalSku: data.externalSku || null,
+      permalink: data.permalink || null,
+      status: data.status,
+      retryAttempts: data.retryAttempts ?? 0,
+      nextRetryAt: data.nextRetryAt ?? null,
+      lastError: data.lastError ?? null,
+      retryEnabled: data.retryEnabled ?? false,
+      requestedCategoryId: data.requestedCategoryId ?? null,
+      listingType: data.listingType ?? null,
+      itemCondition: data.itemCondition ?? null,
+      hasWarranty: data.hasWarranty ?? null,
+      warrantyUnit: data.warrantyUnit ?? null,
+      warrantyDuration: data.warrantyDuration ?? null,
+      shippingMode: data.shippingMode ?? null,
+      freeShipping: data.freeShipping ?? null,
+      localPickup: data.localPickup ?? null,
+      manufacturingTime: data.manufacturingTime ?? null,
+      createdByUserId: data.createdByUserId ?? null,
+      ...(data.attributesOverride !== undefined
+        ? { attributesOverride: campoJson(data.attributesOverride) }
+        : {}),
+    };
+  }
+
+  /**
+   * Cria o placeholder da 1ª publicação do par (produto, conta) SÓ se nenhuma
+   * outra criação o fez enquanto esta montava o anúncio. Sem isso, duas
+   * publicações do mesmo produto que liam "nenhuma linha" antes de uma das
+   * duas gravar criavam DUAS linhas e mandavam dois POST /items.
+   *
+   * Lock consultivo de TRANSAÇÃO (o Postgres solta no COMMIT/ROLLBACK — sem o
+   * problema do lock de sessão com o pooler, ver claimRetryCandidate), chave
+   * de 64 bits por par (`hashtextextended`, como catalog-identity/devolução),
+   * READ COMMITTED (o padrão: a releitura depois do lock vê a linha que a
+   * outra criação acabou de gravar). Sob o lock também confere anúncio VIVO
+   * do par: a outra criação pode ter TERMINADO enquanto esta esperava (o
+   * pendente dela já virou MLB…) — aí não cria linha nenhuma (sem isso
+   * sobrava um pendente encerrado como "já tem anúncio", achado no teste com
+   * Postgres real). Só na 1ª publicação do par.
+   */
+  static async createReservedPlaceholderIfAbsent(
+    data: Parameters<typeof ListingRepository.createListing>[0] & {
+      nextRetryAt: Date;
+    },
+  ): Promise<
+    | { created: Awaited<ReturnType<typeof prisma.productListing.create>> }
+    | {
+        existing: NonNullable<
+          Awaited<ReturnType<typeof prisma.productListing.findFirst>>
+        >;
+      }
+    | { live: { id: string; externalListingId: string; status: string } }
+  > {
+    const chave = `ml_first_placeholder:${data.productId}:${data.marketplaceAccountId}`;
+    return prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${chave}, 0))`;
+        const existing = await tx.productListing.findFirst({
+          where: {
+            productId: data.productId,
+            marketplaceAccountId: data.marketplaceAccountId,
+            externalListingId: { startsWith: "PENDING_" },
+            NOT: { externalListingId: { startsWith: "PENDING_REPUBLISH_" } },
+          },
+          // Linha inteira: quem chama decide com a mesma regra do
+          // reaproveitamento e, se puder, publica nela.
+          orderBy: { createdAt: "desc" },
+        });
+        if (existing) return { existing };
+        const live = await tx.productListing.findFirst({
+          where: {
+            productId: data.productId,
+            marketplaceAccountId: data.marketplaceAccountId,
+            status: { in: liveListingStatuses() },
+            NOT: { externalListingId: { startsWith: "PENDING_" } },
+          },
+          select: { id: true, externalListingId: true, status: true },
+        });
+        if (live) return { live };
+        const created = await tx.productListing.create({
+          data: ListingRepository.buildCreateData(data),
+        });
+        return { created };
+      },
+      // maxWait = o pool_timeout do client (PRISMA_POOL_TIMEOUT, padrão 30 s):
+      // com o pool cheio, a 1ª linha espera a conexão o mesmo tanto que o
+      // create simples de antes esperava, em vez de falhar antes (P2028).
+      { maxWait: esperaConexaoMs(), timeout: 15_000 },
+    );
+  }
+
   static async createListing(data: {
     productId: string;
     marketplaceAccountId: string;
@@ -45,32 +151,7 @@ export class ListingRepository {
   }) {
     try {
       const listing = await prisma.productListing.create({
-        data: {
-          productId: data.productId,
-          marketplaceAccountId: data.marketplaceAccountId,
-          externalListingId: data.externalListingId,
-          externalSku: data.externalSku || null,
-          permalink: data.permalink || null,
-          status: data.status,
-          retryAttempts: data.retryAttempts ?? 0,
-          nextRetryAt: data.nextRetryAt ?? null,
-          lastError: data.lastError ?? null,
-          retryEnabled: data.retryEnabled ?? false,
-          requestedCategoryId: data.requestedCategoryId ?? null,
-          listingType: data.listingType ?? null,
-          itemCondition: data.itemCondition ?? null,
-          hasWarranty: data.hasWarranty ?? null,
-          warrantyUnit: data.warrantyUnit ?? null,
-          warrantyDuration: data.warrantyDuration ?? null,
-          shippingMode: data.shippingMode ?? null,
-          freeShipping: data.freeShipping ?? null,
-          localPickup: data.localPickup ?? null,
-          manufacturingTime: data.manufacturingTime ?? null,
-          createdByUserId: data.createdByUserId ?? null,
-          ...(data.attributesOverride !== undefined
-            ? { attributesOverride: campoJson(data.attributesOverride) }
-            : {}),
-        },
+        data: ListingRepository.buildCreateData(data),
       });
       return listing;
     } catch (error) {
@@ -314,6 +395,22 @@ export class ListingRepository {
   /**
    * Busca listing por ID do anúncio externo (ML ID)
    */
+  /** Só o vínculo (id + produto) de um anúncio na conta — sem o produto. */
+  static async findLinkByExternalListingId(
+    marketplaceAccountId: string,
+    externalListingId: string,
+  ): Promise<{ id: string; productId: string } | null> {
+    return prisma.productListing.findUnique({
+      where: {
+        marketplaceAccountId_externalListingId: {
+          marketplaceAccountId,
+          externalListingId,
+        },
+      },
+      select: { id: true, productId: true },
+    });
+  }
+
   static async findByExternalListingId(
     marketplaceAccountId: string,
     externalListingId: string,
@@ -426,17 +523,7 @@ export class ListingRepository {
     productId: string,
     marketplaceAccountId: string,
   ) {
-    const liveStatuses =
-      process.env.LISTING_STATUS_SYNC_DISABLED === "1"
-        ? ["active", "paused"]
-        : [
-            "active",
-            "paused",
-            "under_review",
-            "reviewing",
-            "unlist",
-            "inactive",
-          ];
+    const liveStatuses = liveListingStatuses();
     return prisma.productListing.findFirst({
       where: {
         productId,
@@ -458,6 +545,261 @@ export class ListingRepository {
     return prisma.productListing.findUnique({
       where: { id: listingId },
       select: { id: true, retryEnabled: true },
+    });
+  }
+
+  /**
+   * Re-arma os placeholders do ML deste produto que foram recusados por DADO
+   * (`[TERMINAL][CORRIGIVEL]`), depois que a pessoa editou o produto. UM
+   * update condicional — nada de ler e depois escrever:
+   *  - só placeholders (`PENDING_…`), nunca republicação (`PENDING_REPUBLISH_`,
+   *    cuja reversão devolve o id do anúncio VIVO à linha) nem linha com id real;
+   *  - só `[TERMINAL][CORRIGIVEL]` — anti-duplicata, PolicyAgent e terminais
+   *    antigos (`[TERMINAL]` puro) não re-armam;
+   *  - só conta ML ativa;
+   *  - `nextRetryAt` daqui a `delayMs`: uma publicação interativa em voo para a
+   *    mesma linha (a escada leva no máximo ~3 min) termina antes, e o que ela
+   *    gravar ao final prevalece;
+   *  - nunca linha RESERVADA pelo botão "Tentar publicar novamente"
+   *    (`nextRetryAt` no futuro com retry desligado = publicação em andamento):
+   *    re-armá-la entregaria a mesma linha ao cron em paralelo.
+   *
+   * `clearRequestedCategory`: a pessoa trocou a categoria do produto na
+   * correção. A categoria gravada no pendente é a da tentativa recusada — sem
+   * limpar, a nova tentativa publicaria de novo na categoria antiga.
+   */
+  static async rearmCorrectableMlPlaceholders(
+    productId: string,
+    delayMs: number,
+    now: Date = new Date(),
+    opts: { clearRequestedCategory?: boolean } = {},
+  ): Promise<number> {
+    const r = await prisma.productListing.updateMany({
+      where: {
+        productId,
+        status: "error",
+        retryEnabled: false,
+        lastError: { startsWith: "[TERMINAL][CORRIGIVEL]" },
+        externalListingId: {
+          startsWith: "PENDING_",
+          not: { startsWith: "PENDING_REPUBLISH_" },
+        },
+        marketplaceAccount: { platform: "MERCADO_LIVRE", status: "ACTIVE" },
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+      },
+      data: {
+        retryEnabled: true,
+        retryAttempts: 0,
+        nextRetryAt: new Date(now.getTime() + delayMs),
+        ...(opts.clearRequestedCategory ? { requestedCategoryId: null } : {}),
+      },
+    });
+    return r.count;
+  }
+
+  /**
+   * A pessoa trocou a categoria do ML do produto: TODO pendente do ML deste
+   * produto (não só os re-armáveis) deixa de carregar a categoria da tentativa
+   * anterior — o cron e o botão "Tentar publicar novamente" passam a usar a
+   * categoria atual do produto. Uma instrução, só quando a categoria mudou.
+   */
+  static async clearRequestedCategoryForMlPlaceholders(
+    productId: string,
+  ): Promise<number> {
+    const r = await prisma.productListing.updateMany({
+      where: {
+        productId,
+        requestedCategoryId: { not: null },
+        externalListingId: {
+          startsWith: "PENDING_",
+          not: { startsWith: "PENDING_REPUBLISH_" },
+        },
+        marketplaceAccount: { platform: "MERCADO_LIVRE" },
+      },
+      data: { requestedCategoryId: null },
+    });
+    return r.count;
+  }
+
+  /**
+   * Reserva ATÔMICA de um placeholder do ML para o botão "Tentar publicar
+   * novamente". Sem ela, o botão e o cron (ou dois cliques) rodavam o
+   * createMLListing ao mesmo tempo e o ML recebia dois POST /items — a guarda
+   * anti-duplicata do create não vê nada vivo em nenhuma das duas chamadas.
+   *
+   * Só reserva linha com o retry automático DESLIGADO e sem reserva vigente:
+   * linha com retry ligado é do cron (agendada ou já reivindicada — o claim do
+   * cron também empurra `nextRetryAt`), e aí o botão responde 409. A reserva é
+   * `nextRetryAt` no futuro com `retryEnabled=false` — o cron não pega (exige
+   * retry ligado) e o re-arme da edição também não (exige `nextRetryAt`
+   * vencido). Quem terminar grava o resultado; `releaseInteractiveRetry`
+   * desfaz a reserva se ela ainda for a mesma.
+   */
+  static async claimInteractiveRetry(
+    listingId: string,
+    leaseMs: number,
+    now: Date = new Date(),
+    /**
+     * Linha com id REAL (anúncio encerrado publicado de novo): reserva só se
+     * o id ainda for este. Ausente = só placeholder `PENDING_` (linha que
+     * acabou de receber o id real não é mais reservável).
+     */
+    opts: { externalListingId?: string } = {},
+  ): Promise<Date | null> {
+    const ate = new Date(now.getTime() + leaseMs);
+    const res = await prisma.productListing.updateMany({
+      where: {
+        id: listingId,
+        retryEnabled: false,
+        externalListingId: opts.externalListingId
+          ? opts.externalListingId
+          : { startsWith: "PENDING_" },
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+      },
+      data: { nextRetryAt: ate },
+    });
+    return res.count === 1 ? ate : null;
+  }
+
+  /**
+   * Assume uma linha que está só AGENDADA pelo cron (retry ligado, fora do
+   * voo dele e sem `[VERIFICAR]`): desliga o retry e reserva, numa instrução.
+   * O claim do cron exige retry ligado; o dele marca `pending` — um exclui o
+   * outro. Devolve o horário da reserva ou null.
+   */
+  static async takeOverScheduledRetry(
+    listingId: string,
+    leaseMs: number,
+    now: Date = new Date(),
+  ): Promise<Date | null> {
+    const ate = new Date(now.getTime() + leaseMs);
+    const res = await prisma.productListing.updateMany({
+      where: {
+        id: listingId,
+        retryEnabled: true,
+        status: { not: "pending" },
+        OR: [
+          { lastError: null },
+          { NOT: { lastError: { startsWith: "[VERIFICAR]" } } },
+        ],
+      },
+      data: { retryEnabled: false, nextRetryAt: ate },
+    });
+    return res.count === 1 ? ate : null;
+  }
+
+  /**
+   * O pendente que a criação reaproveitaria (o `PENDING_` mais novo do par —
+   * a mesma preferência do findByProductAndAccount), só com o que decide se
+   * ele está ocupado. Checagem barata do começo do create: recusar ali evita
+   * baixar e subir as fotos à toa.
+   */
+  static async findNewestMlPlaceholderState(
+    productId: string,
+    marketplaceAccountId: string,
+  ) {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        externalListingId: { startsWith: "PENDING_" },
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        externalListingId: true,
+        retryEnabled: true,
+        nextRetryAt: true,
+        status: true,
+        lastError: true,
+      },
+    });
+  }
+
+  /** Anúncio vivo do par? Só `{id, externalListingId, status}`. */
+  static async findLiveListingLite(
+    productId: string,
+    marketplaceAccountId: string,
+  ): Promise<{
+    id: string;
+    externalListingId: string | null;
+    status: string | null;
+  } | null> {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        status: { in: liveListingStatuses() },
+        NOT: { externalListingId: { startsWith: "PENDING_" } },
+      },
+      select: { id: true, externalListingId: true, status: true },
+    });
+  }
+
+  /**
+   * Devolve o status do candidato que o claim do cron marcou como `pending`
+   * e que ninguém regravou (a criação saiu sem escrever na linha). Condicional:
+   * se a criação gravou `error`/`active`, não mexe.
+   */
+  static async restoreCronClaimStatus(
+    listingId: string,
+    /** Status que a linha tinha antes do claim (nunca `pending`). */
+    original: string = "error",
+  ): Promise<void> {
+    await prisma.productListing.updateMany({
+      where: { id: listingId, status: "pending" },
+      data: { status: original && original !== "pending" ? original : "error" },
+    });
+  }
+
+  /**
+   * Erro inesperado depois de ASSUMIR uma linha agendada: devolve a linha à
+   * fila do cron (como estava antes da assunção), se a reserva ainda for a
+   * nossa. Sem isso a linha ficava com o retry desligado.
+   */
+  static async releaseTakenOverRetry(
+    listingId: string,
+    lease: Date,
+    now: Date = new Date(),
+  ): Promise<void> {
+    await prisma.productListing.updateMany({
+      where: { id: listingId, retryEnabled: false, nextRetryAt: lease },
+      data: { retryEnabled: true, nextRetryAt: new Date(now.getTime() + 60 * 1000) },
+    });
+  }
+
+  /**
+   * Outro pendente do MESMO par (produto, conta) ocupado: com retry ligado (o
+   * cron vai pegar ou já pegou) ou reservado agora. A criação escolhe a linha
+   * pelo par, não pela linha clicada — com outro pendente ocupado, o botão
+   * correria junto com quem o ocupa. Só `{id}`.
+   */
+  static async findBusyMlPlaceholderInPair(
+    productId: string,
+    marketplaceAccountId: string,
+    exceptListingId: string,
+    now: Date = new Date(),
+  ): Promise<{ id: string } | null> {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        id: { not: exceptListingId },
+        externalListingId: { startsWith: "PENDING_" },
+        OR: [{ retryEnabled: true }, { nextRetryAt: { gt: now } }],
+      },
+      select: { id: true },
+    });
+  }
+
+  /** Desfaz a reserva do botão se ninguém gravou nada por cima dela. */
+  static async releaseInteractiveRetry(
+    listingId: string,
+    lease: Date,
+  ): Promise<void> {
+    await prisma.productListing.updateMany({
+      where: { id: listingId, retryEnabled: false, nextRetryAt: lease },
+      data: { nextRetryAt: null },
     });
   }
 
@@ -484,16 +826,37 @@ export class ListingRepository {
    * preso para sempre (o cron nunca mais rodaria); e segurar uma transação
    * pela passada inteira esbarra no idle_in_transaction_session_timeout.
    */
-  static async claimRetryCandidate(listingId: string, leaseMs: number) {
+  static async claimRetryCandidate(
+    listingId: string,
+    leaseMs: number,
+    /**
+     * ML: marca `pending` junto com o claim — é o que distingue "o cron está
+     * publicando" de "só agendada" (esta última pode ser assumida por um
+     * "Anunciar"). O cron devolve o status no fim (restoreCronClaimStatus).
+     */
+    opts: { markPublishing?: boolean } = {},
+  ): Promise<Date | null> {
+    const agora = new Date();
+    const ate = new Date(agora.getTime() + leaseMs);
     const res = await prisma.productListing.updateMany({
       where: {
         id: listingId,
         retryEnabled: true,
-        OR: [{ nextRetryAt: { lte: new Date() } }, { nextRetryAt: null }],
+        OR: [{ nextRetryAt: { lte: agora } }, { nextRetryAt: null }],
+        // A marca só vale para placeholder: confere na própria instrução
+        // (a linha pode ter recebido o id real desde a leitura da passada).
+        ...(opts.markPublishing
+          ? { externalListingId: { startsWith: "PENDING_" } }
+          : {}),
       },
-      data: { nextRetryAt: new Date(Date.now() + leaseMs) },
+      data: {
+        nextRetryAt: ate,
+        ...(opts.markPublishing ? { status: "pending" } : {}),
+      },
     });
-    return res.count === 1;
+    // O horário da reserva volta para o cron: é o passe dele no
+    // createMLListing (só quem tem a reserva reaproveita a linha).
+    return res.count === 1 ? ate : null;
   }
 
   /**

@@ -226,6 +226,25 @@ export class StockReconciliationService {
    * Extraído do laço acima sem mudança de comportamento, para que a vigília de
    * disponibilidade enfileire pelo MESMO caminho — inclusive o advisory lock.
    */
+  /**
+   * Enfileira o sync de estoque de UM anúncio pelo caminho de sempre (lock
+   * por anúncio, relê dono/estoque/conta sob o lock, upsert do job PENDING).
+   * Usado depois de ADOTAR um item que já existia no ML (a quantidade dele é
+   * a do momento da criação). Best-effort, como o enqueue.
+   */
+  static async enqueueListingStockSync(
+    listingId: string,
+    productId: string,
+  ): Promise<void> {
+    await StockReconciliationService.enqueue({
+      listingId,
+      productId,
+      stock: 0,
+      marketplaceAccountId: "",
+      platform: "MERCADO_LIVRE",
+    });
+  }
+
   private static async enqueue(c: DriftCandidate): Promise<void> {
     try {
       // Serializa com OrderUseCase.deductStockForOrder via advisory lock

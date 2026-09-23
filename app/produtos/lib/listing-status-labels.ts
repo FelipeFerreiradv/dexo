@@ -13,6 +13,9 @@ export const LISTING_STATUS_LABELS: Record<
   unlist: { label: "Pausado", variant: "warning" },
   pending: { label: "Pendente", variant: "secondary" },
   reviewing: { label: "Em revisão", variant: "secondary" },
+  // A criação do ML grava o status cru do GET /items (`under_review`); sem
+  // esta chave o badge mostrava a palavra em inglês.
+  under_review: { label: "Em revisão", variant: "secondary" },
   closed: { label: "Fechado", variant: "destructive" },
   deleted: { label: "Excluído", variant: "destructive" },
   seller_deleted: { label: "Excluído", variant: "destructive" },
