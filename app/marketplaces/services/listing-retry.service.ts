@@ -925,11 +925,19 @@ export class ListingRetryService {
           externalListingId: achado.id,
         }),
       );
-      // O item é o do POST perdido deste pendente — só que o webhook `items`
-      // (autodetect) ou um pedido o vincularam antes em outra linha do mesmo
-      // produto. Essa linha também nunca passou pelo pós-criação.
+      // Com [VERIFICAR] (o POST deste pendente pode ter criado o item), o item
+      // é o do POST perdido — só que o webhook `items` (autodetect) ou um
+      // pedido o vincularam antes em outra linha do mesmo produto, que também
+      // nunca passou pelo pós-criação. Sem o marcador (o botão sobre um
+      // pendente velho acha um anúncio que o vendedor publicou por fora) não
+      // é da Dexo: não mexe nele. Uma vez só: o pendente sai daqui [TERMINAL].
+      const doPostPerdido =
+        typeof cand.lastError === "string" &&
+        cand.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR);
       const produtoDoVinculo = jaVinculado.productId || cand.productId;
-      if (produtoDoVinculo) await completarAdocao(jaVinculado.id, produtoDoVinculo);
+      if (doPostPerdido && produtoDoVinculo) {
+        await completarAdocao(jaVinculado.id, produtoDoVinculo);
+      }
       return "adopted";
     }
 
