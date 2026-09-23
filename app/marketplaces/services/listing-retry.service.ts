@@ -660,9 +660,12 @@ export class ListingRetryService {
             continue;
           }
           await ListingRepository.incrementRetryAttempts(cand.id, {
+            // Mensagem humana (nunca o JSON do ML): o corte em 490 fazia a de
+            // 4 campos a corrigir perder o último. `lastError` é text; o teto
+            // só evita linha gigante.
             lastError: `${result.lastErrorMarker} ${result.error || ""}`
               .trim()
-              .substring(0, 490),
+              .substring(0, 4000),
             retryEnabled: false,
             nextRetryAt: null,
           });
