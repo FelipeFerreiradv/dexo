@@ -69,6 +69,28 @@ describe("classifyRecoverRow", () => {
     expect(d.motivo).toContain("MLB5188503789");
   });
 
+  it("vivo local E o ML tem OUTRO item criado depois do pendente ⇒ duplicidade_possivel com os dois ids (não manda excluir o pendente)", () => {
+    const d = classifyRecoverRow(
+      base({
+        liveLocal: { externalListingId: "MLB5188503789", status: "active" },
+        remote: { status: "ok", adoptable: { id: "MLB_ORFAO", status: "active" }, others: [] },
+      }),
+    );
+    expect(d.classe).toBe("duplicidade_possivel");
+    expect(d.motivo).toContain("MLB5188503789");
+    expect(d.motivo).toContain("MLB_ORFAO");
+  });
+
+  it("vivo local e o item achado no ML É o próprio vivo ⇒ ja_publicado", () => {
+    const d = classifyRecoverRow(
+      base({
+        liveLocal: { externalListingId: "MLB5188503789", status: "active" },
+        remote: { status: "ok", adoptable: { id: "MLB5188503789", status: "active" }, others: [] },
+      }),
+    );
+    expect(d.classe).toBe("ja_publicado");
+  });
+
   it("item criado no ML depois do pendente ⇒ adotar", () => {
     const d = classifyRecoverRow(
       base({ remote: { status: "ok", adoptable: { id: "MLB9", status: "active" }, others: [] } }),

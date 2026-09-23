@@ -293,6 +293,25 @@ function reservadoPorOutro(
   return placeholderDecision(row, minha ?? null, agora) === "busy";
 }
 
+/**
+ * Recusa de "Anunciar" com o anúncio do par em republicação. Sem `code`: para o
+ * cron é uma falha comum (gasta tentativa e para no teto) — quando a
+ * republicação termina, a guarda de anúncio vivo encerra o pendente.
+ */
+function republishInProgressRefusal(row: {
+  id: string;
+  externalListingId: string;
+}): { listingId: string; externalListingId?: string; error: string } {
+  const m = /^PENDING_REPUBLISH_(.+)_(\d+)$/.exec(row.externalListingId);
+  const antigo = m ? m[1] : undefined;
+  const qual = antigo ? ` (${antigo})` : "";
+  return {
+    listingId: row.id,
+    externalListingId: antigo,
+    error: `Produto já tem anúncio nesta conta${qual}, sendo republicado agora. Aguarde alguns minutos e confira o anúncio. Se continuar assim, fale com o suporte antes de publicar de novo — o anúncio${qual} pode seguir ativo no Mercado Livre.`,
+  };
+}
+
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
   private static userRepository = new UserRepositoryPrisma();
@@ -2181,6 +2200,40 @@ export class ListingUseCase {
         };
       }
 
+      // 1.5b. Anúncio do par em REPUBLICAÇÃO: a linha dele vira
+      // `PENDING_REPUBLISH_<id antigo>_<ts>` até o item novo nascer, e o antigo
+      // segue vivo no ML — a guarda acima não o vê. Um "Anunciar" agora
+      // publicaria um segundo item (com a republicação interrompida, o antigo
+      // ficaria órfão, vendendo sem baixa). Só a própria republicação passa.
+      // Falha na leitura = segue (o passo 3.1 ainda recusa a linha dela).
+      if (opts?.republish !== true) {
+        let republicando: Awaited<
+          ReturnType<typeof ListingRepository.findRepublishingListingInPair>
+        > = null;
+        try {
+          republicando = await ListingRepository.findRepublishingListingInPair(
+            productId,
+            acc.id,
+          );
+        } catch {
+          republicando = null;
+        }
+        if (republicando) {
+          const recusa = republishInProgressRefusal(republicando);
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.republish_in_progress_refused",
+              productId,
+              accountId: acc.id,
+              listingId: republicando.id,
+              oldExternalListingId: recusa.externalListingId,
+              stage: "early",
+            }),
+          );
+          return { success: false, skipped: true, ...recusa };
+        }
+      }
+
       // 1.6. O pendente que esta criação reaproveitaria está ocupado (cron
       // publicando, reserva de outro, conferência pelo SKU pendente)? Recusa
       // AQUI, antes de baixar e subir as fotos — a reserva atômica de verdade
@@ -3159,6 +3212,26 @@ export class ListingUseCase {
         !String(listing.externalListingId ?? "").startsWith(
           "PENDING_REPUBLISH_",
         );
+      // A linha escolhida é a da republicação e quem chama não é ela (a
+      // leitura do 1.5b falhou ou a marca apareceu depois): recusa — cair no
+      // update abaixo publicaria um segundo item e sobrescreveria o id.
+      if (listing && !ehReaproveitavel && opts?.republish !== true) {
+        const recusa = republishInProgressRefusal({
+          id: listing.id,
+          externalListingId: String(listing.externalListingId ?? ""),
+        });
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.republish_in_progress_refused",
+            productId,
+            accountId: acc.id,
+            listingId: listing.id,
+            oldExternalListingId: recusa.externalListingId,
+            stage: "placeholder",
+          }),
+        );
+        return { success: false, skipped: true, ...recusa };
+      }
       if (listing && ehReaproveitavel) {
         const decisao = placeholderDecision(listing, opts?.reservation ?? null);
         if (decisao !== "owned") {

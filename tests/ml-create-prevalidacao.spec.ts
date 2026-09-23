@@ -16,6 +16,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     updateListing: vi.fn(),
     createListing: vi.fn(),
     createReservedPlaceholderIfAbsent: vi.fn(),
+    findRepublishingListingInPair: vi.fn(async () => null),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
     claimInteractiveRetry: vi.fn(async () => new Date(Date.now() + 600_000)),
@@ -590,5 +591,73 @@ describe("categoria sugerida pelo ML só por erro de categoria", () => {
     await criar();
     expect(MLApiService.suggestCategoryId).toHaveBeenCalled();
     expect(chamadas().some((p: any) => p.category_id === "MLB999")).toBe(true);
+  });
+});
+
+describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — defeito que já existia em main)", () => {
+  const REPUBLICANDO = {
+    id: "l-rep",
+    externalListingId: "PENDING_REPUBLISH_MLB111_1790000000000",
+  };
+  const criarComo = (opts?: Record<string, unknown>) =>
+    ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      undefined,
+      "actor-1",
+      undefined,
+      opts as any,
+    );
+
+  it("'Anunciar' com a republicação em curso (ou interrompida) ⇒ recusa ANTES de montar o anúncio, apontando o anúncio antigo; sem POST", async () => {
+    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(REPUBLICANDO);
+    const r = await criarComo();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.success).toBe(false);
+    expect(r.skipped).toBe(true);
+    expect(r.listingId).toBe("l-rep");
+    expect(r.externalListingId).toBe("MLB111");
+    expect(r.error).toMatch(/MLB111/);
+    // sem code: para o cron é falha comum (gasta tentativa), não "volta à fila" eterna
+    expect((r as any).code).toBeUndefined();
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+    expect(ListingRepository.createReservedPlaceholderIfAbsent).not.toHaveBeenCalled();
+  });
+
+  it("a PRÓPRIA republicação (opts.republish) passa e publica", async () => {
+    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(REPUBLICANDO);
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      ...REPUBLICANDO,
+      status: "pending",
+      retryEnabled: false,
+    });
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+    await criarComo({ republish: true });
+    expect(ListingRepository.findRepublishingListingInPair).not.toHaveBeenCalled();
+    expect(MLApiService.createItem).toHaveBeenCalled();
+  });
+
+  it("a leitura da marca FALHOU e o passo 3.1 escolheu a linha da republicação ⇒ recusa ali; sem POST e sem gravar na linha", async () => {
+    (ListingRepository.findRepublishingListingInPair as any).mockRejectedValue(new Error("pool"));
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      ...REPUBLICANDO,
+      status: "pending",
+      retryEnabled: false,
+    });
+    const r = await criarComo();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(true);
+    expect(r.error).toMatch(/MLB111/);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("sem republicação no par ⇒ caminho de sempre (a consulta devolve nada)", async () => {
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+    await criarComo();
+    expect(ListingRepository.findRepublishingListingInPair).toHaveBeenCalledWith("prod-1", "acct-1");
+    expect(MLApiService.createItem).toHaveBeenCalled();
   });
 });

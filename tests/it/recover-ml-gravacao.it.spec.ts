@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { ehBancoDeTesteLocal } from "./banco-local";
 
 /**
  * INTEGRAÇÃO com Postgres REAL — gravação condicional do `--apply` do script
@@ -12,9 +13,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
  */
 
 const IT_URL = process.env.DEXO_IT_DATABASE_URL ?? "";
-const HOST_OK = /@(127\.0\.0\.1|localhost)(:\d+)?\//.test(IT_URL);
-const NOME_OK = /\/[^/?]*dexo_it[^/?]*(\?|$)/.test(IT_URL);
-if (IT_URL && HOST_OK && NOME_OK) {
+const LOCAL_OK = ehBancoDeTesteLocal(IT_URL);
+if (LOCAL_OK) {
   process.env.DATABASE_URL = IT_URL;
   process.env.DIRECT_URL = IT_URL;
   process.env.ML_API_URL = "http://127.0.0.1:9";
@@ -24,7 +24,7 @@ if (IT_URL && HOST_OK && NOME_OK) {
   process.env.NO_PROXY = "127.0.0.1,localhost";
 }
 
-describe.skipIf(!(IT_URL && HOST_OK && NOME_OK))(
+describe.skipIf(!LOCAL_OK)(
   "IT (Postgres real) — gravação condicional do script de recuperação",
   () => {
     let prisma: any;
@@ -33,9 +33,15 @@ describe.skipIf(!(IT_URL && HOST_OK && NOME_OK))(
     let seq = 0;
 
     beforeAll(async () => {
-      prisma = (await import("../../app/lib/prisma")).default;
-      const [{ current_database: banco }] = await prisma.$queryRaw`SELECT current_database()`;
-      if (!/dexo_it/.test(banco)) throw new Error(`banco inesperado: ${banco}`);
+      // O client só vai para `prisma` DEPOIS de conferir o banco: o afterAll
+      // roda mesmo quando o beforeAll lança, e limparia o banco recusado.
+      const cliente = (await import("../../app/lib/prisma")).default;
+      const [{ current_database: banco }] = await cliente.$queryRaw`SELECT current_database()`;
+      if (!/dexo_it/.test(banco)) {
+        await cliente.$disconnect();
+        throw new Error(`banco inesperado: ${banco}`);
+      }
+      prisma = cliente;
       ListingRepository = (await import("../../app/marketplaces/repositories/listing.repository"))
         .ListingRepository;
       gravarSeIntacta = (await import("../../scripts/lib/recover-ml-apply")).gravarSeIntacta;

@@ -104,6 +104,21 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
     };
   }
   if (i.liveLocal) {
+    // O POST perdido DESTE pendente pode ter criado outro item (criado depois
+    // dele, mesmo SKU/título) que ficou sem vínculo: "exclua este pendente"
+    // apagaria a única pista de um anúncio que vende sem baixa de estoque.
+    const orfao =
+      i.remote.status === "ok" &&
+      i.remote.adoptable &&
+      i.remote.adoptable.id !== i.liveLocal.externalListingId
+        ? i.remote.adoptable
+        : null;
+    if (orfao) {
+      return {
+        classe: "duplicidade_possivel",
+        motivo: `Já existe anúncio ${i.liveLocal.status} nesta conta (${i.liveLocal.externalListingId}), e o ML tem OUTRO (${orfao.id}, criado depois deste pendente) sem vínculo na Dexo. Conferir os dois no Mercado Livre antes de excluir o pendente.`,
+      };
+    }
     return {
       classe: "ja_publicado",
       motivo: `Já existe anúncio ${i.liveLocal.status} nesta conta (${i.liveLocal.externalListingId}).`,

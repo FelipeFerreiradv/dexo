@@ -537,6 +537,25 @@ export class ListingRepository {
   }
 
   /**
+   * Linha do par em REPUBLICAÇÃO (`PENDING_REPUBLISH_<id antigo>_<ts>`): o
+   * anúncio antigo segue vivo no ML até o novo nascer — e para sempre, se a
+   * republicação caiu no meio. A guarda de anúncio vivo não a vê (`PENDING_`).
+   */
+  static async findRepublishingListingInPair(
+    productId: string,
+    marketplaceAccountId: string,
+  ) {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        externalListingId: { startsWith: "PENDING_REPUBLISH_" },
+      },
+      select: { id: true, externalListingId: true },
+    });
+  }
+
+  /**
    * EGRESS-lean: só o estado de retry de uma linha, pelo id. Usado pelo cron
    * para re-ler o PRÓPRIO candidato após a delegação — (produto, conta) pode
    * ter várias linhas, então re-ler por par pegaria a linha errada.
