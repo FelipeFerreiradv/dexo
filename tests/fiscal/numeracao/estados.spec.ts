@@ -30,7 +30,9 @@ const PERMITIDAS: Record<EstadoReserva, EstadoReserva[]> = {
   // INCERTO → REJEITADO: rejeição da MESMA tentativa assíncrona (Focus 55 / SEFAZ recibo) lida na consulta.
   INCERTO: ["AUTORIZADO", "REJEITADO", "RESERVADO", "DENEGADO", "INUTILIZADO", "CONSUMIDO_EXTERNO", "BLOQUEADO", "INCERTO"],
   AUTORIZADO: ["CANCELADO", "ABANDONADO"],
-  BLOQUEADO: [],
+  // BLOQUEADO → ABANDONADO: única saída, e humana — `abandonarPorExclusao` com descarte
+  // confirmado. Sem ela o 613 sem chave referida era beco sem saída (só SQL em produção).
+  BLOQUEADO: ["ABANDONADO"],
   CANCELADO: [],
   DENEGADO: [],
   INUTILIZADO: [],

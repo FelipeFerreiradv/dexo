@@ -48,7 +48,22 @@ export const ESTADOS_RESERVA: readonly EstadoReserva[] = [
  *    (§4.15 passo 5).
  *
  * AUTORIZADO → ABANDONADO só no realinhamento da Focus (nº divergente), antes
- * do `handleAuthorized`. BLOQUEADO não sai por rotina: só conferência manual.
+ * do `handleAuthorized`.
+ *
+ * BLOQUEADO → ABANDONADO é a ÚNICA saída do bloqueio, e ela é humana, não de
+ * rotina: nenhum caminho automático alcança uma reserva BLOQUEADA
+ * (`aplicarResultado`, `naoConstaConfirmado`, `devolverIncerto` e `tomarLease`
+ * exigem reserva aberta; `reservarOuReutilizar` exige reusável; `emitir` para
+ * em BLOQUEADA_MANUAL). Quem transiciona é `abandonarPorExclusao` — exclusão do
+ * rascunho com descarte CONFIRMADO, exigido aqui em qualquer ambiente, e com
+ * `requerInutilizacao` em produção. Sem essa aresta o número virava beco sem
+ * saída, destravável só por SQL em produção.
+ *
+ * BLOQUEADO → RESERVADO segue PROIBIDA de propósito: devolveria ao pool de
+ * reuso (e daí a EM_TRANSMISSAO) um número que pode estar autorizado na SEFAZ
+ * com outro cNF — o mesmo motivo que proíbe INCERTO/EM_TRANSMISSAO →
+ * ABANDONADO. Abandonar + inutilizar falha seguro se o número estiver
+ * autorizado; reemitir em cima dele, não.
  */
 export const TRANSICOES: Readonly<Record<EstadoReserva, readonly EstadoReserva[]>> = {
   RESERVADO: ["EM_TRANSMISSAO", "ABANDONADO", "INUTILIZADO", "CONSUMIDO_EXTERNO"],
@@ -74,7 +89,7 @@ export const TRANSICOES: Readonly<Record<EstadoReserva, readonly EstadoReserva[]
     "INCERTO",
   ],
   AUTORIZADO: ["CANCELADO", "ABANDONADO"],
-  BLOQUEADO: [],
+  BLOQUEADO: ["ABANDONADO"],
   CANCELADO: [],
   DENEGADO: [],
   INUTILIZADO: [],

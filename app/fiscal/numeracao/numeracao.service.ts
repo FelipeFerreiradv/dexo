@@ -77,8 +77,31 @@ export class NfeNumeracaoService {
       }
       const anteriores = await tx.reservasNaChave(c.userId, c.key);
       if (!anteriores.length) seq.proximoNumero = await tx.avancarContador(seq.id, c.key.cfc, (await tx.pisoPorEvidencia(c)) + 1);
-      if (anteriores.length >= 3 && anteriores.slice(0, 3).every(x => x.estado === "CONSUMIDO_EXTERNO")) {
-        throw new NumeracaoError("SEQUENCIA_ATRAS_DA_SEFAZ", 409, "Os 3 últimos números desta série já existiam na SEFAZ — ajuste o próximo número");
+      const bloqueantes = anteriores.slice(0, 3);
+      if (bloqueantes.length === 3 && bloqueantes.every(x => x.estado === "CONSUMIDO_EXTERNO")) {
+        // O guard é legítimo (não martelar a SEFAZ com número que ela já tem), mas lança ANTES
+        // de `inserirReserva`: nenhuma reserva mais nova nasce, estas 3 seguem sendo as mais
+        // recentes (`reservasNaChave` ordena por createdAt DESC) e sem saída ele trancaria a
+        // série INTEIRA, de todo operador, para sempre. A saída é o contador — o que a própria
+        // mensagem manda ajustar.
+        //
+        // Critério: o guard só vale enquanto o contador ainda aponta para DENTRO da faixa já
+        // queimada. Logo após reservar o maior desses números o contador vale exatamente
+        // `maior + 1` (a alocação faz `avancarContador(numero + 1)`), e nada mais escreve na
+        // sequência enquanto o guard está armado. Então `proximoNumero >= maior + 2` é a prova
+        // de estado de que alguém o moveu de propósito (avancarContadorAtomico, inutilizacaoPos
+        // ou a importação dos XMLs já emitidos). `NfeSequence.updatedAt` NÃO serve: o
+        // `avancarContador` carimba NOW() mesmo quando o GREATEST não muda o número, então
+        // reajustar para o valor atual — que não corrige nada — destravaria.
+        const maior = Math.max(...bloqueantes.map(x => x.numero));
+        const minimo = maior + 2;
+        if (seq.proximoNumero < minimo) {
+          const numeros = bloqueantes.map(x => x.numero).sort((a, b) => a - b);
+          throw new NumeracaoError("SEQUENCIA_ATRAS_DA_SEFAZ", 409,
+            `Os nºs ${numeros.join(", ")} da série ${c.key.serie} já existiam na SEFAZ com outra chave: o contador do Dexo está atrás da numeração real deste CNPJ, e nenhuma NF-e desta série sai enquanto ele não for corrigido. Para destravar, nesta ordem: 1) veja no portal da SEFAZ qual foi o último nº já usado por este CNPJ nesta série; 2) ponha o próximo número da série em ${minimo} ou mais (o maior entre esse valor e o último da SEFAZ + 1). Excluir o rascunho, tentar por outro usuário ou reenviar a mesma nota não destrava.`,
+            { numeros, serie: c.key.serie, ambiente: c.key.ambiente, modelo: c.key.modelo,
+              proximoNumeroAtual: seq.proximoNumero, proximoNumeroMinimo: minimo });
+        }
       }
       for (let i = 0; i < 50; i++) {
         const numero = seq.proximoNumero;
@@ -162,7 +185,17 @@ export class NfeNumeracaoService {
         // Nota autorizada não carrega o cStat de uma tentativa rejeitada anterior: o claim da reemissão só limpa `motivoRejeicao`.
         await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "AUTHORIZED", chaveAcesso: resultado.chaveAcesso, cStatRejeicao: null,
           protocoloAutorizacao: resultado.protocolo ?? null, dataAutorizacao: resultado.dataAutorizacao ?? agora, xmlAssinadoPath: t.xmlAssinadoPath });
-      } else if (alvo !== "INCERTO" && alvo !== "BLOQUEADO") {
+      } else if (alvo === "BLOQUEADO") {
+        // A RESERVA fica retida para conferência manual (BLOQUEADO), mas a NOTA não pode ficar em
+        // SENDING: ali ela some do wizard (findDraftById só enxerga DRAFT/REJECTED), `consultar` não
+        // a alcança (BLOQUEADO não é estado consultável) e `emitir` responde 409 NUMERACAO_BLOQUEADA
+        // — beco sem saída destravável só por SQL em produção. O caso real é o cStat 613 ("Chave de
+        // Acesso difere da existente em BD"), que nunca traz chave de 44 dígitos na mensagem: o ramo
+        // BLOQUEADO do orquestrador é determinístico para ele.
+        // O cStat REAL da duplicidade é preservado — nada de inventar código que a SEFAZ não devolveu.
+        await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "REJECTED", cStatRejeicao: cls.cStat,
+          motivoRejeicao: `Nº ${atual.numero} retido para conferência: ${cls.mensagem}`.slice(0, 500) });
+      } else if (alvo !== "INCERTO") {
         await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "REJECTED", motivoRejeicao: cls.mensagem, cStatRejeicao: cls.cStat });
       }
       return reserva;
@@ -266,7 +299,10 @@ export class NfeNumeracaoService {
       const r = viva(reservas);
       if ((antes?.id ?? null) !== (r?.id ?? null)) concorrencia();
       if (r) {
-        if (!reusavel(r)) throw new NumeracaoError("NFE_NUMERO_PENDENTE_CONSULTA", 409, "Consulte a situação antes de excluir o rascunho");
+        // BLOQUEADO é a anomalia pós-consulta (613 sem chave referida legível): a SEFAZ já respondeu,
+        // então consultar de novo não move nada — o que falta é conferência humana. Esta é a saída, e
+        // `confirmarDescarte` a mantém explícita (em QUALQUER ambiente, não só em produção).
+        if (!reusavel(r) && r.estado !== "BLOQUEADO") throw new NumeracaoError("NFE_NUMERO_PENDENTE_CONSULTA", 409, "Consulte a situação antes de excluir o rascunho");
         this.confirmarDescarte(r, confirmar, "RASCUNHO_EXCLUIDO");
         await tx.transicionar(r, "ABANDONADO", { motivo: "RASCUNHO_EXCLUIDO", requerInutilizacao: r.ambiente === "PRODUCAO" });
       }
@@ -333,8 +369,14 @@ export class NfeNumeracaoService {
       mensagem: `${r.classificacao.mensagem.slice(0, 400)}${r.classificacao.chaveReferida?` [chNFe:${r.classificacao.chaveReferida}]`:""}`, httpStatus: r.httpStatus, transporte: r.transporte, nRec: r.nRec, protocolo: r.protocolo };
   }
   private confirmarDescarte(r: Reserva, confirmou: boolean, motivo: string): void {
-    if (r.ambiente === "PRODUCAO" && !confirmou) throw new NumeracaoError("NUMERACAO_CONFIRMAR_DESCARTE", 409,
-      `O nº ${r.numero} (série ${r.serie}) ficará sem uso e precisará ser inutilizado`, { numero: r.numero, serie: r.serie, motivo });
+    // Número BLOQUEADO pode estar autorizado na SEFAZ com outro cNF: o descarte exige confirmação
+    // explícita em QUALQUER ambiente, não só em produção — é o que impede a saída automática.
+    const bloqueada = r.estado === "BLOQUEADO";
+    if ((r.ambiente === "PRODUCAO" || bloqueada) && !confirmou) throw new NumeracaoError("NUMERACAO_CONFIRMAR_DESCARTE", 409,
+      bloqueada
+        ? `O nº ${r.numero} (série ${r.serie}) está retido para conferência: confirme que ele NÃO foi autorizado na SEFAZ antes de descartá-lo`
+        : `O nº ${r.numero} (série ${r.serie}) ficará sem uso e precisará ser inutilizado`,
+      { numero: r.numero, serie: r.serie, motivo });
   }
   private validarChave(userId: string, k: ChaveFiscal): void {
     if (!userId || !k.cfc || !["HOMOLOGACAO", "PRODUCAO"].includes(k.ambiente) || !["55", "65"].includes(k.modelo) || !Number.isInteger(k.serie) || k.serie < 0 || k.serie > 999) {

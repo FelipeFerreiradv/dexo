@@ -1908,6 +1908,13 @@ export class FinanceUseCase {
     }
 
     const mudouEmitente=!!existing && !!companyFiscalConfigId && companyFiscalConfigId!==existing.companyFiscalConfigId;
+    // ⚠️ `confirmarDescarteNumero:true` é a confirmação HUMANA da numeração V2 — é ela
+    // que desarma o NUMERACAO_CONFIRMAR_DESCARTE e deixa ABANDONAR um número já
+    // reservado em PRODUÇÃO (numeracao.service.ts → confirmarDescarte). Aqui ela vem
+    // pré-aprovada porque o modelo 65 está FORA da V2 (NFE_NUMERACAO_V2_MODELOS=55) e
+    // nada chega a ser reservado. No dia em que "65" entrar nessa lista, este `true`
+    // vira descarte silencioso de número de produção (que ainda exige inutilização):
+    // REVER ANTES de ligar a V2 para o modelo 65.
     const emission = mudouEmitente
       ? await this.nfeEmission.emit(userId,nfeId,{confirmarDescarteNumero:true,actorUserId:userId})
       : await this.nfeEmission.emit(userId, nfeId);
