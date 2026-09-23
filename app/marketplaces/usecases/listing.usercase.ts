@@ -257,6 +257,35 @@ export interface ListingFullEditInput extends MLListingSettings {
  */
 const CREATE_RESERVATION_MS = 10 * 60 * 1000;
 
+/**
+ * Pendente PENDING_ com publicação em andamento de OUTRO agente (retry
+ * desligado e reserva vigente que não é a de quem chama). Gravar um bloqueio
+ * por cima apagaria a reserva e liberaria um segundo POST /items.
+ */
+function reservadoPorOutro(
+  row: {
+    id: string;
+    externalListingId?: string | null;
+    retryEnabled?: boolean | null;
+    nextRetryAt?: Date | string | null;
+  },
+  minha?: { listingId: string; at: Date } | null,
+  agora: number = Date.now(),
+): boolean {
+  const ext = String(row.externalListingId ?? "");
+  if (!ext.startsWith("PENDING_") || ext.startsWith("PENDING_REPUBLISH_")) {
+    return false;
+  }
+  if (row.retryEnabled) return false;
+  const t = row.nextRetryAt ? new Date(row.nextRetryAt).getTime() : null;
+  if (t === null || t <= agora) return false;
+  return !(
+    !!minha &&
+    minha.listingId === row.id &&
+    new Date(minha.at).getTime() === t
+  );
+}
+
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
   private static userRepository = new UserRepositoryPrisma();
@@ -1317,7 +1346,14 @@ export class ListingUseCase {
      * Linha do par já lida pelo chamador (`null` = não existe). Ausente = lê
      * aqui. Evita a segunda leitura idêntica no bloqueio de valores.
      */
-    knownRow?: { id: string; externalListingId: string | null } | null;
+    knownRow?: {
+      id: string;
+      externalListingId: string | null;
+      retryEnabled?: boolean | null;
+      nextRetryAt?: Date | string | null;
+    } | null;
+    /** Reserva de quem chama (ver `opts.reservation` do createMLListing). */
+    reservation?: { listingId: string; at: Date } | null;
   }): Promise<string | undefined> {
     try {
       const lastError = `${i.marker ?? "[TERMINAL]"} ${i.message}`;
@@ -1329,6 +1365,11 @@ export class ListingUseCase {
               i.accountId,
             );
       if (row?.externalListingId?.startsWith("PENDING_REPUBLISH_")) {
+        return row.id;
+      }
+      // Outro agente está publicando esta linha agora: o bloqueio volta para
+      // quem chamou, mas não é gravado por cima da reserva dele.
+      if (row && reservadoPorOutro(row, i.reservation)) {
         return row.id;
       }
       // Linha com id REAL (anúncio encerrado sendo publicado de novo): o
@@ -2539,6 +2580,7 @@ export class ListingUseCase {
               effectiveSettings,
               externalSku: product.sku,
               actorId,
+              reservation: opts?.reservation,
             });
             console.warn(
               JSON.stringify({
@@ -2626,7 +2668,12 @@ export class ListingUseCase {
         // números sem unidade). Então a republicação segue como antes: o POST
         // vai e o ML decide; as correções determinísticas continuam valendo.
         let linhaDoPar:
-          | { id: string; externalListingId: string | null }
+          | {
+              id: string;
+              externalListingId: string | null;
+              retryEnabled?: boolean | null;
+              nextRetryAt?: Date | string | null;
+            }
           | null
           | undefined;
         if (checagem.blocked && !catalogoLigado) {
@@ -2667,6 +2714,7 @@ export class ListingUseCase {
             actorId,
             marker: LAST_ERROR_MARKER.CORRIGIVEL,
             knownRow: linhaDoPar,
+            reservation: opts?.reservation,
           });
           return {
             success: false,
