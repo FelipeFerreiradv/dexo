@@ -267,6 +267,43 @@ describe("número sem unidade (3708 — também em campo OPCIONAL)", () => {
     expect(r.issues[0].message).toMatch(/Ângulo máximo de abertura.*"10 °".*"1"/);
   });
 
+  it("polegada (\") primeiro na lista: o exemplo usa outra unidade, não '\"10 \"\"'", () => {
+    const DIAMETRO: CatalogAttributeLite = {
+      id: "INPUT_CONNECTOR_DIAMETER",
+      name: "Diâmetro do conector de entrada",
+      valueType: "number_unit",
+      allowedUnits: ['"', "mm", "cm"],
+    };
+    const r = valida([{ id: DIAMETRO.id, value_name: "1" }], [DIAMETRO]);
+    expect(r.issues[0].message).toContain('(ex.: "10 mm")');
+    expect(r.issues[0].message).not.toContain('"10 ""');
+  });
+
+  it("Rodas: unidade PADRÃO do ML é polegada ⇒ o exemplo segue polegada (nunca sugere cm num aro)", () => {
+    const ARO: CatalogAttributeLite = {
+      id: "RIM_DIAMETER",
+      name: "Diâmetro da roda",
+      valueType: "number_unit",
+      allowedUnits: ['"', "cm"],
+      defaultUnit: '"',
+    };
+    const r = valida([{ id: ARO.id, value_name: "15" }], [ARO]);
+    expect(r.issues[0].message).toContain('(ex.: 10")');
+    expect(r.issues[0].message).not.toContain("10 cm");
+  });
+
+  it("só polegada aceita: exemplo 10\" (sem aspas duplicadas)", () => {
+    const SO_POL: CatalogAttributeLite = {
+      id: "RIM_DIAMETER",
+      name: "Diâmetro do aro",
+      valueType: "number_unit",
+      allowedUnits: ['"'],
+      defaultUnit: '"',
+    };
+    const r = valida([{ id: SO_POL.id, value_name: "15" }], [SO_POL]);
+    expect(r.issues[0].message).toContain('(ex.: 10")');
+  });
+
   it("unidade que a categoria não aceita ⇒ bloqueia", () => {
     expect(valida([{ id: "WIDTH", value_name: "30 kg" }], [LARGURA]).blocked).toBe(true);
   });

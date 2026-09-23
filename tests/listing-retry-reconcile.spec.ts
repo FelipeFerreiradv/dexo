@@ -361,6 +361,25 @@ describe("marcadores devolvidos pelo createMLListing", () => {
     expect(dados.nextRetryAt).toBeNull();
   });
 
+  it("[TERMINAL][CORRIGIVEL] com 4 campos (> 490 caracteres) ⇒ grava a mensagem INTEIRA", async () => {
+    const campo = (n: number) =>
+      `O campo "Medida ${n}" precisa de número com unidade (ex.: "10 cm") e está com "30". Informe a unidade na ficha técnica ou apague o valor.`;
+    const msg = `A ficha técnica tem 4 valores que o Mercado Livre não aceita: ${[1, 2, 3, 4].map(campo).join(" ")} Depois de corrigir, a publicação é retomada.`;
+    expect(msg.length).toBeGreaterThan(490);
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([candidato()]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      error: msg,
+      errorKind: "VALIDATION",
+      lastErrorMarker: "[TERMINAL][CORRIGIVEL]",
+    });
+
+    await ListingRetryService.runOnce();
+
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.lastError).toBe(`[TERMINAL][CORRIGIVEL] ${msg}`);
+  });
+
   it("[VERIFICAR] ⇒ backoff normal, marcador preservado para a próxima passada", async () => {
     (ListingRepository.findPendingRetries as any).mockResolvedValue([candidato()]);
     (ListingUseCase.createMLListing as any).mockResolvedValue({

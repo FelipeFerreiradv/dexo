@@ -338,12 +338,20 @@ export function validateMLAttributeValues(
     ) {
       const v = attr.value_name;
       if (!unidadeValida(v, cat.allowedUnits)) {
-        const exemplo = cat.defaultUnit || cat.allowedUnits[0];
+        // A unidade padrão do ML manda (em Rodas o diâmetro é em polegada:
+        // sugerir "cm" levaria a gravar 15 cm num aro 15). Sem padrão, evita
+        // a polegada, que vem primeiro na lista. Polegada é `"` no ML: entre
+        // aspas virava `"10 ""`, então sai escrita 10".
+        const exemplo =
+          cat.defaultUnit ||
+          cat.allowedUnits.find((u) => u !== '"') ||
+          cat.allowedUnits[0];
+        const ex = exemplo === '"' ? '10"' : `"10 ${exemplo}"`;
         recusar({
           attributeId: attr.id,
           attributeName: nome,
           code: "NUMBER_WITHOUT_UNIT",
-          message: `O campo "${nome}" precisa de número com unidade (ex.: "10 ${exemplo}") e está com "${v}". Informe a unidade na ficha técnica ou apague o valor.`,
+          message: `O campo "${nome}" precisa de número com unidade (ex.: ${ex}) e está com "${v}". Informe a unidade na ficha técnica ou apague o valor.`,
           value: v,
         });
         continue;

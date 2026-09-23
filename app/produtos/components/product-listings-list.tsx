@@ -37,7 +37,10 @@ import {
   type ApiListing,
 } from "@/app/produtos/lib/listings-status-cache";
 import { derivePublicationState } from "@/app/produtos/lib/listing-publication-state";
-import { formatListingError } from "@/app/produtos/lib/listing-error-format";
+import {
+  formatListingError,
+  splitListingErrorSummary,
+} from "@/app/produtos/lib/listing-error-format";
 import { describeCompatDiagnostics } from "@/app/produtos/lib/listing-compat-summary";
 
 export type { ApiListing };
@@ -185,6 +188,41 @@ export function useProductListings(params: {
   }, [enabled]);
 
   return { listings, loading, error };
+}
+
+/** Erro do card; vários campos a corrigir viram lista (um por linha). */
+function ListingErrorSummary({
+  summary,
+  prefix,
+  className,
+}: {
+  summary: string;
+  prefix: string;
+  className: string;
+}) {
+  const partes = splitListingErrorSummary(summary);
+  if (partes.items.length === 0) {
+    return (
+      <p className={className}>
+        {prefix}
+        {summary}
+      </p>
+    );
+  }
+  return (
+    <div className={className}>
+      <p>
+        {prefix}
+        {partes.lead}
+      </p>
+      <ul className="mt-1 list-disc space-y-1 pl-4">
+        {partes.items.map((item, i) => (
+          <li key={i}>{item}</li>
+        ))}
+      </ul>
+      {partes.tail && <p className="mt-1">{partes.tail}</p>}
+    </div>
+  );
 }
 
 interface ProductListingsListProps {
@@ -358,6 +396,8 @@ export function ProductListingsList({
             const erro = formatListingError(listing.lastError, rowPlatform);
             const ehML = rowPlatform === "MERCADO_LIVRE";
             const retentativa = retentativas[listing.id];
+            const acoesDeCorrecao =
+              pending && ehML && estado.canRetry && !retentativa?.ok;
             const erroClasse =
               estado.state === "sync_error" ||
               estado.state === "retry_scheduled" ||
@@ -370,11 +410,17 @@ export function ProductListingsList({
               : describeCompatDiagnostics(listing.compatDiagnostics);
 
             return (
+              // Com "Corrigir produto" + "Tentar publicar novamente" +
+              // "Editar anúncio" (~520px, sem encolher) ao lado, o texto ficava
+              // com uma palavra por linha no modal. Agora esses botões vão
+              // sempre para a linha de baixo; os demais cards seguem com os
+              // botões ao lado (texto cresce a partir de 11rem e só quebra se
+              // não couber).
               <li
                 key={listing.id}
-                className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between"
               >
-                <div className="min-w-0 space-y-1">
+                <div className="min-w-0 space-y-1 sm:flex-[1_1_11rem]">
                   <div className="flex flex-wrap items-center gap-2">
                     {/* Sem filtro de plataforma a conta sozinha não diz o canal. */}
                     {!platform && rowPlatform && (
@@ -405,10 +451,11 @@ export function ProductListingsList({
                   </p>
                   {erro && (
                     <div className="space-y-1">
-                      <p className={erroClasse}>
-                        {estado.state === "sync_error" ? "Última sincronização: " : ""}
-                        {erro.summary}
-                      </p>
+                      <ListingErrorSummary
+                        className={erroClasse}
+                        prefix={estado.state === "sync_error" ? "Última sincronização: " : ""}
+                        summary={erro.summary}
+                      />
                       {erro.technical && (
                         <details className="text-xs text-muted-foreground">
                           <summary className="cursor-pointer select-none">
@@ -447,8 +494,14 @@ export function ProductListingsList({
                   )}
                 </div>
 
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  {pending && ehML && estado.canRetry && !retentativa?.ok && (
+                <div
+                  className={
+                    acoesDeCorrecao
+                      ? "flex min-w-0 flex-wrap items-center gap-2 sm:basis-full"
+                      : "flex min-w-0 flex-wrap items-center gap-2"
+                  }
+                >
+                  {acoesDeCorrecao && (
                     <>
                       {onFixProduct && (
                         <Button

@@ -109,3 +109,44 @@ export function formatListingError(
     markers,
   };
 }
+
+/**
+ * Mensagem com VÁRIOS campos a corrigir ("A ficha técnica tem 3 valores a
+ * corrigir: O campo "A"… O campo "B"…") vinha num parágrafo corrido, ilegível
+ * no card. Separa em cabeçalho + um item por campo (+ fecho, quando há). Vale
+ * também para as mensagens já gravadas no banco. Qualquer outro texto volta
+ * inteiro em `lead`, sem itens.
+ */
+export interface ListingErrorSummaryParts {
+  lead: string;
+  items: string[];
+  tail: string | null;
+}
+
+const LISTA_DE_CAMPOS = /^(A ficha técnica tem \d+ valores[^:]*:)\s*([\s\S]+)$/;
+const FECHO = /\s*(Depois de corrigir, a publicação é retomada\.)\s*$/;
+// Começo de cada mensagem de bloqueio (ml-attribute-value-validation.logic e
+// ml-required-attributes.logic M1–M7): "O campo …", "O valor …", "O lado da
+// peça …", "Nesta categoria …", "Esta categoria …". Dentro das mensagens essas
+// palavras só aparecem em minúscula ("por esta categoria", "no campo").
+const INICIO_DE_ITEM =
+  /\s+(?=(?:O campo |O valor |O lado da peça |Nesta categoria |Esta categoria ))/;
+
+export function splitListingErrorSummary(summary: string): ListingErrorSummaryParts {
+  const inteiro = { lead: summary, items: [], tail: null };
+  const m = LISTA_DE_CAMPOS.exec(summary.trim());
+  if (!m) return inteiro;
+  let corpo = m[2];
+  let tail: string | null = null;
+  const fecho = FECHO.exec(corpo);
+  if (fecho) {
+    tail = fecho[1];
+    corpo = corpo.slice(0, fecho.index);
+  }
+  const items = corpo
+    .split(INICIO_DE_ITEM)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (items.length < 2) return inteiro;
+  return { lead: m[1], items, tail };
+}

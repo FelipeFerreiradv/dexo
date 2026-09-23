@@ -495,7 +495,9 @@ async function main() {
         } else if (l.classe === "precisa_cliente") {
           const ok = await gravarSeIntacta(l.listingId, {
             status: "error",
-            lastError: `${LAST_ERROR_MARKER.CORRIGIVEL} ${l.motivo}`.slice(0, 490),
+            // Sem corte: `lastError` é text. O corte em 490 fazia a mensagem de
+            // 4 campos perder o último (e o card mostrava o 3º pela metade).
+            lastError: `${LAST_ERROR_MARKER.CORRIGIVEL} ${l.motivo}`,
             retryEnabled: false,
             nextRetryAt: null,
           });
