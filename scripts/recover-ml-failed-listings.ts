@@ -369,6 +369,26 @@ async function main() {
       }
     }
 
+    // Item remoto adotável que não é o vivo local: só é suspeito de ser órfão
+    // do POST perdido se não tiver vínculo em nenhuma linha desta conta
+    // (leitura; falha = trata como vinculado, o comportamento de antes).
+    let adoptableUnlinked = false;
+    if (
+      liveLocal &&
+      remote.status === "ok" &&
+      remote.adoptable &&
+      remote.adoptable.id !== liveLocal.externalListingId
+    ) {
+      try {
+        adoptableUnlinked = !(await ListingRepository.findLinkByExternalListingId(
+          acc.id,
+          remote.adoptable.id,
+        ));
+      } catch {
+        adoptableUnlinked = false;
+      }
+    }
+
     const editedAfterError =
       !!p.product?.updatedAt &&
       new Date(p.product.updatedAt).getTime() > new Date(p.updatedAt).getTime();
@@ -380,6 +400,7 @@ async function main() {
         ? { externalListingId: liveLocal.externalListingId, status: liveLocal.status }
         : null,
       remote,
+      adoptableUnlinked,
       preflight,
       lastError: p.lastError,
       editedAfterError,

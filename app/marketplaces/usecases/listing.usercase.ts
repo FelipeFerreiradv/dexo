@@ -294,6 +294,21 @@ function reservadoPorOutro(
 }
 
 /**
+ * A republicação dona desta linha ainda pode estar em curso? O id carrega o
+ * horário da troca (`PENDING_REPUBLISH_<id antigo>_<ts>`). Passada a janela de
+ * uma criação (a mesma reserva de 10 min), é linha ENCALHADA — o processo
+ * morreu no meio, ou o revert deu "id_taken" — e vale o comportamento de antes
+ * (publicar nela tira a linha desse estado), agora sob reserva. Recusar para
+ * sempre bloqueava o par sem saída (achado da releitura de 23/09).
+ */
+function republicacaoEmCurso(externalListingId: string, now = Date.now()): boolean {
+  const m = /^PENDING_REPUBLISH_.+_(\d+)$/.exec(externalListingId);
+  if (!m) return false;
+  const ts = Number(m[1]);
+  return Number.isFinite(ts) && now - ts < CREATE_RESERVATION_MS;
+}
+
+/**
  * Recusa de "Anunciar" com o anúncio do par em republicação. Sem `code`: para o
  * cron é uma falha comum (gasta tentativa e para no teto) — quando a
  * republicação termina, a guarda de anúncio vivo encerra o pendente.
@@ -308,7 +323,7 @@ function republishInProgressRefusal(row: {
   return {
     listingId: row.id,
     externalListingId: antigo,
-    error: `Produto já tem anúncio nesta conta${qual}, sendo republicado agora. Aguarde alguns minutos e confira o anúncio. Se continuar assim, fale com o suporte antes de publicar de novo — o anúncio${qual} pode seguir ativo no Mercado Livre.`,
+    error: `Produto já tem anúncio nesta conta${qual}, sendo republicado agora. Aguarde alguns minutos e confira o anúncio.`,
   };
 }
 
@@ -2205,7 +2220,8 @@ export class ListingUseCase {
       // segue vivo no ML — a guarda acima não o vê. Um "Anunciar" agora
       // publicaria um segundo item (com a republicação interrompida, o antigo
       // ficaria órfão, vendendo sem baixa). Só a própria republicação passa.
-      // Falha na leitura = segue (o passo 3.1 ainda recusa a linha dela).
+      // Linha ENCALHADA (fora da janela de uma criação) segue como antes — ver
+      // republicacaoEmCurso. Falha na leitura = segue (o 3.1 ainda decide).
       if (opts?.republish !== true) {
         let republicando: Awaited<
           ReturnType<typeof ListingRepository.findRepublishingListingInPair>
@@ -2218,7 +2234,10 @@ export class ListingUseCase {
         } catch {
           republicando = null;
         }
-        if (republicando) {
+        if (
+          republicando &&
+          republicacaoEmCurso(republicando.externalListingId)
+        ) {
           const recusa = republishInProgressRefusal(republicando);
           console.warn(
             JSON.stringify({
@@ -2231,6 +2250,19 @@ export class ListingUseCase {
             }),
           );
           return { success: false, skipped: true, ...recusa };
+        }
+        if (republicando) {
+          // Encalhada: segue (antes também seguia). Fica no log para o Suporte
+          // conferir se o anúncio antigo ainda está vivo no ML.
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.stale_republish_row",
+              productId,
+              accountId: acc.id,
+              listingId: republicando.id,
+              externalListingId: republicando.externalListingId,
+            }),
+          );
         }
       }
 
@@ -3207,14 +3239,20 @@ export class ListingUseCase {
       // de um agendamento, ou tomada agora. Sem isso botão, cron, outro
       // "Anunciar", outro lote e o script de recuperação mandavam cada um o
       // seu POST /items. Republicação (PENDING_REPUBLISH_) é do sync.
-      const ehReaproveitavel =
+      const linhaDeRepublicacao =
         !!listing &&
-        !String(listing.externalListingId ?? "").startsWith(
-          "PENDING_REPUBLISH_",
-        );
-      // A linha escolhida é a da republicação e quem chama não é ela (a
-      // leitura do 1.5b falhou ou a marca apareceu depois): recusa — cair no
-      // update abaixo publicaria um segundo item e sobrescreveria o id.
+        String(listing.externalListingId ?? "").startsWith("PENDING_REPUBLISH_");
+      // Linha de republicação ENCALHADA escolhida por um "Anunciar" comum:
+      // publica nela como antes, mas sob reserva (antes, sem nenhuma).
+      const republicacaoEncalhada =
+        linhaDeRepublicacao &&
+        opts?.republish !== true &&
+        !republicacaoEmCurso(String(listing?.externalListingId ?? ""));
+      const ehReaproveitavel =
+        !!listing && (!linhaDeRepublicacao || republicacaoEncalhada);
+      // A linha escolhida é a de uma republicação EM CURSO e quem chama não é
+      // ela (a leitura do 1.5b falhou ou a marca apareceu depois): recusa —
+      // cair no update abaixo publicaria um segundo item e sobrescreveria o id.
       if (listing && !ehReaproveitavel && opts?.republish !== true) {
         const recusa = republishInProgressRefusal({
           id: listing.id,

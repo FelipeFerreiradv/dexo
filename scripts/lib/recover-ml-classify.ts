@@ -51,6 +51,12 @@ export interface RecoverInput {
         ambiguous?: RemoteItemLite | null;
       }
     | { status: "search_failed" | "not_checked" | "skipped" };
+  /**
+   * O item adotável do ML (≠ do vivo local) NÃO tem vínculo em nenhuma linha
+   * desta conta? Só `true` quando conferido. Vinculado (outro produto, outra
+   * linha) é anúncio conhecido — não é órfão do POST perdido deste pendente.
+   */
+  adoptableUnlinked?: boolean;
   /** Pré-validação atual do produto (mesmo motor do create). */
   preflight: { blocked: boolean; message: string | null } | null;
   lastError: string | null;
@@ -110,7 +116,8 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
     const orfao =
       i.remote.status === "ok" &&
       i.remote.adoptable &&
-      i.remote.adoptable.id !== i.liveLocal.externalListingId
+      i.remote.adoptable.id !== i.liveLocal.externalListingId &&
+      i.adoptableUnlinked === true
         ? i.remote.adoptable
         : null;
     if (orfao) {

@@ -595,9 +595,20 @@ describe("categoria sugerida pelo ML só por erro de categoria", () => {
 });
 
 describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — defeito que já existia em main)", () => {
+  // O id carrega o horário da troca: recente = republicação em curso.
   const REPUBLICANDO = {
     id: "l-rep",
-    externalListingId: "PENDING_REPUBLISH_MLB111_1790000000000",
+    externalListingId: `PENDING_REPUBLISH_MLB111_${Date.now() - 60_000}`,
+  };
+  // Encalhada: bem fora da janela de uma criação (10 min).
+  const ENCALHADA = {
+    id: "l-encalhada",
+    externalListingId: `PENDING_REPUBLISH_MLB111_${Date.now() - 3 * 24 * 3600_000}`,
+    status: "error",
+    retryEnabled: false,
+    nextRetryAt: null,
+    lastError:
+      "[TERMINAL] Republicacao abortada: o anuncio MLB111 ja tem outra linha nesta conta — remova este pendente",
   };
   const criarComo = (opts?: Record<string, unknown>) =>
     ListingUseCase.createMLListing(
@@ -652,6 +663,33 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
     expect(r.skipped).toBe(true);
     expect(r.error).toMatch(/MLB111/);
     expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("linha ENCALHADA (processo morreu / revert id_taken, dias atrás) ⇒ 'Anunciar' segue como antes, agora SOB RESERVA, e publica nela (releitura de 23/09)", async () => {
+    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(ENCALHADA);
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue(ENCALHADA);
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+    const r = await criarComo();
+    expect(r.error ?? "").not.toMatch(/sendo republicado/);
+    expect(ListingRepository.claimInteractiveRetry).toHaveBeenCalledWith(
+      "l-encalhada",
+      expect.any(Number),
+      expect.any(Date),
+      {},
+    );
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    expect((ListingRepository.updateListing as any).mock.calls[0][0]).toBe("l-encalhada");
+  });
+
+  it("linha ENCALHADA já reservada por outro 'Anunciar' ⇒ recua (sem o segundo POST que main mandava)", async () => {
+    (ListingRepository.findRepublishingListingInPair as any).mockResolvedValue(ENCALHADA);
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      ...ENCALHADA,
+      nextRetryAt: new Date(Date.now() + 300_000),
+    });
+    const r = await criarComo();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
   });
 
   it("sem republicação no par ⇒ caminho de sempre (a consulta devolve nada)", async () => {

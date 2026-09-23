@@ -74,11 +74,25 @@ describe("classifyRecoverRow", () => {
       base({
         liveLocal: { externalListingId: "MLB5188503789", status: "active" },
         remote: { status: "ok", adoptable: { id: "MLB_ORFAO", status: "active" }, others: [] },
+        adoptableUnlinked: true,
       }),
     );
     expect(d.classe).toBe("duplicidade_possivel");
     expect(d.motivo).toContain("MLB5188503789");
     expect(d.motivo).toContain("MLB_ORFAO");
+  });
+
+  it("vivo local e o outro item do ML está VINCULADO (outro produto/outra linha) ou não foi conferido ⇒ ja_publicado, como antes", () => {
+    for (const adoptableUnlinked of [false, undefined]) {
+      const d = classifyRecoverRow(
+        base({
+          liveLocal: { externalListingId: "MLB5188503789", status: "active" },
+          remote: { status: "ok", adoptable: { id: "MLB_DO_B", status: "active" }, others: [] },
+          adoptableUnlinked,
+        }),
+      );
+      expect(d.classe).toBe("ja_publicado");
+    }
   });
 
   it("vivo local e o item achado no ML É o próprio vivo ⇒ ja_publicado", () => {
