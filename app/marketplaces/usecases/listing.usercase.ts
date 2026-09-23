@@ -1846,7 +1846,16 @@ export class ListingUseCase {
      * reservado por OUTRO (botão, outro "Anunciar", outro lote) não é
      * reaproveitado — seria um segundo POST /items do mesmo produto.
      */
-    opts?: { reservation?: { listingId: string; at: Date } },
+    opts?: {
+      reservation?: { listingId: string; at: Date };
+      /**
+       * Republicação UP (troca de título de anúncio vivo), dita por quem
+       * chama (SyncUseCase.republishUpListing). Explícito: deduzir pela linha
+       * do banco confundia com um `PENDING_REPUBLISH_` órfão e desligava a
+       * validação de valores do par inteiro.
+       */
+      republish?: boolean;
+    },
   ): Promise<CreateListingResult> {
     // Reserva que ESTA chamada fez no pendente reaproveitado; o catch geral a
     // desfaz (os fins normais gravam o próprio agendamento por cima).
@@ -2663,13 +2672,14 @@ export class ListingUseCase {
         const catalogoLigado = shouldSkipMlRequiredBlockForCatalog(
           (product as any).mlCatalogProductId,
         );
-        // Só no caminho bloqueado (raro): a linha do par diz se isto é a
         // REPUBLICAÇÃO de um anúncio vivo (troca de título UP disparada pela
-        // edição do produto). Lá o bloqueio não aparece em lugar nenhum — o
-        // sync reverte a linha e só registra log — e o título novo nunca
-        // chegaria ao ML, nem nos casos que o ML aceita com aviso (parte dos
-        // números sem unidade). Então a republicação segue como antes: o POST
-        // vai e o ML decide; as correções determinísticas continuam valendo.
+        // edição do produto, `opts.republish`): lá o bloqueio não aparece em
+        // lugar nenhum — o sync reverte a linha e só registra log — e o
+        // título novo nunca chegaria ao ML, nem nos casos que o ML aceita com
+        // aviso (parte dos números sem unidade). Então a republicação segue
+        // como antes: o POST vai e o ML decide; as correções determinísticas
+        // continuam valendo. A linha do par só é lida no caminho bloqueado de
+        // uma criação normal (para gravar o bloqueio).
         let linhaDoPar:
           | {
               id: string;
@@ -2679,7 +2689,8 @@ export class ListingUseCase {
             }
           | null
           | undefined;
-        if (checagem.blocked && !catalogoLigado) {
+        const republicacao = opts?.republish === true;
+        if (checagem.blocked && !catalogoLigado && !republicacao) {
           try {
             linhaDoPar = await ListingRepository.findByProductAndAccount(
               productId,
@@ -2687,21 +2698,6 @@ export class ListingUseCase {
             );
           } catch {
             linhaDoPar = undefined;
-          }
-        }
-        // A linha "mais nova" do par pode ser outro pendente (um [TERMINAL]
-        // antigo): a republicação é conferida pela própria marca.
-        let republicacao = !!linhaDoPar?.externalListingId?.startsWith(
-          "PENDING_REPUBLISH_",
-        );
-        if (checagem.blocked && !catalogoLigado && !republicacao) {
-          try {
-            republicacao = !!(await ListingRepository.findRepublishPlaceholderInPair(
-              productId,
-              acc.id,
-            ));
-          } catch {
-            republicacao = false;
           }
         }
         if (checagem.blocked && !catalogoLigado && republicacao) {

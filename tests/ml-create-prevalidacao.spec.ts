@@ -17,7 +17,6 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     createListing: vi.fn(),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
-    findRepublishPlaceholderInPair: vi.fn(async () => null),
     claimInteractiveRetry: vi.fn(async () => new Date(Date.now() + 600_000)),
     releaseInteractiveRetry: vi.fn(async () => undefined),
   },
@@ -312,7 +311,7 @@ describe("valores da ficha técnica antes do POST", () => {
     expect(ListingRepository.findByProductAndAccount).toHaveBeenCalledTimes(1);
   });
 
-  it("REPUBLICAÇÃO UP (linha PENDING_REPUBLISH_) ⇒ não bloqueia: o POST segue como antes e o ML decide", async () => {
+  it("REPUBLICAÇÃO UP (opts.republish, linha PENDING_REPUBLISH_) ⇒ não bloqueia: o POST segue como antes e o ML decide", async () => {
     // A troca de título de anúncio vivo não tem onde mostrar o bloqueio (o
     // sync reverte a linha); o ML aceita parte destes valores com aviso.
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
@@ -332,6 +331,8 @@ describe("valores da ficha técnica antes do POST", () => {
       undefined,
       "Título novo",
       "actor-1",
+      undefined,
+      { republish: true },
     );
     expect(MLApiService.createItem).toHaveBeenCalled();
     const primeiro = chamadas()[0];
@@ -344,7 +345,7 @@ describe("valores da ficha técnica antes do POST", () => {
     }
   });
 
-  it("REPUBLICAÇÃO com um pendente ANTIGO mais novo no par ⇒ reconhecida pela consulta direta; não bloqueia", async () => {
+  it("REPUBLICAÇÃO com um pendente ANTIGO mais novo no par ⇒ reconhecida pelo aviso de quem chama; não bloqueia", async () => {
     // findByProductAndAccount devolve o PENDING_ mais novo (um [TERMINAL]
     // velho), não a linha PENDING_REPUBLISH_ do anúncio vivo.
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
@@ -352,9 +353,6 @@ describe("valores da ficha técnica antes do POST", () => {
       externalListingId: "PENDING_999",
       retryEnabled: false,
       nextRetryAt: null,
-    });
-    (ListingRepository.findRepublishPlaceholderInPair as any).mockResolvedValue({
-      id: "l-viva",
     });
     produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "30" } };
     // ML fora do ar: o que importa é que o POST SAIU (o bloqueio de valor
@@ -370,6 +368,8 @@ describe("valores da ficha técnica antes do POST", () => {
       undefined,
       "Título novo",
       "actor-1",
+      undefined,
+      { republish: true },
     );
     expect(MLApiService.createItem).toHaveBeenCalled();
     for (const c of (ListingRepository.updateListing as any).mock.calls) {
@@ -377,10 +377,14 @@ describe("valores da ficha técnica antes do POST", () => {
     }
   });
 
-  it("criação normal bloqueada ⇒ confere a republicação uma vez e grava o bloqueio", async () => {
+  it("PENDING_REPUBLISH_ ÓRFÃO no par não desliga a validação de uma criação normal", async () => {
+    // Republicação que caiu no meio (restart) deixa a marca para sempre.
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-orfa",
+      externalListingId: "PENDING_REPUBLISH_MLB1_1",
+    });
     produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "30" } };
     const r = await criar();
-    expect(ListingRepository.findRepublishPlaceholderInPair).toHaveBeenCalledTimes(1);
     expect(MLApiService.createItem).not.toHaveBeenCalled();
     expect(r.lastErrorMarker).toBe("[TERMINAL][CORRIGIVEL]");
   });

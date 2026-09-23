@@ -154,6 +154,17 @@ describe("republishUpListing — revert desliga o retry", () => {
     });
   });
 
+  it("diz à criação que é REPUBLICAÇÃO (opts.republish): o bloqueio de valores da ficha não segura o título novo", async () => {
+    const spy = vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: false,
+      error: "qualquer",
+    } as any);
+
+    await expect(SyncUseCase.republishUpListing(args)).rejects.toThrow();
+
+    expect(spy.mock.calls[0][8]).toEqual({ republish: true });
+  });
+
   it("desliga retryEnabled quando createMLListing retorna success=false", async () => {
     vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
       success: false,
