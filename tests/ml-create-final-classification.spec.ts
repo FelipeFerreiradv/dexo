@@ -23,6 +23,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     claimInteractiveRetry: vi.fn(),
     releaseInteractiveRetry: vi.fn(async () => undefined),
     takeOverScheduledRetry: vi.fn(),
+    releaseTakenOverRetry: vi.fn(async () => undefined),
     findNewestMlPlaceholderState: vi.fn(async () => null),
     findLiveListingLite: vi.fn(async () => null),
   },
@@ -790,5 +791,25 @@ describe("pendente reaproveitado com retry desligado: reserva antes de publicar 
     expect("nextRetryAt" in g).toBe(true);
     expect(g.nextRetryAt === null || g.nextRetryAt instanceof Date).toBe(true);
     expect(g.nextRetryAt).not.toEqual(RESERVA);
+  });
+});
+
+describe("rodada 5 da revisão (23/09): erro inesperado depois de ASSUMIR uma linha agendada", () => {
+  it("a linha volta à fila do cron (retry religado), não fica sem retentativa", async () => {
+    const LEASE = new Date(Date.now() + 600_000);
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-ag",
+      externalListingId: "PENDING_7",
+      status: "error",
+      retryEnabled: true,
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+      lastError: "[TERMINAL][CORRIGIVEL] GTIN inválido",
+    });
+    (ListingRepository.takeOverScheduledRetry as any).mockResolvedValue(LEASE);
+    (ListingRepository.updateListing as any).mockRejectedValue(new Error("pool esgotado"));
+    const r = await criar();
+    expect(r.success).toBe(false);
+    expect(ListingRepository.releaseTakenOverRetry).toHaveBeenCalledWith("l-ag", LEASE);
+    expect(ListingRepository.releaseInteractiveRetry).not.toHaveBeenCalled();
   });
 });

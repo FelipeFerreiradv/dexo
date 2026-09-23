@@ -47,6 +47,13 @@ export function placeholderDecision(
   if (row.retryEnabled) {
     if (String(row.status ?? "").toLowerCase() === "pending") return "busy";
     if (String(row.lastError ?? "").startsWith("[VERIFICAR]")) return "busy";
+    // Linha com id REAL (anúncio encerrado sendo publicado de novo): o claim
+    // do cron não a marca `pending` (marcar escondia uma linha viva das
+    // guardas anti-duplicata) — sem essa marca não dá para saber se o cron
+    // está nela, então não é assumida.
+    if (!String(row.externalListingId ?? "").startsWith("PENDING_")) {
+      return "busy";
+    }
     return "takeover";
   }
   if (proxima !== null && proxima > now) return "busy";

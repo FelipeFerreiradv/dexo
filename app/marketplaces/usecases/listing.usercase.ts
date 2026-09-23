@@ -1765,7 +1765,12 @@ export class ListingUseCase {
   ): Promise<CreateListingResult> {
     // Reserva que ESTA chamada fez no pendente reaproveitado; o catch geral a
     // desfaz (os fins normais gravam o próprio agendamento por cima).
-    let reservaPropria: { listingId: string; at: Date } | null = null;
+    let reservaPropria: {
+      listingId: string;
+      at: Date;
+      /** Veio de uma linha AGENDADA pelo cron (takeOverScheduledRetry). */
+      assumida?: boolean;
+    } | null = null;
     try {
       let account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
@@ -2957,7 +2962,11 @@ export class ListingUseCase {
               error: busyMessage(listing),
             };
           }
-          reservaPropria = { listingId: listing.id, at };
+          reservaPropria = {
+            listingId: listing.id,
+            at,
+            assumida: decisao === "takeover",
+          };
         }
       }
 
@@ -4633,10 +4642,19 @@ export class ListingUseCase {
       console.error("[ListingUseCase] Error creating ML listing:", error);
       if (reservaPropria) {
         try {
-          await ListingRepository.releaseInteractiveRetry(
-            reservaPropria.listingId,
-            reservaPropria.at,
-          );
+          // Linha assumida de um agendamento volta à fila do cron; a
+          // reservada volta a ficar livre.
+          if (reservaPropria.assumida) {
+            await ListingRepository.releaseTakenOverRetry(
+              reservaPropria.listingId,
+              reservaPropria.at,
+            );
+          } else {
+            await ListingRepository.releaseInteractiveRetry(
+              reservaPropria.listingId,
+              reservaPropria.at,
+            );
+          }
         } catch {
           // A reserva expira sozinha (10 min); o erro original é o que importa.
         }

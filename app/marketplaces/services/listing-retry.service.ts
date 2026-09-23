@@ -91,8 +91,12 @@ export class ListingRetryService {
         // deploy anterior). Sem o claim, dois processos leem o mesmo lote e
         // criam o mesmo anúncio duas vezes no ML. O UPDATE condicional é
         // atômico — quem perder a corrida pula o candidato.
+        // Só placeholder PENDING_ do ML: marcar `pending` numa linha com id
+        // REAL a esconderia das guardas de anúncio vivo (status fora da lista)
+        // e o cron poderia publicar um segundo anúncio do mesmo produto.
         const ehMl =
           cand.marketplaceAccount?.platform === "MERCADO_LIVRE" &&
+          !!cand.externalListingId?.startsWith("PENDING_") &&
           !cand.externalListingId?.startsWith("PENDING_SHP_");
         const claimed = await ListingRepository.claimRetryCandidate(
           cand.id,
@@ -718,7 +722,10 @@ export class ListingRetryService {
       } finally {
         if (marcouPublicando) {
           try {
-            await ListingRepository.restoreCronClaimStatus(cand.id);
+            await ListingRepository.restoreCronClaimStatus(
+              cand.id,
+              String(cand.status ?? "error"),
+            );
           } catch {
             // o próximo claim do cron regrava; a linha segue com retry
           }
