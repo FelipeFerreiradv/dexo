@@ -837,6 +837,19 @@ export async function listingRoutes(app: FastifyInstance) {
               "Já existe uma nova tentativa agendada para este anúncio — a Dexo publica sozinha em instantes.",
           });
         }
+        // A criação escolhe a linha pelo PAR (produto, conta): outro pendente
+        // do par agendado ou em andamento correria junto com este clique.
+        const ocupado = await ListingRepository.findBusyMlPlaceholderInPair(
+          row.productId,
+          row.marketplaceAccountId,
+          id,
+        );
+        if (ocupado) {
+          return reply.status(409).send({
+            error:
+              "Já existe uma publicação agendada ou em andamento para este produto nesta conta. Aguarde alguns minutos e confira o anúncio.",
+          });
+        }
         const reserva = await ListingRepository.claimInteractiveRetry(
           id,
           RETRY_ML_LEASE_MS,
@@ -881,6 +894,7 @@ export async function listingRoutes(app: FastifyInstance) {
           const conferencia = await ListingRetryService.reconcileBeforeRecreate(
             row,
             conta,
+            { interactive: true },
           );
           if (conferencia === "adopted") {
             return reply.status(200).send({
@@ -899,7 +913,7 @@ export async function listingRoutes(app: FastifyInstance) {
           if (conferencia === "search_failed") {
             return reply.status(503).send({
               error:
-                "Não foi possível conferir no Mercado Livre se o anúncio já existe. A Dexo tenta de novo sozinha em alguns minutos.",
+                "Não foi possível conferir no Mercado Livre se o anúncio já existe. Nada foi publicado; tente de novo em instantes.",
             });
           }
 
@@ -923,6 +937,7 @@ export async function listingRoutes(app: FastifyInstance) {
                   undefined,
                   request.user!.id,
                   fichaGuardada,
+                  { reservation: { listingId: id, at: reserva } },
                 )
               : ListingUseCase.createMLListing(
                   userId,
@@ -932,6 +947,8 @@ export async function listingRoutes(app: FastifyInstance) {
                   placeholderMlSettings(row),
                   undefined,
                   request.user!.id,
+                  undefined,
+                  { reservation: { listingId: id, at: reserva } },
                 )
           ).finally(() =>
             ListingRepository.releaseInteractiveRetry(id, reserva).catch(

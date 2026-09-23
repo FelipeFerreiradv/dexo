@@ -13,7 +13,10 @@ import axios from "axios";
 vi.mock("axios");
 vi.mock("../app/lib/prisma", () => ({
   default: {
-    productListing: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    productListing: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findFirst: vi.fn(async () => null),
+    },
   },
 }));
 
@@ -44,9 +47,25 @@ describe("reserva do botão (claimInteractiveRetry)", () => {
     expect(arg.where).toEqual({
       id: "pl-1",
       retryEnabled: false,
+      externalListingId: { startsWith: "PENDING_" },
       OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: NOW } }],
     });
     expect(arg.data).toEqual({ nextRetryAt: new Date(NOW.getTime() + 600_000) });
+  });
+
+  it("outro pendente ocupado no par: uma consulta, só {id}, sem a própria linha", async () => {
+    await ListingRepository.findBusyMlPlaceholderInPair("prod-1", "acct-1", "pl-1", NOW);
+    const arg = (prisma.productListing.findFirst as any).mock.calls[0][0];
+    expect(arg).toEqual({
+      where: {
+        productId: "prod-1",
+        marketplaceAccountId: "acct-1",
+        id: { not: "pl-1" },
+        externalListingId: { startsWith: "PENDING_" },
+        OR: [{ retryEnabled: true }, { nextRetryAt: { gt: NOW } }],
+      },
+      select: { id: true },
+    });
   });
 
   it("perdeu a corrida (count 0) ⇒ null", async () => {

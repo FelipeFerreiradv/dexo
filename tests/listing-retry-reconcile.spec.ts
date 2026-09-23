@@ -304,6 +304,18 @@ describe("[VERIFICAR] — confere no ML antes de recriar", () => {
     expect(dados.lastError).toBe("[VERIFICAR] Erro antigo sem marcador");
   });
 
+  it("pelo BOTÃO (interactive) a busca que falha não grava nada: nem tentativa, nem marcador, nem agenda", async () => {
+    (MLApiService.findItemsBySellerSku as any).mockRejectedValue(new Error("503"));
+    const r = await ListingRetryService.reconcileBeforeRecreate(
+      candidato({ lastError: "[TERMINAL][CORRIGIVEL] GTIN inválido", retryAttempts: 4 }),
+      conta("acct-1", "X"),
+      { interactive: true },
+    );
+    expect(r).toBe("search_failed");
+    expect(ListingRepository.incrementRetryAttempts).not.toHaveBeenCalled();
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
   it("falha do capability check NÃO apaga o [VERIFICAR] da linha", async () => {
     (ListingRepository.findPendingRetries as any).mockResolvedValue([
       candidato({ lastError: "[VERIFICAR] timeout anterior" }),
@@ -415,5 +427,59 @@ describe("multi-conta", () => {
     const escritas = (ListingRepository.incrementRetryAttempts as any).mock.calls;
     expect(escritas.map((c: any[]) => c[0])).toEqual(["pl-B"]);
     expect(escritas[0][1].retryEnabled).toBe(true);
+  });
+});
+
+describe("rodada 2 da revisão (23/09): estados que ficavam errados", () => {
+  it("capability check falha na ÚLTIMA tentativa ⇒ retry desligado SEM horário (não vira 'Publicando agora')", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ retryAttempts: 4 }),
+    ]);
+    (MLApiService.getSellerItemIds as any).mockRejectedValue(new Error("rede caiu"));
+    await ListingRetryService.runOnce();
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.retryEnabled).toBe(false);
+    expect(dados.nextRetryAt).toBeNull();
+  });
+
+  it("capability check falha antes do teto ⇒ reagenda como sempre", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ retryAttempts: 1 }),
+    ]);
+    (MLApiService.getSellerItemIds as any).mockRejectedValue(new Error("rede caiu"));
+    await ListingRetryService.runOnce();
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.retryEnabled).toBe(true);
+    expect(dados.nextRetryAt).toBeInstanceOf(Date);
+  });
+
+  it("candidato com id REAL e o bloqueio gravado noutro placeholder ⇒ só sai da fila, SEM o marcador", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ externalListingId: "MLB_ENCERRADO", lastError: "Erro anterior" }),
+    ]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      listingId: "pl-novo-placeholder",
+      error: "O campo GTIN …",
+      errorKind: "VALIDATION",
+      lastErrorMarker: "[TERMINAL][CORRIGIVEL]",
+    });
+    await ListingRetryService.runOnce();
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados).toEqual({ retryEnabled: false, nextRetryAt: null });
+  });
+
+  it("candidato PENDING_ com o bloqueio ⇒ continua recebendo o marcador (re-arme e botão o enxergam)", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([candidato()]);
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      listingId: "outra-linha",
+      error: "O campo GTIN …",
+      errorKind: "VALIDATION",
+      lastErrorMarker: "[TERMINAL][CORRIGIVEL]",
+    });
+    await ListingRetryService.runOnce();
+    const dados = (ListingRepository.incrementRetryAttempts as any).mock.calls[0][1];
+    expect(dados.lastError).toMatch(/^\[TERMINAL\]\[CORRIGIVEL\]/);
   });
 });

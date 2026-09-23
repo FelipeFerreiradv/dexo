@@ -239,6 +239,13 @@ export interface ListingFullEditInput extends MLListingSettings {
   sourceVehicleOverride?: string | null;
 }
 
+/**
+ * Reserva que a criação faz no pendente reaproveitado (retry desligado).
+ * Cobre a escada inteira com folga; os fins normais gravam por cima e o erro
+ * inesperado a desfaz. Mesma ordem de grandeza da reserva do botão.
+ */
+const CREATE_RESERVATION_MS = 10 * 60 * 1000;
+
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
   private static userRepository = new UserRepositoryPrisma();
@@ -1705,7 +1712,17 @@ export class ListingUseCase {
      * outros fluxos, que leem a ficha do próprio `product.attributes`.
      */
     attributeOverrides?: Record<string, unknown> | null,
+    /**
+     * Reserva de quem chama: o botão "Tentar publicar novamente" reserva a
+     * linha antes e passa a reserva aqui para poder reaproveitá-la. Pendente
+     * reservado por OUTRO (botão, outro "Anunciar", outro lote) não é
+     * reaproveitado — seria um segundo POST /items do mesmo produto.
+     */
+    opts?: { reservation?: { listingId: string; at: Date } },
   ): Promise<CreateListingResult> {
+    // Reserva que ESTA chamada fez no pendente reaproveitado; o catch geral a
+    // desfaz (os fins normais gravam o próprio agendamento por cima).
+    let reservaPropria: { listingId: string; at: Date } | null = null;
     try {
       let account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
@@ -2784,6 +2801,55 @@ export class ListingUseCase {
         productId,
         acc.id,
       );
+
+      // Pendente com retry automático DESLIGADO é reaproveitado sob reserva
+      // atômica (a mesma do botão): enquanto esta criação roda, o botão, outro
+      // "Anunciar", outro lote e o script de recuperação o veem "em
+      // andamento" — sem isso cada um mandava o seu POST /items. Linha com
+      // retry ligado é do cron (tem claim próprio); republicação
+      // (PENDING_REPUBLISH_) é do sync.
+      if (
+        listing &&
+        String(listing.externalListingId ?? "").startsWith("PENDING_") &&
+        !String(listing.externalListingId ?? "").startsWith(
+          "PENDING_REPUBLISH_",
+        ) &&
+        !listing.retryEnabled
+      ) {
+        const minha = opts?.reservation;
+        const proxima = listing.nextRetryAt
+          ? new Date(listing.nextRetryAt).getTime()
+          : null;
+        const ehDeQuemChamou =
+          !!minha &&
+          minha.listingId === listing.id &&
+          proxima !== null &&
+          proxima === new Date(minha.at).getTime();
+        if (!ehDeQuemChamou) {
+          const at = await ListingRepository.claimInteractiveRetry(
+            listing.id,
+            CREATE_RESERVATION_MS,
+          );
+          if (!at) {
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.in_progress_refused",
+                productId,
+                accountId: acc.id,
+                listingId: listing.id,
+              }),
+            );
+            return {
+              success: false,
+              skipped: true,
+              listingId: listing.id,
+              error:
+                "Esta publicação já está em andamento. Aguarde alguns minutos e confira o anúncio.",
+            };
+          }
+          reservaPropria = { listingId: listing.id, at };
+        }
+      }
 
       // Ficha da Revisão individual que ENTROU nesta criação (só com
       // ML_REQUIRED_ATTRS_BLOCK=1). Fica guardada no placeholder porque o cron
@@ -4408,6 +4474,12 @@ export class ListingUseCase {
       };
     } catch (error) {
       console.error("[ListingUseCase] Error creating ML listing:", error);
+      if (reservaPropria) {
+        await ListingRepository.releaseInteractiveRetry(
+          reservaPropria.listingId,
+          reservaPropria.at,
+        ).catch(() => undefined);
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : "Erro desconhecido",
