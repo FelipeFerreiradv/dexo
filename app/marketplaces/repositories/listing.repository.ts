@@ -661,10 +661,30 @@ export class ListingRepository {
    * e que ninguém regravou (a criação saiu sem escrever na linha). Condicional:
    * se a criação gravou `error`/`active`, não mexe.
    */
-  static async restoreCronClaimStatus(listingId: string): Promise<void> {
+  static async restoreCronClaimStatus(
+    listingId: string,
+    /** Status que a linha tinha antes do claim (nunca `pending`). */
+    original: string = "error",
+  ): Promise<void> {
     await prisma.productListing.updateMany({
       where: { id: listingId, status: "pending" },
-      data: { status: "error" },
+      data: { status: original && original !== "pending" ? original : "error" },
+    });
+  }
+
+  /**
+   * Erro inesperado depois de ASSUMIR uma linha agendada: devolve a linha à
+   * fila do cron (como estava antes da assunção), se a reserva ainda for a
+   * nossa. Sem isso a linha ficava com o retry desligado.
+   */
+  static async releaseTakenOverRetry(
+    listingId: string,
+    lease: Date,
+    now: Date = new Date(),
+  ): Promise<void> {
+    await prisma.productListing.updateMany({
+      where: { id: listingId, retryEnabled: false, nextRetryAt: lease },
+      data: { retryEnabled: true, nextRetryAt: new Date(now.getTime() + 60 * 1000) },
     });
   }
 

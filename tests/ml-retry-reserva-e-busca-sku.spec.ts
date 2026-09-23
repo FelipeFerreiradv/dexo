@@ -254,3 +254,21 @@ describe("rodada 4 da revisão (23/09): cron x Anunciar sem perder as escolhas d
     expect(arg.where.externalListingId).toBe("MLB_ENCERRADO");
   });
 });
+
+describe("rodada 5 da revisão (23/09): erro depois de assumir devolve a linha à fila", () => {
+  it("releaseTakenOverRetry religa o retry só se a reserva ainda for a nossa", async () => {
+    const lease = new Date(NOW.getTime() + 600_000);
+    await ListingRepository.releaseTakenOverRetry("pl-1", lease, NOW);
+    const arg = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect(arg.where).toEqual({ id: "pl-1", retryEnabled: false, nextRetryAt: lease });
+    expect(arg.data).toEqual({ retryEnabled: true, nextRetryAt: new Date(NOW.getTime() + 60_000) });
+  });
+
+  it("status devolvido é o original; 'pending' nunca é devolvido como original", async () => {
+    await ListingRepository.restoreCronClaimStatus("pl-1", "paused");
+    await ListingRepository.restoreCronClaimStatus("pl-1", "pending");
+    const [a, b] = (prisma.productListing.updateMany as any).mock.calls.map((c: any[]) => c[0]);
+    expect(a.data).toEqual({ status: "paused" });
+    expect(b.data).toEqual({ status: "error" });
+  });
+});

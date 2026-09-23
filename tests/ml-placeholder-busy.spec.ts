@@ -108,3 +108,20 @@ describe("isReusableMlPlaceholder / busyMessage", () => {
     expect(busyMessage({ id: "l", retryEnabled: false })).toMatch(/em andamento/);
   });
 });
+
+describe("rodada 5 da revisão (23/09)", () => {
+  it("linha com id REAL agendada pelo cron NÃO é assumida (o claim não a marca)", () => {
+    expect(
+      placeholderDecision(
+        {
+          id: "l1",
+          externalListingId: "MLB_ENCERRADO",
+          retryEnabled: true,
+          status: "error",
+          nextRetryAt: new Date(Date.now() + 60_000),
+        },
+        null,
+      ),
+    ).toBe("busy");
+  });
+});

@@ -533,7 +533,7 @@ describe("rodada 4 da revisão (23/09): o claim do cron no ML marca 'pending' e 
     expect((ListingRepository.claimRetryCandidate as any).mock.calls[0][2]).toEqual({
       markPublishing: true,
     });
-    expect(ListingRepository.restoreCronClaimStatus).toHaveBeenCalledWith("pl-1");
+    expect(ListingRepository.restoreCronClaimStatus).toHaveBeenCalledWith("pl-1", "error");
   });
 
   it("claim perdido ⇒ nada a devolver", async () => {
@@ -541,5 +541,32 @@ describe("rodada 4 da revisão (23/09): o claim do cron no ML marca 'pending' e 
     (ListingRepository.claimRetryCandidate as any).mockResolvedValue(null);
     await ListingRetryService.runOnce();
     expect(ListingRepository.restoreCronClaimStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("rodada 5 da revisão (23/09): a marca 'pending' só em placeholder", () => {
+  it("candidato com id REAL (linha viva ou encerrada na fila) ⇒ claim SEM a marca (as guardas de anúncio vivo continuam vendo a linha)", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ externalListingId: "MLB123", status: "active" }),
+    ]);
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(
+      new Date("2026-09-23T12:10:00.000Z"),
+    );
+    (ListingUseCase.createMLListing as any).mockResolvedValue({ success: true });
+    await ListingRetryService.runOnce();
+    expect((ListingRepository.claimRetryCandidate as any).mock.calls[0][2]).toEqual({});
+    expect(ListingRepository.restoreCronClaimStatus).not.toHaveBeenCalled();
+  });
+
+  it("devolve o status ORIGINAL da linha (não um 'error' fixo)", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ status: "error" }),
+    ]);
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(
+      new Date("2026-09-23T12:10:00.000Z"),
+    );
+    (ListingUseCase.createMLListing as any).mockResolvedValue({ success: true });
+    await ListingRetryService.runOnce();
+    expect(ListingRepository.restoreCronClaimStatus).toHaveBeenCalledWith("pl-1", "error");
   });
 });
