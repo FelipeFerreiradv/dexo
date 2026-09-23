@@ -37,7 +37,11 @@ vi.mock("../app/marketplaces/services/ml-api.service", () => ({
 }));
 
 vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
-  ListingUseCase: { createMLListing: vi.fn(), createShopeeListing: vi.fn() },
+  ListingUseCase: {
+    createMLListing: vi.fn(),
+    createShopeeListing: vi.fn(),
+    completeAdoptedMLListing: vi.fn(async () => undefined),
+  },
 }));
 
 vi.mock("../app/marketplaces/services/ml-oauth.service", () => ({
@@ -568,5 +572,65 @@ describe("rodada 5 da revisão (23/09): a marca 'pending' só em placeholder", (
     (ListingUseCase.createMLListing as any).mockResolvedValue({ success: true });
     await ListingRetryService.runOnce();
     expect(ListingRepository.restoreCronClaimStatus).toHaveBeenCalledWith("pl-1", "error");
+  });
+});
+
+describe("anúncio ADOTADO é completado (compatibilidade + estoque)", () => {
+  const ITEM = {
+    id: "MLB7686581550",
+    status: "active",
+    dateCreated: "2026-09-22T19:34:40.000Z",
+    permalink: "https://ml/x",
+  };
+
+  it("cron adota ⇒ completa o anúncio (e espera, o lease cobre)", async () => {
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidato({ lastError: "[VERIFICAR] O Mercado Livre não respondeu a tempo." }),
+    ]);
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+    await ListingRetryService.runOnce();
+    expect(ListingUseCase.completeAdoptedMLListing).toHaveBeenCalledWith({
+      accessToken: "tok-acct-1",
+      itemId: "MLB7686581550",
+      listingId: "pl-1",
+      productId: "prod-1",
+    });
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+  });
+
+  it("botão (interactive) adota ⇒ completa em segundo plano; a resposta não espera", async () => {
+    let soltar: () => void = () => {};
+    (ListingUseCase.completeAdoptedMLListing as any).mockImplementation(
+      () => new Promise<void>((r) => (soltar = r)),
+    );
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+    const r = await ListingRetryService.reconcileBeforeRecreate(
+      candidato(),
+      conta("acct-1", "X"),
+      { interactive: true },
+    );
+    // A resposta saiu com a complementação ainda presa (não esperou por ela).
+    expect(r).toBe("adopted");
+    await vi.waitFor(() =>
+      expect(ListingUseCase.completeAdoptedMLListing).toHaveBeenCalled(),
+    );
+    soltar();
+  });
+
+  it("falha ao completar não desfaz a adoção", async () => {
+    (ListingUseCase.completeAdoptedMLListing as any).mockRejectedValue(new Error("x"));
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([ITEM]);
+    const r = await ListingRetryService.reconcileBeforeRecreate(candidato(), conta("acct-1", "X"));
+    expect(r).toBe("adopted");
+  });
+
+  it("não encontrado / ambíguo ⇒ nada a completar", async () => {
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([]);
+    await ListingRetryService.reconcileBeforeRecreate(candidato(), conta("acct-1", "X"));
+    (MLApiService.findItemsBySellerSku as any).mockResolvedValue([
+      { ...ITEM, title: "Outra peça totalmente diferente" },
+    ]);
+    await ListingRetryService.reconcileBeforeRecreate(candidato(), conta("acct-1", "X"));
+    expect(ListingUseCase.completeAdoptedMLListing).not.toHaveBeenCalled();
   });
 });

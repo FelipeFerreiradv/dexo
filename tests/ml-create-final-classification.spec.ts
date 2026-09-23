@@ -18,6 +18,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     findByProductAndAccount: vi.fn(),
     updateListing: vi.fn(),
     createListing: vi.fn(),
+    createReservedPlaceholderIfAbsent: vi.fn(),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
     claimInteractiveRetry: vi.fn(),
@@ -209,6 +210,11 @@ beforeEach(async () => {
   (MarketplaceRepository.findByIdAndUser as any).mockResolvedValue(ACCOUNT);
   (ListingRepository.findLiveByProductAndAccount as any).mockResolvedValue(null);
   (ListingRepository.findByProductAndAccount as any).mockResolvedValue(null);
+  // Criação exclusiva da 1ª linha do par (lock de transação): nos testes
+  // unitários delega ao createListing mockado — as asserções de sempre valem.
+  (ListingRepository.createReservedPlaceholderIfAbsent as any).mockImplementation(
+    async (d: any) => ({ created: await (ListingRepository.createListing as any)(d) }),
+  );
   (ListingRepository.createListing as any).mockImplementation(async (d: any) => ({
     id: "l-novo",
     ...d,
@@ -855,5 +861,42 @@ describe("rodada 6 da revisão (23/09): reserva desfeita em TODA saída sem regr
     });
     await criar();
     expect(ListingRepository.releaseInteractiveRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("1ª publicação: criação exclusiva da linha (lock de transação)", () => {
+  it("outra criação do mesmo produto criou a linha enquanto esta montava o anúncio ⇒ recua sem POST e sem mexer na reserva dela", async () => {
+    (ListingRepository.createReservedPlaceholderIfAbsent as any).mockResolvedValue({
+      existing: {
+        id: "l-da-outra",
+        externalListingId: "PENDING_9",
+        retryEnabled: false,
+        nextRetryAt: new Date(Date.now() + 600_000),
+        status: "pending",
+        lastError: null,
+      },
+    });
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(true);
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+    expect(r.listingId).toBe("l-da-outra");
+    expect(ListingRepository.releaseInteractiveRetry).not.toHaveBeenCalled();
+    expect(ListingRepository.releaseTakenOverRetry).not.toHaveBeenCalled();
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+});
+
+describe("1ª publicação: a outra criação já terminou enquanto esta esperava o lock", () => {
+  it("anúncio vivo no par ⇒ recusa como duplicata, sem POST e sem linha nova", async () => {
+    (ListingRepository.createReservedPlaceholderIfAbsent as any).mockResolvedValue({
+      live: { id: "l-viva", externalListingId: "MLB777", status: "active" },
+    });
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(true);
+    expect(r.error).toMatch(/já tem anúncio nesta conta \(MLB777\)/);
+    expect(ListingRepository.createListing).not.toHaveBeenCalled();
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
   });
 });

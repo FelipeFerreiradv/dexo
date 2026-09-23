@@ -11,12 +11,19 @@ import axios from "axios";
  */
 
 vi.mock("axios");
+const { tx } = vi.hoisted(() => ({
+  tx: {
+    $executeRaw: vi.fn(async () => 1),
+    productListing: { findFirst: vi.fn(), create: vi.fn() },
+  },
+}));
 vi.mock("../app/lib/prisma", () => ({
   default: {
     productListing: {
       updateMany: vi.fn(async () => ({ count: 1 })),
       findFirst: vi.fn(async () => null),
     },
+    $transaction: vi.fn(async (fn: any) => fn(tx)),
   },
 }));
 
@@ -278,5 +285,81 @@ describe("rodada 6 da revisão (23/09)", () => {
     await ListingRepository.claimRetryCandidate("pl-1", 600_000, { markPublishing: true });
     const arg = (prisma.productListing.updateMany as any).mock.calls[0][0];
     expect(arg.where.externalListingId).toEqual({ startsWith: "PENDING_" });
+  });
+});
+
+describe("criação EXCLUSIVA da 1ª linha do par (lock de transação)", () => {
+  const DADOS = {
+    productId: "prod-1",
+    marketplaceAccountId: "acct-1",
+    externalListingId: "PENDING_1",
+    status: "pending",
+    retryEnabled: false,
+    nextRetryAt: new Date(NOW.getTime() + 600_000),
+  };
+
+  beforeEach(() => {
+    tx.$executeRaw.mockClear();
+    tx.productListing.findFirst.mockReset();
+    tx.productListing.create.mockReset();
+    tx.productListing.create.mockImplementation(async ({ data }: any) => ({ id: "novo", ...data }));
+  });
+
+  it("ordem: lock do par ⇒ releitura ⇒ criação; lock por $executeRaw com chave de 64 bits do par", async () => {
+    tx.productListing.findFirst.mockResolvedValue(null);
+    const r = await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
+    expect("created" in r && r.created.id).toBe("novo");
+    const [partes, ...valores] = tx.$executeRaw.mock.calls[0] as any[];
+    expect(partes.join("?")).toContain("pg_advisory_xact_lock(hashtextextended(");
+    expect(valores[0]).toBe("ml_first_placeholder:prod-1:acct-1");
+    const ordem = [
+      tx.$executeRaw.mock.invocationCallOrder[0],
+      tx.productListing.findFirst.mock.invocationCallOrder[0],
+      tx.productListing.create.mock.invocationCallOrder[0],
+    ];
+    expect(ordem[0]).toBeLessThan(ordem[1]);
+    expect(ordem[1]).toBeLessThan(ordem[2]);
+    // a releitura olha só placeholder comum do par
+    expect(tx.productListing.findFirst.mock.calls[0][0].where).toEqual({
+      productId: "prod-1",
+      marketplaceAccountId: "acct-1",
+      externalListingId: { startsWith: "PENDING_" },
+      NOT: { externalListingId: { startsWith: "PENDING_REPUBLISH_" } },
+    });
+    // a linha nasce com a reserva pedida
+    expect(tx.productListing.create.mock.calls[0][0].data.nextRetryAt).toEqual(DADOS.nextRetryAt);
+  });
+
+  it("outra criação chegou antes (linha PENDING_ do par já existe) ⇒ NÃO cria; devolve a existente", async () => {
+    tx.productListing.findFirst.mockResolvedValue({
+      id: "outra",
+      externalListingId: "PENDING_0",
+      retryEnabled: false,
+      nextRetryAt: new Date(NOW.getTime() + 300_000),
+      status: "pending",
+      lastError: null,
+    });
+    const r = await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
+    expect("existing" in r && r.existing.id).toBe("outra");
+    expect(tx.productListing.create).not.toHaveBeenCalled();
+  });
+
+  it("a outra criação já TERMINOU (anúncio vivo no par) ⇒ NÃO cria linha nenhuma; devolve o vivo", async () => {
+    tx.productListing.findFirst
+      .mockResolvedValueOnce(null) // nenhum pendente
+      .mockResolvedValueOnce({ id: "l-viva", externalListingId: "MLB9", status: "active" });
+    const r = await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
+    expect("live" in r && r.live.externalListingId).toBe("MLB9");
+    expect(tx.productListing.create).not.toHaveBeenCalled();
+    const where = tx.productListing.findFirst.mock.calls[1][0].where;
+    expect(where.NOT).toEqual({ externalListingId: { startsWith: "PENDING_" } });
+    expect(where.status.in).toContain("active");
+  });
+
+  it("transação com folga explícita (fila do pool) — nunca o padrão de 2 s/5 s", async () => {
+    tx.productListing.findFirst.mockResolvedValue(null);
+    await ListingRepository.createReservedPlaceholderIfAbsent(DADOS as any);
+    const opcoes = (prisma.$transaction as any).mock.calls.at(-1)[1];
+    expect(opcoes).toEqual({ maxWait: 10_000, timeout: 15_000 });
   });
 });

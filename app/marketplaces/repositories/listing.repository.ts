@@ -11,6 +11,113 @@ export class ListingRepository {
   /**
    * Cria uma nova conexão entre produto e anúncio ML
    */
+  /** Mapeamento único do `data` de criação (createListing e a exclusiva). */
+  private static buildCreateData(
+    data: Parameters<typeof ListingRepository.createListing>[0],
+  ) {
+    return {
+      productId: data.productId,
+      marketplaceAccountId: data.marketplaceAccountId,
+      externalListingId: data.externalListingId,
+      externalSku: data.externalSku || null,
+      permalink: data.permalink || null,
+      status: data.status,
+      retryAttempts: data.retryAttempts ?? 0,
+      nextRetryAt: data.nextRetryAt ?? null,
+      lastError: data.lastError ?? null,
+      retryEnabled: data.retryEnabled ?? false,
+      requestedCategoryId: data.requestedCategoryId ?? null,
+      listingType: data.listingType ?? null,
+      itemCondition: data.itemCondition ?? null,
+      hasWarranty: data.hasWarranty ?? null,
+      warrantyUnit: data.warrantyUnit ?? null,
+      warrantyDuration: data.warrantyDuration ?? null,
+      shippingMode: data.shippingMode ?? null,
+      freeShipping: data.freeShipping ?? null,
+      localPickup: data.localPickup ?? null,
+      manufacturingTime: data.manufacturingTime ?? null,
+      createdByUserId: data.createdByUserId ?? null,
+      ...(data.attributesOverride !== undefined
+        ? { attributesOverride: campoJson(data.attributesOverride) }
+        : {}),
+    };
+  }
+
+  /**
+   * Cria o placeholder da 1ª publicação do par (produto, conta) SÓ se nenhuma
+   * outra criação o fez enquanto esta montava o anúncio. Sem isso, duas
+   * publicações do mesmo produto que liam "nenhuma linha" antes de uma das
+   * duas gravar criavam DUAS linhas e mandavam dois POST /items.
+   *
+   * Lock consultivo de TRANSAÇÃO (o Postgres solta no COMMIT/ROLLBACK — sem o
+   * problema do lock de sessão com o pooler, ver claimRetryCandidate), chave
+   * de 64 bits por par (`hashtextextended`, como catalog-identity/devolução),
+   * READ COMMITTED (o padrão: a releitura depois do lock vê a linha que a
+   * outra criação acabou de gravar). Sob o lock também confere anúncio VIVO
+   * do par: a outra criação pode ter TERMINADO enquanto esta esperava (o
+   * pendente dela já virou MLB…) — aí não cria linha nenhuma (sem isso
+   * sobrava um pendente encerrado como "já tem anúncio", achado no teste com
+   * Postgres real). Só na 1ª publicação do par.
+   */
+  static async createReservedPlaceholderIfAbsent(
+    data: Parameters<typeof ListingRepository.createListing>[0] & {
+      nextRetryAt: Date;
+    },
+  ): Promise<
+    | { created: Awaited<ReturnType<typeof prisma.productListing.create>> }
+    | {
+        existing: {
+          id: string;
+          externalListingId: string;
+          retryEnabled: boolean;
+          nextRetryAt: Date | null;
+          status: string;
+          lastError: string | null;
+        };
+      }
+    | { live: { id: string; externalListingId: string; status: string } }
+  > {
+    const chave = `ml_first_placeholder:${data.productId}:${data.marketplaceAccountId}`;
+    return prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${chave}, 0))`;
+        const existing = await tx.productListing.findFirst({
+          where: {
+            productId: data.productId,
+            marketplaceAccountId: data.marketplaceAccountId,
+            externalListingId: { startsWith: "PENDING_" },
+            NOT: { externalListingId: { startsWith: "PENDING_REPUBLISH_" } },
+          },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            externalListingId: true,
+            retryEnabled: true,
+            nextRetryAt: true,
+            status: true,
+            lastError: true,
+          },
+        });
+        if (existing) return { existing };
+        const live = await tx.productListing.findFirst({
+          where: {
+            productId: data.productId,
+            marketplaceAccountId: data.marketplaceAccountId,
+            status: { in: liveListingStatuses() },
+            NOT: { externalListingId: { startsWith: "PENDING_" } },
+          },
+          select: { id: true, externalListingId: true, status: true },
+        });
+        if (live) return { live };
+        const created = await tx.productListing.create({
+          data: ListingRepository.buildCreateData(data),
+        });
+        return { created };
+      },
+      { maxWait: 10_000, timeout: 15_000 },
+    );
+  }
+
   static async createListing(data: {
     productId: string;
     marketplaceAccountId: string;
@@ -46,32 +153,7 @@ export class ListingRepository {
   }) {
     try {
       const listing = await prisma.productListing.create({
-        data: {
-          productId: data.productId,
-          marketplaceAccountId: data.marketplaceAccountId,
-          externalListingId: data.externalListingId,
-          externalSku: data.externalSku || null,
-          permalink: data.permalink || null,
-          status: data.status,
-          retryAttempts: data.retryAttempts ?? 0,
-          nextRetryAt: data.nextRetryAt ?? null,
-          lastError: data.lastError ?? null,
-          retryEnabled: data.retryEnabled ?? false,
-          requestedCategoryId: data.requestedCategoryId ?? null,
-          listingType: data.listingType ?? null,
-          itemCondition: data.itemCondition ?? null,
-          hasWarranty: data.hasWarranty ?? null,
-          warrantyUnit: data.warrantyUnit ?? null,
-          warrantyDuration: data.warrantyDuration ?? null,
-          shippingMode: data.shippingMode ?? null,
-          freeShipping: data.freeShipping ?? null,
-          localPickup: data.localPickup ?? null,
-          manufacturingTime: data.manufacturingTime ?? null,
-          createdByUserId: data.createdByUserId ?? null,
-          ...(data.attributesOverride !== undefined
-            ? { attributesOverride: campoJson(data.attributesOverride) }
-            : {}),
-        },
+        data: ListingRepository.buildCreateData(data),
       });
       return listing;
     } catch (error) {

@@ -3226,7 +3226,10 @@ export class ListingUseCase {
         // segundo "Anunciar" do mesmo produto (duplo clique, lotes
         // sobrepostos) a acharia livre e mandaria outro POST /items.
         const reservaNova = new Date(Date.now() + CREATE_RESERVATION_MS);
-        listing = await ListingRepository.createListing({
+        // Criação EXCLUSIVA por par (lock de transação): outra publicação do
+        // mesmo produto que tenha criado a linha enquanto esta montava o
+        // anúncio faz esta recuar, sem POST.
+        const criacao = await ListingRepository.createReservedPlaceholderIfAbsent({
           productId,
           marketplaceAccountId: acc.id,
           externalListingId: `PENDING_${Date.now()}`,
@@ -3252,6 +3255,44 @@ export class ListingUseCase {
             ? { attributesOverride: fichaParaRetentativa }
             : {}),
         });
+        if ("live" in criacao) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.duplicate_refused",
+              productId,
+              accountId: acc.id,
+              liveExternalListingId: criacao.live.externalListingId,
+              liveStatus: criacao.live.status,
+              stage: "first_placeholder_lock",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            listingId: criacao.live.id,
+            externalListingId: criacao.live.externalListingId,
+            error: `Produto já tem anúncio nesta conta (${criacao.live.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+          };
+        }
+        if ("existing" in criacao) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.create_item.in_progress_refused",
+              productId,
+              accountId: acc.id,
+              listingId: criacao.existing.id,
+              stage: "first_placeholder_lock",
+            }),
+          );
+          return {
+            success: false,
+            skipped: true,
+            code: "PUBLICATION_IN_PROGRESS",
+            listingId: criacao.existing.id,
+            error: busyMessage(criacao.existing),
+          };
+        }
+        listing = criacao.created;
         if (listing?.id) {
           reservaPropria = { listingId: listing.id, at: reservaNova };
         }
@@ -8637,6 +8678,101 @@ export class ListingUseCase {
    * Best-effort: qualquer falha só gera warning — não pode derrubar a edição
    * nem o re-sync que a chamou.
    */
+  /**
+   * Completa um anúncio ADOTADO pela conferência (o item já existia no ML:
+   * a tentativa anterior deu timeout depois de criar). Ele não passou pelo
+   * pós-criação do createMLListing — que roda só quando o POST responde.
+   *
+   *  - Compatibilidade veicular: vai DEPOIS do POST, então o item adotado
+   *    nunca a recebeu. Mesma escada aditiva da criação
+   *    (applyCompatibilitiesVerified: só acrescenta) + diagnóstico.
+   *  - Estoque: se a peça vendeu entre a criação e a adoção, a quantidade do
+   *    item é velha. Enfileira o sync de estoque pela fila durável de sempre
+   *    (StockSyncJob, com retry) — nunca empurra direto.
+   *
+   * Não reativa item pausado nem mexe em descrição/tipo/título (o POST já os
+   * levou; reativar poria no ar uma quantidade velha). Best-effort: nada aqui
+   * derruba a adoção. ML_ADOPT_COMPLETE_DISABLED=1 desliga.
+   */
+  static async completeAdoptedMLListing(a: {
+    accessToken: string;
+    itemId: string;
+    listingId: string;
+    productId: string;
+  }): Promise<void> {
+    if (process.env.ML_ADOPT_COMPLETE_DISABLED === "1") return;
+    if (!a.itemId || a.itemId.startsWith("PENDING_")) return;
+
+    try {
+      const { StockReconciliationService } = await import(
+        "../services/stock-reconciliation.service"
+      );
+      await StockReconciliationService.enqueueListingStockSync(
+        a.listingId,
+        a.productId,
+      );
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] estoque pós-adoção não enfileirado (${a.itemId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    try {
+      const prisma = (await import("../../lib/prisma")).default;
+      const p = await prisma.product.findUnique({
+        where: { id: a.productId },
+        select: {
+          compatibilityPositions: true,
+          compatibilities: {
+            select: { brand: true, model: true, yearFrom: true, yearTo: true },
+          },
+        },
+      });
+      const vehicles = (p?.compatibilities ?? [])
+        .filter((v) => v.brand && v.model)
+        .map((v) => ({
+          brand: v.brand,
+          model: v.model,
+          yearFrom: v.yearFrom ?? null,
+          yearTo: v.yearTo ?? null,
+        }));
+      if (vehicles.length === 0) return;
+      const posicoes = Array.isArray(p?.compatibilityPositions)
+        ? (p!.compatibilityPositions as unknown[]).filter(
+            (x): x is string => typeof x === "string",
+          )
+        : [];
+      const compat = await MLApiService.applyCompatibilitiesVerified(
+        a.accessToken,
+        a.itemId,
+        vehicles as any,
+        posicoes.length > 0 ? posicoes : undefined,
+      );
+      console.log(
+        JSON.stringify({
+          event: "ml.compat.verified",
+          origin: "adoption",
+          itemId: a.itemId,
+          listingId: a.listingId,
+          requested: compat.requested,
+          persisted: compat.persisted,
+          strategy: compat.strategy,
+          verified: compat.verified,
+        }),
+      );
+      await ListingRepository.updateCompatDiagnostics(
+        a.listingId,
+        buildCompatDiagnostics(compat, { origin: "adoption" }),
+      );
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] compatibilidade pós-adoção falhou (${a.itemId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   static async resendCompatibilitiesIfNeeded(args: {
     accessToken: string;
     itemId: string;

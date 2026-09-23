@@ -15,6 +15,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     findByProductAndAccount: vi.fn(),
     updateListing: vi.fn(),
     createListing: vi.fn(),
+    createReservedPlaceholderIfAbsent: vi.fn(),
     findRetryStateById: vi.fn(),
     updateCompatDiagnostics: vi.fn(),
   },
@@ -214,6 +215,11 @@ beforeEach(async () => {
   (MarketplaceRepository.findByIdAndUser as any).mockResolvedValue(ACCOUNT);
   (ListingRepository.findLiveByProductAndAccount as any).mockResolvedValue(null);
   (ListingRepository.findByProductAndAccount as any).mockResolvedValue(null);
+  // Criação exclusiva da 1ª linha do par (lock de transação): nos testes
+  // unitários delega ao createListing mockado — as asserções de sempre valem.
+  (ListingRepository.createReservedPlaceholderIfAbsent as any).mockImplementation(
+    async (d: any) => ({ created: await (ListingRepository.createListing as any)(d) }),
+  );
   (ListingRepository.createListing as any).mockImplementation(async (d: any) => ({
     id: "l-novo",
     ...d,
