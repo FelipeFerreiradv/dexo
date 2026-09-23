@@ -31,6 +31,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { ListingsPagination } from "@/app/integracoes/components/listings-pagination";
 import { MLListingsSkeleton } from "./ml-skeleton";
+import { formatListingError } from "@/app/produtos/lib/listing-error-format";
 
 interface Listing {
   id: string;
@@ -326,9 +327,20 @@ export function MLListingsTab() {
                     <TableCell>
                       {getStatusBadge(listing.status)}
                       {listing.lastError ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {listing.lastError.slice(0, 120)}
-                          {listing.lastError.length > 120 ? "…" : ""}
+                        // Frase em vez do JSON cru do ML (marcadores de retry
+                        // removidos); o texto técnico fica no title.
+                        <div
+                          className="mt-1 text-xs text-muted-foreground"
+                          title={listing.lastError}
+                        >
+                          {(() => {
+                            const texto =
+                              formatListingError(listing.lastError)?.summary ??
+                              listing.lastError;
+                            return texto.length > 120
+                              ? `${texto.slice(0, 120)}…`
+                              : texto;
+                          })()}
                         </div>
                       ) : null}
                     </TableCell>

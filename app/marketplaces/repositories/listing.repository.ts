@@ -462,6 +462,45 @@ export class ListingRepository {
   }
 
   /**
+   * Re-arma os placeholders do ML deste produto que foram recusados por DADO
+   * (`[TERMINAL][CORRIGIVEL]`), depois que a pessoa editou o produto. UM
+   * update condicional — nada de ler e depois escrever:
+   *  - só placeholders (`PENDING_…`), nunca republicação (`PENDING_REPUBLISH_`,
+   *    cuja reversão devolve o id do anúncio VIVO à linha) nem linha com id real;
+   *  - só `[TERMINAL][CORRIGIVEL]` — anti-duplicata, PolicyAgent e terminais
+   *    antigos (`[TERMINAL]` puro) não re-armam;
+   *  - só conta ML ativa;
+   *  - `nextRetryAt` daqui a `delayMs`: uma publicação interativa em voo para a
+   *    mesma linha (a escada leva no máximo ~3 min) termina antes, e o que ela
+   *    gravar ao final prevalece.
+   */
+  static async rearmCorrectableMlPlaceholders(
+    productId: string,
+    delayMs: number,
+    now: Date = new Date(),
+  ): Promise<number> {
+    const r = await prisma.productListing.updateMany({
+      where: {
+        productId,
+        status: "error",
+        retryEnabled: false,
+        lastError: { startsWith: "[TERMINAL][CORRIGIVEL]" },
+        externalListingId: {
+          startsWith: "PENDING_",
+          not: { startsWith: "PENDING_REPUBLISH_" },
+        },
+        marketplaceAccount: { platform: "MERCADO_LIVRE", status: "ACTIVE" },
+      },
+      data: {
+        retryEnabled: true,
+        retryAttempts: 0,
+        nextRetryAt: new Date(now.getTime() + delayMs),
+      },
+    });
+    return r.count;
+  }
+
+  /**
    * Claim atômico de um candidato de retry — a trava ENTRE PROCESSOS do cron.
    *
    * A trava de reentrância do ListingRetryService (`passInFlight`) é por

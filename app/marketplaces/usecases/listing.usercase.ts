@@ -36,11 +36,18 @@ import {
   type MLPreflightResult,
 } from "../services/listing-preflight.service";
 import {
-  pickActionableMLError,
+  pickActionableMLErrorForCategory,
   isMissingRequiredAttrsForCategory,
   findMissingRequiredAttributeIds,
   type MLCause,
 } from "../services/ml-error-message.service";
+import {
+  humanMessageForKind,
+  isTerminalMarker,
+  lastErrorMarkerFor,
+  normalizeMLError,
+  type MLRawCause,
+} from "../lib/ml-error-normalizer";
 import {
   isMlRequiredAttrsBlockEnabled,
   evaluateMLRequiredAttributes,
@@ -163,6 +170,15 @@ export interface CreateListingResult {
     name: string;
     reason: "missing" | "invalid_value";
   }>;
+  /**
+   * Classe da falha do ML (ml-error-normalizer) e o marcador que foi gravado
+   * no começo do `lastError` da linha (`[TERMINAL][CORRIGIVEL]`,
+   * `[TERMINAL][RECONECTAR]`, `[VERIFICAR]`). `error` vem SEM o marcador —
+   * é o texto para a pessoa. O cron usa o marcador ao gravar na linha do
+   * candidato (que pode não ser a linha que o create escolheu). Opcionais.
+   */
+  errorKind?: "VALIDATION" | "TRANSIENT" | "RATE_LIMIT" | "AUTH" | "UNKNOWN";
+  lastErrorMarker?: string;
 }
 
 export interface MLListingSettings {
@@ -3029,9 +3045,38 @@ export class ListingUseCase {
         const attemptCauses: MLCause[][] = [
           Array.isArray(parsedMl?.cause) ? parsedMl.cause : [],
         ];
-        const recordAttemptCause = (retryErr: any) => {
+        // Registro de CADA tentativa da escada, com a categoria em que foi
+        // feita. `err`/`errMsg`/`parsedMl` acima são da 1ª tentativa — para
+        // vendedor "User Products" ela SEMPRE leva 369 (family_name), então
+        // classificar por eles diria "erro de dado" mesmo quando a última
+        // tentativa estourou o tempo (e pode ter criado o item no ML). A
+        // classificação final usa a ÚLTIMA tentativa na categoria pedida, e
+        // qualquer timeout na passada vira "conferir antes de recriar".
+        const attemptLog: Array<{
+          step: string;
+          categoryId: string | null;
+          err: unknown;
+        }> = [{ step: "initial", categoryId: categoryIdForML ?? null, err }];
+        const recordAttempt = (
+          step: string,
+          categoryId: string | null | undefined,
+          e: unknown,
+        ) => {
+          if (e && typeof e === "object") {
+            // Mesmo erro relançado por dois catches aninhados conta uma vez.
+            if ((e as any).__dexoAttemptRecorded) return;
+            (e as any).__dexoAttemptRecorded = true;
+          }
+          attemptLog.push({ step, categoryId: categoryId ?? null, err: e });
+        };
+        const recordAttemptCause = (
+          retryErr: any,
+          step = "retry",
+          categoryId: string | null = categoryIdForML ?? null,
+        ) => {
           const causes = retryErr?.mlError?.cause;
           if (Array.isArray(causes)) attemptCauses.push(causes);
+          recordAttempt(step, categoryId, retryErr);
         };
 
         // ─── Obrigatórios do ML depois do POST (ML_REQUIRED_ATTRS_BLOCK=1) ───
@@ -3103,11 +3148,16 @@ export class ListingUseCase {
                 normalizedNew,
               );
 
-              mlItem = await this.withTimeout(
-                MLApiService.createItem(acc.accessToken, retryPayload),
-                timeoutMs,
-                "ML createItem condition retry",
-              );
+              try {
+                mlItem = await this.withTimeout(
+                  MLApiService.createItem(acc.accessToken, retryPayload),
+                  timeoutMs,
+                  "ML createItem condition retry",
+                );
+              } catch (e) {
+                recordAttempt("condition_retry", normalizedNew, e);
+                throw e;
+              }
 
               if (mlItem) {
                 resolvedCategoryId = normalizedNew;
@@ -3147,11 +3197,16 @@ export class ListingUseCase {
               ...payload,
               category_id: categoryIdForML,
             };
-            mlItem = await this.withTimeout(
-              MLApiService.createItem(acc.accessToken, retryPayload),
-              timeoutMs,
-              "ML createItem retry category",
-            );
+            try {
+              mlItem = await this.withTimeout(
+                MLApiService.createItem(acc.accessToken, retryPayload),
+                timeoutMs,
+                "ML createItem retry category",
+              );
+            } catch (e) {
+              recordAttempt("category_leaf_retry", categoryIdForML, e);
+              throw e;
+            }
             console.warn(
               `[ListingUseCase] Retentativa com categoria leaf ${categoryIdForML} bem-sucedida`,
             );
@@ -3206,7 +3261,7 @@ export class ListingUseCase {
             const famMsg =
               famErr instanceof Error ? famErr.message : String(famErr);
             const famMl = famErr?.mlError || null;
-            recordAttemptCause(famErr);
+            recordAttemptCause(famErr, "family_name", categoryIdForML);
             recordSameCategoryCause(famErr);
             console.warn(
               JSON.stringify({
@@ -3254,7 +3309,7 @@ export class ListingUseCase {
             // categorias da allowlist (as que exigem family_name sem title)
             // sumia antes de chegar ao `pickActionableMLError` — justo o
             // caminho em que ela é a única informação útil.
-            recordAttemptCause(noTitleErr);
+            recordAttemptCause(noTitleErr, "no_title", categoryIdForML);
             recordSameCategoryCause(noTitleErr);
             console.warn(
               "[ListingUseCase] Retentativa sem title falhou:",
@@ -3290,7 +3345,7 @@ export class ListingUseCase {
             );
           } catch (retryTitleErr: any) {
             const stMl = retryTitleErr?.mlError || null;
-            recordAttemptCause(retryTitleErr);
+            recordAttemptCause(retryTitleErr, "safe_title", categoryIdForML);
             recordSameCategoryCause(retryTitleErr);
             console.warn(
               JSON.stringify({
@@ -3331,7 +3386,7 @@ export class ListingUseCase {
             );
           } catch (dynErr: any) {
             const dynMl = dynErr?.mlError || null;
-            recordAttemptCause(dynErr);
+            recordAttemptCause(dynErr, "dynamic_no_title", categoryIdForML);
             recordSameCategoryCause(dynErr);
             console.warn(
               JSON.stringify({
@@ -3405,7 +3460,7 @@ export class ListingUseCase {
                 // adicionando family_name e removendo title.
                 const innerMl =
                   innerErr && innerErr.mlError ? innerErr.mlError : null;
-                recordAttemptCause(innerErr);
+                recordAttemptCause(innerErr, "suggested_category", normalizedNew);
                 const innerMsg = JSON.stringify(
                   innerMl || innerErr?.message || "",
                 ).toLowerCase();
@@ -3428,7 +3483,7 @@ export class ListingUseCase {
                       "ML createItem suggested+family",
                     );
                   } catch (innerErr2: any) {
-                    recordAttemptCause(innerErr2);
+                    recordAttemptCause(innerErr2, "suggested_family", normalizedNew);
                     const inner2Msg = JSON.stringify(
                       (innerErr2 && innerErr2.mlError) ||
                         innerErr2?.message ||
@@ -3443,11 +3498,19 @@ export class ListingUseCase {
                           this.buildMLTitle(product),
                       } as any;
                       delete (noTitleRetry as any).title;
-                      mlItem = await this.withTimeout(
-                        MLApiService.createItem(acc.accessToken, noTitleRetry),
-                        timeoutMs,
-                        "ML createItem suggested+noTitle",
-                      );
+                      try {
+                        mlItem = await this.withTimeout(
+                          MLApiService.createItem(
+                            acc.accessToken,
+                            noTitleRetry,
+                          ),
+                          timeoutMs,
+                          "ML createItem suggested+noTitle",
+                        );
+                      } catch (e) {
+                        recordAttempt("suggested_no_title", normalizedNew, e);
+                        throw e;
+                      }
                     } else {
                       throw innerErr2;
                     }
@@ -3789,39 +3852,150 @@ export class ListingUseCase {
 
         // If we recovered and have mlItem, continue normal flow; otherwise rethrow
         if (!mlItem) {
-          // A escada esgotou. `err` é o erro da PRIMEIRA tentativa — em
-          // categorias de catálogo isso é sempre `family_name`, que a escada
-          // já resolveu e que o operador não tem como corrigir. A causa que
-          // ele resolve (ex.: PART_NUMBER em branco) só aparece nas
-          // retentativas. Reporta a mais acionável; sem nenhuma reconhecida,
-          // mantém a mensagem de hoje.
-          const actionable = pickActionableMLError(
-            attemptCauses,
-            categoryIdForML,
+          // A escada esgotou. `err` é o erro da PRIMEIRA tentativa — em conta
+          // "User Products" isso é sempre `family_name`, que a escada já
+          // resolveu. A causa que a pessoa resolve só aparece nas
+          // retentativas, e só vale a da categoria que ELA escolheu (a escada
+          // também tenta categorias sugeridas pelo ML).
+          const actionable = pickActionableMLErrorForCategory(
+            attemptLog.map((a) => ({
+              causes: Array.isArray((a.err as any)?.mlError?.cause)
+                ? ((a.err as any).mlError.cause as MLCause[])
+                : [],
+              categoryId: a.categoryId,
+            })),
+            categoriaPedidaML,
             {
               somenteObrigatorios: process.env.ML_ERROR_DETAIL_DISABLED === "1",
             },
           );
-          if (actionable) {
-            console.warn(
-              JSON.stringify({
-                event: "ml.create_item.actionable_error",
-                productId: product.id,
-                categoryId: categoryIdForML,
-                actionable,
-                originalMessage: errMsg,
+
+          // Classe da falha: pela ÚLTIMA tentativa na categoria pedida; um
+          // timeout em QUALQUER tentativa vira "conferir antes de recriar".
+          const mesmaCategoria = (c: string | null) =>
+            String(c || "").toUpperCase() ===
+            String(categoriaPedidaML || "").toUpperCase();
+          const ultimaNaPedida =
+            [...attemptLog].reverse().find((a) => mesmaCategoria(a.categoryId)) ??
+            attemptLog[attemptLog.length - 1];
+          const normalizado = normalizeMLError({
+            err: ultimaNaPedida.err,
+            operation: "create_item",
+            step: ultimaNaPedida.step,
+            categoryId: ultimaNaPedida.categoryId,
+          });
+          const algumTimeout = attemptLog.some(
+            (a) => normalizeMLError({ err: a.err }).timedOut,
+          );
+          const classe = algumTimeout
+            ? { ...normalizado, kind: "UNKNOWN" as const, timedOut: true }
+            : normalizado;
+          // Recusa por dado só é terminal quando a ficha foi montada COM o
+          // catálogo de atributos da categoria. Sem catálogo (serviço de
+          // atributos indisponível nesta tentativa — fail-open), o próprio
+          // corpo saiu incompleto e a retentativa, com o catálogo de volta,
+          // costuma passar: continua reagendando como sempre.
+          const catalogoDisponivel =
+            !!categoryAttrsForBuild && categoryAttrsForBuild.length > 0;
+          const marcadorBruto = lastErrorMarkerFor(classe);
+          const marcador =
+            classe.kind === "VALIDATION" && !catalogoDisponivel
+              ? null
+              : marcadorBruto;
+          const primeiraCausa =
+            (((ultimaNaPedida.err as any)?.mlError?.cause ?? []) as MLRawCause[])
+              .find((c) => (c?.type ?? "error").toLowerCase() === "error") ??
+            null;
+          const mensagem =
+            actionable ??
+            humanMessageForKind(classe, {
+              accountName: acc.accountName,
+              firstCause: primeiraCausa,
+            });
+
+          // Log estruturado: responde "quantos falham, por qual código, em
+          // qual categoria/conta, desde quando". Sem token e sem payload.
+          const resumoTentativas = attemptLog.map((a) => {
+            const n = normalizeMLError({ err: a.err });
+            return {
+              step: a.step,
+              categoryId: a.categoryId,
+              kind: n.kind,
+              httpStatus: n.httpStatus,
+              causeIds: n.causeIds,
+              timedOut: n.timedOut,
+            };
+          });
+          console.warn(
+            JSON.stringify({
+              event: "ml.publish.outcome",
+              outcome: "failed",
+              productId: product.id,
+              accountId: acc.id,
+              listingId: listing.id,
+              requestedCategoryId: categoriaPedidaML,
+              kind: classe.kind,
+              httpStatus: classe.httpStatus,
+              causeIds: classe.causeIds,
+              causeCodes: classe.causeCodes,
+              fields: classe.fields,
+              retryable: classe.retryable,
+              userActionRequired: classe.userActionRequired,
+              timedOut: classe.timedOut,
+              marker: marcador,
+              actionable: !!actionable,
+              attempts: resumoTentativas,
+            }),
+          );
+          // Best-effort de verdade: registrar o log nunca pode derrubar o
+          // fluxo de publicação (nem se o serviço lançar ou não devolver
+          // Promise).
+          try {
+            void Promise.resolve(
+              SystemLogService.logError("CREATE_LISTING", mensagem, {
+                userId,
+                resource: "ProductListing",
+                resourceId: listing.id,
+                details: {
+                  event: "ml.publish.failed",
+                  provider: "mercadolivre",
+                  operation: "create_item",
+                  productId: product.id,
+                  accountId: acc.id,
+                  requestedCategoryId: categoriaPedidaML,
+                  kind: classe.kind,
+                  httpStatus: classe.httpStatus,
+                  causeIds: classe.causeIds,
+                  causeCodes: classe.causeCodes,
+                  fields: classe.fields,
+                  timedOut: classe.timedOut,
+                  attempts: resumoTentativas,
+                },
               }),
-            );
+            ).catch(() => undefined);
+          } catch {
+            /* log é best-effort */
           }
 
-          // marcar placeholder com erro genÃ©rico para retry e exibir ao usuÃ¡rio
+          // Republicação (PENDING_REPUBLISH_) segue gravando como sempre: o
+          // sync reverte a linha para o anúncio original, e um marcador
+          // terminal ali ficaria numa linha VIVA.
+          const republicacao =
+            !!listing.externalListingId?.startsWith("PENDING_REPUBLISH_");
+          const terminal = !republicacao && isTerminalMarker(marcador);
           const nextRetryMs = 60 * 1000;
           try {
             await ListingRepository.updateListing(listing.id, {
               status: "error",
-              lastError: actionable || errMsg,
-              retryEnabled: true,
-              nextRetryAt: new Date(Date.now() + nextRetryMs),
+              lastError: republicacao
+                ? mensagem
+                : marcador
+                  ? `${marcador} ${mensagem}`
+                  : mensagem,
+              retryEnabled: !terminal,
+              nextRetryAt: terminal
+                ? null
+                : new Date(Date.now() + nextRetryMs),
               requestedCategoryId: payload.category_id || null,
             });
           } catch (updateErr) {
@@ -3831,19 +4005,16 @@ export class ListingUseCase {
             );
           }
 
-          if (actionable) {
-            // Retorno (em vez de throw) para a mensagem chegar ao usuário sem
-            // virar "Erro desconhecido" no catch externo. `mlError` preserva o
-            // erro bruto do ML para diagnóstico.
-            return {
-              success: false,
-              listingId: listing.id,
-              error: actionable,
-              mlError: errMsg,
-            };
-          }
-
-          throw err;
+          // Retorno (nunca mais throw do erro cru): a mensagem chega à pessoa
+          // sem JSON. `mlError` preserva o erro bruto para diagnóstico.
+          return {
+            success: false,
+            listingId: listing.id,
+            error: mensagem,
+            mlError: errMsg,
+            errorKind: classe.kind,
+            ...(republicacao || !marcador ? {} : { lastErrorMarker: marcador }),
+          };
         }
       }
 

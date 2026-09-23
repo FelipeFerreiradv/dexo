@@ -25,6 +25,10 @@ import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
 import prisma from "../lib/prisma";
 import { ML_REQUIRED_ATTRS_ERROR_CODE } from "../marketplaces/lib/ml-required-attributes.logic";
+import { ListingRepository } from "../marketplaces/repositories/listing.repository";
+import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+import { LAST_ERROR_MARKER } from "../marketplaces/lib/ml-error-normalizer";
+import { placeholderMlSettings } from "../marketplaces/lib/ml-placeholder-settings";
 
 /**
  * Enriquece a config de aumento percentual escalonado entre contas antes de
@@ -758,6 +762,105 @@ export async function listingRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         console.error("[Listing Routes] Error patching status:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/:id/retry-ml
+   * "Tentar publicar novamente" de um anúncio do ML que ainda não existe
+   * (placeholder PENDING_…), com as configurações que a criação guardou na
+   * linha (Premium, frete grátis, garantia…).
+   *
+   * Segurança contra duplicata:
+   *  - desliga o retry automático da linha ANTES de publicar (o cron não
+   *    pega a mesma linha em paralelo — o claim dele exige retryEnabled);
+   *  - linha marcada `[VERIFICAR]` (timeout/5xx anterior) confere no ML
+   *    primeiro e adota o item se ele já existir;
+   *  - o `createMLListing` ainda recusa se já houver anúncio vivo na conta.
+   */
+  app.post<{ Params: { id: string } }>(
+    "/:id/retry-ml",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const row = await (prisma as any).productListing.findFirst({
+          where: { id, product: { userId } },
+          include: { marketplaceAccount: true, product: { select: { sku: true } } },
+        });
+        if (!row) {
+          return reply.status(404).send({ error: "Anúncio não encontrado" });
+        }
+        if (row.marketplaceAccount?.platform !== "MERCADO_LIVRE") {
+          return reply
+            .status(400)
+            .send({ error: "Disponível só para anúncios do Mercado Livre" });
+        }
+        const ext = String(row.externalListingId || "");
+        if (!ext.startsWith("PENDING_") || ext.startsWith("PENDING_REPUBLISH_")) {
+          return reply.status(409).send({
+            error:
+              "Este anúncio já existe no Mercado Livre — use a edição do anúncio.",
+          });
+        }
+
+        await ListingRepository.updateListing(id, {
+          retryEnabled: false,
+          nextRetryAt: null,
+        });
+
+        if (
+          typeof row.lastError === "string" &&
+          row.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR)
+        ) {
+          const conferencia = await ListingRetryService.reconcileBeforeRecreate(
+            row,
+            row.marketplaceAccount,
+          );
+          if (conferencia === "adopted") {
+            return reply.status(200).send({
+              success: true,
+              reconciled: true,
+              message:
+                "O anúncio já tinha sido criado no Mercado Livre e foi vinculado.",
+            });
+          }
+          if (conferencia === "search_failed") {
+            return reply.status(503).send({
+              error:
+                "Não foi possível conferir no Mercado Livre se o anúncio já existe. Tente de novo em instantes.",
+            });
+          }
+        }
+
+        const result = await ListingUseCase.createMLListing(
+          userId,
+          row.productId,
+          row.requestedCategoryId || undefined,
+          row.marketplaceAccountId,
+          placeholderMlSettings(row),
+          undefined,
+          request.user!.id,
+        );
+        if (!result.success) {
+          return reply.status(422).send({
+            error: result.error || "O Mercado Livre recusou o anúncio.",
+            errorKind: result.errorKind,
+          });
+        }
+        return reply.status(200).send({
+          success: true,
+          externalListingId: result.externalListingId,
+          permalink: result.permalink,
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error retrying ML listing:", error);
         return reply.status(500).send({
           error: "Erro interno do servidor",
           message: error instanceof Error ? error.message : "Erro desconhecido",

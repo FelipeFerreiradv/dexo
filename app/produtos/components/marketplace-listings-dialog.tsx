@@ -80,6 +80,11 @@ export function MarketplaceListingsDialog({
           listings={listings}
           loading={loading}
           error={error}
+          onFixProduct={() => {
+            // Anúncio recusado por dado: a correção é no cadastro do produto.
+            onOpenChange(false);
+            onEditProduct();
+          }}
           onEditListing={
             onEditListing
               ? (ctx) => {

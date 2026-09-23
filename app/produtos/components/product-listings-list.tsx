@@ -8,6 +8,8 @@ import {
   Loader2,
   Pencil,
   PackageOpen,
+  RotateCcw,
+  Wrench,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -29,10 +31,13 @@ import {
   getListingStatusBadge,
 } from "@/app/produtos/lib/listing-status-labels";
 import {
+  invalidateListingsStatusCache,
   readListingsCache,
   writeListingsCache,
   type ApiListing,
 } from "@/app/produtos/lib/listings-status-cache";
+import { derivePublicationState } from "@/app/produtos/lib/listing-publication-state";
+import { formatListingError } from "@/app/produtos/lib/listing-error-format";
 
 export type { ApiListing };
 
@@ -189,6 +194,11 @@ interface ProductListingsListProps {
   loading: boolean;
   error: string | null;
   onEditListing?: (ctx: ListingEditContext) => void;
+  /**
+   * "Corrigir produto" nos anúncios que o ML recusou. Só o host que NÃO é o
+   * próprio modal de edição passa (lá a pessoa já está no produto).
+   */
+  onFixProduct?: () => void;
   /** Rodapé opcional ("Editar dados do produto…") — só o dialog usa. */
   footer?: React.ReactNode;
   /** Texto do estado vazio; cada host tem o seu. */
@@ -210,10 +220,60 @@ export function ProductListingsList({
   loading,
   error,
   onEditListing,
+  onFixProduct,
   footer,
   emptyMessage,
   emptyHint,
 }: ProductListingsListProps) {
+  const { data: session } = useSession();
+  const email = session?.user?.email ?? null;
+  /** Resultado do "Tentar publicar novamente", por anúncio. */
+  const [retentativas, setRetentativas] = useState<
+    Record<string, { loading: boolean; ok?: boolean; message?: string }>
+  >({});
+
+  const tentarPublicarDeNovo = async (listing: ApiListing) => {
+    if (!email) return;
+    setRetentativas((s) => ({ ...s, [listing.id]: { loading: true } }));
+    try {
+      const resp = await fetch(
+        `${getApiBaseUrl()}/listings/${encodeURIComponent(listing.id)}/retry-ml`,
+        { method: "POST", headers: { email } },
+      );
+      const data = (await resp.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+        externalListingId?: string;
+      };
+      invalidateListingsStatusCache(product?.id);
+      setRetentativas((s) => ({
+        ...s,
+        [listing.id]: resp.ok
+          ? {
+              loading: false,
+              ok: true,
+              message:
+                data.message ||
+                `Publicado no Mercado Livre${data.externalListingId ? ` (${data.externalListingId})` : ""}. Reabra a lista para ver o anúncio.`,
+            }
+          : {
+              loading: false,
+              ok: false,
+              message: data.error || `Não foi possível publicar (HTTP ${resp.status}).`,
+            },
+      }));
+    } catch {
+      setRetentativas((s) => ({
+        ...s,
+        [listing.id]: {
+          loading: false,
+          ok: false,
+          message: "Não foi possível falar com o servidor. Tente de novo.",
+        },
+      }));
+    }
+  };
+
   const shopIdByExternalId = useMemo(() => {
     const map = new Map<string, number>();
     for (const listing of product?.listings ?? []) {
@@ -291,6 +351,18 @@ export function ProductListingsList({
               listing.accountName?.trim() || "Conta sem nome";
             const externalId = listing.externalListingId?.trim();
             const pending = isPending(listing);
+            // Estado de publicação derivado (sem status novo no banco) e o
+            // erro em frase — o card mostrava o JSON cru do ML.
+            const estado = derivePublicationState(listing);
+            const erro = formatListingError(listing.lastError, rowPlatform);
+            const ehML = rowPlatform === "MERCADO_LIVRE";
+            const retentativa = retentativas[listing.id];
+            const erroClasse =
+              estado.state === "sync_error" ||
+              estado.state === "retry_scheduled" ||
+              estado.state === "publishing"
+                ? "text-xs text-amber-700 dark:text-amber-400"
+                : "text-xs text-destructive";
 
             return (
               <li
@@ -310,23 +382,82 @@ export function ProductListingsList({
                       {statusInfo.label}
                     </Badge>
                   </div>
-                  <p className="truncate font-mono text-xs text-muted-foreground">
+                  <p
+                    className={
+                      pending
+                        ? "text-xs font-medium text-muted-foreground"
+                        : "truncate font-mono text-xs text-muted-foreground"
+                    }
+                  >
                     {pending
-                      ? "Aguardando publicação"
+                      ? ehML
+                        ? estado.label
+                        : "Aguardando publicação"
                       : externalId || "Sem ID externo"}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     Atualizado em {formatListingDateTime(listing.updatedAt)}
                   </p>
-                  {listing.lastError && (
-                    <p className="text-xs text-destructive">
-                      {listing.lastError}
+                  {erro && (
+                    <div className="space-y-1">
+                      <p className={erroClasse}>
+                        {estado.state === "sync_error" ? "Última sincronização: " : ""}
+                        {erro.summary}
+                      </p>
+                      {erro.technical && (
+                        <details className="text-xs text-muted-foreground">
+                          <summary className="cursor-pointer select-none">
+                            Detalhes técnicos
+                          </summary>
+                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-[11px]">
+                            {erro.technical}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                  {retentativa?.message && (
+                    <p
+                      className={
+                        retentativa.ok
+                          ? "text-xs text-emerald-700 dark:text-emerald-400"
+                          : "text-xs text-destructive"
+                      }
+                    >
+                      {retentativa.message}
                     </p>
                   )}
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2">
-                  {linkState.isOpenable && linkState.href ? (
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  {pending && ehML && estado.canRetry && !retentativa?.ok && (
+                    <>
+                      {onFixProduct && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onFixProduct()}
+                        >
+                          <Wrench className="mr-1.5 size-3" />
+                          Corrigir produto
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!!retentativa?.loading}
+                        onClick={() => void tentarPublicarDeNovo(listing)}
+                      >
+                        {retentativa?.loading ? (
+                          <Loader2 className="mr-1.5 size-3 animate-spin" />
+                        ) : (
+                          <RotateCcw className="mr-1.5 size-3" />
+                        )}
+                        Tentar publicar novamente
+                      </Button>
+                    </>
+                  )}
+                  {pending && ehML ? null : linkState.isOpenable && linkState.href ? (
                     <Button variant="outline" size="sm" asChild>
                       <a
                         href={linkState.href}

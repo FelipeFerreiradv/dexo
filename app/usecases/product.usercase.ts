@@ -27,6 +27,11 @@ import { getVehicleBrands } from "../lib/vehicle-catalog";
 import { maskCorruptVehicleCategoriesInProducts } from "../marketplaces/services/category-resolution.service";
 import { AccountSemaphore } from "../marketplaces/services/account-semaphore";
 import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-status-reconcile.service";
+import { ListingRepository } from "../marketplaces/repositories/listing.repository";
+import {
+  isPublishRelevantProductChange,
+  REARM_DELAY_MS,
+} from "../marketplaces/lib/ml-rearm.logic";
 
 export const BULK_DELETE_MAX_IDS = 50;
 
@@ -970,6 +975,37 @@ export class ProductUseCase {
     }
 
     const updated = await this.productRepository.update(id, data, userId);
+
+    // Anúncio do ML recusado por DADO (`[TERMINAL][CORRIGIVEL]`) volta para a
+    // fila quando a edição mexe no que pode mudar o resultado — publica sozinho
+    // depois da correção. Best-effort: falhar aqui não derruba a edição.
+    if (
+      isPublishRelevantProductChange(
+        data as unknown as Record<string, unknown>,
+        product as unknown as Record<string, unknown>,
+      )
+    ) {
+      try {
+        const rearmados = await ListingRepository.rearmCorrectableMlPlaceholders(
+          id,
+          REARM_DELAY_MS,
+        );
+        if (rearmados > 0) {
+          console.log(
+            JSON.stringify({
+              event: "ml.publish.rearmed",
+              productId: id,
+              count: rearmados,
+            }),
+          );
+        }
+      } catch (rearmErr) {
+        console.warn(
+          "[ProductUseCase] falha ao re-armar anúncios corrigíveis:",
+          rearmErr instanceof Error ? rearmErr.message : String(rearmErr),
+        );
+      }
+    }
 
     // Limpa overrides dos anúncios para os campos que o usuário editou no
     // produto. Sem isso, anúncios com priceOverride (criados via "Editar

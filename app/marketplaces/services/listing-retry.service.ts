@@ -10,6 +10,13 @@ import {
   classifyOlxRemoveError,
 } from "./listing-removal.helpers";
 import { isMlRequiredAttrsBlockEnabled } from "../lib/ml-required-attributes.logic";
+import { placeholderMlSettings } from "../lib/ml-placeholder-settings";
+import {
+  LAST_ERROR_MARKER,
+  isTerminalMarker,
+} from "../lib/ml-error-normalizer";
+import { pickReconciledItem } from "../lib/ml-reconcile.logic";
+import { normalizeListingStatus } from "../lib/listing-status";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -468,7 +475,24 @@ export class ListingRetryService {
         //
         // createMLListing REUSA a linha existente (findByProductAndAccount),
         // entao o placeholder deste candidato e atualizado no lugar.
+        // Anti-duplicata: a tentativa anterior terminou em timeout/5xx e pode
+        // ter criado o item no ML sem a Dexo saber. Confere na conta ANTES de
+        // criar de novo; achou ⇒ adota o item, não cria.
+        if (
+          typeof cand.lastError === "string" &&
+          cand.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR)
+        ) {
+          const conferencia = await this.reconcileBeforeRecreate(
+            cand as any,
+            account as any,
+          );
+          if (conferencia !== "not_found") continue;
+        }
+
         const { ListingUseCase } = await import("../usecases/listing.usercase");
+        // Configurações escolhidas na criação (tipo de anúncio, frete, garantia),
+        // guardadas no placeholder. Sem nenhuma ⇒ chamada igual à de sempre.
+        const settingsDoPlaceholder = placeholderMlSettings(cand as any);
         // Com ML_REQUIRED_ATTRS_BLOCK=1, a ficha que a criação original guardou
         // no placeholder (lado/posição e obrigatórios preenchidos na Revisão
         // individual) volta para esta retentativa. Sem ela, o bloqueio de
@@ -487,17 +511,25 @@ export class ListingRetryService {
                 cand.productId,
                 cand.requestedCategoryId || undefined,
                 account.id,
-                undefined, // mlSettings
+                settingsDoPlaceholder, // mlSettings
                 undefined, // titleOverride
                 undefined, // actorId
                 fichaGuardada as Record<string, unknown>,
               )
-            : await ListingUseCase.createMLListing(
-                account.userId,
-                cand.productId,
-                cand.requestedCategoryId || undefined,
-                account.id,
-              );
+            : settingsDoPlaceholder
+              ? await ListingUseCase.createMLListing(
+                  account.userId,
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account.id,
+                  settingsDoPlaceholder,
+                )
+              : await ListingUseCase.createMLListing(
+                  account.userId,
+                  cand.productId,
+                  cand.requestedCategoryId || undefined,
+                  account.id,
+                );
 
         if (result.success) {
           console.log(
@@ -522,6 +554,24 @@ export class ListingRetryService {
           );
           await ListingRepository.incrementRetryAttempts(cand.id, {
             lastError: `[TERMINAL] ${(result.error || "").substring(0, 480)}`,
+            retryEnabled: false,
+            nextRetryAt: null,
+          });
+          continue;
+        }
+
+        // Erro de DADO (ou conta a reconectar): repetir o mesmo corpo só repete
+        // a recusa. Grava no candidato, pelo id, com o marcador que o create
+        // devolveu — `[TERMINAL][CORRIGIVEL]` é re-armado quando a pessoa edita
+        // o produto (ProductUseCase.update).
+        if (isTerminalMarker(result.lastErrorMarker)) {
+          console.warn(
+            `[ListingRetryService] ML retry terminal (${result.errorKind}) for ${cand.id}: ${result.error}`,
+          );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            lastError: `${result.lastErrorMarker} ${result.error || ""}`
+              .trim()
+              .substring(0, 490),
             retryEnabled: false,
             nextRetryAt: null,
           });
@@ -554,7 +604,12 @@ export class ListingRetryService {
           `[ListingRetryService] ML retry failed for ${cand.id} (tentativa ${attempts}/${MAX_ATTEMPTS}): ${result.error}`,
         );
         await ListingRepository.incrementRetryAttempts(cand.id, {
-          lastError: (result.error || "erro desconhecido").substring(0, 490),
+          // `[VERIFICAR]` segue na linha: a próxima passada confere no ML
+          // antes de criar de novo (a tentativa pode ter criado o item).
+          lastError: (result.lastErrorMarker
+            ? `${result.lastErrorMarker} ${result.error || "erro desconhecido"}`
+            : result.error || "erro desconhecido"
+          ).substring(0, 490),
           nextRetryAt: shouldRetry
             ? new Date(Date.now() + nextDelay * 1000)
             : null,
@@ -583,6 +638,123 @@ export class ListingRetryService {
         );
       }
     }
+  }
+
+  /**
+   * Antes de RECRIAR um anúncio cuja tentativa anterior terminou em timeout ou
+   * 5xx: busca na conta os anúncios com o SKU do produto e, se um deles foi
+   * criado a partir do placeholder, ADOTA-o (vincula o id real) em vez de
+   * criar outro. Resultado:
+   *  - "adopted": vinculado, nada a criar;
+   *  - "search_failed": não deu para conferir — reagenda SEM criar (criar às
+   *    cegas é exatamente o risco de duplicata);
+   *  - "not_found": nenhum item novo; segue para a criação normal.
+   */
+  static async reconcileBeforeRecreate(
+    cand: {
+      id: string;
+      createdAt: Date;
+      retryAttempts?: number | null;
+      lastError?: string | null;
+      marketplaceAccountId?: string;
+      product?: { sku?: string | null } | null;
+    },
+    account: {
+      id: string;
+      accessToken: string;
+      externalUserId?: string | null;
+    },
+  ): Promise<"adopted" | "search_failed" | "not_found"> {
+    const sku = (cand.product?.sku || "").trim();
+    const sellerId = (account.externalUserId || "").trim();
+    // Sem SKU ou sem vendedor não há como conferir: segue como sempre foi.
+    if (!sku || !sellerId) return "not_found";
+
+    let items: Awaited<ReturnType<typeof MLApiService.findItemsBySellerSku>>;
+    try {
+      items = await MLApiService.findItemsBySellerSku(
+        account.accessToken,
+        sellerId,
+        sku,
+      );
+    } catch (err) {
+      const attempts = (cand.retryAttempts || 0) + 1;
+      const shouldRetry = attempts < MAX_ATTEMPTS;
+      const nextDelay =
+        BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
+      console.warn(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "search_failed",
+          listingId: cand.id,
+          error: errMsg(err),
+        }),
+      );
+      await ListingRepository.incrementRetryAttempts(cand.id, {
+        lastError: cand.lastError ?? `${LAST_ERROR_MARKER.VERIFICAR} conferência pendente`,
+        nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+        retryEnabled: shouldRetry,
+      });
+      return "search_failed";
+    }
+
+    const achado = pickReconciledItem(items, new Date(cand.createdAt));
+    if (!achado) {
+      console.log(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "not_found",
+          listingId: cand.id,
+          remoteCandidates: items.length,
+        }),
+      );
+      return "not_found";
+    }
+
+    // Já existe OUTRA linha para este anúncio nesta conta (unique): não duplica
+    // o vínculo — encerra o placeholder apontando para ele.
+    const jaVinculado = await ListingRepository.findByExternalListingId(
+      account.id,
+      achado.id,
+    );
+    if (jaVinculado && jaVinculado.id !== cand.id) {
+      await ListingRepository.updateListing(cand.id, {
+        status: "error",
+        lastError: `[TERMINAL] O anúncio ${achado.id} já existe no Mercado Livre e já está vinculado — exclua este pendente.`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      console.warn(
+        JSON.stringify({
+          event: "ml.publish.reconcile",
+          outcome: "already_linked",
+          listingId: cand.id,
+          externalListingId: achado.id,
+        }),
+      );
+      return "adopted";
+    }
+
+    await ListingRepository.updateListing(cand.id, {
+      externalListingId: achado.id,
+      status:
+        normalizeListingStatus("MERCADO_LIVRE", achado.status) ?? "active",
+      permalink: achado.permalink ?? null,
+      lastError: null,
+      retryEnabled: false,
+      nextRetryAt: null,
+      retryAttempts: 0,
+    });
+    console.warn(
+      JSON.stringify({
+        event: "ml.publish.reconcile",
+        outcome: "adopted",
+        listingId: cand.id,
+        externalListingId: achado.id,
+        remoteStatus: achado.status,
+      }),
+    );
+    return "adopted";
   }
 
   static start(intervalMs = 60 * 1000) {
