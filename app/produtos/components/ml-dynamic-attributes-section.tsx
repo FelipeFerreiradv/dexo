@@ -24,6 +24,7 @@ import {
   INMETRO_HINT,
   OEM_FIELD_ATTR_ID,
   OEM_MAX_LENGTH,
+  attributeIdsWithValue,
   getVisibleAttributes,
   isListAttribute,
   isPictureAttribute,
@@ -150,7 +151,34 @@ export function MLDynamicAttributesSection({
     };
   }, [categoryId, email]);
 
-  const visible = useMemo(() => getVisibleAttributes(attrs), [attrs]);
+  // Atributo hidden que o produto preencheu continua na tela enquanto a ficha
+  // estiver aberta — inclusive depois de apagado, para o campo não sumir no
+  // meio da correção. Zera ao trocar de categoria.
+  const [idsComValor, setIdsComValor] = useState<Set<string>>(
+    () => attributeIdsWithValue(value),
+  );
+  useEffect(() => {
+    setIdsComValor(attributeIdsWithValue(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryId]);
+  useEffect(() => {
+    const agora = attributeIdsWithValue(value);
+    setIdsComValor((prev) => {
+      let mudou = false;
+      const prox = new Set(prev);
+      for (const id of agora) {
+        if (!prox.has(id)) {
+          prox.add(id);
+          mudou = true;
+        }
+      }
+      return mudou ? prox : prev;
+    });
+  }, [value]);
+  const visible = useMemo(
+    () => getVisibleAttributes(attrs, idsComValor),
+    [attrs, idsComValor],
+  );
 
   // Descoberta do lado/posição: quando a categoria expõe POSITION e o operador
   // ainda não informou, destacamos e auto-abrimos a ficha (uma vez por

@@ -62,10 +62,34 @@ export const FIXED_FIELD_ATTRS = new Set([
  */
 export function getVisibleAttributes(
   attrs: MLDynamicAttribute[],
+  /**
+   * Ids que o produto tem PREENCHIDOS. Atributo `hidden` com valor continua
+   * visível: a publicação pode recusar esse valor (ex.: GTIN "906062426R") e a
+   * mensagem pede para corrigi-lo na ficha — escondido, a pessoa não teria
+   * como. Ausente = regra de sempre.
+   */
+  idsComValor?: ReadonlySet<string>,
 ): MLDynamicAttribute[] {
   return attrs.filter(
-    (a) => !FIXED_FIELD_ATTRS.has(a.id) && !(a.hidden && !a.required),
+    (a) =>
+      !FIXED_FIELD_ATTRS.has(a.id) &&
+      (!(a.hidden && !a.required) || !!idsComValor?.has(a.id)),
   );
+}
+
+/**
+ * Ids com valor no mapa da ficha (value_id ou value_name não vazios). Usado
+ * para manter visível um atributo `hidden` que o produto preencheu.
+ */
+export function attributeIdsWithValue(
+  value: Record<string, MLAttributeValue> | null | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const [id, v] of Object.entries(value ?? {})) {
+    const tem = (s?: string) => typeof s === "string" && s.trim().length > 0;
+    if (v && (tem(v.value_id) || tem(v.value_name))) ids.add(id);
+  }
+  return ids;
 }
 
 /**

@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   INMETRO_ATTR_ID,
+  attributeIdsWithValue,
+  getVisibleAttributes,
   isListAttribute,
   isPictureAttribute,
   joinNumberUnit,
@@ -122,5 +124,40 @@ describe("fiação no componente (sem jsdom: lê o fonte)", () => {
     expect(fonte.indexOf("if (isList)")).toBeLessThan(
       fonte.indexOf("if (isPictureAttribute(attr))"),
     );
+  });
+});
+
+describe("atributo hidden com valor continua visível (dá para corrigir o que a publicação recusa)", () => {
+  const GTIN_HIDDEN = base({ id: "GTIN", name: "Código universal de produto", hidden: true });
+  const OUTRO_HIDDEN = base({ id: "OUTRO", hidden: true });
+
+  it("sem ids: regra de sempre (hidden opcional some)", () => {
+    expect(getVisibleAttributes([GTIN_HIDDEN, OUTRO_HIDDEN]).map((a) => a.id)).toEqual([]);
+  });
+
+  it("hidden preenchido fica; hidden vazio continua escondido", () => {
+    const ids = attributeIdsWithValue({
+      GTIN: { value_name: "906062426R" },
+      OUTRO: { value_name: "  " },
+    });
+    expect(getVisibleAttributes([GTIN_HIDDEN, OUTRO_HIDDEN], ids).map((a) => a.id)).toEqual([
+      "GTIN",
+    ]);
+  });
+
+  it("campo fixo do formulário nunca volta para a ficha, mesmo com valor", () => {
+    const marca = base({ id: "BRAND", hidden: true });
+    expect(
+      getVisibleAttributes([marca], attributeIdsWithValue({ BRAND: { value_name: "Fiat" } })),
+    ).toEqual([]);
+  });
+
+  it("componente usa os ids preenchidos e não os esquece no meio da correção", () => {
+    const fonte = fs.readFileSync(
+      path.resolve(__dirname, "../app/produtos/components/ml-dynamic-attributes-section.tsx"),
+      "utf8",
+    );
+    expect(fonte).toMatch(/getVisibleAttributes\(attrs, idsComValor\)/);
+    expect(fonte).toMatch(/return mudou \? prox : prev;/);
   });
 });
