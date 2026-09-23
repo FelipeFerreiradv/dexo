@@ -169,7 +169,18 @@ function principal(): void {
     ).map((r) => r[0]),
   );
 
-  const resultados: Array<Decisao & { externo: string; conta: string; link: string; tituloNoMl: string; de: string; para: string | null }> = [];
+  const resultados: Array<
+    Decisao & {
+      externo: string;
+      conta: string;
+      link: string;
+      tituloNoMl: string;
+      de: string;
+      para: string | null;
+      paraId: string | null;
+      contaId: string;
+    }
+  > = [];
   for (const e of errados) {
     const d = detalhe[e.externo];
     const tenant = tenantDaConta.get(e.contaId);
@@ -240,7 +251,28 @@ function principal(): void {
       tituloNoMl: d.titulo,
       de: `${e.sku} ${e.peca}`,
       para: candidato ? `${candidato.sku ?? ""} ${candidato.nome}` : null,
+      paraId: candidato?.id ?? null,
+      contaId: e.contaId,
     });
+  }
+
+  // GUARDA ENTRE AS PROPOSTAS. Cada caso foi decidido sozinho, mas duas
+  // religacoes para a MESMA peca na MESMA conta se anulam: a segunda encontraria
+  // o anuncio que a primeira acabou de pendurar e viraria empilhamento. Sem
+  // isto o plano promete um numero que o aplicador nao entrega — foi o que
+  // aconteceu em 23/09, quando 9 dos 85 so foram barrados na revalidacao sob
+  // trava. Nao da para saber qual das duas e a certa, entao caem as duas.
+  const disputa = new Map<string, number>();
+  for (const r of resultados) {
+    if (r.veredito !== "RELIGAR" || !r.paraId) continue;
+    const chave = `${r.paraId}|${r.contaId}`;
+    disputa.set(chave, (disputa.get(chave) ?? 0) + 1);
+  }
+  for (const r of resultados) {
+    if (r.veredito !== "RELIGAR" || !r.paraId) continue;
+    if ((disputa.get(`${r.paraId}|${r.contaId}`) ?? 0) <= 1) continue;
+    r.veredito = "EMPILHADO";
+    r.motivos = [...r.motivos, "outra proposta aponta para a MESMA peca nesta conta"];
   }
 
   const porVeredito: Record<string, number> = {};
