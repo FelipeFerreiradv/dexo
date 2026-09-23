@@ -618,7 +618,21 @@ describe("detecção DEPOIS do POST (causa 147)", () => {
       externalListingId: "PENDING_REPUBLISH_9",
     });
     (MLApiService.createItem as any).mockRejectedValue(erro147());
-    const r = await criar();
+    // ⚠️ Mudança intencional (#361, revisão de fechamento): a linha
+    // PENDING_REPUBLISH_ só é escrita por SyncUseCase.republishUpListing,
+    // que chama com { republish: true } — sem o flag, a criação agora recusa
+    // (um "Anunciar" comum ali publicava um segundo item).
+    const r = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      undefined,
+      "actor-1",
+      undefined,
+      { republish: true },
+    );
     expect(r.success).toBe(false);
     expect(r.terminal).toBe(true);
     expect(gravacoesTerminais()).toEqual([]);
