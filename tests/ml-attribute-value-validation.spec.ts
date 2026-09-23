@@ -132,15 +132,43 @@ describe("fail-open (sem metadado não mexe em nada)", () => {
     expect(r.issues).toEqual([]);
   });
 
-  it("atributo read_only (o ML ignora, aviso 303) fica fora das regras", () => {
-    const soLeitura: CatalogAttributeLite = {
-      id: "PACKAGE_LENGTH",
-      valueType: "number_unit",
-      allowedUnits: ["cm"],
-      readOnlyTag: true,
-    };
-    const r = valida([{ id: "PACKAGE_LENGTH", value_name: "30" }], [soLeitura]);
+});
+
+describe("atributo read_only (o ML ignora o valor na criação, mas confere o formato)", () => {
+  // Caso real (Xaxim, 22/09): GTIN hidden+read_only com "906062426R" levou
+  // 7711; "Comprimento da embalagem" levou 3708 na mesma resposta do 303.
+  const GTIN_SO_LEITURA: CatalogAttributeLite = { ...GTIN, readOnlyTag: true };
+  const PACOTE_SO_LEITURA: CatalogAttributeLite = {
+    id: "PACKAGE_LENGTH",
+    name: "Comprimento da embalagem",
+    valueType: "number_unit",
+    allowedUnits: ["cm"],
+    readOnlyTag: true,
+  };
+
+  it("valor inválido é RETIRADO do payload, sem bloquear (a pessoa não vê o campo)", () => {
+    const outro = { id: "BRAND", value_name: "Bosch" };
+    const r = valida(
+      [{ id: "GTIN", value_name: "906062426R" }, { id: "PACKAGE_LENGTH", value_name: "30" }, outro],
+      [GTIN_SO_LEITURA, PACOTE_SO_LEITURA, MARCA_STRING],
+    );
+    expect(r.blocked).toBe(false);
+    expect(r.attributes.map((a) => a.id)).toEqual(["BRAND"]);
+    expect(r.attributes[0]).toBe(outro);
+    expect(r.issues.map((i) => [i.code, i.severity, i.attributeId])).toEqual([
+      ["READ_ONLY_INVALID_DROPPED", "fix", "GTIN"],
+      ["READ_ONLY_INVALID_DROPPED", "fix", "PACKAGE_LENGTH"],
+    ]);
+  });
+
+  it("valor válido em read_only passa intacto (payload de hoje)", () => {
+    const attrs = [
+      { id: "GTIN", value_name: "7891234567895" },
+      { id: "PACKAGE_LENGTH", value_name: "30 cm" },
+    ];
+    const r = valida(attrs, [GTIN_SO_LEITURA, PACOTE_SO_LEITURA]);
     expect(r.issues).toEqual([]);
+    r.attributes.forEach((a, i) => expect(a).toBe(attrs[i]));
   });
 });
 

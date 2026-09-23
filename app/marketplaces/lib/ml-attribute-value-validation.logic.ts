@@ -26,6 +26,10 @@
  *   - Todo o resto BLOQUEIA com mensagem que diz o campo, o valor e o que
  *     fazer. Decisão do Felipe (22/09/2026): valor inválido, mesmo em campo
  *     opcional, bloqueia até a correção — nada é omitido em silêncio.
+ *   - Exceção: atributo `read_only` do ML. O ML descarta o valor na criação
+ *     (aviso 303) mas recusa o anúncio se o formato for inválido; como a
+ *     pessoa não vê o campo, o valor inválido é retirado do payload (fica
+ *     registrado como correção) em vez de bloquear.
  *   - Catálogo indisponível ou cache antigo sem o metadado da regra: a regra
  *     não roda (fail-open, igual ao resto do preflight).
  *
@@ -48,7 +52,11 @@ export interface CatalogAttributeLite {
   fixedTag?: boolean;
   /** `tags.multivalued`; undefined = cache antigo = não se sabe. */
   multivaluedTag?: boolean;
-  /** `tags.read_only`: o ML ignora o valor enviado (aviso 303). */
+  /**
+   * `tags.read_only`: o ML ignora o valor na criação (aviso 303), mas ainda
+   * confere o formato — valor inválido aqui é retirado do payload, não
+   * bloqueia (a pessoa não vê o campo).
+   */
   readOnlyTag?: boolean;
   allowedValues?: Array<{ id: string; name: string }>;
   allowedUnits?: string[];
@@ -66,7 +74,8 @@ export type ValueIssueCode =
   | "NUMBER_DECIMAL_COMMA"
   | "GTIN_INVALID_FORMAT"
   | "OEM_DUPLICATE_VALUES"
-  | "OEM_SINGLE_VALUE_ONLY";
+  | "OEM_SINGLE_VALUE_ONLY"
+  | "READ_ONLY_INVALID_DROPPED";
 
 export interface ValueIssue {
   attributeId: string;
@@ -176,11 +185,33 @@ export function validateMLAttributeValues(
 
   for (const attr of attributes) {
     const cat = attr && typeof attr.id === "string" ? porId.get(attr.id) : undefined;
-    if (!attr || !cat || PAYLOAD_MANAGED.has(attr.id) || cat.readOnlyTag) {
+    if (!attr || !cat || PAYLOAD_MANAGED.has(attr.id)) {
       saida.push(attr);
       continue;
     }
     const nome = rotulo(cat, attr.id);
+    // Valor que o ML recusaria. Em atributo `read_only` (quase sempre também
+    // `hidden`: a pessoa nem vê o campo na ficha) o ML IGNORA o valor na
+    // criação (aviso 303), mas confere o formato antes — o 7711 do GTIN e o
+    // 3708 da medida da embalagem vieram assim, na mesma resposta do 303.
+    // Tirar o valor do payload não perde nada que o ML guardaria; bloquear
+    // deixaria a pessoa presa num campo que ela não enxerga.
+    const somenteLeitura = cat.readOnlyTag === true;
+    const recusar = (issue: Omit<ValueIssue, "severity">): void => {
+      if (somenteLeitura) {
+        issues.push({
+          attributeId: issue.attributeId,
+          attributeName: issue.attributeName,
+          severity: "fix",
+          code: "READ_ONLY_INVALID_DROPPED",
+          message: `"${nome}" é um campo só-leitura do Mercado Livre (ignorado na criação) e estava com um valor que ele recusa ("${issue.value ?? ""}"); o valor não foi enviado.`,
+          value: issue.value,
+        });
+        return;
+      }
+      issues.push({ ...issue, severity: "block" });
+      saida.push(attr);
+    };
 
     // GTIN: só código de barras. O ML recusa (7711) qualquer outra coisa — no
     // caso real, número de peça ou texto digitado no campo.
@@ -191,16 +222,16 @@ export function validateMLAttributeValues(
       const invalido = valores.find((v) => !gtinCheckDigitOk(v));
       if (invalido !== undefined) {
         const soDigitoErrado = GTIN.test(invalido);
-        issues.push({
+        recusar({
           attributeId: attr.id,
           attributeName: nome,
-          severity: "block",
           code: "GTIN_INVALID_FORMAT",
           message: soDigitoErrado
             ? `O campo ${nome} está com "${invalido}", que não é um código de barras válido (o dígito verificador não confere). Confira o número na embalagem ou apague o ${nome} na ficha técnica; se isso é o número da peça, use o campo Número da Peça.`
             : `O campo ${nome} aceita só código de barras (EAN/UPC, com 8, 12, 13 ou 14 dígitos) e está com "${invalido}". Se isso é o número da peça, apague o ${nome} na ficha técnica e use o campo Número da Peça.`,
           value: invalido,
         });
+        continue;
       }
       saida.push(attr);
       continue;
@@ -211,14 +242,14 @@ export function validateMLAttributeValues(
     if (cat.valueType === "picture_id") {
       const v = valorTexto(attr).trim() || String(attr.value_id ?? "").trim();
       if (v) {
-        issues.push({
+        recusar({
           attributeId: attr.id,
           attributeName: nome,
-          severity: "block",
           code: "PICTURE_ATTRIBUTE_WITH_TEXT",
           message: `O campo "${nome}" da ficha técnica é do tipo imagem e está preenchido com "${v}". Apague esse valor na ficha técnica.`,
           value: v,
         });
+        continue;
       }
       saida.push(attr);
       continue;
@@ -278,15 +309,13 @@ export function validateMLAttributeValues(
         continue;
       }
       const opcoes = permitidos.slice(0, 6).map((p) => p.name).join(", ");
-      issues.push({
+      recusar({
         attributeId: attr.id,
         attributeName: nome,
-        severity: "block",
         code: "LIST_VALUE_NOT_IN_CATEGORY",
         message: `O valor "${attr.value_name ?? attr.value_id}" do campo "${nome}" não existe nesta categoria do Mercado Livre (opções: ${opcoes}${permitidos.length > 6 ? "…" : ""}). Escolha uma das opções na ficha técnica.`,
         value: String(attr.value_name ?? attr.value_id ?? ""),
       });
-      saida.push(attr);
       continue;
     }
 
@@ -302,15 +331,13 @@ export function validateMLAttributeValues(
       const v = attr.value_name;
       if (!unidadeValida(v, cat.allowedUnits)) {
         const exemplo = cat.defaultUnit || cat.allowedUnits[0];
-        issues.push({
+        recusar({
           attributeId: attr.id,
           attributeName: nome,
-          severity: "block",
           code: "NUMBER_WITHOUT_UNIT",
           message: `O campo "${nome}" precisa de número com unidade (ex.: "10 ${exemplo}") e está com "${v}". Informe a unidade na ficha técnica ou apague o valor.`,
           value: v,
         });
-        saida.push(attr);
         continue;
       }
       // "10,5 cm" → "10.5 cm": mesmo número, na forma que o ML lê.
