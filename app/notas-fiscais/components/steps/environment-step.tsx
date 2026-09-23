@@ -4,6 +4,7 @@ import { Control, Controller, FieldErrors, useWatch } from "react-hook-form";
 import { Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { RespTecCard } from "./resp-tec-card";
+import { AjusteNumeracaoCard } from "./ajuste-numeracao-card";
 import {
   Select,
   SelectContent,
@@ -30,6 +31,10 @@ interface Props {
   cscConfigured?: boolean;
   /** Multi-CNPJ: empresa dona do certificado (ausente = rota legada/padrão). */
   companyId?: string | null;
+  /** Cadastro de CNPJ novo: enquanto true, `companyId` ainda é null e o ajuste
+   *  apontaria para o CNPJ PADRÃO do tenant — o card some até a empresa
+   *  recém-salva virar a selecionada. */
+  createMode?: boolean;
 }
 
 export function FiscalEnvironmentStep({
@@ -43,9 +48,17 @@ export function FiscalEnvironmentStep({
   providerTokenConfigured,
   cscConfigured = false,
   companyId,
+  createMode = false,
 }: Props) {
   const providerName = useWatch({ control, name: "providerName" });
   const uf = useWatch({ control, name: "uf" });
+  // Pre-selecao do card de ajuste do proximo numero (so o valor inicial dos
+  // campos: o ajuste vai ao servidor com ambiente/modelo/serie explicitos).
+  const ambiente = useWatch({ control, name: "ambiente" });
+  const serieNfe = useWatch({ control, name: "serieNfe" });
+  // A NFC-e tem série própria: sem isso, escolher "nota do PDV" no ajuste
+  // levaria a série da NF-e — o mesmo erro do CNPJ errado, no eixo da série.
+  const serieNfce = useWatch({ control, name: "serieNfce" });
   const isSefazDirect = providerName === "SEFAZ_DIRECT";
 
   return (
@@ -259,6 +272,21 @@ export function FiscalEnvironmentStep({
           </div>
         )}
       </div>
+
+      {/* Ajuste do próximo número da série — a série se configura logo acima e
+          o contador é atributo dela. O card herda o `companyId` deste formulário:
+          o ajuste é sempre do CNPJ que está sendo editado, sem seletor próprio. */}
+      {!createMode && (
+        <AjusteNumeracaoCard
+          key={companyId ?? "default"}
+          companyId={companyId}
+          userEmail={userEmail}
+          configExists={configExists}
+          ambientePadrao={ambiente}
+          seriePadrao={serieNfe}
+          serieNfcePadrao={serieNfce}
+        />
+      )}
 
       {/* Certificado A1 — só quando o provedor é SEFAZ Direto */}
       {process.env.NEXT_PUBLIC_NFE_RESP_TEC_EMPRESA_ENABLED === "true" && <RespTecCard key={companyId ?? "default"} companyId={companyId} userEmail={userEmail} configExists={configExists} providerName={providerName} />}

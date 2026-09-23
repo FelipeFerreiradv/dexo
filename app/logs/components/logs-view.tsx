@@ -218,6 +218,9 @@ export function LogsView() {
       STOCK_SYNC_FAILED: "Falha na sincronização de estoque",
       STOCK_SYNC_DEFERRED_TOO_LONG: "Baixa de estoque aguardando reconexão",
       OVERSELL_DETECTED: "Possível venda sem estoque",
+      // Ajuste manual do próximo número de uma série de NF-e: sem rótulo, a
+      // única trilha de uma operação irreversível apareceria como código cru.
+      ADJUST_NFE_SEQUENCE: "Ajuste do próximo número da NF-e",
     };
     return actionLabels[action] || action;
   };
@@ -336,6 +339,9 @@ export function LogsView() {
                     Sincronizar Estoque
                   </SelectItem>
                   <SelectItem value="CREATE_LISTING">Criar Anúncio</SelectItem>
+                  <SelectItem value="ADJUST_NFE_SEQUENCE">
+                    Ajuste do próximo número da NF-e
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>

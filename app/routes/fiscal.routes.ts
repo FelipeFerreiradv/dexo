@@ -14,6 +14,7 @@ import { calcularDevolucao } from "../fiscal/devolucao/emissao";
 import { NfeListingUseCase } from "../usecases/nfe-listing.usecase";
 import { NfeCancelamentoUseCase } from "../usecases/nfe-cancelamento.usecase";
 import { NfeInutilizacaoUseCase } from "../usecases/nfe-inutilizacao.usecase";
+import { NfeSequenceAjusteUseCase } from "../usecases/nfe-sequence-ajuste.usecase";
 import { NfeCartaCorrecaoUseCase } from "../usecases/nfe-carta-correcao.usecase";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
@@ -233,6 +234,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const nfeListing = new NfeListingUseCase();
   const nfeCancelamento = new NfeCancelamentoUseCase();
   const nfeInutilizacao = new NfeInutilizacaoUseCase();
+  const nfeSequenceAjuste = new NfeSequenceAjusteUseCase();
   const nfeCartaCorrecao = new NfeCartaCorrecaoUseCase();
   const calculator = new FiscalCalculatorService();
   const configRepo = new CompanyFiscalRepository();
@@ -700,6 +702,65 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao consultar próximo número",
+        });
+      }
+    },
+  );
+
+  // Ajuste MANUAL do próximo número da série (escrita) — par do GET acima.
+  //
+  // É a saída do 409 SEQUENCIA_ATRAS_DA_SEFAZ: cliente migrado de outro sistema
+  // fiscal chega com o contador do Dexo atrás da numeração que o CNPJ já usou, e
+  // até 09/2026 mover `NfeSequence.proximoNumero` só era possível por SQL em
+  // produção. Restrito ao tenant (o emitente é resolvido pelo próprio userId),
+  // com escopo (emitente, ambiente, modelo, série) explícito, confirmação em
+  // dois passos e auditoria própria — tudo no caso de uso.
+  //
+  // POST (e não PUT) de propósito: `determineActionType` mapearia um PUT em
+  // /fiscal/nfe para UPDATE_NFE_DRAFT, rotulando o ajuste como edição de
+  // rascunho no SystemLog. Com POST o middleware não grava nada nesta rota e o
+  // único registro é o explícito, com o rótulo certo (ADJUST_NFE_SEQUENCE).
+  fastify.post(
+    "/nfe/proximo-numero/ajuste",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const body = (request.body as any) ?? {};
+        // Fronteira de tipo do emitente ANTES do usecase/Prisma (padrão das
+        // vizinhas): tipo inválido → 400, nunca 500 com erro interno ecoado.
+        const companyId = parseCompanyIdParam(body.companyFiscalConfigId);
+        if (companyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
+        const resultado = await nfeSequenceAjuste.ajustar(
+          userId,
+          {
+            companyFiscalConfigId: companyId,
+            ambiente: body.ambiente,
+            modelo: body.modelo,
+            serie: body.serie,
+            proximoNumero: body.proximoNumero,
+            motivo: body.motivo,
+            confirmar: body.confirmar === true,
+          },
+          {
+            // QUEM clicou: colaborador tem id próprio, distinto do dono dos
+            // dados (dataOwnerId) — a auditoria guarda os dois.
+            atorUserId: (request as any).user?.id as string | undefined,
+            ipAddress: request.ip,
+            userAgent: request.headers["user-agent"],
+          },
+        );
+        return reply.status(200).send({ success: true, ajuste: resultado });
+      } catch (error) {
+        if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+        if(error instanceof DevolucaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,issues:error.issues});
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao ajustar próximo número",
         });
       }
     },

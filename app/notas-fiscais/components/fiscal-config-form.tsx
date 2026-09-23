@@ -323,6 +323,7 @@ export function FiscalConfigForm({
             providerTokenConfigured={providerTokenConfigured}
             cscConfigured={cscConfigured}
             companyId={companyId}
+            createMode={createMode}
           />
           <RespTecCard key={`${companyId??"default"}-${configRevision}`} companyId={companyId} userEmail={session?.user?.email} configExists={configExists} providerName={form.watch("providerName")} />
           </>

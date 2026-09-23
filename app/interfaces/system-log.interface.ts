@@ -19,6 +19,16 @@ export type LogAction =
   | "EMIT_NFE"
   | "CANCEL_NFE"
   | "INUTILIZE_NFE"
+  // Ajuste MANUAL do próximo número de uma série (NfeSequence) — a saída do
+  // 409 SEQUENCIA_ATRAS_DA_SEFAZ para quem migrou de outro sistema fiscal com
+  // numeração à frente da do Dexo. Rótulo próprio porque o
+  // `loggingMiddleware` não grava nada nesta rota (`determineActionType`
+  // devolve null para POST /fiscal que não seja emission/draft/inutilizacao) e
+  // porque o efeito é irreversível: os números pulados viram lacuna que, em
+  // produção, pode exigir inutilização junto à SEFAZ. O `details` carrega
+  // quem/quando/de quanto para quanto/em qual (emitente, ambiente, modelo,
+  // série) e o MOTIVO informado pelo operador.
+  | "ADJUST_NFE_SEQUENCE"
   | "UPDATE_FISCAL_CONFIG"
   | "CREATE_CUSTOMER"
   | "UPDATE_CUSTOMER"
