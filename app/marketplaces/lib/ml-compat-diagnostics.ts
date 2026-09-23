@@ -38,21 +38,32 @@ export interface CompatVerifiedLike {
 }
 
 /**
+ * Versão do formato. Diagnóstico SEM ela foi gravado antes da correção da
+ * paginação (22/09/2026): a busca relia os mesmos 50 veículos, então tanto o
+ * "não encontrado" quanto o total confirmado dele não são confiáveis.
+ */
+export const COMPAT_DIAGNOSTICS_VERSION = 2;
+
+/**
  * O anúncio vale um reenvio de compatibilidade? Critério do backfill
- * `--only-unresolved`:
+ * `--only-unresolved` (que só percorre produtos COM compatibilidade
+ * cadastrada):
  *  - `unsupportedDomain` ⇒ NÃO: o ML recusa compat na categoria, reenviar não
  *    muda nada;
- *  - veículo não resolvido, catálogo truncado, ou nada gravado ⇒ SIM. Inclui a
- *    assinatura do defeito de paginação de antes de 22/09/2026 ("… total
- *    fetched" com 1500), que é exatamente o que o reenvio conserta.
- *  - sem diagnóstico ⇒ NÃO (não há evidência; use o `--report` para medir).
+ *  - sem diagnóstico ⇒ SIM: nunca foi confirmado (anúncio adotado pela
+ *    reconciliação, ou criado antes do diagnóstico existir);
+ *  - diagnóstico ANTERIOR à correção (sem `v`) ⇒ SIM, uma vez: a cobertura
+ *    parcial do defeito ("50 de 757" com `unresolved=0`) não aparece em
+ *    nenhum outro campo. Reenviado, ele ganha o formato novo e sai da lista;
+ *  - veículo não resolvido, catálogo truncado, ou nada gravado ⇒ SIM.
  */
 export function compatDiagnosticsNeedsResend(diag: unknown): boolean {
-  if (!diag || typeof diag !== "object" || Array.isArray(diag)) return false;
+  if (!diag || typeof diag !== "object" || Array.isArray(diag)) return true;
   const d = diag as Record<string, unknown>;
   if (typeof d.unsupportedDomain === "string" && d.unsupportedDomain) {
     return false;
   }
+  if (d.v !== COMPAT_DIAGNOSTICS_VERSION) return true;
   if (Array.isArray(d.truncated) && d.truncated.length > 0) return true;
   if (typeof d.unresolved === "number" && d.unresolved > 0) return true;
   return typeof d.persisted === "number" && d.persisted === 0;
@@ -63,6 +74,7 @@ export function buildCompatDiagnostics(
   extra: { origin?: string; now?: Date } = {},
 ): Record<string, unknown> {
   return {
+    v: COMPAT_DIAGNOSTICS_VERSION,
     requested: compat.requested,
     persisted: compat.persisted,
     strategy: compat.strategy,

@@ -19,6 +19,9 @@ export interface CompatSummary {
 
 type Unresolved = { brand?: unknown; model?: unknown; year?: unknown };
 
+/** Mesmo valor de COMPAT_DIAGNOSTICS_VERSION (lib do servidor). */
+const VERSAO_ATUAL = 2;
+
 function plural(n: number, singular: string, pluralForm: string): string {
   return n === 1 ? singular : pluralForm;
 }
@@ -49,6 +52,7 @@ export function describeCompatDiagnostics(diag: unknown): CompatSummary | null {
   }
 
   const persisted = typeof d.persisted === "number" ? d.persisted : 0;
+  const requested = typeof d.requested === "number" ? d.requested : 0;
   const unresolved = typeof d.unresolved === "number" ? d.unresolved : 0;
   const verified = d.verified === true;
   const truncated = Array.isArray(d.truncated) && d.truncated.length > 0;
@@ -57,10 +61,36 @@ export function describeCompatDiagnostics(diag: unknown): CompatSummary | null {
       ? (d.positions as Record<string, unknown>)
       : null;
 
-  if (!verified && persisted === 0) {
+  // Gravado antes da correção da paginação (22/09/2026): o "não encontrado"
+  // e o total vieram da busca que relia os mesmos 50 veículos — não afirmar
+  // nada que ele diga sobre o catálogo.
+  if (d.v !== VERSAO_ATUAL) {
+    return persisted > 0
+      ? {
+          tone: "muted",
+          text: `Compatibilidade no Mercado Livre: ${persisted} ${plural(persisted, "veículo", "veículos")} (conferida antes da atualização de 22/09/2026).`,
+        }
+      : {
+          tone: "muted",
+          text: "Compatibilidade ainda não confirmada no Mercado Livre.",
+        };
+  }
+
+  // Nenhum veículo existia no catálogo do ML: nada foi enviado.
+  if (persisted === 0 && requested > 0 && unresolved >= requested) {
+    return {
+      tone: "warning",
+      text: `Nenhum veículo foi encontrado no catálogo do Mercado Livre${exemplo(d.unresolvedSample)}.`,
+    };
+  }
+
+  if (!verified) {
     return {
       tone: "muted",
-      text: "Compatibilidade enviada; o Mercado Livre não permitiu confirmar a gravação.",
+      text:
+        persisted > 0
+          ? `Compatibilidade enviada ao Mercado Livre: ${persisted} ${plural(persisted, "veículo", "veículos")}; o Mercado Livre não permitiu confirmar a gravação.`
+          : "O envio da compatibilidade não foi confirmado pelo Mercado Livre.",
     };
   }
 

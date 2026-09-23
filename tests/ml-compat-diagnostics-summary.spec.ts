@@ -27,13 +27,14 @@ describe("compatDiagnosticsNeedsResend (critério do backfill)", () => {
 
   it("parcial (algum veículo não resolvido) ⇒ reenviar", () => {
     expect(
-      compatDiagnosticsNeedsResend({ persisted: 8, unresolved: 2, verified: true }),
+      compatDiagnosticsNeedsResend({ v: 2, persisted: 8, unresolved: 2, verified: true }),
     ).toBe(true);
   });
 
   it("truncado ⇒ reenviar", () => {
     expect(
       compatDiagnosticsNeedsResend({
+        v: 2,
         persisted: 8,
         unresolved: 0,
         truncated: [{ brand: "Ford", model: "Ka", fetched: 50, total: 209 }],
@@ -51,12 +52,24 @@ describe("compatDiagnosticsNeedsResend (critério do backfill)", () => {
     ).toBe(false);
   });
 
-  it("tudo gravado ⇒ NÃO; sem diagnóstico ⇒ NÃO", () => {
+  it("tudo gravado (formato atual) ⇒ NÃO", () => {
     expect(
-      compatDiagnosticsNeedsResend({ persisted: 57, unresolved: 0, verified: true }),
+      compatDiagnosticsNeedsResend({ v: 2, persisted: 57, unresolved: 0, verified: true }),
     ).toBe(false);
-    expect(compatDiagnosticsNeedsResend(null)).toBe(false);
-    expect(compatDiagnosticsNeedsResend([])).toBe(false);
+  });
+
+  // Revisão de 23/09/2026: o defeito deixava cobertura PARCIAL com
+  // unresolved=0 ("50 de 757") — nenhum campo do diagnóstico antigo a revela.
+  it("diagnóstico ANTERIOR à correção (sem v) ⇒ reenviar uma vez, mesmo 'completo'", () => {
+    expect(
+      compatDiagnosticsNeedsResend({ persisted: 50, unresolved: 0, verified: true }),
+    ).toBe(true);
+  });
+
+  it("sem diagnóstico (ex.: anúncio adotado pela reconciliação) ⇒ reenviar", () => {
+    expect(compatDiagnosticsNeedsResend(null)).toBe(true);
+    expect(compatDiagnosticsNeedsResend(undefined)).toBe(true);
+    expect(compatDiagnosticsNeedsResend([])).toBe(true);
   });
 });
 import { describeCompatDiagnostics } from "../app/produtos/lib/listing-compat-summary";
@@ -77,8 +90,9 @@ const base = {
 };
 
 describe("buildCompatDiagnostics", () => {
-  it("mantém EXATAMENTE as chaves antigas quando não há posição/truncado", () => {
+  it("chaves antigas intactas + a versão do formato (v: 2)", () => {
     expect(buildCompatDiagnostics(base, { now: NOW })).toEqual({
+      v: 2,
       requested: 3,
       persisted: 12,
       strategy: "catalog_products",
@@ -150,7 +164,7 @@ describe("describeCompatDiagnostics", () => {
 
   it("confirmado no ML", () => {
     expect(
-      describeCompatDiagnostics({ persisted: 57, verified: true, unresolved: 0 }),
+      describeCompatDiagnostics({ v: 2, persisted: 57, verified: true, unresolved: 0 }),
     ).toEqual({
       tone: "ok",
       text: "Compatibilidade confirmada no Mercado Livre: 57 veículos.",
@@ -159,13 +173,14 @@ describe("describeCompatDiagnostics", () => {
 
   it("singular", () => {
     expect(
-      describeCompatDiagnostics({ persisted: 1, verified: true, unresolved: 0 })
+      describeCompatDiagnostics({ v: 2, persisted: 1, verified: true, unresolved: 0 })
         ?.text,
     ).toBe("Compatibilidade confirmada no Mercado Livre: 1 veículo.");
   });
 
   it("parcial: cita os que o catálogo do ML não tem", () => {
     const s = describeCompatDiagnostics({
+      v: 2,
       persisted: 8,
       verified: true,
       unresolved: 1,
@@ -179,6 +194,8 @@ describe("describeCompatDiagnostics", () => {
 
   it("nada gravado com veículos não achados é aviso", () => {
     const s = describeCompatDiagnostics({
+      v: 2,
+      requested: 1,
       persisted: 0,
       verified: true,
       unresolved: 1,
@@ -211,6 +228,7 @@ describe("describeCompatDiagnostics", () => {
 
   it("posição descartada pelo ML vira aviso mesmo com veículos gravados", () => {
     const s = describeCompatDiagnostics({
+      v: 2,
       persisted: 20,
       verified: true,
       unresolved: 0,
@@ -222,11 +240,49 @@ describe("describeCompatDiagnostics", () => {
 
   it("truncado é sinalizado", () => {
     const s = describeCompatDiagnostics({
+      v: 2,
       persisted: 20,
       verified: true,
       unresolved: 0,
       truncated: [{ brand: "Ford", model: "Ka", fetched: 50, total: 209 }],
     });
     expect(s?.text).toContain("catálogo lido só em parte");
+  });
+
+  it("sem releitura: nunca diz 'confirmada' (diz 'enviada … não permitiu confirmar')", () => {
+    const s = describeCompatDiagnostics({ v: 2, persisted: 12, verified: false });
+    expect(s?.tone).toBe("muted");
+    expect(s?.text).toMatch(/^Compatibilidade enviada ao Mercado Livre: 12 veículos; o Mercado Livre não permitiu confirmar/);
+    expect(s?.text).not.toMatch(/confirmada/);
+  });
+
+  it("nenhum veículo existia no catálogo ⇒ não diz 'enviada'", () => {
+    const s = describeCompatDiagnostics({
+      v: 2,
+      requested: 2,
+      persisted: 0,
+      verified: false,
+      unresolved: 2,
+      unresolvedSample: [{ brand: "Fiat", model: "Argo", year: 2017 }],
+    });
+    expect(s?.text).toBe(
+      "Nenhum veículo foi encontrado no catálogo do Mercado Livre (ex.: Fiat Argo 2017).",
+    );
+  });
+
+  it("diagnóstico ANTIGO não afirma 'não encontrado no catálogo' (veio da busca quebrada)", () => {
+    const s = describeCompatDiagnostics({
+      persisted: 8,
+      verified: true,
+      unresolved: 3,
+      unresolvedSample: [{ brand: "Ford", model: "Fiesta", year: 2002 }],
+    });
+    expect(s).toEqual({
+      tone: "muted",
+      text: "Compatibilidade no Mercado Livre: 8 veículos (conferida antes da atualização de 22/09/2026).",
+    });
+    expect(describeCompatDiagnostics({ persisted: 0, unresolved: 2 })?.text).toBe(
+      "Compatibilidade ainda não confirmada no Mercado Livre.",
+    );
   });
 });
