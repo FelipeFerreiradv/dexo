@@ -33,6 +33,13 @@ import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import { OEM_FIELD_ATTR_ID } from "./ml-dynamic-attributes.logic";
 import { oemTravadoNoProduto } from "../lib/marketplace-field-lock";
 import {
+  categoryPatchForAutoDetected,
+  createCategoryGuard,
+  isManualCategory,
+  markManual,
+  resetCategoryGuard,
+} from "../lib/category-suggestion-guard";
+import {
   buildListingOverridesPayload,
   isCategoryUnderVehicleRoot,
   sanityCheckInitialMlCategory,
@@ -570,6 +577,9 @@ export function EditProductDialog({
     lengthCm?: number;
     weightKg?: number;
   } | null>(null);
+  // Escolha manual da categoria ML nesta abertura (ver
+  // category-suggestion-guard.ts). Ref, não state: o efeito de medidas lê.
+  const categoryGuardRef = useRef(createCategoryGuard());
 
   // Snapshot dos settings ML do listing no momento da abertura do modal
   // (modo listingContext). Usado no save para enviar apenas os settings que
@@ -1085,6 +1095,7 @@ export function EditProductDialog({
 
       // Reset previous auto-detection when opening dialog so it's recalculated
       autoDetectedRef.current = null;
+      resetCategoryGuard(categoryGuardRef.current);
 
       // Atualizar refs com valores originais do produto
       originalNameRef.current = product.name;
@@ -1792,8 +1803,13 @@ export function EditProductDialog({
           widthCm: measurements.widthCm ?? autoDetectedRef.current?.widthCm,
           lengthCm: measurements.lengthCm ?? autoDetectedRef.current?.lengthCm,
           weightKg: measurements.weightKg ?? autoDetectedRef.current?.weightKg,
-          category: category || autoDetectedRef.current?.category,
-          mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
+          // Escolha manual NÃO entra como auto-detectada (senão passava por
+          // automática e ia para o banco como "auto" — bug de 22/09/2026).
+          ...categoryPatchForAutoDetected(
+            categoryGuardRef.current,
+            { category, mlCategory: watchMlCategory },
+            autoDetectedRef.current,
+          ),
         };
       } else {
         // no measurements for this category: clear fields only if they were previously auto-filled
@@ -1824,8 +1840,13 @@ export function EditProductDialog({
           widthCm: undefined,
           lengthCm: undefined,
           weightKg: undefined,
-          category: category || autoDetectedRef.current?.category,
-          mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
+          // Escolha manual NÃO entra como auto-detectada (senão passava por
+          // automática e ia para o banco como "auto" — bug de 22/09/2026).
+          ...categoryPatchForAutoDetected(
+            categoryGuardRef.current,
+            { category, mlCategory: watchMlCategory },
+            autoDetectedRef.current,
+          ),
         };
       }
     } catch (err) {
@@ -1903,10 +1924,15 @@ export function EditProductDialog({
     setIsSubmitting(true);
     try {
 
+      // Categoria escolhida no seletor nesta abertura é "manual". Antes o
+      // efeito de medidas registrava a escolha como auto-detectada e este
+      // modal mandava SEMPRE "auto".
       const mlCategorySourceToSend = data.mlCategory
-        ? autoDetectedRef.current?.mlCategory === data.mlCategory
-          ? "auto"
-          : "manual"
+        ? isManualCategory(categoryGuardRef.current, "ml")
+          ? "manual"
+          : autoDetectedRef.current?.mlCategory === data.mlCategory
+            ? "auto"
+            : "manual"
         : autoDetectedRef.current?.mlCategory
           ? "auto"
           : undefined;
@@ -3032,6 +3058,8 @@ export function EditProductDialog({
                                             key={`ml-sug-${opt.id}`}
                                             value={`${opt.value} ${opt.id}`}
                                             onSelect={() => {
+                                              // Escolha da pessoa: trava contra sugestão (antes do onChange).
+                                              markManual(categoryGuardRef.current, "ml");
                                               field.onChange(opt.id);
                                               // `category` (a categoria de
                                               // topo do produto) deixou de
@@ -3070,6 +3098,8 @@ export function EditProductDialog({
                                             key={`ml-all-${opt.id}`}
                                             value={`${opt.value} ${opt.id}`}
                                             onSelect={() => {
+                                              // Escolha da pessoa: trava contra sugestão (antes do onChange).
+                                              markManual(categoryGuardRef.current, "ml");
                                               field.onChange(opt.id);
                                               // `category` (a categoria de
                                               // topo do produto) deixou de
