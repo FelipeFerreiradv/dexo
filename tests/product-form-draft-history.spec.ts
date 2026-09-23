@@ -657,3 +657,42 @@ describe("precedência dos contextos NF-e e sucata", () => {
     expect(readDraft(draftKey("dono", "scrap"))).toBeNull();
   });
 });
+
+describe("origem das categorias no rascunho (hotfix de 23/09/2026)", () => {
+  const base = {
+    values: { name: "Farol", mlCategory: "MLB1" },
+    compatibilities: [],
+    now: 1_000,
+  };
+
+  it("guarda só canais conhecidos marcados 'manual' e volta igual do storage", () => {
+    const s = serializeProductForm({
+      ...base,
+      categoryOrigins: { ml: "manual", shopee: "auto" as never, xyz: "manual" } as never,
+    });
+    expect(s.categoryOrigins).toEqual({ ml: "manual" });
+    const volta = parseSnapshot(JSON.parse(JSON.stringify(s)));
+    expect(volta?.categoryOrigins).toEqual({ ml: "manual" });
+  });
+
+  it("sem escolha manual ⇒ o campo nem entra (rascunho igual ao de antes)", () => {
+    const s = serializeProductForm({ ...base, categoryOrigins: {} });
+    expect("categoryOrigins" in s).toBe(false);
+  });
+
+  it("rascunho antigo (sem o campo) continua válido e volta sem origens", () => {
+    const s = serializeProductForm(base);
+    const volta = parseSnapshot(JSON.parse(JSON.stringify(s)));
+    expect(volta).not.toBeNull();
+    expect(volta?.categoryOrigins).toBeUndefined();
+  });
+
+  it("lixo no storage é descartado sem invalidar o rascunho", () => {
+    const s = serializeProductForm(base) as Record<string, unknown>;
+    for (const lixo of ["manual", 42, ["ml"], { ml: "MANUAL" }, null]) {
+      const volta = parseSnapshot({ ...s, categoryOrigins: lixo });
+      expect(volta).not.toBeNull();
+      expect(volta?.categoryOrigins).toBeUndefined();
+    }
+  });
+});

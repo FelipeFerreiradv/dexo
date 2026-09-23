@@ -87,18 +87,43 @@ describe("create-product-dialog — trava de categoria manual", () => {
     );
   });
 
-  it("rascunho e histórico travam as categorias ANTES dos setValue", () => {
+  // ⚠️ Mudança intencional (hotfix de 23/09/2026): rascunho e histórico
+  // TRAVAVAM toda categoria que voltava — o "Usar último" grudava a categoria
+  // da peça anterior em toda a série. Agora a origem decide: o rascunho (mesmo
+  // cadastro) grava e devolve as escolhas manuais; o histórico (outro
+  // produto) não passa origem e entra como sugestão. Regra provada em
+  // tests/category-suggestion-guard.spec.ts.
+  it("rascunho devolve a ORIGEM gravada ANTES dos setValue", () => {
     const rascunho = trecho(CREATE, "const restoreSnapshotIntoForm = useCallback(", 900);
-    const marca = rascunho.indexOf("markRestoredCategoriesManual(");
+    const marca = rascunho.indexOf("markRestoredCategories(");
     const laco = rascunho.indexOf("for (const [field, value] of Object.entries(snapshot.values))");
     expect(marca).toBeGreaterThan(-1);
     expect(laco).toBeGreaterThan(marca);
+    expect(rascunho.slice(marca, laco)).toContain("snapshot.categoryOrigins");
+  });
 
+  it("histórico entra como SUGESTÃO (sem origem) ANTES dos setValue", () => {
     const historico = trecho(CREATE, "const handleApplyHistory = useCallback(", 1600);
-    const marcaH = historico.indexOf("markRestoredCategoriesManual(");
+    const marcaH = historico.indexOf("markRestoredCategories(");
     const lacoH = historico.indexOf("for (const field of applied)");
     expect(marcaH).toBeGreaterThan(-1);
     expect(lacoH).toBeGreaterThan(marcaH);
+    const chamada = historico.slice(marcaH, lacoH);
+    expect(chamada).not.toContain("categoryOrigins");
+    expect(chamada).not.toContain("Source");
+    expect(historico).not.toContain("markCategoryManual(");
+  });
+
+  it("o rascunho grava as escolhas manuais da sessão", () => {
+    const salvar = trecho(CREATE, "const saveDraftNow = useCallback(", 1800);
+    expect(salvar).toContain("categoryOrigins: manualCategoryOrigins(categoryGuardRef.current)");
+  });
+
+  it("categoria restaurada como sugestão fica registrada como auto-detectada (a sugestão do título pode trocá-la)", () => {
+    const f = trecho(CREATE, "const markRestoredCategories = useCallback(", 2200);
+    expect(f).toContain("markRestoredCategory(");
+    expect(f).toContain("mlCategory: String(v)");
+    expect(f).toContain("shopeeCategory: String(v)");
   });
 
   it("abrir e fechar o modal zeram a trava", () => {

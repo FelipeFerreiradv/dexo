@@ -77,7 +77,9 @@ const fakeUser = {
   dataOwnerId: "user-1",
 } as any;
 
-const RESERVA = new Date("2026-09-23T12:10:00.000Z");
+// Reserva VIGENTE: relativa ao relógio. A data fixa que estava aqui
+// (2026-09-23T12:10Z) venceu no próprio dia e o teste passou a falhar.
+const RESERVA = new Date(Date.now() + 10 * 60_000);
 
 const linha = (over: Record<string, unknown> = {}) => ({
   id: "pl-1",

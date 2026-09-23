@@ -97,9 +97,11 @@ import {
   categoryPatchForAutoDetected,
   createCategoryGuard,
   isManualCategory,
+  manualCategoryOrigins,
   markAuto,
   markEmpty,
   markManual,
+  markRestoredCategory,
   mayApplyAutoCategory,
   resetCategoryGuard,
   type CategoryChannel,
@@ -668,23 +670,6 @@ export function CreateProductDialog({
     markManual(categoryGuardRef.current, channel);
     if (channel === "ml") setPendingMlSuggestion(null);
   }, []);
-  /** Rascunho/histórico: categorias não vazias que voltam contam como escolha. */
-  const markRestoredCategoriesManual = useCallback(
-    (values: Record<string, unknown>) => {
-      const campos: Array<[string, CategoryChannel]> = [
-        ["mlCategory", "ml"],
-        ["shopeeCategory", "shopee"],
-        ["magaluCategory", "magalu"],
-        ["olxCategory", "olx"],
-        ["facebookCategory", "fb"],
-      ];
-      for (const [campo, canal] of campos) {
-        const v = values[campo];
-        if (typeof v === "string" && v.trim()) markCategoryManual(canal);
-      }
-    },
-    [markCategoryManual],
-  );
 
   // ── Rascunho automático (Bloco 4) e histórico de cadastros (Bloco 3) ──
   // Flags de build-time do Next: precisam ser lidas com o nome literal.
@@ -3650,6 +3635,8 @@ export function CreateProductDialog({
       magaluCategoryLabel: extras.magaluLabel,
       currentStep: extras.step,
       defaultStock: defaultStockRef.current,
+      // Só as escolhas da pessoa: na volta, o resto entra como sugestão.
+      categoryOrigins: manualCategoryOrigins(categoryGuardRef.current),
     });
   }, [getValues]);
 
@@ -3692,14 +3679,67 @@ export function CreateProductDialog({
     setAskRestoreDraft(true);
   }, [open, draftEnabled, draft.hasDraft]);
 
+  /**
+   * Rascunho/histórico: categorias não vazias que voltam para o formulário.
+   * Travada (escolha da pessoa) só a que a origem gravada diz "manual" — o
+   * rascunho grava isso; o histórico não passa origem nenhuma, porque traz a
+   * categoria de OUTRO produto. O resto entra como sugestão e fica registrado
+   * como auto-detectado: a sugestão do título novo pode trocá-la e o submit
+   * grava "auto". Chamar ANTES dos setValue (os efeitos de sugestão rodam logo
+   * depois). Ver `markRestoredCategory`.
+   */
+  const markRestoredCategories = useCallback(
+    (
+      values: Record<string, unknown>,
+      origins?: Partial<Record<CategoryChannel, unknown>> | null,
+    ) => {
+      const campos: Array<[string, CategoryChannel]> = [
+        ["mlCategory", "ml"],
+        ["shopeeCategory", "shopee"],
+        ["magaluCategory", "magalu"],
+        ["olxCategory", "olx"],
+        ["facebookCategory", "fb"],
+      ];
+      for (const [campo, canal] of campos) {
+        const v = values[campo];
+        const marcou = markRestoredCategory(
+          categoryGuardRef.current,
+          canal,
+          v,
+          origins?.[canal],
+        );
+        if (marcou === "manual") {
+          if (canal === "ml") setPendingMlSuggestion(null);
+        } else if (marcou === "auto" && canal === "ml") {
+          const rotulo = values.category;
+          autoDetectedRef.current = {
+            ...(autoDetectedRef.current ?? {}),
+            mlCategory: String(v),
+            ...(typeof rotulo === "string" && rotulo.trim()
+              ? { category: rotulo }
+              : {}),
+          };
+        } else if (marcou === "auto" && canal === "shopee") {
+          autoDetectedRef.current = {
+            ...(autoDetectedRef.current ?? {}),
+            shopeeCategory: String(v),
+          };
+        }
+      }
+    },
+    [],
+  );
+
   /** Reaplica um snapshot no formulário (rascunho restaurado). */
   const restoreSnapshotIntoForm = useCallback(
     (snapshot: ProductFormSnapshot) => {
       const opts = { shouldDirty: true } as const;
-      // Categoria que volta do rascunho foi decisão da pessoa naquela sessão:
-      // trava ANTES dos setValue (os efeitos de sugestão rodam logo depois e
-      // a sobrescreveriam).
-      markRestoredCategoriesManual(snapshot.values as Record<string, unknown>);
+      // O rascunho é o MESMO cadastro: a categoria que a pessoa escolheu
+      // continua travada; a que a sugestão tinha posto volta como sugestão.
+      markRestoredCategories(
+        snapshot.values as Record<string, unknown>,
+        snapshot.categoryOrigins,
+      );
       for (const [field, value] of Object.entries(snapshot.values)) {
         // `sku` não está no snapshot por construção; a checagem é
         // cinto-e-suspensório para nunca reintroduzir um código já consumido.
@@ -3746,7 +3786,7 @@ export function CreateProductDialog({
         }
       }
     },
-    [setValue, markRestoredCategoriesManual],
+    [setValue, markRestoredCategories],
   );
 
   // Aplica a sucata enfileirada — a `<option>` num commit, o valor no
@@ -3898,9 +3938,11 @@ export function CreateProductDialog({
         shouldValidate: true,
         shouldTouch: true,
       } as const;
-      // Categoria copiada do cadastro anterior (só entra em campo vazio) é
-      // escolha da pessoa: trava antes dos setValue.
-      markRestoredCategoriesManual(
+      // Categoria copiada do cadastro anterior (só entra em campo vazio) é a
+      // de OUTRO produto: entra como sugestão — a do título novo pode
+      // trocá-la (hotfix de 23/09/2026; travar grudava a categoria da peça
+      // anterior em toda a série).
+      markRestoredCategories(
         Object.fromEntries(applied.map((f) => [f, next[f]])),
       );
       for (const field of applied) {
@@ -3949,7 +3991,7 @@ export function CreateProductDialog({
       compatibilityPositions,
       setValue,
       onToast,
-      markRestoredCategoriesManual,
+      markRestoredCategories,
     ],
   );
 

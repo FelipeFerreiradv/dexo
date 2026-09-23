@@ -125,6 +125,32 @@ export interface ProductFormSnapshot {
    * fallback `0`, que era o comportamento anterior.
    */
   defaultStock?: number | null;
+  /**
+   * Canais cuja categoria a pessoa ESCOLHEU nesta sessão (seletor, "Usar
+   * sugestão"). Na volta do rascunho, só esses ficam travados; o resto entra
+   * como sugestão. Opcional: rascunho gravado antes do hotfix de 23/09/2026 não
+   * tem o campo e volta todo como sugestão (o comportamento de antes do #359).
+   * Mesmo motivo do `compatibilityPositions` para não subir a versão.
+   */
+  categoryOrigins?: CategoryOrigins;
+}
+
+/** Canal de categoria → "manual" (só as escolhas da pessoa são gravadas). */
+export type CategoryOrigins = Partial<
+  Record<"ml" | "shopee" | "magalu" | "olx" | "fb", "manual">
+>;
+
+const CATEGORY_CHANNELS = ["ml", "shopee", "magalu", "olx", "fb"] as const;
+
+/** Entrada NÃO confiável (localStorage): só canais conhecidos com "manual". */
+function parseCategoryOrigins(v: unknown): CategoryOrigins | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  const out: CategoryOrigins = {};
+  for (const c of CATEGORY_CHANNELS) {
+    if (o[c] === "manual") out[c] = "manual";
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export interface SerializeInput {
@@ -134,6 +160,7 @@ export interface SerializeInput {
   scrap?: ScrapSnapshot | null;
   magaluCategoryLabel?: string | null;
   currentStep?: number | null;
+  categoryOrigins?: CategoryOrigins | null;
   /** Ver `ProductFormSnapshot.defaultStock`. */
   defaultStock?: number | null;
   /** Injetado para manter a função pura e testável com relógio fixo. */
@@ -177,6 +204,9 @@ export function serializeProductForm(
       sku: (input.values?.sku as string | undefined)?.trim() || null,
     },
     defaultStock: input.defaultStock ?? null,
+    ...(parseCategoryOrigins(input.categoryOrigins)
+      ? { categoryOrigins: parseCategoryOrigins(input.categoryOrigins) }
+      : {}),
   };
 }
 
@@ -249,6 +279,9 @@ export function parseSnapshot(raw: unknown): ProductFormSnapshot | null {
       name: String(s.label?.name ?? ""),
       sku: s.label?.sku ?? null,
     },
+    ...(parseCategoryOrigins(s.categoryOrigins)
+      ? { categoryOrigins: parseCategoryOrigins(s.categoryOrigins) }
+      : {}),
   };
 }
 
