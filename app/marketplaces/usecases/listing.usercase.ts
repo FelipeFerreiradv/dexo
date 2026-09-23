@@ -1306,17 +1306,32 @@ export class ListingUseCase {
      * `[TERMINAL][CORRIGIVEL]`, que a edição do produto re-arma.
      */
     marker?: string;
+    /**
+     * Linha do par já lida pelo chamador (`null` = não existe). Ausente = lê
+     * aqui. Evita a segunda leitura idêntica no bloqueio de valores.
+     */
+    knownRow?: { id: string; externalListingId: string | null } | null;
   }): Promise<string | undefined> {
     try {
       const lastError = `${i.marker ?? "[TERMINAL]"} ${i.message}`;
-      const row = await ListingRepository.findByProductAndAccount(
-        i.productId,
-        i.accountId,
-      );
+      const row =
+        i.knownRow !== undefined
+          ? i.knownRow
+          : await ListingRepository.findByProductAndAccount(
+              i.productId,
+              i.accountId,
+            );
       if (row?.externalListingId?.startsWith("PENDING_REPUBLISH_")) {
         return row.id;
       }
-      if (row) {
+      // Linha com id REAL (anúncio encerrado sendo publicado de novo): o
+      // re-arme da edição e o botão "Tentar publicar novamente" só enxergam
+      // placeholders PENDING_, então um `[TERMINAL][CORRIGIVEL]` nela ficaria
+      // sem saída. O bloqueio de VALOR vai para um placeholder próprio e o
+      // anúncio encerrado segue intacto no histórico.
+      const idReal =
+        !!row && !String(row.externalListingId ?? "").startsWith("PENDING_");
+      if (row && !(idReal && i.marker === LAST_ERROR_MARKER.CORRIGIVEL)) {
         await ListingRepository.updateListing(row.id, {
           status: "error",
           lastError,
@@ -2586,7 +2601,42 @@ export class ListingUseCase {
         const catalogoLigado = shouldSkipMlRequiredBlockForCatalog(
           (product as any).mlCatalogProductId,
         );
+        // Só no caminho bloqueado (raro): a linha do par diz se isto é a
+        // REPUBLICAÇÃO de um anúncio vivo (troca de título UP disparada pela
+        // edição do produto). Lá o bloqueio não aparece em lugar nenhum — o
+        // sync reverte a linha e só registra log — e o título novo nunca
+        // chegaria ao ML, nem nos casos que o ML aceita com aviso (parte dos
+        // números sem unidade). Então a republicação segue como antes: o POST
+        // vai e o ML decide; as correções determinísticas continuam valendo.
+        let linhaDoPar:
+          | { id: string; externalListingId: string | null }
+          | null
+          | undefined;
         if (checagem.blocked && !catalogoLigado) {
+          try {
+            linhaDoPar = await ListingRepository.findByProductAndAccount(
+              productId,
+              acc.id,
+            );
+          } catch {
+            linhaDoPar = undefined;
+          }
+        }
+        const republicacao =
+          !!linhaDoPar?.externalListingId?.startsWith("PENDING_REPUBLISH_");
+        if (checagem.blocked && !catalogoLigado && republicacao) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.attribute_values.block_skipped_republish",
+              productId: product.id,
+              accountId: acc.id,
+              categoryId: categoryIdForML,
+              issues: checagem.issues
+                .filter((i) => i.severity === "block")
+                .map((i) => `${i.code}:${i.attributeId}`),
+            }),
+          );
+        } else if (checagem.blocked && !catalogoLigado) {
           const msg =
             summarizeValueBlocks(checagem.issues) ??
             "A ficha técnica tem valores que o Mercado Livre não aceita.";
@@ -2599,6 +2649,7 @@ export class ListingUseCase {
             externalSku: product.sku,
             actorId,
             marker: LAST_ERROR_MARKER.CORRIGIVEL,
+            knownRow: linhaDoPar,
           });
           return {
             success: false,

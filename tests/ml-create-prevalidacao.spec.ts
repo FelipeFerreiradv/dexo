@@ -282,6 +282,65 @@ describe("valores da ficha técnica antes do POST", () => {
     );
   });
 
+  it("linha reaproveitada com id REAL (anúncio encerrado) ⇒ o bloqueio vai para um placeholder PENDING_ novo; a encerrada não é tocada", async () => {
+    // Sem isto o [TERMINAL][CORRIGIVEL] ficava numa linha que o re-arme e o
+    // botão não enxergam (só PENDING_) — sem saída.
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-encerrada",
+      externalListingId: "MLB123",
+      status: "closed",
+    });
+    produto.attributes = { GTIN: { value_name: "2033029" } };
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect(ListingRepository.updateListing).not.toHaveBeenCalledWith(
+      "l-encerrada",
+      expect.anything(),
+    );
+    const criada = (ListingRepository.createListing as any).mock.calls[0][0];
+    expect(criada.externalListingId.startsWith("PENDING_")).toBe(true);
+    expect(criada.lastError.startsWith("[TERMINAL][CORRIGIVEL] ")).toBe(true);
+    expect(r.listingId).toBe("l-novo");
+  });
+
+  it("bloqueio lê a linha do par UMA vez (sem segunda leitura idêntica)", async () => {
+    produto.attributes = { GTIN: { value_name: "2033029" } };
+    await criar();
+    expect(ListingRepository.findByProductAndAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("REPUBLICAÇÃO UP (linha PENDING_REPUBLISH_) ⇒ não bloqueia: o POST segue como antes e o ML decide", async () => {
+    // A troca de título de anúncio vivo não tem onde mostrar o bloqueio (o
+    // sync reverte a linha); o ML aceita parte destes valores com aviso.
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-viva",
+      externalListingId: "PENDING_REPUBLISH_MLB1_1",
+    });
+    produto.attributes = {
+      MAXIMUM_OPENING_ANGLE: { value_name: "30" },
+      VEHICLE_TYPE: { value_id: "13222040", value_name: "Linha Pesada" },
+    };
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+    await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      "Título novo",
+      "actor-1",
+    );
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    const primeiro = chamadas()[0];
+    expect(attr(primeiro, "MAXIMUM_OPENING_ANGLE")).toMatchObject({ value_name: "30" });
+    // correção determinística continua valendo
+    expect(attr(primeiro, "VEHICLE_TYPE").value_id).toBe("11377043");
+    // nada de [TERMINAL][CORRIGIVEL] gravado na linha viva
+    for (const c of (ListingRepository.updateListing as any).mock.calls) {
+      expect(String(c[1]?.lastError ?? "")).not.toMatch(/CORRIGIVEL/);
+    }
+  });
+
   it("número sem unidade em campo OPCIONAL ⇒ bloqueia (3708 recusa o anúncio)", async () => {
     produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "30" } };
     const r = await criar();

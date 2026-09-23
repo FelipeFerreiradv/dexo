@@ -33,6 +33,32 @@ describe("classifyRecoverRow", () => {
     ).toBe("conta_inativa");
   });
 
+  it("publicação em andamento (pending recente / reservada pelo botão) ⇒ em_andamento, nada é tocado", () => {
+    const d = classifyRecoverRow(
+      base({ inFlight: "publishing", liveLocal: null, lastError: null }),
+    );
+    expect(d.classe).toBe("em_andamento");
+  });
+
+  it("cron já agendado ⇒ agendado, nada é tocado", () => {
+    expect(classifyRecoverRow(base({ inFlight: "scheduled" })).classe).toBe("agendado");
+  });
+
+  it("mesmo SKU com outro título criado na janela ⇒ duplicidade_possivel (não adota nem publica)", () => {
+    const d = classifyRecoverRow(
+      base({
+        remote: {
+          status: "ok",
+          adoptable: null,
+          others: [],
+          ambiguous: { id: "MLB_X", status: "active", title: "Farol Gol G5" },
+        },
+      }),
+    );
+    expect(d.classe).toBe("duplicidade_possivel");
+    expect(d.motivo).toMatch(/MLB_X "Farol Gol G5"/);
+  });
+
   it("anúncio vivo local ⇒ ja_publicado (nunca re-arma)", () => {
     const d = classifyRecoverRow(
       base({ liveLocal: { externalListingId: "MLB5188503789", status: "active" } }),
@@ -103,15 +129,18 @@ describe("classifyRecoverRow", () => {
     expect(d.motivo.startsWith("[")).toBe(false);
   });
 
-  it("mesmo erro, mas produto editado depois ⇒ publicavel (a pessoa pode ter corrigido)", () => {
-    expect(
-      classifyRecoverRow(
-        base({
-          lastError: 'O valor que você inseriu em "Número de registro/certificação INMETRO" está incorreto.',
-          editedAfterError: true,
-        }),
-      ).classe,
-    ).toBe("publicavel");
+  it("mesmo erro com o produto alterado depois (venda, sync de preço) ⇒ CONTINUA precisa_cliente; o motivo orienta o botão", () => {
+    // `Product.updatedAt` também anda com baixa de estoque e sync de preço:
+    // não é prova de que a pessoa corrigiu o INMETRO.
+    const d = classifyRecoverRow(
+      base({
+        lastError: 'O valor que você inseriu em "Número de registro/certificação INMETRO" está incorreto.',
+        editedAfterError: true,
+      }),
+    );
+    expect(d.classe).toBe("precisa_cliente");
+    expect(d.motivo).toMatch(/INMETRO/);
+    expect(d.motivo).toMatch(/Tentar publicar novamente/);
   });
 
   it("GTIN antigo sem bloqueio atual (corrigido) ⇒ publicavel", () => {

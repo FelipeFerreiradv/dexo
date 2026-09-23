@@ -329,6 +329,23 @@ describe("GTIN (7711 / 7712)", () => {
     expect(gtinCheckDigitOk("abc")).toBe(false);
   });
 
+  it.each(["7891234567895,17891234567892", "7891234567895, 12345670", "7891234567895,"])(
+    "mais de um código separado por vírgula (GTIN multivalorado) '%s' ⇒ passa, payload intacto",
+    (v) => {
+      const attrs = [{ id: "GTIN", value_name: v }];
+      const r = valida(attrs, [GTIN]);
+      expect(r.blocked).toBe(false);
+      expect(r.issues).toEqual([]);
+      expect(r.attributes[0]).toBe(attrs[0]);
+    },
+  );
+
+  it("vírgula com um código ruim: bloqueia apontando SÓ o ruim", () => {
+    const r = valida([{ id: "GTIN", value_name: "7891234567895,906062426R" }], [GTIN]);
+    expect(r.blocked).toBe(true);
+    expect(r.issues[0].value).toBe("906062426R");
+  });
+
   it("em lista: um valor inválido basta para bloquear", () => {
     const r = valida(
       [{ id: "GTIN", values: [{ name: "7891234567895" }, { name: "abc" }] }],

@@ -409,6 +409,15 @@ export function MLDynamicAttributesSection({
                       onChange={(e) => {
                         const numero = e.target.value;
                         if (!numero || !numero.trim()) {
+                          // Guarda a unidade em uso: apagar e redigitar o
+                          // número não pode trocar "mm" pela unidade padrão.
+                          if (partes.unit) {
+                            const emUso = partes.unit;
+                            setUnidadeEscolhida((prev) => ({
+                              ...prev,
+                              [attr.id]: emUso,
+                            }));
+                          }
                           updateAttr(attr.id, null);
                           return;
                         }

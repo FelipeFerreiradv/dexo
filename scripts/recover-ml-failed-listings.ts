@@ -8,7 +8,12 @@ import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 import { ListingRetryService } from "../app/marketplaces/services/listing-retry.service";
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
-import { pickReconciledItem } from "../app/marketplaces/lib/ml-reconcile.logic";
+import { decideReconcile } from "../app/marketplaces/lib/ml-reconcile.logic";
+import { sanitizeMLTitle } from "../app/marketplaces/lib/ml-title";
+import {
+  isMlRequiredAttrsBlockEnabled,
+  shouldSkipMlRequiredBlockForCatalog,
+} from "../app/marketplaces/lib/ml-required-attributes.logic";
 import { placeholderMlSettings } from "../app/marketplaces/lib/ml-placeholder-settings";
 import { formatListingError } from "../app/produtos/lib/listing-error-format";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
@@ -41,7 +46,9 @@ import {
  *                                              ⇒ adotar (sem criar nada)
  *   3. outro anúncio vivo com o mesmo SKU      ⇒ duplicidade_possivel
  *   4. pré-validação atual bloqueia (obrigatório/valor), ou o último erro é
- *      dado que só a pessoa corrige e o produto não foi editado depois
+ *      dado que só a pessoa corrige (INMETRO, medidas, foto…). O
+ *      `updatedAt` do produto NÃO conta como correção — estoque e preço
+ *      também o movem —, só muda o texto do motivo
  *                                              ⇒ precisa_cliente
  *   5. resto                                   ⇒ publicavel
  *
@@ -55,7 +62,14 @@ import {
  *                   de 30 s). Quem publica é o cron, pelo createMLListing, com
  *                   as configurações do PRÓPRIO pendente (tipo de anúncio,
  *                   condição, frete) — nada de padrão global.
- *   duplicidade_possivel / nao_verificado / conta_inativa ⇒ nada.
+ *   duplicidade_possivel / nao_verificado / conta_inativa / em_andamento /
+ *   agendado ⇒ nada.
+ *
+ * Toda escrita do --apply é CONDICIONAL: só vale se a linha continua como o
+ * dry-run a leu (mesmo `updatedAt`, ainda placeholder). Linha que mudou no
+ * meio — o cron publicou, a pessoa clicou em "Tentar publicar novamente" — é
+ * pulada, nunca sobrescrita (sobrescrever uma linha recém-publicada devolvia
+ * ao cron algo que ele criaria de novo).
  *
  * Saída: scripts/out/recover-ml-<userId>-<data>.json (todas as linhas) e
  * .csv só com o que precisa da cliente (produto, SKU, conta, motivo).
@@ -83,6 +97,8 @@ const since: Date | null = (() => {
 })();
 
 const ESCALONAMENTO_MS = 30_000;
+/** Pending mais novo que isto está sendo publicado agora (mesma régua do card). */
+const PUBLICANDO_AGORA_MS = 30 * 60_000;
 const TOKEN_FOLGA_MS = 5 * 60_000;
 
 interface Linha {
@@ -192,7 +208,16 @@ async function main() {
       externalListingId: { startsWith: "PENDING_" },
       NOT: { externalListingId: { startsWith: "PENDING_REPUBLISH_" } },
       status: { in: ["error", "pending"] },
-      ...(since ? { product: { createdAt: { gte: since } } } : {}),
+      // Janela pelo pendente OU pelo produto: um anúncio preso de produto
+      // antigo também entra.
+      ...(since
+        ? {
+            OR: [
+              { createdAt: { gte: since } },
+              { product: { createdAt: { gte: since } } },
+            ],
+          }
+        : {}),
     },
     select: {
       id: true,
@@ -200,7 +225,9 @@ async function main() {
       status: true,
       retryEnabled: true,
       retryAttempts: true,
+      nextRetryAt: true,
       lastError: true,
+      attributesOverride: true,
       createdAt: true,
       updatedAt: true,
       requestedCategoryId: true,
@@ -248,8 +275,21 @@ async function main() {
       acc.id,
     );
 
+    const agora = Date.now();
+    const proxima = p.nextRetryAt ? new Date(p.nextRetryAt).getTime() : null;
+    const inFlight: RecoverInput["inFlight"] =
+      p.retryEnabled && proxima !== null
+        ? "scheduled"
+        : (!p.retryEnabled && proxima !== null && proxima > agora) ||
+            (p.status === "pending" &&
+              agora - new Date(p.updatedAt).getTime() < PUBLICANDO_AGORA_MS)
+          ? "publishing"
+          : null;
+
     let remote: RecoverInput["remote"];
-    if (!sku || !acc.externalUserId) {
+    if (inFlight) {
+      remote = { status: "skipped" };
+    } else if (!sku || !acc.externalUserId) {
       remote = { status: "skipped" };
     } else if (!tokenValido(acc.expiresAt)) {
       remote = { status: "not_checked" };
@@ -260,11 +300,19 @@ async function main() {
           acc.externalUserId,
           sku,
         );
-        const adotavel = pickReconciledItem(itens, new Date(p.createdAt));
+        // Mesma decisão do cron: status, campo de SKU e TÍTULO.
+        const decisao = decideReconcile(itens, {
+          placeholderCreatedAt: new Date(p.createdAt),
+          sku,
+          desiredTitle: p.product?.name ? sanitizeMLTitle(p.product.name, sku) : null,
+        });
+        const adotavel = decisao.kind === "adopt" ? decisao.item : null;
+        const ambiguo = decisao.kind === "ambiguous" ? decisao.item : null;
         remote = {
           status: "ok",
           adoptable: adotavel,
-          others: itens.filter((it) => it.id !== adotavel?.id),
+          ambiguous: ambiguo,
+          others: itens.filter((it) => it.id !== adotavel?.id && it.id !== ambiguo?.id),
         };
       } catch {
         remote = { status: "search_failed" };
@@ -273,14 +321,42 @@ async function main() {
 
     let preflight: RecoverInput["preflight"] = null;
     const produto = porProduto.get(p.productId);
-    if (produto) {
+    if (produto && !inFlight) {
       try {
+        const ficha =
+          p.attributesOverride &&
+          typeof p.attributesOverride === "object" &&
+          !Array.isArray(p.attributesOverride)
+            ? (p.attributesOverride as Record<string, unknown>)
+            : null;
         const ev = await ListingUseCase.evaluateMLRequiredAttributesForProduct({
           product: produto,
           categoryId: p.requestedCategoryId ?? undefined,
+          attributeOverrides: ficha,
           categoryCache: cacheCategoria,
         });
-        preflight = { blocked: ev.status === "blocked", message: ev.message };
+        // Espelha o que o create de PRODUÇÃO bloqueia: valor inválido sempre;
+        // obrigatório faltando só com ML_REQUIRED_ATTRS_BLOCK=1; e nada antes
+        // do POST quando é anúncio de catálogo ligado.
+        const catalogo = shouldSkipMlRequiredBlockForCatalog(
+          (produto as { mlCatalogProductId?: unknown }).mlCatalogProductId,
+        );
+        const bloqueios = catalogo
+          ? []
+          : ev.blocking.filter(
+              (b) =>
+                b.reason === "invalid_value" ||
+                (b.reason === "missing" && isMlRequiredAttrsBlockEnabled()),
+            );
+        preflight = {
+          blocked: bloqueios.length > 0,
+          message:
+            bloqueios.length === 0
+              ? null
+              : bloqueios.length === 1
+                ? bloqueios[0].message
+                : `A ficha técnica tem ${bloqueios.length} valores a corrigir: ${bloqueios.map((b) => b.message).join(" ")}`,
+        };
       } catch (err) {
         console.warn(
           `[recover-ml] pré-validação falhou para ${p.productId}:`,
@@ -295,6 +371,7 @@ async function main() {
 
     const d = classifyRecoverRow({
       accountActive: acc.status === "ACTIVE",
+      inFlight,
       liveLocal: liveLocal
         ? { externalListingId: liveLocal.externalListingId, status: liveLocal.status }
         : null,
@@ -336,18 +413,46 @@ async function main() {
 
   if (apply) {
     let ordem = 0;
+    const lidoEm = new Map(pendentes.map((p) => [p.id, p.updatedAt]));
+    // Escrita condicional: só se a linha continua EXATAMENTE como foi lida.
+    const gravarSeIntacta = async (
+      listingId: string,
+      data: Record<string, unknown>,
+    ): Promise<boolean> => {
+      const r = await prisma.productListing.updateMany({
+        where: {
+          id: listingId,
+          updatedAt: lidoEm.get(listingId),
+          externalListingId: { startsWith: "PENDING_" },
+        },
+        data,
+      });
+      return r.count === 1;
+    };
     for (const l of linhas) {
       try {
         if (l.classe === "ja_publicado") {
-          await ListingRepository.updateListing(l.listingId, {
+          const ok = await gravarSeIntacta(l.listingId, {
             status: "error",
             lastError: `[TERMINAL] Produto já tem anúncio nesta conta — ${l.motivo} Exclua este pendente.`,
             retryEnabled: false,
             nextRetryAt: null,
           });
-          l.acao = "encerrado";
+          l.acao = ok ? "encerrado" : "pulado: linha mudou durante a execução";
         } else if (l.classe === "adotar") {
           const cand = pendentes.find((p) => p.id === l.listingId)!;
+          const atual = await prisma.productListing.findUnique({
+            where: { id: cand.id },
+            select: { updatedAt: true, externalListingId: true },
+          });
+          if (
+            !atual ||
+            !String(atual.externalListingId).startsWith("PENDING_") ||
+            atual.updatedAt.getTime() !== new Date(cand.updatedAt).getTime()
+          ) {
+            l.acao = "pulado: linha mudou durante a execução";
+            continue;
+          }
           const r = await ListingRetryService.reconcileBeforeRecreate(
             {
               id: cand.id,
@@ -355,7 +460,11 @@ async function main() {
               retryAttempts: cand.retryAttempts,
               lastError: cand.lastError,
               marketplaceAccountId: cand.marketplaceAccountId,
-              product: { sku: cand.product?.sku ?? null },
+              productId: cand.productId,
+              product: {
+                sku: cand.product?.sku ?? null,
+                name: cand.product?.name ?? null,
+              },
             },
             {
               id: cand.marketplaceAccount.id,
@@ -365,26 +474,26 @@ async function main() {
           );
           l.acao = `reconcile:${r}`;
         } else if (l.classe === "precisa_cliente") {
-          await ListingRepository.updateListing(l.listingId, {
+          const ok = await gravarSeIntacta(l.listingId, {
             status: "error",
             lastError: `${LAST_ERROR_MARKER.CORRIGIVEL} ${l.motivo}`.slice(0, 490),
             retryEnabled: false,
             nextRetryAt: null,
           });
-          l.acao = "marcado_corrigivel";
+          l.acao = ok ? "marcado_corrigivel" : "pulado: linha mudou durante a execução";
         } else if (l.classe === "publicavel") {
           // lastError limpo: o motivo antigo (quase sempre o 369 que
           // mascarava a causa) fica no relatório; a nova tentativa grava o
           // motivo real, já classificado.
-          await ListingRepository.updateListing(l.listingId, {
+          const ok = await gravarSeIntacta(l.listingId, {
             status: "error",
             lastError: null,
             retryEnabled: true,
             retryAttempts: 0,
             nextRetryAt: new Date(Date.now() + 60_000 + ordem * ESCALONAMENTO_MS),
           });
-          ordem++;
-          l.acao = "rearmado";
+          if (ok) ordem++;
+          l.acao = ok ? "rearmado" : "pulado: linha mudou durante a execução";
         }
       } catch (err) {
         l.acao = `falhou: ${err instanceof Error ? err.message : String(err)}`;
@@ -402,7 +511,13 @@ async function main() {
       const r = porId.get(l.listingId);
       const esperadoRetry = l.acao === "rearmado";
       const acao = l.acao ?? "";
-      if (!r || (!acao.startsWith("falhou") && !acao.startsWith("reconcile") && r.retryEnabled !== esperadoRetry)) {
+      if (
+        !r ||
+        (!acao.startsWith("falhou") &&
+          !acao.startsWith("reconcile") &&
+          !acao.startsWith("pulado") &&
+          r.retryEnabled !== esperadoRetry)
+      ) {
         divergentes++;
         console.warn(`[recover-ml] releitura divergente: ${l.listingId}`, r);
       }

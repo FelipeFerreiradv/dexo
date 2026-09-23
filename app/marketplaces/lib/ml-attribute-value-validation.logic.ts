@@ -216,9 +216,17 @@ export function validateMLAttributeValues(
     // GTIN: só código de barras. O ML recusa (7711) qualquer outra coisa — no
     // caso real, número de peça ou texto digitado no campo.
     if (attr.id === "GTIN") {
-      const valores = Array.isArray(attr.values)
-        ? attr.values.map((v) => String(v?.name ?? "").trim()).filter(Boolean)
-        : [String(attr.value_name ?? "").trim()].filter(Boolean);
+      // O GTIN é multivalorado no ML: mais de um código vem separado por
+      // vírgula ("7891234567895,7891234567888"). Cada código é conferido
+      // sozinho — a lista inteira nunca é "um código inválido".
+      const valores = (
+        Array.isArray(attr.values)
+          ? attr.values.map((v) => String(v?.name ?? ""))
+          : [String(attr.value_name ?? "")]
+      )
+        .flatMap((v) => v.split(","))
+        .map((v) => v.trim())
+        .filter(Boolean);
       const invalido = valores.find((v) => !gtinCheckDigitOk(v));
       if (invalido !== undefined) {
         const soDigitoErrado = GTIN.test(invalido);

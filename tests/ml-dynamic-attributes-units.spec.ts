@@ -115,6 +115,18 @@ describe("fiação no componente (sem jsdom: lê o fonte)", () => {
     expect(bloco).toMatch(/Remover valor inválido/);
   });
 
+  it("apagar o número guarda a unidade em uso (redigitar não volta para a padrão)", () => {
+    const bloco = fonte.slice(
+      fonte.indexOf("if (usesUnitSelector(attr))"),
+      fonte.indexOf("const inputType ="),
+    );
+    const limpar = bloco.slice(bloco.indexOf("if (!numero || !numero.trim())"));
+    expect(limpar.indexOf("setUnidadeEscolhida")).toBeGreaterThan(-1);
+    expect(limpar.indexOf("setUnidadeEscolhida")).toBeLessThan(
+      limpar.indexOf("updateAttr(attr.id, null)"),
+    );
+  });
+
   it("dica do INMETRO no campo certo", () => {
     expect(INMETRO_ATTR_ID).toBe("INMETRO_CERTIFICATION_REGISTRATION_NUMBER");
     expect(fonte).toMatch(/attr\.id === INMETRO_ATTR_ID/);

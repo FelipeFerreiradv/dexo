@@ -11,6 +11,8 @@
 
 export type RecoverClass =
   | "conta_inativa"
+  | "em_andamento"
+  | "agendado"
   | "ja_publicado"
   | "adotar"
   | "duplicidade_possivel"
@@ -27,6 +29,13 @@ export interface RemoteItemLite {
 
 export interface RecoverInput {
   accountActive: boolean;
+  /**
+   * A linha já está com outro agente: `publishing` = publicação em curso
+   * (pending recente, ou reservada pelo botão "Tentar publicar novamente");
+   * `scheduled` = o cron já vai tentar. Nenhum dos dois pode ser tocado —
+   * re-armar ou marcar por cima duplicaria o anúncio.
+   */
+  inFlight?: "publishing" | "scheduled" | null;
   /** Anúncio vivo local (id real) no mesmo par produto/conta. */
   liveLocal: { externalListingId: string; status: string } | null;
   /**
@@ -34,12 +43,24 @@ export interface RecoverInput {
    * para conferir); `not_checked` = token vencido no dry-run (não renova).
    */
   remote:
-    | { status: "ok"; adoptable: RemoteItemLite | null; others: RemoteItemLite[] }
+    | {
+        status: "ok";
+        adoptable: RemoteItemLite | null;
+        others: RemoteItemLite[];
+        /** Mesmo SKU, criado na janela, título diferente (ver decideReconcile). */
+        ambiguous?: RemoteItemLite | null;
+      }
     | { status: "search_failed" | "not_checked" | "skipped" };
   /** Pré-validação atual do produto (mesmo motor do create). */
   preflight: { blocked: boolean; message: string | null } | null;
   lastError: string | null;
-  /** Produto editado depois do último erro gravado na linha? */
+  /**
+   * `Product.updatedAt` é mais novo que o erro? NÃO prova edição da pessoa:
+   * baixa de estoque, sync de preço e troca de foto também movem o
+   * `updatedAt`. Por isso só muda o TEXTO do motivo, nunca a classe
+   * (revisão de 23/09/2026: usado como prova, uma venda fazia a recusa por
+   * INMETRO/medida/foto virar "publicável" sem ninguém ter corrigido).
+   */
   editedAfterError: boolean;
 }
 
@@ -69,6 +90,18 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
   if (!i.accountActive) {
     return { classe: "conta_inativa", motivo: "Conta do ML não está ativa." };
   }
+  if (i.inFlight === "publishing") {
+    return {
+      classe: "em_andamento",
+      motivo: "Publicação em andamento agora — não mexer.",
+    };
+  }
+  if (i.inFlight === "scheduled") {
+    return {
+      classe: "agendado",
+      motivo: "A Dexo já tem uma nova tentativa agendada para esta linha.",
+    };
+  }
   if (i.liveLocal) {
     return {
       classe: "ja_publicado",
@@ -79,6 +112,13 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
     return {
       classe: "adotar",
       motivo: `O anúncio ${i.remote.adoptable.id} foi criado no ML depois deste pendente e não estava vinculado.`,
+    };
+  }
+  if (i.remote.status === "ok" && i.remote.ambiguous) {
+    const a = i.remote.ambiguous;
+    return {
+      classe: "duplicidade_possivel",
+      motivo: `Há um anúncio com o mesmo SKU criado depois deste pendente, com outro título: ${a.id} "${(a.title ?? "").slice(0, 60)}". Conferir antes de publicar.`,
     };
   }
   if (i.remote.status === "ok") {
@@ -109,16 +149,17 @@ export function classifyRecoverRow(i: RecoverInput): RecoverDecision {
     };
   }
   const erro = i.lastError ?? "";
-  if (!i.editedAfterError && RECUSA_DE_DADO_INVISIVEL.some((r) => r.test(erro))) {
+  if (RECUSA_DE_DADO_INVISIVEL.some((r) => r.test(erro))) {
+    const texto = erro.replace(/^(\[[A-Z]+\])+\s*/, "").slice(0, 300);
     return {
       classe: "precisa_cliente",
-      motivo: erro.replace(/^(\[[A-Z]+\])+\s*/, "").slice(0, 300),
+      motivo: i.editedAfterError
+        ? `${texto} (O produto mudou depois desta recusa; se o dado já foi corrigido, basta clicar em "Tentar publicar novamente".)`.slice(0, 460)
+        : texto,
     };
   }
   return {
     classe: "publicavel",
-    motivo: i.editedAfterError
-      ? "Produto editado depois do último erro; pré-validação sem bloqueio."
-      : "Pré-validação sem bloqueio; o último erro não aponta dado a corrigir.",
+    motivo: "Pré-validação sem bloqueio; o último erro não aponta dado a corrigir.",
   };
 }
