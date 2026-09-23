@@ -312,6 +312,20 @@ describe("bloqueio ANTES do POST /items", () => {
     expect(r.listingId).toBe("l-novo");
   });
 
+  it("C3b: linha PENDING_ reservada por OUTRO (publicação em andamento) → bloqueio NÃO é gravado por cima da reserva", async () => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      retryEnabled: false,
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+    });
+    const r = await criar();
+    expect(r.success).toBe(false);
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+    expect(ListingRepository.createListing).not.toHaveBeenCalled();
+  });
+
   it("C3: linha PENDING_ existente → updateListing nela com os mesmos campos", async () => {
     process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
