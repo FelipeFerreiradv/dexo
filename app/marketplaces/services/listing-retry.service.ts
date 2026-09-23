@@ -911,6 +911,33 @@ export class ListingRetryService {
         remoteStatus: achado.status,
       }),
     );
+    // O item adotado não passou pelo pós-criação (compatibilidade; estoque
+    // do momento da criação). O botão não espera a escada de compatibilidade;
+    // o cron espera (o lease dele cobre).
+    if (cand.productId) {
+      const completar = (async () => {
+        try {
+          const { ListingUseCase } = await import(
+            "../usecases/listing.usercase"
+          );
+          await ListingUseCase.completeAdoptedMLListing({
+            accessToken: account.accessToken,
+            itemId: achado.id,
+            listingId: cand.id,
+            productId: cand.productId!,
+          });
+        } catch (e) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.publish.reconcile.complete_failed",
+              listingId: cand.id,
+              error: errMsg(e),
+            }),
+          );
+        }
+      })();
+      if (!opts.interactive) await completar;
+    }
     return "adopted";
   }
 
