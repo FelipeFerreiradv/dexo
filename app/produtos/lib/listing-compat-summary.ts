@@ -68,7 +68,7 @@ export function describeCompatDiagnostics(diag: unknown): CompatSummary | null {
     return persisted > 0
       ? {
           tone: "muted",
-          text: `Compatibilidade no Mercado Livre: ${persisted} ${plural(persisted, "veículo", "veículos")} (conferida antes da atualização de 22/09/2026).`,
+          text: `Compatibilidade no Mercado Livre: ${persisted} ${plural(persisted, "veículo", "veículos")} (conferida antes desta atualização).`,
         }
       : {
           tone: "muted",

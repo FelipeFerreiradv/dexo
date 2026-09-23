@@ -279,7 +279,7 @@ describe("describeCompatDiagnostics", () => {
     });
     expect(s).toEqual({
       tone: "muted",
-      text: "Compatibilidade no Mercado Livre: 8 veículos (conferida antes da atualização de 22/09/2026).",
+      text: "Compatibilidade no Mercado Livre: 8 veículos (conferida antes desta atualização).",
     });
     expect(describeCompatDiagnostics({ persisted: 0, unresolved: 2 })?.text).toBe(
       "Compatibilidade ainda não confirmada no Mercado Livre.",
