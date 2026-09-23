@@ -82,6 +82,24 @@ export function derivePublicationState(
     return { state: "published", label: externalId, canRetry: false };
   }
 
+  // Retry automático ligado vence qualquer marcador velho: a linha re-armada
+  // pela edição ainda carrega o `[TERMINAL][CORRIGIVEL]` da recusa anterior,
+  // e mostrar "precisa de correção" com o botão ativo convidava a um clique
+  // em paralelo com o cron.
+  const proxima = toDate(listing.nextRetryAt);
+  if (listing.retryEnabled && proxima) {
+    return {
+      state: "retry_scheduled",
+      label: "Nova tentativa agendada",
+      canRetry: false,
+    };
+  }
+  // Retry desligado com horário no futuro = reservada pelo botão "Tentar
+  // publicar novamente" (publicação em andamento).
+  if (!listing.retryEnabled && proxima && proxima.getTime() > now.getTime()) {
+    return { state: "publishing", label: "Publicando agora", canRetry: false };
+  }
+
   if (
     markers.includes("RECONECTAR") ||
     /PolicyAgent|Reconecte a conta|reconecte a conta/.test(text)
@@ -98,14 +116,6 @@ export function derivePublicationState(
       state: "needs_fix",
       label: "Não publicado — precisa de correção",
       canRetry: true,
-    };
-  }
-
-  if (listing.retryEnabled && toDate(listing.nextRetryAt)) {
-    return {
-      state: "retry_scheduled",
-      label: "Nova tentativa agendada",
-      canRetry: false,
     };
   }
 

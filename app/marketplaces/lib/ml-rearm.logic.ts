@@ -54,9 +54,24 @@ function toNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Vazio é vazio: `null`, ausente, `[]` e `{}` comparam iguais. O produto que o
+ * update carrega não traz as relações (compatibilidades, posições), então o
+ * modal que manda `compatibilities: []` num salvamento só de estoque parecia
+ * "mudança" e re-armava — gastando uma tentativa no ML a cada salvamento.
+ */
 function json(v: unknown): string {
+  if (v === null || v === undefined) return "null";
+  if (Array.isArray(v) && v.length === 0) return "null";
+  if (
+    typeof v === "object" &&
+    !Array.isArray(v) &&
+    Object.keys(v as object).length === 0
+  ) {
+    return "null";
+  }
   try {
-    return JSON.stringify(v ?? null);
+    return JSON.stringify(v);
   } catch {
     return String(v);
   }
@@ -78,6 +93,16 @@ export function isPublishRelevantProductChange(
   for (const f of JSON_FIELDS) {
     if (data[f] === undefined) continue;
     if (json(data[f]) !== json(before[f])) return true;
+  }
+  return false;
+}
+
+/** A edição trocou a categoria do ML do produto? */
+export function mlCategoryChanged(data: Loose, before: Loose): boolean {
+  for (const f of ["mlCategoryId", "mlCategory"] as const) {
+    const novo = data[f];
+    if (novo === undefined) continue;
+    if ((novo ?? null) !== (before[f] ?? null)) return true;
   }
   return false;
 }

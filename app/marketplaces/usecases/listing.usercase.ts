@@ -96,6 +96,7 @@ import {
   sanitizeMLTitle,
 } from "../lib/ml-title";
 import { applyOemTags } from "../lib/ml-oem-tags.logic";
+import { buildCompatDiagnostics } from "../lib/ml-compat-diagnostics";
 import { buildShopeeAttributeList } from "../lib/shopee-attribute-mapper";
 import {
   applyOverridesToProduct,
@@ -4121,12 +4122,26 @@ export class ListingUseCase {
             step: ultimaNaPedida.step,
             categoryId: ultimaNaPedida.categoryId,
           });
-          const algumTimeout = attemptLog.some(
-            (a) => normalizeMLError({ err: a.err }).timedOut,
-          );
-          const classe = algumTimeout
-            ? { ...normalizado, kind: "UNKNOWN" as const, timedOut: true }
-            : normalizado;
+          // Qualquer tentativa da passada que PODE ter criado o item no ML
+          // (timeout, conexão que caiu depois de aberta, 5xx) torna a falha
+          // inteira "conferir antes de recriar" — mesmo que a última tentativa
+          // tenha sido uma recusa por dado.
+          const algumTimeout = attemptLog.some((a) => {
+            const n = normalizeMLError({ err: a.err });
+            return (
+              n.timedOut ||
+              lastErrorMarkerFor(n) === LAST_ERROR_MARKER.VERIFICAR
+            );
+          });
+          // Se a própria última tentativa já pede conferência (timeout, 5xx,
+          // conexão caída), ela fala por si (ex.: "ML indisponível"); se a
+          // conferência vem de uma tentativa ANTERIOR, a falha inteira vira
+          // "pode ter criado — conferir antes de recriar".
+          const classe =
+            algumTimeout &&
+            lastErrorMarkerFor(normalizado) !== LAST_ERROR_MARKER.VERIFICAR
+              ? { ...normalizado, kind: "UNKNOWN" as const, timedOut: true }
+              : normalizado;
           // Recusa por dado só é terminal quando a ficha foi montada COM o
           // catálogo de atributos da categoria. Sem catálogo (serviço de
           // atributos indisponível nesta tentativa — fail-open), o próprio
@@ -4135,20 +4150,27 @@ export class ListingUseCase {
           const catalogoDisponivel =
             !!categoryAttrsForBuild && categoryAttrsForBuild.length > 0;
           const marcadorBruto = lastErrorMarkerFor(classe);
+          // ML_ERROR_CLASSIFICATION_DISABLED=1: sem marcador ⇒ toda falha volta
+          // a reagendar como antes do erro estruturado (a mensagem humana fica).
           const marcador =
-            classe.kind === "VALIDATION" && !catalogoDisponivel
+            process.env.ML_ERROR_CLASSIFICATION_DISABLED === "1" ||
+            (classe.kind === "VALIDATION" && !catalogoDisponivel)
               ? null
               : marcadorBruto;
           const primeiraCausa =
             (((ultimaNaPedida.err as any)?.mlError?.cause ?? []) as MLRawCause[])
               .find((c) => (c?.type ?? "error").toLowerCase() === "error") ??
             null;
+          // ML_ERROR_DETAIL_DISABLED=1 restaura o texto de antes: sem causa
+          // reconhecida, a mensagem crua do ML (como era em main).
           const mensagem =
             actionable ??
-            humanMessageForKind(classe, {
-              accountName: acc.accountName,
-              firstCause: primeiraCausa,
-            });
+            (process.env.ML_ERROR_DETAIL_DISABLED === "1"
+              ? errMsg
+              : humanMessageForKind(classe, {
+                  accountName: acc.accountName,
+                  firstCause: primeiraCausa,
+                }));
 
           // Log estruturado: responde "quantos falham, por qual código, em
           // qual categoria/conta, desde quando". Sem token e sem payload.
@@ -4216,9 +4238,14 @@ export class ListingUseCase {
 
           // Republicação (PENDING_REPUBLISH_) segue gravando como sempre: o
           // sync reverte a linha para o anúncio original, e um marcador
-          // terminal ali ficaria numa linha VIVA.
+          // terminal ali ficaria numa linha VIVA. Linha REAPROVEITADA com id
+          // real (ex.: anúncio encerrado sendo publicado de novo) também: o
+          // re-arme e o botão só enxergam placeholders PENDING_, então um
+          // `[TERMINAL][CORRIGIVEL]` nela ficaria sem saída — ali vale o
+          // reagendamento de sempre.
           const republicacao =
-            !!listing.externalListingId?.startsWith("PENDING_REPUBLISH_");
+            !!listing.externalListingId?.startsWith("PENDING_REPUBLISH_") ||
+            !listing.externalListingId?.startsWith("PENDING_");
           const terminal = !republicacao && isTerminalMarker(marcador);
           const nextRetryMs = 60 * 1000;
           try {
@@ -4579,16 +4606,10 @@ export class ListingUseCase {
           // não pode derrubar uma publicação que deu certo.
           if (finalListingId) {
             try {
-              await ListingRepository.updateCompatDiagnostics(finalListingId, {
-                requested: compat.requested,
-                persisted: compat.persisted,
-                strategy: compat.strategy,
-                verified: compat.verified,
-                unresolved: compat.unresolved.length,
-                unresolvedSample: compat.unresolved.slice(0, 5),
-                unsupportedDomain: compat.unsupportedDomain,
-                at: new Date().toISOString(),
-              });
+              await ListingRepository.updateCompatDiagnostics(
+                finalListingId,
+                buildCompatDiagnostics(compat),
+              );
             } catch (diagErr) {
               console.warn(
                 `[ListingUseCase] Falha ao gravar diagnóstico de compat (${mlItem.id}):`,
@@ -8370,17 +8391,10 @@ export class ListingUseCase {
         }),
       );
 
-      await ListingRepository.updateCompatDiagnostics(args.listingId, {
-        requested: compat.requested,
-        persisted: compat.persisted,
-        strategy: compat.strategy,
-        verified: compat.verified,
-        unresolved: compat.unresolved.length,
-        unresolvedSample: compat.unresolved.slice(0, 5),
-        unsupportedDomain: compat.unsupportedDomain,
-        origin: args.origin,
-        at: new Date().toISOString(),
-      });
+      await ListingRepository.updateCompatDiagnostics(
+        args.listingId,
+        buildCompatDiagnostics(compat, { origin: args.origin }),
+      );
     } catch (err) {
       console.warn(
         `[ListingUseCase] Falha ao reenviar compatibilidades (${args.itemId}):`,

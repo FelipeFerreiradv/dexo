@@ -314,6 +314,22 @@ export class ListingRepository {
   /**
    * Busca listing por ID do anúncio externo (ML ID)
    */
+  /** Só o vínculo (id + produto) de um anúncio na conta — sem o produto. */
+  static async findLinkByExternalListingId(
+    marketplaceAccountId: string,
+    externalListingId: string,
+  ): Promise<{ id: string; productId: string } | null> {
+    return prisma.productListing.findUnique({
+      where: {
+        marketplaceAccountId_externalListingId: {
+          marketplaceAccountId,
+          externalListingId,
+        },
+      },
+      select: { id: true, productId: true },
+    });
+  }
+
   static async findByExternalListingId(
     marketplaceAccountId: string,
     externalListingId: string,
@@ -472,12 +488,20 @@ export class ListingRepository {
    *  - só conta ML ativa;
    *  - `nextRetryAt` daqui a `delayMs`: uma publicação interativa em voo para a
    *    mesma linha (a escada leva no máximo ~3 min) termina antes, e o que ela
-   *    gravar ao final prevalece.
+   *    gravar ao final prevalece;
+   *  - nunca linha RESERVADA pelo botão "Tentar publicar novamente"
+   *    (`nextRetryAt` no futuro com retry desligado = publicação em andamento):
+   *    re-armá-la entregaria a mesma linha ao cron em paralelo.
+   *
+   * `clearRequestedCategory`: a pessoa trocou a categoria do produto na
+   * correção. A categoria gravada no pendente é a da tentativa recusada — sem
+   * limpar, a nova tentativa publicaria de novo na categoria antiga.
    */
   static async rearmCorrectableMlPlaceholders(
     productId: string,
     delayMs: number,
     now: Date = new Date(),
+    opts: { clearRequestedCategory?: boolean } = {},
   ): Promise<number> {
     const r = await prisma.productListing.updateMany({
       where: {
@@ -490,14 +514,82 @@ export class ListingRepository {
           not: { startsWith: "PENDING_REPUBLISH_" },
         },
         marketplaceAccount: { platform: "MERCADO_LIVRE", status: "ACTIVE" },
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
       },
       data: {
         retryEnabled: true,
         retryAttempts: 0,
         nextRetryAt: new Date(now.getTime() + delayMs),
+        ...(opts.clearRequestedCategory ? { requestedCategoryId: null } : {}),
       },
     });
     return r.count;
+  }
+
+  /**
+   * A pessoa trocou a categoria do ML do produto: TODO pendente do ML deste
+   * produto (não só os re-armáveis) deixa de carregar a categoria da tentativa
+   * anterior — o cron e o botão "Tentar publicar novamente" passam a usar a
+   * categoria atual do produto. Uma instrução, só quando a categoria mudou.
+   */
+  static async clearRequestedCategoryForMlPlaceholders(
+    productId: string,
+  ): Promise<number> {
+    const r = await prisma.productListing.updateMany({
+      where: {
+        productId,
+        requestedCategoryId: { not: null },
+        externalListingId: {
+          startsWith: "PENDING_",
+          not: { startsWith: "PENDING_REPUBLISH_" },
+        },
+        marketplaceAccount: { platform: "MERCADO_LIVRE" },
+      },
+      data: { requestedCategoryId: null },
+    });
+    return r.count;
+  }
+
+  /**
+   * Reserva ATÔMICA de um placeholder do ML para o botão "Tentar publicar
+   * novamente". Sem ela, o botão e o cron (ou dois cliques) rodavam o
+   * createMLListing ao mesmo tempo e o ML recebia dois POST /items — a guarda
+   * anti-duplicata do create não vê nada vivo em nenhuma das duas chamadas.
+   *
+   * Só reserva linha com o retry automático DESLIGADO e sem reserva vigente:
+   * linha com retry ligado é do cron (agendada ou já reivindicada — o claim do
+   * cron também empurra `nextRetryAt`), e aí o botão responde 409. A reserva é
+   * `nextRetryAt` no futuro com `retryEnabled=false` — o cron não pega (exige
+   * retry ligado) e o re-arme da edição também não (exige `nextRetryAt`
+   * vencido). Quem terminar grava o resultado; `releaseInteractiveRetry`
+   * desfaz a reserva se ela ainda for a mesma.
+   */
+  static async claimInteractiveRetry(
+    listingId: string,
+    leaseMs: number,
+    now: Date = new Date(),
+  ): Promise<Date | null> {
+    const ate = new Date(now.getTime() + leaseMs);
+    const res = await prisma.productListing.updateMany({
+      where: {
+        id: listingId,
+        retryEnabled: false,
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+      },
+      data: { nextRetryAt: ate },
+    });
+    return res.count === 1 ? ate : null;
+  }
+
+  /** Desfaz a reserva do botão se ninguém gravou nada por cima dela. */
+  static async releaseInteractiveRetry(
+    listingId: string,
+    lease: Date,
+  ): Promise<void> {
+    await prisma.productListing.updateMany({
+      where: { id: listingId, retryEnabled: false, nextRetryAt: lease },
+      data: { nextRetryAt: null },
+    });
   }
 
   /**

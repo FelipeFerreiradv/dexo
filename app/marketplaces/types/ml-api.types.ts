@@ -208,6 +208,12 @@ export interface MLCatalogCompatibilityProduct {
 
 export interface MLCatalogCompatibilityChunkResponse {
   paging?: { total?: number; limit?: number; offset?: number };
+  /**
+   * O endpoint real devolve o total AQUI, na raiz — não em `paging.total`
+   * (sonda contra a API em 22/09/2026). `searchCatalogCompatibilityChunks`
+   * copia para `paging.total`, que é onde os laços de paginação leem.
+   */
+  total?: number;
   results?: MLCatalogCompatibilityProduct[];
 }
 
