@@ -79,6 +79,7 @@ export type LogAction =
   | "ML_BACK_ONLINE_WITHOUT_STOCK"
   | "ML_LISTING_TITLE_DRIFT"
   | "ML_LISTING_RELINKED"
+  | "CATALOG_EMPTY_DUPLICATE_REMOVED"
   // Mesmo estado, canal Shopee. Rótulo próprio de propósito: o do ML já é
   // consultado em painel e auditoria, e emitir Shopee sob aquele nome faria o
   // rótulo mentir e misturaria série histórica. Quem quiser o total soma os
