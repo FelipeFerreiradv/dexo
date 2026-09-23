@@ -6,7 +6,7 @@
  * prática o anúncio era criado com a descrição VAZIA e a Dexo registrava
  * sucesso: medido em 23/09/2026, 12 de 12 anúncios cuja descrição tinha "⚠️"
  * ou "🚗" estavam sem descrição no ML (inclusive de 18/09), ~300 anúncios
- * ativos no total. Caso reportado: SKU 7167 da Portal Eco Peças, com o bloco
+ * ativos no total. Caso reportado: SKU 7167 de um cliente, com o bloco
  * "⚠️ ATENÇÃO E OBSERVAÇÕES IMPORTANTES" na descrição padrão.
  *
  * Dois níveis, para não mexer no que já funciona:

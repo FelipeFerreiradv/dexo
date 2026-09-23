@@ -1,6 +1,6 @@
 /**
  * Reenvia a descrição dos anúncios do Mercado Livre que ficaram SEM descrição
- * porque o texto tinha emoji (23/09/2026 — SKU 7167 da Portal Eco Peças; ver
+ * porque o texto tinha emoji (23/09/2026 — SKU 7167 de um cliente; ver
  * app/marketplaces/lib/ml-description-text.ts). Roda NA VPS.
  *
  *   npx tsx scripts/fix-ml-empty-descriptions.ts --user-email=x [--limit=N]          (dry-run: só lê)

@@ -7,8 +7,8 @@ import {
 } from "../app/marketplaces/lib/ml-description-text";
 
 /**
- * Descrição com emoji ficava VAZIA no Mercado Livre (23/09/2026, SKU 7167 da
- * Portal Eco Peças: "⚠️ ATENÇÃO E OBSERVAÇÕES IMPORTANTES" na descrição
+ * Descrição com emoji ficava VAZIA no Mercado Livre (23/09/2026, SKU 7167 de
+ * um cliente: "⚠️ ATENÇÃO E OBSERVAÇÕES IMPORTANTES" na descrição
  * padrão). Ver app/marketplaces/lib/ml-description-text.ts.
  */
 describe("sanitizeMLDescription", () => {
