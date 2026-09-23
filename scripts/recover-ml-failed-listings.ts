@@ -9,6 +9,7 @@ import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 import { ListingRetryService } from "../app/marketplaces/services/listing-retry.service";
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
 import { decideReconcile } from "../app/marketplaces/lib/ml-reconcile.logic";
+import { gravarSeIntacta as gravarCondicional } from "./lib/recover-ml-apply";
 import { REARM_DELAY_MS } from "../app/marketplaces/lib/ml-rearm.logic";
 import { sanitizeMLTitle } from "../app/marketplaces/lib/ml-title";
 import {
@@ -417,21 +418,13 @@ async function main() {
   if (apply) {
     let ordem = 0;
     const lidoEm = new Map(pendentes.map((p) => [p.id, p.updatedAt]));
-    // Escrita condicional: só se a linha continua EXATAMENTE como foi lida.
-    const gravarSeIntacta = async (
+    // Escrita condicional: só se a linha continua EXATAMENTE como foi lida
+    // (scripts/lib/recover-ml-apply.ts; provada contra Postgres real).
+    const gravarSeIntacta = (
       listingId: string,
       data: Record<string, unknown>,
-    ): Promise<boolean> => {
-      const r = await prisma.productListing.updateMany({
-        where: {
-          id: listingId,
-          updatedAt: lidoEm.get(listingId),
-          externalListingId: { startsWith: "PENDING_" },
-        },
-        data,
-      });
-      return r.count === 1;
-    };
+    ): Promise<boolean> =>
+      gravarCondicional(prisma, listingId, lidoEm.get(listingId), data);
     for (const l of linhas) {
       try {
         if (l.classe === "ja_publicado") {
