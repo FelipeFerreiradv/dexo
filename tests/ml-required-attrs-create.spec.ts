@@ -893,6 +893,8 @@ describe("ficha da Revisão individual (D2/D6)", () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-pend",
       externalListingId: "PENDING_1",
+      // Linha do CRON: retry ligado (o cron só pega essas; a criação não a reserva).
+      retryEnabled: true,
       attributesOverride: { SIDE: SIDE_OVERRIDE, COLOR: { value_name: "Preto" } },
     });
     const r = await ListingUseCase.createMLListing(
@@ -947,6 +949,8 @@ describe("ficha da Revisão individual (D2/D6)", () => {
     (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
       id: "l-novo",
       externalListingId: "PENDING_1",
+      // Linha do CRON: retry ligado (o cron só pega essas; a criação não a reserva).
+      retryEnabled: true,
       attributesOverride: placeholder.attributesOverride,
     });
     const r2 = await ListingUseCase.createMLListing(

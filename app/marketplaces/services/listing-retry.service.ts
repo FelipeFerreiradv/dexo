@@ -407,9 +407,15 @@ export class ListingRetryService {
           const attempts = (cand.retryAttempts || 0) + 1;
           const nextDelay =
             BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
+          // Última tentativa: sem horário. Retry desligado COM horário futuro
+          // é a marca de "publicação em andamento" (reserva do botão/criação)
+          // e deixava o card em "Publicando agora" por 15 min sem nada rodar.
           await ListingRepository.incrementRetryAttempts(cand.id, {
             lastError: manterVerificar(cand.lastError, errMsg(capErr)),
-            nextRetryAt: new Date(Date.now() + nextDelay * 1000),
+            nextRetryAt:
+              attempts < MAX_ATTEMPTS
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
             retryEnabled: attempts < MAX_ATTEMPTS,
           });
 
@@ -573,6 +579,21 @@ export class ListingRetryService {
           console.warn(
             `[ListingRetryService] ML retry terminal (${result.errorKind}) for ${cand.id}: ${result.error}`,
           );
+          // Candidato com id REAL (anúncio encerrado publicado de novo) e o
+          // bloqueio gravado num placeholder PENDING_ próprio: o marcador fica
+          // lá, onde o re-arme e o botão enxergam. Aqui só sai da fila — com o
+          // marcador, esta linha ficaria sem saída.
+          if (
+            !String(cand.externalListingId ?? "").startsWith("PENDING_") &&
+            result.listingId &&
+            result.listingId !== cand.id
+          ) {
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+            continue;
+          }
           await ListingRepository.incrementRetryAttempts(cand.id, {
             lastError: `${result.lastErrorMarker} ${result.error || ""}`
               .trim()
@@ -670,6 +691,12 @@ export class ListingRetryService {
       accessToken: string;
       externalUserId?: string | null;
     },
+    /**
+     * `interactive` = botão "Tentar publicar novamente": busca que falha não
+     * grava nada (nem tentativa, nem marcador, nem agendamento) — a pessoa
+     * tenta de novo; o cron é quem agenda.
+     */
+    opts: { interactive?: boolean } = {},
   ): Promise<"adopted" | "ambiguous" | "search_failed" | "not_found"> {
     const sku = (cand.product?.sku || "").trim();
     const sellerId = (account.externalUserId || "").trim();
@@ -684,6 +711,18 @@ export class ListingRetryService {
         sku,
       );
     } catch (err) {
+      if (opts.interactive) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.publish.reconcile",
+            outcome: "search_failed",
+            interactive: true,
+            listingId: cand.id,
+            error: errMsg(err),
+          }),
+        );
+        return "search_failed";
+      }
       const attempts = (cand.retryAttempts || 0) + 1;
       const shouldRetry = attempts < MAX_ATTEMPTS;
       const nextDelay =

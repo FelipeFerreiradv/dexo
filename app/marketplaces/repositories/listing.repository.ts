@@ -574,11 +574,37 @@ export class ListingRepository {
       where: {
         id: listingId,
         retryEnabled: false,
+        // Linha que acabou de receber o id real não é mais reservável.
+        externalListingId: { startsWith: "PENDING_" },
         OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
       },
       data: { nextRetryAt: ate },
     });
     return res.count === 1 ? ate : null;
+  }
+
+  /**
+   * Outro pendente do MESMO par (produto, conta) ocupado: com retry ligado (o
+   * cron vai pegar ou já pegou) ou reservado agora. A criação escolhe a linha
+   * pelo par, não pela linha clicada — com outro pendente ocupado, o botão
+   * correria junto com quem o ocupa. Só `{id}`.
+   */
+  static async findBusyMlPlaceholderInPair(
+    productId: string,
+    marketplaceAccountId: string,
+    exceptListingId: string,
+    now: Date = new Date(),
+  ): Promise<{ id: string } | null> {
+    return prisma.productListing.findFirst({
+      where: {
+        productId,
+        marketplaceAccountId,
+        id: { not: exceptListingId },
+        externalListingId: { startsWith: "PENDING_" },
+        OR: [{ retryEnabled: true }, { nextRetryAt: { gt: now } }],
+      },
+      select: { id: true },
+    });
   }
 
   /** Desfaz a reserva do botão se ninguém gravou nada por cima dela. */

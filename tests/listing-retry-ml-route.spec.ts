@@ -32,6 +32,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     claimInteractiveRetry: vi.fn(),
     releaseInteractiveRetry: vi.fn(async () => undefined),
+    findBusyMlPlaceholderInPair: vi.fn(async () => null),
     updateListing: vi.fn(),
   },
 }));
@@ -118,6 +119,7 @@ describe("POST /listings/:id/retry-ml", () => {
     (prisma.productListing.findFirst as any).mockResolvedValue(linha());
     (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(RESERVA);
     (ListingRetryService.reconcileBeforeRecreate as any).mockResolvedValue("not_found");
+    (ListingRepository.findBusyMlPlaceholderInPair as any).mockResolvedValue(null);
     (ListingUseCase.createMLListing as any).mockResolvedValue({
       success: true,
       externalListingId: "MLB9",
@@ -195,10 +197,28 @@ describe("POST /listings/:id/retry-ml", () => {
     expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
   });
 
-  it("não deu para conferir ⇒ 503, NÃO cria", async () => {
+  it("não deu para conferir ⇒ 503, NÃO cria; a conferência é a INTERATIVA (não grava tentativa nem marcador)", async () => {
     (ListingRetryService.reconcileBeforeRecreate as any).mockResolvedValue("search_failed");
     const res = await tentar();
     expect(res.statusCode).toBe(503);
+    expect(res.json().error).toMatch(/Nada foi publicado/);
+    expect(res.json().error).not.toMatch(/sozinha/);
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
+    expect((ListingRetryService.reconcileBeforeRecreate as any).mock.calls[0][2]).toEqual({
+      interactive: true,
+    });
+  });
+
+  it("outro pendente do MESMO par agendado ou em andamento ⇒ 409, sem reserva nem create", async () => {
+    (ListingRepository.findBusyMlPlaceholderInPair as any).mockResolvedValue({ id: "pl-2" });
+    const res = await tentar();
+    expect(res.statusCode).toBe(409);
+    expect(ListingRepository.findBusyMlPlaceholderInPair).toHaveBeenCalledWith(
+      "prod-1",
+      "acct-1",
+      "pl-1",
+    );
+    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
     expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
   });
 
@@ -207,7 +227,9 @@ describe("POST /listings/:id/retry-ml", () => {
     const args = (ListingUseCase.createMLListing as any).mock.calls[0];
     expect(args.slice(0, 4)).toEqual(["user-1", "prod-1", "MLB192571", "acct-1"]);
     expect(args[4]).toMatchObject({ listingType: "gold_premium", freeShipping: true });
-    expect(args).toHaveLength(7);
+    expect(args[7]).toBeUndefined();
+    // A reserva vai junto: só quem a tem pode reaproveitar a linha reservada.
+    expect(args[8]).toEqual({ reservation: { listingId: "pl-1", at: RESERVA } });
     expect(ListingRepository.releaseInteractiveRetry).toHaveBeenCalledWith("pl-1", RESERVA);
   });
 
