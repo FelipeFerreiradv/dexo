@@ -813,3 +813,47 @@ describe("rodada 5 da revisão (23/09): erro inesperado depois de ASSUMIR uma li
     expect(ListingRepository.releaseInteractiveRetry).not.toHaveBeenCalled();
   });
 });
+
+describe("rodada 6 da revisão (23/09): reserva desfeita em TODA saída sem regravação", () => {
+  it("assumida + recusa do ML + gravação do erro falhando em silêncio ⇒ a linha volta à fila do cron", async () => {
+    const LEASE = new Date(Date.now() + 600_000);
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-ag",
+      externalListingId: "PENDING_7",
+      status: "error",
+      retryEnabled: true,
+      nextRetryAt: new Date(Date.now() + 5 * 60_000),
+      lastError: "[TERMINAL][CORRIGIVEL] GTIN inválido",
+    });
+    (ListingRepository.takeOverScheduledRetry as any).mockResolvedValue(LEASE);
+    // configurações gravam; a gravação FINAL do erro falha (e é engolida)
+    (ListingRepository.updateListing as any).mockImplementation(async (_id: string, d: any) => {
+      if (d?.status === "error") throw new Error("pool esgotado");
+      return {};
+    });
+    mlResponde(() => {
+      throw erroMl("Validation error", [INMETRO_3702]);
+    });
+    const r = await criar();
+    expect(r.success).toBe(false);
+    expect(ListingRepository.releaseTakenOverRetry).toHaveBeenCalledWith("l-ag", LEASE);
+  });
+
+  it("sucesso também passa pelo 'finally' — inofensivo (a condição pelo horário da reserva não casa)", async () => {
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "l-pend",
+      externalListingId: "PENDING_1",
+      status: "error",
+      retryEnabled: false,
+      nextRetryAt: null,
+    });
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(
+      new Date(Date.now() + 600_000),
+    );
+    mlResponde(() => {
+      throw erroMl("Validation error", [INMETRO_3702]);
+    });
+    await criar();
+    expect(ListingRepository.releaseInteractiveRetry).toHaveBeenCalledTimes(1);
+  });
+});

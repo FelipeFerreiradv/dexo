@@ -9,9 +9,11 @@
  *    dele marca `pending` só para o ML);
  *  - retry LIGADO + `[VERIFICAR]` ⇒ a tentativa anterior pode ter criado o
  *    item: só o cron, que confere pelo SKU antes de recriar, publica;
- *  - retry LIGADO sem nada disso ⇒ apenas AGENDADA: quem chama pode assumir
- *    (atômico) — "Anunciar em massa" logo depois de corrigir o produto
- *    publica com as escolhas do lote, como antes;
+ *  - retry LIGADO sem nada disso, em placeholder `PENDING_` ⇒ apenas
+ *    AGENDADA: quem chama pode assumir (atômico) — "Anunciar em massa" logo
+ *    depois de corrigir o produto publica com as escolhas do lote, como
+ *    antes. Linha com id REAL agendada não é assumida (o claim do cron não
+ *    a marca, então não dá para saber se ele está nela);
  *  - o resto ⇒ livre (reserva atômica normal).
  *
  * Revisão de 23/09/2026 (4ª rodada): recusar toda linha com retry ligado

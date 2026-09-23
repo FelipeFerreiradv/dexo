@@ -272,3 +272,11 @@ describe("rodada 5 da revisão (23/09): erro depois de assumir devolve a linha �
     expect(b.data).toEqual({ status: "error" });
   });
 });
+
+describe("rodada 6 da revisão (23/09)", () => {
+  it("claim com a marca confere o prefixo PENDING_ na própria instrução", async () => {
+    await ListingRepository.claimRetryCandidate("pl-1", 600_000, { markPublishing: true });
+    const arg = (prisma.productListing.updateMany as any).mock.calls[0][0];
+    expect(arg.where.externalListingId).toEqual({ startsWith: "PENDING_" });
+  });
+});

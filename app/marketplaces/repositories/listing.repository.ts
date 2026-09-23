@@ -763,6 +763,11 @@ export class ListingRepository {
         id: listingId,
         retryEnabled: true,
         OR: [{ nextRetryAt: { lte: agora } }, { nextRetryAt: null }],
+        // A marca só vale para placeholder: confere na própria instrução
+        // (a linha pode ter recebido o id real desde a leitura da passada).
+        ...(opts.markPublishing
+          ? { externalListingId: { startsWith: "PENDING_" } }
+          : {}),
       },
       data: {
         nextRetryAt: ate,
