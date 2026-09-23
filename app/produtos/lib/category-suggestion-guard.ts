@@ -49,6 +49,9 @@ export function createCategoryGuard(): CategoryGuardState {
 const norm = (v: unknown): string =>
   typeof v === "string" ? v.trim().toLowerCase() : "";
 
+/** Forma de comparação dos ids de categoria (a mesma do guard). */
+export const normalizeCategoryId = norm;
+
 /**
  * Reset do modal (abrir de novo / fechar). O contador AVANÇA: resposta de uma
  * requisição disparada antes do reset é descartada quando chegar.
@@ -176,4 +179,29 @@ export function resolveCategorySource(
   const g = state[channel];
   if (g.origin === "manual") return "manual";
   return norm(submitted) === norm(g.lastAutoValue) ? "auto" : "manual";
+}
+
+/**
+ * O que fazer com o chip "Usar sugestão" da categoria ML quando chega uma
+ * resposta de sugestão.
+ *
+ * - resposta que não é a última pedida ⇒ `keep` (a atrasada não mexe);
+ * - ninguém escolheu à mão ⇒ `keep` (sem chip: a sugestão aplica sozinha);
+ * - sem sugestão, sugestão igual à escolha, ou já recusada com "Manter minha
+ *   escolha" ⇒ `clear` (o chip anterior era de outro título);
+ * - sugestão diferente da escolha ⇒ `show`.
+ */
+export function mlSuggestionChipAction(args: {
+  responseIsLatest: boolean;
+  manual: boolean;
+  suggested: string | null | undefined;
+  current: unknown;
+  declined: ReadonlySet<string>;
+}): "show" | "clear" | "keep" {
+  if (!args.responseIsLatest || !args.manual) return "keep";
+  const sugerida = norm(args.suggested);
+  if (!sugerida) return "clear";
+  if (sugerida === norm(args.current)) return "clear";
+  if (args.declined.has(sugerida)) return "clear";
+  return "show";
 }

@@ -9,6 +9,7 @@ import {
   markEmpty,
   markManual,
   mayApplyAutoCategory,
+  mlSuggestionChipAction,
   resetCategoryGuard,
   resolveCategorySource,
   type CategoryGuardState,
@@ -215,5 +216,60 @@ describe("category-suggestion-guard", () => {
     markAuto(g, "ml", "MLB111");
     markManual(g, "ml");
     expect(resolveCategorySource(g, "ml", "MLB111")).toBe("manual");
+  });
+});
+
+describe("sugestão Magalu/OLX/Facebook com número de requisição (revisão 23/09)", () => {
+  it.each(["magalu", "olx", "fb"] as const)(
+    "%s: resposta que chega depois de fechar o modal NÃO grava (e a nova sugestão, depois de reabrir, grava)",
+    (canal) => {
+      const g = createCategoryGuard();
+      const velha = beginSuggestionRequest(g, canal);
+      resetCategoryGuard(g); // fechou (reset do formulário zera o campo)
+      // A resposta do produto A chega com o campo vazio: descartada.
+      expect(mayApplyAutoCategory(g, canal, { current: "", responseSeq: velha })).toBe(false);
+      resetCategoryGuard(g); // reabriu para o produto B
+      const nova = beginSuggestionRequest(g, canal);
+      expect(mayApplyAutoCategory(g, canal, { current: "", responseSeq: nova })).toBe(true);
+    },
+  );
+});
+
+describe("chip 'Usar sugestão' da categoria ML (revisão 23/09)", () => {
+  const base = {
+    responseIsLatest: true,
+    manual: true,
+    suggested: "MLB222",
+    current: "MLB111",
+    declined: new Set<string>(),
+  };
+
+  it("escolha manual + sugestão diferente ⇒ mostra", () => {
+    expect(mlSuggestionChipAction(base)).toBe("show");
+  });
+
+  it("recusada com 'Manter minha escolha' ⇒ não volta quando o efeito roda de novo", () => {
+    expect(
+      mlSuggestionChipAction({ ...base, declined: new Set(["mlb222"]) }),
+    ).toBe("clear");
+  });
+
+  it("título corrigido: a sugestão nova é a própria escolha ⇒ some o chip velho", () => {
+    expect(mlSuggestionChipAction({ ...base, suggested: " mlb111 " })).toBe("clear");
+  });
+
+  it("título sem sugestão ⇒ some o chip velho", () => {
+    expect(mlSuggestionChipAction({ ...base, suggested: null })).toBe("clear");
+  });
+
+  it("resposta atrasada (não é a última pedida) ⇒ não mexe no chip", () => {
+    expect(mlSuggestionChipAction({ ...base, responseIsLatest: false })).toBe("keep");
+    expect(
+      mlSuggestionChipAction({ ...base, responseIsLatest: false, suggested: null }),
+    ).toBe("keep");
+  });
+
+  it("sem escolha manual ⇒ não há chip (a sugestão aplica sozinha)", () => {
+    expect(mlSuggestionChipAction({ ...base, manual: false })).toBe("keep");
   });
 });
