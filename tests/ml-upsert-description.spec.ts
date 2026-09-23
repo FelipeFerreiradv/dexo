@@ -23,6 +23,7 @@ vi.mock("axios", () => {
 });
 
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
+import { MLDescriptionNotSavedError } from "../app/marketplaces/lib/ml-description-text";
 
 const erroMl = (status: number, data: unknown) => ({
   isAxiosError: true,
@@ -49,6 +50,7 @@ const url = (fn: typeof mockPost, i = 0) => String(fn.mock.calls[i]?.[0] ?? "");
 beforeEach(() => {
   // reset (não clear): valores "Once" que sobram de um teste não vazam para o próximo
   vi.resetAllMocks();
+  MLApiService.descriptionReadbackDelayMs = 0;
   vi.spyOn(console, "warn").mockImplementation(() => {});
   mockPost.mockResolvedValue({ data: {} });
   mockPut.mockResolvedValue({ data: {} });
@@ -70,10 +72,10 @@ describe("upsertDescription", () => {
     expect(corpo(mockPost)).toBe("Loja ATUBA\nPeças usadas");
   });
 
-  it("descrição já existente: o PUT vai com api_version=2 (erro de caractere volta explícito)", async () => {
+  it("descrição já existente: o PUT vai para a MESMA URL de antes, com o texto idêntico", async () => {
     mockPost.mockRejectedValueOnce(JA_TEM);
     await MLApiService.upsertDescription("tok", "MLB1", "Texto comum");
-    expect(url(mockPut)).toMatch(/\/items\/MLB1\/description\?api_version=2$/);
+    expect(url(mockPut)).toMatch(/\/items\/MLB1\/description$/);
     expect(corpo(mockPut)).toBe("Texto comum");
   });
 
@@ -88,11 +90,41 @@ describe("upsertDescription", () => {
     expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
-  it("continua VAZIO depois de regravar ⇒ FALHA (o chamador registra), nunca finge sucesso", async () => {
+  it("continua VAZIO depois de regravar ⇒ FALHA tipada (o chamador registra), nunca finge sucesso", async () => {
     mockGet.mockResolvedValue({ data: { plain_text: "" } });
-    await expect(
-      MLApiService.upsertDescription("tok", "MLB1", "⚠️ ATENÇÃO"),
-    ).rejects.toThrow(/VAZIA/);
+    const p = MLApiService.upsertDescription("tok", "MLB1", "⚠️ ATENÇÃO");
+    await expect(p).rejects.toThrow(/VAZIA/);
+    await expect(p).rejects.toBeInstanceOf(MLDescriptionNotSavedError);
+  });
+
+  it("descrição gravada só no campo HTML (`text`) conta como gravada: não regrava", async () => {
+    mockGet.mockResolvedValueOnce({ data: { plain_text: "", text: "<p>ATENÇÃO</p>" } });
+    await MLApiService.upsertDescription("tok", "MLB1", "⚠️ ATENÇÃO");
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(mockPut).not.toHaveBeenCalled();
+  });
+
+  it("recusa 398 que o estrito não resolve ⇒ FALHA tipada 'rejected'", async () => {
+    mockPost.mockRejectedValueOnce(CARACTERE);
+    mockPut.mockRejectedValueOnce(CARACTERE);
+    const p = MLApiService.upsertDescription("tok", "MLB1", "Texto comum");
+    await expect(p).rejects.toBeInstanceOf(MLDescriptionNotSavedError);
+    await expect(p).rejects.toMatchObject({ reason: "rejected" });
+  });
+
+  it("símbolo que não é emoji (●) também é conferido e sai na regravação", async () => {
+    mockGet
+      .mockResolvedValueOnce({ data: { plain_text: "" } })
+      .mockResolvedValueOnce({ data: { plain_text: "Peça revisada" } });
+    mockPost.mockResolvedValueOnce({ data: {} }).mockRejectedValueOnce(JA_TEM);
+    await MLApiService.upsertDescription("tok", "MLB1", "● Peça revisada");
+    expect(corpo(mockPost, 0)).toBe("● Peça revisada");
+    expect(corpo(mockPut, 0)).toBe("Peça revisada");
+  });
+
+  it("letra de outro alfabeto (sem símbolo) não ganha leitura a mais", async () => {
+    await MLApiService.upsertDescription("tok", "MLB1", "部品 original");
+    expect(mockGet).not.toHaveBeenCalled();
   });
 
   it("recusa explícita de caractere (cause 398) ⇒ regrava sem os símbolos", async () => {
