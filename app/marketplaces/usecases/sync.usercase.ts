@@ -42,6 +42,7 @@ import type { ShopeeItem } from "../types/shopee-api.types";
 import type { MagaluSku } from "../types/magalu-api.types";
 import { normalizeSku } from "@/app/lib/sku";
 import { normalizeListingStatus } from "../lib/listing-status";
+import { sanitizeMLDescription } from "../lib/ml-description-text";
 import {
   buildMLTitleFrom,
   compareMLTitles,
@@ -5861,7 +5862,12 @@ export class SyncUseCase {
           if (isUserProductItem) {
             pendingUpDescriptionUpdate = enrichedDescription;
           } else {
-            updateData.description = enrichedDescription;
+            // Sem emoji (o ML recusa; lib/ml-description-text.ts). Descrição
+            // sem emoji segue idêntica. O caminho UP limpa no upsertDescription.
+            updateData.description = sanitizeMLDescription(
+              enrichedDescription,
+              "basico",
+            ).text;
           }
         }
       }

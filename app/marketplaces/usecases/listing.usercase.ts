@@ -18,6 +18,10 @@ import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
 import { OlxRepublishService } from "../services/olx-republish.service";
+import {
+  MLDescriptionNotSavedError,
+  sanitizeMLDescription,
+} from "../lib/ml-description-text";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
 import { formatMarketplaceError } from "../services/olx-facebook-error-message.service";
 import { OLX_CONSTANTS, resolveOlxSellerContact } from "../olx/olx-constants";
@@ -3126,8 +3130,10 @@ export class ListingUseCase {
         // ganha a forma de lista do OEM.
         attributes: atributosValidados ?? this.withOemAsTags(attributes),
         seller_custom_field: product.sku,
+        // Sem emoji: o ML recusa e criava o anúncio com a descrição VAZIA
+        // (lib/ml-description-text.ts). Descrição sem emoji segue idêntica.
         description: {
-          plain_text: descriptionText,
+          plain_text: sanitizeMLDescription(descriptionText, "basico").text,
         },
       };
 
@@ -9480,14 +9486,28 @@ export class ListingUseCase {
       } catch (error) {
         const rawMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
-        console.error(
-          "[ListingUseCase] ML upsertDescription failed:",
-          rawMessage,
-        );
-        return {
-          success: false,
-          error: `Falha ao atualizar descrição: ${rawMessage}`,
-        };
+        if (error instanceof MLDescriptionNotSavedError) {
+          // O ML não guardou o texto (caractere que ele não aceita). O resto
+          // da edição já foi aplicado no ML: segue e salva, com aviso.
+          console.warn(
+            JSON.stringify({
+              event: "ml.description.not_saved",
+              listingId: listing.id,
+              externalListingId: listing.externalListingId,
+              reason: error.reason,
+            }),
+          );
+          skippedByMl.push("descrição (caractere não aceito pelo ML)");
+        } else {
+          console.error(
+            "[ListingUseCase] ML upsertDescription failed:",
+            rawMessage,
+          );
+          return {
+            success: false,
+            error: `Falha ao atualizar descrição: ${rawMessage}`,
+          };
+        }
       }
     }
 
