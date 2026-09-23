@@ -733,3 +733,24 @@ describe("anúncio do par em REPUBLICAÇÃO (revisão de fechamento, 23/09 — d
     expect(MLApiService.createItem).toHaveBeenCalled();
   });
 });
+
+describe("descrição com emoji no corpo do POST /items (23/09/2026 — SKU 7167)", () => {
+  it("o emoji que o ML recusa sai do corpo; o resto do texto vai igual", async () => {
+    produto.description = "⚠️ ATENÇÃO E OBSERVAÇÕES IMPORTANTES:\n🚗 Só direção hidráulica.";
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+    await criar();
+    const texto = chamadas()[0].description.plain_text as string;
+    expect(texto).toContain("ATENÇÃO E OBSERVAÇÕES IMPORTANTES:");
+    expect(texto).toContain("Só direção hidráulica.");
+    expect(texto).not.toMatch(/[️‍]|[\u{10000}-\u{10FFFF}]/u);
+  });
+
+  it("descrição sem emoji vai IDÊNTICA à de antes", async () => {
+    produto.description = "Peça original — usada.\n• 90 dias de garantia";
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+    await criar();
+    expect(chamadas()[0].description.plain_text).toContain(
+      "Peça original — usada.\n• 90 dias de garantia",
+    );
+  });
+});

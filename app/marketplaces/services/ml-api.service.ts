@@ -1,6 +1,11 @@
 ﻿import axios from "axios";
 import { ML_CONSTANTS } from "../mercado-livre/ml-constants";
 import {
+  descriptionHasSymbols,
+  isInvalidDescriptionCharError,
+  sanitizeMLDescription,
+} from "../lib/ml-description-text";
+import {
   MLItemsSearchResponse,
   MLItemDetails,
   MLMultigetResponse,
@@ -1370,7 +1375,100 @@ export class MLApiService {
   ): Promise<void> {
     if (!plainText || !plainText.trim()) return;
 
+    // Emoji na descrição: o ML recusa (cause 398) e o anúncio ficava SEM
+    // descrição com a Dexo registrando sucesso (23/09/2026, ver
+    // lib/ml-description-text.ts). Tira o que se provou recusado antes de
+    // enviar; descrição sem emoji segue idêntica.
+    const basico = sanitizeMLDescription(plainText, "basico");
+    if (basico.removed > 0) {
+      console.warn(
+        JSON.stringify({
+          event: "ml.description.sanitized",
+          itemId,
+          mode: "basico",
+          removed: basico.removed,
+        }),
+      );
+    }
+    try {
+      await MLApiService.writeDescription(accessToken, itemId, basico.text);
+    } catch (err) {
+      // Caractere que o ML recusa e o básico não tirou (⚠, ✅…): tenta sem os
+      // símbolos. Qualquer outro erro sobe como antes.
+      if (!isInvalidDescriptionCharError(err)) throw err;
+      const estrito = sanitizeMLDescription(basico.text, "estrito");
+      if (estrito.removed === 0) throw err;
+      await MLApiService.writeDescription(accessToken, itemId, estrito.text);
+      console.warn(
+        JSON.stringify({
+          event: "ml.description.sanitized",
+          itemId,
+          mode: "estrito",
+          removed: basico.removed + estrito.removed,
+          reason: "rejected",
+        }),
+      );
+      return;
+    }
+
+    // Conferência só quando o texto tem símbolo: o ML já aceitou a escrita e
+    // gravou VAZIO sem erro nenhum (SKU 7167). Descrição comum não ganha
+    // chamada a mais. Falha na leitura = não sabe, não insiste.
+    if (!descriptionHasSymbols(basico.text)) return;
+    const gravada = await MLApiService.readDescriptionText(accessToken, itemId);
+    if (gravada === null || gravada.trim()) return;
+    const estrito = sanitizeMLDescription(basico.text, "estrito");
+    if (estrito.removed > 0) {
+      await MLApiService.writeDescription(accessToken, itemId, estrito.text);
+      const segunda = await MLApiService.readDescriptionText(accessToken, itemId);
+      if (segunda === null || segunda.trim()) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.description.sanitized",
+            itemId,
+            mode: "estrito",
+            removed: basico.removed + estrito.removed,
+            reason: "empty_after_write",
+          }),
+        );
+        return;
+      }
+    }
+    throw new Error(
+      `Erro ao atualizar descrição: o Mercado Livre gravou a descrição de ${itemId} VAZIA (caractere não aceito no texto).`,
+    );
+  }
+
+  /**
+   * Texto gravado na descrição do item (`plain_text`), ou `null` se a leitura
+   * falhar. Só leitura.
+   */
+  private static async readDescriptionText(
+    accessToken: string,
+    itemId: string,
+  ): Promise<string | null> {
+    try {
+      const res = await axios.get(
+        `${ML_CONSTANTS.API_URL}/items/${itemId}/description`,
+        { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 15000 },
+      );
+      const d = res?.data as { plain_text?: unknown } | undefined;
+      return typeof d?.plain_text === "string" ? d.plain_text : "";
+    } catch {
+      return null;
+    }
+  }
+
+  /** POST cria; PUT substitui (ver upsertDescription). */
+  private static async writeDescription(
+    accessToken: string,
+    itemId: string,
+    plainText: string,
+  ): Promise<void> {
     const url = `${ML_CONSTANTS.API_URL}/items/${itemId}/description`;
+    // `api_version=2` no PUT: é a forma da documentação, que devolve o erro de
+    // caractere (com a posição) em vez de aceitar sem gravar.
+    const putUrl = `${url}?api_version=2`;
     const body = { plain_text: plainText };
     const headers = {
       Authorization: `Bearer ${accessToken}`,
@@ -1417,7 +1515,7 @@ export class MLApiService {
       }
 
       try {
-        await axios.put(url, body, { headers });
+        await axios.put(putUrl, body, { headers });
       } catch (putErr) {
         const putAxios = axios.isAxiosError(putErr);
         const putData = putAxios ? putErr.response?.data : null;
@@ -1429,7 +1527,7 @@ export class MLApiService {
         if (isPlainTextNotAllowed) {
           try {
             const htmlBody = { text: plainText };
-            await axios.put(url, htmlBody, { headers });
+            await axios.put(putUrl, htmlBody, { headers });
             return;
           } catch (htmlErr) {
             const htmlAxios = axios.isAxiosError(htmlErr);

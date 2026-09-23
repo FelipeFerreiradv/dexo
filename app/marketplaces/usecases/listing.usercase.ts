@@ -18,6 +18,7 @@ import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
 import { OlxRepublishService } from "../services/olx-republish.service";
+import { sanitizeMLDescription } from "../lib/ml-description-text";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
 import { formatMarketplaceError } from "../services/olx-facebook-error-message.service";
 import { OLX_CONSTANTS, resolveOlxSellerContact } from "../olx/olx-constants";
@@ -3126,8 +3127,10 @@ export class ListingUseCase {
         // ganha a forma de lista do OEM.
         attributes: atributosValidados ?? this.withOemAsTags(attributes),
         seller_custom_field: product.sku,
+        // Sem emoji: o ML recusa e criava o anúncio com a descrição VAZIA
+        // (lib/ml-description-text.ts). Descrição sem emoji segue idêntica.
         description: {
-          plain_text: descriptionText,
+          plain_text: sanitizeMLDescription(descriptionText, "basico").text,
         },
       };
 
