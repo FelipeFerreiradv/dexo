@@ -350,6 +350,54 @@ describe("processUploadedImage — gate de concorrência do sidecar", () => {
     return { fetcher, getPeak: () => peak };
   }
 
+  /**
+   * Fetcher-BARREIRA: segura cada chamada até `parties` chamadas estarem
+   * DENTRO do fetcher ao mesmo tempo. Ao contrário do `makeTrackingFetcher`, a
+   * sobreposição não depende de relógio: sob CPU carregada, o sharp que roda
+   * ANTES do fetch (metadata + resize + encode PNG no threadpool) espalha as
+   * chegadas por mais que os 40ms do hold, e o pico medido caía para 1 sem bug
+   * nenhum. Serve só para provar pico MÍNIMO (gate desligado) — não usar onde o
+   * gate limita abaixo de `parties`.
+   *
+   * Nunca trava: um timer de segurança ÚNICO, armado na 1ª chegada, solta todo
+   * mundo após `safetyMs` se as `parties` chamadas não coexistirem (ex.:
+   * killswitch quebrado com o gate de 1 slot ainda ativo) — aí o pico fica
+   * < parties e o teste falha por asserção, não por timeout.
+   */
+  function makeBarrierFetcher(cutout: Buffer, parties: number, safetyMs = 5_000) {
+    let inFlight = 0;
+    let peak = 0;
+    let arrived = 0;
+    let timedOut = false;
+    let openBarrier: () => void = () => {};
+    const barrier = new Promise<void>((r) => {
+      openBarrier = r;
+    });
+    let safety: ReturnType<typeof setTimeout> | undefined;
+    const fetcher = vi.fn(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      arrived += 1;
+      if (safety === undefined) {
+        safety = setTimeout(() => {
+          timedOut = true;
+          openBarrier();
+        }, safetyMs);
+      }
+      if (arrived >= parties) {
+        clearTimeout(safety);
+        openBarrier();
+      }
+      try {
+        await barrier;
+      } finally {
+        inFlight -= 1;
+      }
+      return cutout;
+    });
+    return { fetcher, getPeak: () => peak, barrierTimedOut: () => timedOut };
+  }
+
   it("nunca deixa mais que REMBG_MAX_CONCURRENCY inferências em voo", async () => {
     process.env.REMBG_MAX_CONCURRENCY = "2";
     __resetRembgGate();
@@ -440,7 +488,10 @@ describe("processUploadedImage — gate de concorrência do sidecar", () => {
       rembgFetcher: slowFetcher,
       deadlineAt: Date.now() + 30_000,
     });
-    await new Promise((r) => setTimeout(r, 10));
+    // Espera o recorte lento ESTAR no fetcher (segurando o slot). Um sleep fixo
+    // não garante isso: sob carga a 1ª chamada ainda está no sharp e o teste
+    // passaria sem o slot ocupado — sem provar nada.
+    await vi.waitFor(() => expect(slowFetcher).toHaveBeenCalled(), { timeout: 10_000 });
 
     // ...e confirma que o caminho sem recorte (sharp puro) passa direto.
     const fast = await processUploadedImage(buf, { removeBackground: false });
@@ -457,7 +508,9 @@ describe("processUploadedImage — gate de concorrência do sidecar", () => {
 
     const buf = await makeImage(1200, 900);
     const cutout = await makeImage(800, 600, { hasAlpha: true });
-    const { fetcher, getPeak } = makeTrackingFetcher(cutout);
+    // Barreira em vez de hold por tempo: sob carga as chegadas se espalhavam
+    // por mais de 40ms e o pico caía para 1 (flaky). Ver `makeBarrierFetcher`.
+    const { fetcher, getPeak, barrierTimedOut } = makeBarrierFetcher(cutout, 3);
 
     await Promise.all(
       Array.from({ length: 3 }, () =>
@@ -469,8 +522,12 @@ describe("processUploadedImage — gate de concorrência do sidecar", () => {
       ),
     );
 
-    // Sem gate, as 3 correm juntas — comportamento anterior à mudança.
+    // Sem gate, as 3 correm juntas — comportamento anterior à mudança. Com o
+    // gate de 1 slot ativo, 3 chamadas simultâneas no fetcher são impossíveis:
+    // a barreira só abriria pelo timer de segurança e o pico ficaria em 1.
     expect(getPeak()).toBe(3);
+    expect(barrierTimedOut()).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 });
 
