@@ -89,6 +89,21 @@ import { ProductHistoryPicker } from "./product-history-picker";
 import { useProductDraft } from "../hooks/use-product-draft";
 import { useProductHistory } from "../hooks/use-product-history";
 import { applyProductHistory } from "../lib/apply-product-history";
+import {
+  beginSuggestionRequest,
+  mlSuggestionChipAction,
+  normalizeCategoryId,
+  blocksAutoCategory,
+  categoryPatchForAutoDetected,
+  createCategoryGuard,
+  isManualCategory,
+  markAuto,
+  markEmpty,
+  markManual,
+  mayApplyAutoCategory,
+  resetCategoryGuard,
+  type CategoryChannel,
+} from "../lib/category-suggestion-guard";
 import type {
   ProductFormSnapshot,
   ScrapSnapshot,
@@ -627,6 +642,49 @@ export function CreateProductDialog({
   const magaluSuggestedRef = useRef(false);
   /** Categoria Magalu que a sugestão automática aplicou nesta abertura. */
   const magaluAutoValueRef = useRef<string | null>(null);
+
+  // Quem manda na categoria de cada canal: a sugestão automática ou a pessoa.
+  // Escolha manual NUNCA é sobrescrita por sugestão (título novo, resposta
+  // atrasada, opções recarregadas) — ver category-suggestion-guard.ts. Vive em
+  // ref porque os efeitos do react-hook-form disparam síncronos dentro de
+  // `setValue`: o estado tem de estar certo ANTES do setValue.
+  const categoryGuardRef = useRef(createCategoryGuard());
+  /**
+   * Sugestão de categoria ML que chegou DEPOIS da escolha manual. Não é
+   * aplicada: vira o botão "Usar sugestão", decisão da pessoa.
+   */
+  const [pendingMlSuggestion, setPendingMlSuggestion] = useState<{
+    id: string;
+    label: string;
+  } | null>(null);
+  /**
+   * Sugestões recusadas com "Manter minha escolha" nesta abertura do modal:
+   * não voltam a aparecer quando o efeito roda de novo (tecla no título,
+   * opções da Shopee carregando).
+   */
+  const recusadasMlRef = useRef<Set<string>>(new Set());
+  /** Marca a escolha manual do canal ANTES de gravar o campo. */
+  const markCategoryManual = useCallback((channel: CategoryChannel) => {
+    markManual(categoryGuardRef.current, channel);
+    if (channel === "ml") setPendingMlSuggestion(null);
+  }, []);
+  /** Rascunho/histórico: categorias não vazias que voltam contam como escolha. */
+  const markRestoredCategoriesManual = useCallback(
+    (values: Record<string, unknown>) => {
+      const campos: Array<[string, CategoryChannel]> = [
+        ["mlCategory", "ml"],
+        ["shopeeCategory", "shopee"],
+        ["magaluCategory", "magalu"],
+        ["olxCategory", "olx"],
+        ["facebookCategory", "fb"],
+      ];
+      for (const [campo, canal] of campos) {
+        const v = values[campo];
+        if (typeof v === "string" && v.trim()) markCategoryManual(canal);
+      }
+    },
+    [markCategoryManual],
+  );
 
   // ── Rascunho automático (Bloco 4) e histórico de cadastros (Bloco 3) ──
   // Flags de build-time do Next: precisam ser lidas com o nome literal.
@@ -1246,6 +1304,11 @@ export function CreateProductDialog({
 
       // Reset auto-detection state when opening modal to avoid stale auto-detected values
       autoDetectedRef.current = null;
+      // Nova abertura: nenhuma categoria escolhida ainda, e respostas de
+      // sugestão disparadas antes disto são descartadas quando chegarem.
+      resetCategoryGuard(categoryGuardRef.current);
+      setPendingMlSuggestion(null);
+      recusadasMlRef.current = new Set();
       compatAutofilledRef.current = {};
 
       // Disparar todas as requisições em paralelo para abrir o modal mais rápido
@@ -1527,6 +1590,10 @@ export function CreateProductDialog({
     const name = (watchName || "").trim();
     if (!name) return;
     magaluSuggestedRef.current = true;
+    // Número desta requisição: fechar/reabrir o modal avança o contador e a
+    // resposta que chegar depois é descartada (não grava a categoria do
+    // produto anterior num formulário já zerado).
+    const seq = beginSuggestionRequest(categoryGuardRef.current, "magalu");
     (async () => {
       try {
         const resp = await fetch(
@@ -1535,11 +1602,23 @@ export function CreateProductDialog({
         );
         if (!resp.ok) return;
         const data = await resp.json();
+        // Escolha manual (ou valor restaurado de rascunho/histórico) não é
+        // sobrescrita pela sugestão que chegou depois.
+        if (
+          data?.categoryId &&
+          !mayApplyAutoCategory(categoryGuardRef.current, "magalu", {
+            current: getValues("magaluCategory"),
+            responseSeq: seq,
+          })
+        ) {
+          return;
+        }
         if (data?.categoryId) {
           const label = data.path || data.categoryId;
           // Guarda o valor SUGERIDO para o submit distinguir "aceitou a
           // sugestão" de "escolheu na mão" ao gravar magaluCategorySource.
           magaluAutoValueRef.current = data.categoryId;
+          markAuto(categoryGuardRef.current, "magalu", data.categoryId);
           setValue("magaluCategory", data.categoryId, { shouldDirty: true });
           setMagaluSelectedLabel(label);
           setMagaluOptions([{ id: data.categoryId, value: label }]);
@@ -1548,7 +1627,7 @@ export function CreateProductDialog({
         console.error("Erro ao sugerir categoria Magalu:", err);
       }
     })();
-  }, [watchCreateMagaluListing, watchName, setValue, session?.user?.email]);
+  }, [watchCreateMagaluListing, watchName, setValue, getValues, session?.user?.email]);
 
   // Busca server-side de categorias Magalu (debounced) ao digitar no combobox.
   useEffect(() => {
@@ -1588,6 +1667,10 @@ export function CreateProductDialog({
     const name = (watchName || "").trim();
     if (!name) return;
     olxSuggestedRef.current = true;
+    // Número desta requisição: fechar/reabrir o modal avança o contador e a
+    // resposta que chegar depois é descartada (não grava a categoria do
+    // produto anterior num formulário já zerado).
+    const seq = beginSuggestionRequest(categoryGuardRef.current, "olx");
     (async () => {
       try {
         const resp = await fetch(
@@ -1596,8 +1679,18 @@ export function CreateProductDialog({
         );
         if (!resp.ok) return;
         const data = await resp.json();
+        if (
+          data?.categoryId &&
+          !mayApplyAutoCategory(categoryGuardRef.current, "olx", {
+            current: getValues("olxCategory"),
+            responseSeq: seq,
+          })
+        ) {
+          return;
+        }
         if (data?.categoryId) {
           const label = data.path || data.categoryId;
+          markAuto(categoryGuardRef.current, "olx", data.categoryId);
           setValue("olxCategory", data.categoryId, { shouldDirty: true });
           setOlxSelectedLabel(label);
           setOlxOptions([{ id: data.categoryId, value: label }]);
@@ -1606,7 +1699,7 @@ export function CreateProductDialog({
         console.error("Erro ao sugerir categoria OLX:", err);
       }
     })();
-  }, [watchCreateOlxListing, watchName, setValue, session?.user?.email]);
+  }, [watchCreateOlxListing, watchName, setValue, getValues, session?.user?.email]);
 
   // Busca server-side de categorias OLX (debounced) ao digitar no combobox.
   useEffect(() => {
@@ -1650,6 +1743,10 @@ export function CreateProductDialog({
     const name = (watchName || "").trim();
     if (!name) return;
     facebookSuggestedRef.current = true;
+    // Número desta requisição: fechar/reabrir o modal avança o contador e a
+    // resposta que chegar depois é descartada (não grava a categoria do
+    // produto anterior num formulário já zerado).
+    const seq = beginSuggestionRequest(categoryGuardRef.current, "fb");
     (async () => {
       try {
         const resp = await fetch(
@@ -1658,8 +1755,18 @@ export function CreateProductDialog({
         );
         if (!resp.ok) return;
         const data = await resp.json();
+        if (
+          data?.categoryId &&
+          !mayApplyAutoCategory(categoryGuardRef.current, "fb", {
+            current: getValues("facebookCategory"),
+            responseSeq: seq,
+          })
+        ) {
+          return;
+        }
         if (data?.categoryId) {
           const label = data.path || data.categoryId;
+          markAuto(categoryGuardRef.current, "fb", data.categoryId);
           setValue("facebookCategory", data.categoryId, { shouldDirty: true });
           setFacebookSelectedLabel(label);
           setFacebookOptions([{ id: data.categoryId, value: label }]);
@@ -1668,7 +1775,7 @@ export function CreateProductDialog({
         console.error("Erro ao sugerir categoria Facebook:", err);
       }
     })();
-  }, [watchCreateFacebookListing, watchName, setValue, session?.user?.email]);
+  }, [watchCreateFacebookListing, watchName, setValue, getValues, session?.user?.email]);
 
   // Busca server-side de categorias Facebook (debounced) ao digitar no combobox.
   useEffect(() => {
@@ -1845,6 +1952,8 @@ export function CreateProductDialog({
       if (applied.includes("attributes") && next.attributes)
         setValue("attributes", next.attributes, setOpts);
       if (applied.includes("mlCategoryId") && next.mlCategoryId) {
+        // Sugestão aceita do catálogo = automática (só preenche campo vazio).
+        markAuto(categoryGuardRef.current, "ml", next.mlCategoryId);
         setValue("mlCategory", next.mlCategoryId, setOpts);
         // Marca como auto-detectado para o submit classificar mlCategorySource.
         autoDetectedRef.current = {
@@ -1961,14 +2070,18 @@ export function CreateProductDialog({
       if (applied.includes("attributes") && next.attributes)
         setValue("attributes", next.attributes, setOpts);
       if (applied.includes("mlCategory") && next.mlCategory) {
+        // Sugestão da base interna = automática (só preenche campo vazio).
+        markAuto(categoryGuardRef.current, "ml", next.mlCategory);
         setValue("mlCategory", next.mlCategory, setOpts);
         autoDetectedRef.current = {
           ...(autoDetectedRef.current || {}),
           mlCategory: next.mlCategory,
         };
       }
-      if (applied.includes("shopeeCategory") && next.shopeeCategory)
+      if (applied.includes("shopeeCategory") && next.shopeeCategory) {
+        markAuto(categoryGuardRef.current, "shopee", next.shopeeCategory);
         setValue("shopeeCategory", next.shopeeCategory, setOpts);
+      }
       if (applied.includes("compatibilities") && next.compatibilities) {
         setCompatibilities(
           next.compatibilities.map((c, i) => ({
@@ -2067,6 +2180,12 @@ export function CreateProductDialog({
 
       // Capture previous auto-detected values
       const prev = autoDetectedRef.current || ({} as any);
+      // O fallback por palavra-chave/medida (mais abaixo) também grava
+      // categoria: registrá-la como auto-detectada AQUI, onde é escrita. Antes
+      // quem registrava era o efeito de medidas, copiando o valor ATUAL — e
+      // copiava também a escolha manual, que passava a ser sobrescrita.
+      let fallbackMlAuto: string | undefined;
+      let fallbackLabelAuto: string | undefined;
 
       // DEBUG: log detection flow to help debug cases where fields are not updated in the UI
       try {
@@ -2103,8 +2222,12 @@ export function CreateProductDialog({
       // Categoria: atualizar se vazio ou se o valor atual foi auto-detectado anteriormente
       const currentCategory = getValues("category");
       const currentMlCategory = getValues("mlCategory");
+      // Categoria ML escolhida à mão trava também o rótulo `category`, que o
+      // seletor grava junto com ela.
+      const mlLockedByUser = isManualCategory(categoryGuardRef.current, "ml");
       const shouldUpdateCategory =
-        !currentCategory || norm(prev.category) === norm(currentCategory);
+        !mlLockedByUser &&
+        (!currentCategory || norm(prev.category) === norm(currentCategory));
 
       if (shouldUpdateCategory) {
         if (mapping.topLevel || mapping.detailedValue) {
@@ -2154,7 +2277,8 @@ export function CreateProductDialog({
         const resolvedMlCategoryId =
           externalFromMlOptions || mapping.detailedId;
 
-        if (!currentMlCategory || isPrevAutoMl) {
+        if ((!currentMlCategory || isPrevAutoMl) && !mlLockedByUser) {
+          markAuto(categoryGuardRef.current, "ml", resolvedMlCategoryId);
           setValue("mlCategory", resolvedMlCategoryId, {
             shouldDirty: true,
           });
@@ -2196,7 +2320,8 @@ export function CreateProductDialog({
         }
       } else {
         // No detailed mapping: if previously auto-filled mlCategory and user didn't change it, clear it
-        if (isPrevAutoMl && currentMlCategory) {
+        if (isPrevAutoMl && currentMlCategory && !mlLockedByUser) {
+          markEmpty(categoryGuardRef.current, "ml");
           setValue("mlCategory", "", { shouldDirty: true });
           if (
             typeof window !== "undefined" &&
@@ -2494,8 +2619,9 @@ export function CreateProductDialog({
         try {
           const currentCategory = getValues("category");
           const shouldUpdateCategory =
-            !currentCategory ||
-            (autoDetectedRef.current?.category ?? "") === currentCategory;
+            !isManualCategory(categoryGuardRef.current, "ml") &&
+            (!currentCategory ||
+              (autoDetectedRef.current?.category ?? "") === currentCategory);
 
           if (shouldUpdateCategory && !mapping.topLevel && !detected.category) {
             const source = (watchName || "").toString().toLowerCase();
@@ -2589,6 +2715,7 @@ export function CreateProductDialog({
                     .split(/\s+/)
                     .map((w) => w[0]?.toUpperCase() + w.slice(1))
                     .join(" ");
+                  fallbackLabelAuto = pretty;
                   setValue("category", pretty, { shouldDirty: true });
                 }
               }
@@ -2611,8 +2738,21 @@ export function CreateProductDialog({
               // Usar mlOptions quando disponível; caso contrário, usar o ID estático do childMatch
               const mlValueToSet = externalMatch?.id || childMatch.id;
 
-              setValue("mlCategory", mlValueToSet, { shouldDirty: true });
-              setValue("category", fullPathLabel, { shouldDirty: true });
+              // Mesma regra dos outros escritores: só grava sobre campo vazio
+              // ou sobre o valor que a própria sugestão pôs — antes gravava
+              // incondicionalmente (inclusive sobre categoria vinda do
+              // catálogo/histórico).
+              const currentMl = getValues("mlCategory");
+              const mlStillAuto =
+                !currentMl ||
+                norm(autoDetectedRef.current?.mlCategory) === norm(currentMl);
+              if (mlStillAuto) {
+                fallbackMlAuto = mlValueToSet;
+                fallbackLabelAuto = fullPathLabel;
+                markAuto(categoryGuardRef.current, "ml", mlValueToSet);
+                setValue("mlCategory", mlValueToSet, { shouldDirty: true });
+                setValue("category", fullPathLabel, { shouldDirty: true });
+              }
               if (
                 typeof window !== "undefined" &&
                 window.location.hostname === "localhost"
@@ -2643,10 +2783,12 @@ export function CreateProductDialog({
         category:
           mapping.topLevel ||
           detected.category ||
+          fallbackLabelAuto ||
           autoDetectedRef.current?.category,
         mlCategory:
           mlOptions.find((c) => c.value === mapping.detailedValue)?.id ??
           mapping.detailedId ??
+          fallbackMlAuto ??
           autoDetectedRef.current?.mlCategory,
         shopeeCategory: autoDetectedRef.current?.shopeeCategory,
         heightCm:
@@ -2693,6 +2835,14 @@ export function CreateProductDialog({
     categorySuggestTimerRef.current = window.setTimeout(async () => {
       if (cancelled) return;
 
+      // Número desta requisição por canal: a resposta só vale se ainda for a
+      // última quando chegar (a pessoa pode ter reaberto o modal no meio).
+      const mlSeq = beginSuggestionRequest(categoryGuardRef.current, "ml");
+      const shopeeSeq = beginSuggestionRequest(
+        categoryGuardRef.current,
+        "shopee",
+      );
+
       // Fetch ML and Shopee suggestions in parallel
       const [suggestion, shopeeSuggestion] = await Promise.all([
         fetchCategorySuggestion(watchName, controller.signal),
@@ -2702,6 +2852,10 @@ export function CreateProductDialog({
 
       const norm = (s?: string) => (s || "").toString().trim().toLowerCase();
       const prev = autoDetectedRef.current || {};
+      // Resposta ainda é a última pedida para o ML? Só ela mexe no chip
+      // "Usar sugestão" (uma atrasada não apaga nem troca o chip atual).
+      const mlRespostaAtual =
+        mlSeq === categoryGuardRef.current.ml.reqSeq;
 
       // --- Shopee category auto-detect ---
       // Only consider suggestions with sufficient confidence to avoid absurd mismatches.
@@ -2736,12 +2890,29 @@ export function CreateProductDialog({
           currentShopeeCategory,
           isPrevAutoShopee,
         });
-        if ((!currentShopeeCategory || isPrevAutoShopee) && shopeeValue) {
+        if (
+          (!currentShopeeCategory || isPrevAutoShopee) &&
+          shopeeValue &&
+          !blocksAutoCategory(categoryGuardRef.current, "shopee", shopeeSeq)
+        ) {
+          markAuto(categoryGuardRef.current, "shopee", shopeeValue);
           setValue("shopeeCategory", shopeeValue, { shouldDirty: true });
         }
       }
 
       // --- ML category + attributes auto-detect ---
+      if (!suggestion || !suggestion.suggestions?.[0]) {
+        // Sem sugestão para o título atual: o chip de uma sugestão anterior
+        // ficou velho.
+        const acao = mlSuggestionChipAction({
+          responseIsLatest: mlRespostaAtual,
+          manual: isManualCategory(categoryGuardRef.current, "ml"),
+          suggested: null,
+          current: getValues("mlCategory"),
+          declined: recusadasMlRef.current,
+        });
+        if (acao === "clear") setPendingMlSuggestion(null);
+      }
       if (!suggestion) {
         // Still save Shopee even if ML failed
         if (shopeeValue) {
@@ -2777,8 +2948,32 @@ export function CreateProductDialog({
       const isPrevAutoMl =
         prev.mlCategory &&
         norm(prev.mlCategory) === norm(currentMlCategory || "");
-      if ((!currentMlCategory || isPrevAutoMl) && mlValue) {
+      const mlBlocked = blocksAutoCategory(
+        categoryGuardRef.current,
+        "ml",
+        mlSeq,
+      );
+      if ((!currentMlCategory || isPrevAutoMl) && mlValue && !mlBlocked) {
+        markAuto(categoryGuardRef.current, "ml", mlValue);
         setValue("mlCategory", mlValue, { shouldDirty: true });
+      } else {
+        // Escolha manual vence. Uma sugestão diferente vira o botão "Usar
+        // sugestão" — trocar é decisão da pessoa, nunca automática.
+        const acao = mlSuggestionChipAction({
+          responseIsLatest: mlRespostaAtual,
+          manual: isManualCategory(categoryGuardRef.current, "ml"),
+          suggested: mlValue,
+          current: currentMlCategory,
+          declined: recusadasMlRef.current,
+        });
+        if (acao === "show") {
+          setPendingMlSuggestion({
+            id: mlValue,
+            label: best.fullPath || mlValue,
+          });
+        } else if (acao === "clear") {
+          setPendingMlSuggestion(null);
+        }
       }
 
       const attributes = best.attributes || {};
@@ -2968,14 +3163,23 @@ export function CreateProductDialog({
           void trigger(["heightCm", "widthCm", "lengthCm", "weightKg"]);
         }
 
+        // Este efeito copia a categoria ATUAL para o registro de
+        // auto-detectados — é o que mantém o rótulo acompanhando o título
+        // enquanto ninguém escolheu. Mas copiava também a escolha MANUAL, que
+        // passava por automática e a sugestão seguinte a sobrescrevia (bug da
+        // categoria manual, 22/09/2026). Com a categoria ML travada pela
+        // pessoa, só as medidas entram.
         autoDetectedRef.current = {
           ...autoDetectedRef.current,
           heightCm: measurements.heightCm ?? autoDetectedRef.current?.heightCm,
           widthCm: measurements.widthCm ?? autoDetectedRef.current?.widthCm,
           lengthCm: measurements.lengthCm ?? autoDetectedRef.current?.lengthCm,
           weightKg: measurements.weightKg ?? autoDetectedRef.current?.weightKg,
-          category: category || autoDetectedRef.current?.category,
-          mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
+          ...categoryPatchForAutoDetected(
+            categoryGuardRef.current,
+            { category, mlCategory: watchMlCategory },
+            autoDetectedRef.current,
+          ),
         };
       }
     } catch (err) {
@@ -3209,10 +3413,14 @@ export function CreateProductDialog({
         });
       }
 
+      // Escolha explícita (seletor, rascunho, histórico, "usar sugestão") é
+      // sempre "manual" — mesmo quando coincide com o que foi sugerido.
       const mlCategorySourceToSend = data.mlCategory
-        ? autoDetectedRef.current?.mlCategory === data.mlCategory
-          ? "auto"
-          : "manual"
+        ? isManualCategory(categoryGuardRef.current, "ml")
+          ? "manual"
+          : autoDetectedRef.current?.mlCategory === data.mlCategory
+            ? "auto"
+            : "manual"
         : autoDetectedRef.current?.mlCategory
           ? "auto"
           : undefined;
@@ -3269,16 +3477,19 @@ export function CreateProductDialog({
         // realmente escolhidos por alguém, o que inviabiliza medir precisão.
         // Não muda publicação, estoque nem pedido — só o valor da coluna.
         shopeeCategorySource: data.shopeeCategory
-          ? autoDetectedRef.current?.shopeeCategory === data.shopeeCategory
-            ? "auto"
-            : "manual"
+          ? isManualCategory(categoryGuardRef.current, "shopee")
+            ? "manual"
+            : autoDetectedRef.current?.shopeeCategory === data.shopeeCategory
+              ? "auto"
+              : "manual"
           : autoDetectedRef.current?.shopeeCategory
             ? "auto"
             : undefined,
         // Idem Magalu: nenhum modal enviava o campo, então o backend caía no
         // default `magaluCategory ? "manual" : "auto"`.
         magaluCategorySource: data.magaluCategory
-          ? magaluAutoValueRef.current === data.magaluCategory
+          ? !isManualCategory(categoryGuardRef.current, "magalu") &&
+            magaluAutoValueRef.current === data.magaluCategory
             ? "auto"
             : "manual"
           : undefined,
@@ -3485,6 +3696,10 @@ export function CreateProductDialog({
   const restoreSnapshotIntoForm = useCallback(
     (snapshot: ProductFormSnapshot) => {
       const opts = { shouldDirty: true } as const;
+      // Categoria que volta do rascunho foi decisão da pessoa naquela sessão:
+      // trava ANTES dos setValue (os efeitos de sugestão rodam logo depois e
+      // a sobrescreveriam).
+      markRestoredCategoriesManual(snapshot.values as Record<string, unknown>);
       for (const [field, value] of Object.entries(snapshot.values)) {
         // `sku` não está no snapshot por construção; a checagem é
         // cinto-e-suspensório para nunca reintroduzir um código já consumido.
@@ -3531,7 +3746,7 @@ export function CreateProductDialog({
         }
       }
     },
-    [setValue],
+    [setValue, markRestoredCategoriesManual],
   );
 
   // Aplica a sucata enfileirada — a `<option>` num commit, o valor no
@@ -3683,6 +3898,11 @@ export function CreateProductDialog({
         shouldValidate: true,
         shouldTouch: true,
       } as const;
+      // Categoria copiada do cadastro anterior (só entra em campo vazio) é
+      // escolha da pessoa: trava antes dos setValue.
+      markRestoredCategoriesManual(
+        Object.fromEntries(applied.map((f) => [f, next[f]])),
+      );
       for (const field of applied) {
         // Os três vivem fora do react-hook-form: mandá-los ao `setValue`
         // criaria um campo fantasma no formulário.
@@ -3723,7 +3943,14 @@ export function CreateProductDialog({
         "success",
       );
     },
-    [getValues, compatibilities, compatibilityPositions, setValue, onToast],
+    [
+      getValues,
+      compatibilities,
+      compatibilityPositions,
+      setValue,
+      onToast,
+      markRestoredCategoriesManual,
+    ],
   );
 
   const handleClose = () => {
@@ -3750,6 +3977,9 @@ export function CreateProductDialog({
     // Zera a sugestão memorizada — a próxima abertura busca uma nova.
     autoSuggestedSkuRef.current = "";
     magaluAutoValueRef.current = null;
+    resetCategoryGuard(categoryGuardRef.current);
+    setPendingMlSuggestion(null);
+    recusadasMlRef.current = new Set();
     // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
     nfeAppliedRef.current = false;
     // Permite reaplicar a sucata travada na próxima abertura (várias peças em sequência).
@@ -4838,6 +5068,10 @@ export function CreateProductDialog({
                                         }`}
                                         onMouseDown={(e) => {
                                           e.preventDefault();
+                                          // ANTES do onChange: escolha da
+                                          // pessoa trava a categoria contra
+                                          // qualquer sugestão automática.
+                                          markCategoryManual("ml");
                                           field.onChange(cat.id);
                                           setValue("category", cat.value);
                                           setMlCategorySearch("");
@@ -4863,6 +5097,52 @@ export function CreateProductDialog({
                     <p className="text-xs text-muted-foreground">
                       Categoria sugerida: {watch("category") || "Nenhuma"}
                     </p>
+                    {pendingMlSuggestion &&
+                      pendingMlSuggestion.id !== watchMlCategory && (
+                        // A categoria foi escolhida à mão e continua valendo.
+                        // Uma sugestão diferente chegou depois: trocar é
+                        // decisão da pessoa, nunca automática.
+                        <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs">
+                          <span className="min-w-0 text-muted-foreground">
+                            Sugestão automática:{" "}
+                            <span className="font-medium text-foreground">
+                              {pendingMlSuggestion.label}
+                            </span>
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              const s = pendingMlSuggestion;
+                              markCategoryManual("ml");
+                              setValue("mlCategory", s.id, {
+                                shouldDirty: true,
+                              });
+                              setValue("category", s.label, {
+                                shouldDirty: true,
+                              });
+                            }}
+                          >
+                            Usar sugestão
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              recusadasMlRef.current.add(
+                                normalizeCategoryId(pendingMlSuggestion.id),
+                              );
+                              setPendingMlSuggestion(null);
+                            }}
+                          >
+                            Manter minha escolha
+                          </Button>
+                        </div>
+                      )}
 
                     <Controller
                       name="attributes"
@@ -5458,6 +5738,7 @@ export function CreateProductDialog({
                                         }`}
                                         onMouseDown={(e) => {
                                           e.preventDefault();
+                                          markCategoryManual("shopee");
                                           field.onChange(cat.id);
                                           setShopeeCategorySearch("");
                                           setShopeeCategoryDropdownOpen(false);
@@ -5722,6 +6003,7 @@ export function CreateProductDialog({
                                         }`}
                                         onMouseDown={(e) => {
                                           e.preventDefault();
+                                          markCategoryManual("magalu");
                                           field.onChange(o.id);
                                           setMagaluSelectedLabel(o.value);
                                           setMagaluCategorySearch("");
@@ -5990,6 +6272,7 @@ export function CreateProductDialog({
                                         }`}
                                         onMouseDown={(e) => {
                                           e.preventDefault();
+                                          markCategoryManual("olx");
                                           field.onChange(o.id);
                                           setOlxSelectedLabel(o.value);
                                           setOlxCategorySearch("");
@@ -6270,6 +6553,7 @@ export function CreateProductDialog({
                                         }`}
                                         onMouseDown={(e) => {
                                           e.preventDefault();
+                                          markCategoryManual("fb");
                                           field.onChange(o.id);
                                           setFacebookSelectedLabel(o.value);
                                           setFacebookCategorySearch("");
