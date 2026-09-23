@@ -7,6 +7,12 @@ import { campoJson } from "../../lib/prisma-json-null";
  * Repositório para gerenciar ProductListings
  * Conexão entre Product local e anúncios no Mercado Livre
  */
+/** Espera por conexão do pool (ms) — a mesma do client (app/lib/prisma.ts). */
+function esperaConexaoMs(): number {
+  const s = Number(process.env.PRISMA_POOL_TIMEOUT);
+  return (Number.isFinite(s) && s > 0 ? s : 30) * 1000;
+}
+
 export class ListingRepository {
   /**
    * Cria uma nova conexão entre produto e anúncio ML
@@ -66,14 +72,9 @@ export class ListingRepository {
   ): Promise<
     | { created: Awaited<ReturnType<typeof prisma.productListing.create>> }
     | {
-        existing: {
-          id: string;
-          externalListingId: string;
-          retryEnabled: boolean;
-          nextRetryAt: Date | null;
-          status: string;
-          lastError: string | null;
-        };
+        existing: NonNullable<
+          Awaited<ReturnType<typeof prisma.productListing.findFirst>>
+        >;
       }
     | { live: { id: string; externalListingId: string; status: string } }
   > {
@@ -88,15 +89,9 @@ export class ListingRepository {
             externalListingId: { startsWith: "PENDING_" },
             NOT: { externalListingId: { startsWith: "PENDING_REPUBLISH_" } },
           },
+          // Linha inteira: quem chama decide com a mesma regra do
+          // reaproveitamento e, se puder, publica nela.
           orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            externalListingId: true,
-            retryEnabled: true,
-            nextRetryAt: true,
-            status: true,
-            lastError: true,
-          },
         });
         if (existing) return { existing };
         const live = await tx.productListing.findFirst({
@@ -114,7 +109,10 @@ export class ListingRepository {
         });
         return { created };
       },
-      { maxWait: 10_000, timeout: 15_000 },
+      // maxWait = o pool_timeout do client (PRISMA_POOL_TIMEOUT, padrão 30 s):
+      // com o pool cheio, a 1ª linha espera a conexão o mesmo tanto que o
+      // create simples de antes esperava, em vez de falhar antes (P2028).
+      { maxWait: esperaConexaoMs(), timeout: 15_000 },
     );
   }
 

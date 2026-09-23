@@ -900,3 +900,91 @@ describe("1ª publicação: a outra criação já terminou enquanto esta esperav
     expect(ListingRepository.updateListing).not.toHaveBeenCalled();
   });
 });
+
+describe("1ª publicação: a linha que apareceu sob o lock segue a MESMA regra do reaproveitamento (revisão de fechamento, 23/09)", () => {
+  const linhaSobLock = (over: Record<string, unknown>) => ({
+    id: "l-sob-lock",
+    productId: "prod-1",
+    marketplaceAccountId: "acct-1",
+    externalListingId: "PENDING_9",
+    status: "error",
+    retryEnabled: false,
+    nextRetryAt: null,
+    lastError: null,
+    attributesOverride: null,
+    ...over,
+  });
+
+  it("LIVRE (o bloqueio de campo obrigatório de outro 'Anunciar' a gravou terminal) ⇒ reserva e publica nela, com as configurações desta chamada", async () => {
+    (ListingRepository.createReservedPlaceholderIfAbsent as any).mockResolvedValue({
+      existing: linhaSobLock({ lastError: "[TERMINAL][CORRIGIVEL] Falta o lado" }),
+    });
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(
+      new Date(Date.now() + 600_000),
+    );
+    mlResponde(() => {
+      throw erroMl("Validation error", [INMETRO_3702]);
+    });
+    const r = await criar();
+    expect(ListingRepository.claimInteractiveRetry).toHaveBeenCalledWith(
+      "l-sob-lock",
+      expect.any(Number),
+      expect.any(Date),
+      {},
+    );
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    expect((r as any).code).not.toBe("PUBLICATION_IN_PROGRESS");
+    // a linha reaproveitada recebe as configurações desta publicação
+    expect((ListingRepository.updateListing as any).mock.calls[0][0]).toBe("l-sob-lock");
+    expect(ListingRepository.createListing).not.toHaveBeenCalled();
+    // a reserva própria é desfeita no fim
+    expect(ListingRepository.releaseInteractiveRetry).toHaveBeenCalledWith(
+      "l-sob-lock",
+      expect.any(Date),
+    );
+  });
+
+  it("só AGENDADA (retry ligado, sem o cron nela) ⇒ assume e publica", async () => {
+    (ListingRepository.createReservedPlaceholderIfAbsent as any).mockResolvedValue({
+      existing: linhaSobLock({
+        retryEnabled: true,
+        nextRetryAt: new Date(Date.now() + 300_000),
+        lastError: "Instabilidade no Mercado Livre (503).",
+      }),
+    });
+    (ListingRepository.takeOverScheduledRetry as any).mockResolvedValue(
+      new Date(Date.now() + 600_000),
+    );
+    mlResponde(() => {
+      throw erroMl("Validation error", [INMETRO_3702]);
+    });
+    await criar();
+    expect(ListingRepository.takeOverScheduledRetry).toHaveBeenCalledWith(
+      "l-sob-lock",
+      expect.any(Number),
+    );
+    expect(MLApiService.createItem).toHaveBeenCalled();
+  });
+
+  it("LIVRE, mas outro agente a reservou antes (claim perdido) ⇒ recua sem POST", async () => {
+    (ListingRepository.createReservedPlaceholderIfAbsent as any).mockResolvedValue({
+      existing: linhaSobLock({}),
+    });
+    (ListingRepository.claimInteractiveRetry as any).mockResolvedValue(null);
+    const r = await criar();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+    expect(ListingRepository.updateListing).not.toHaveBeenCalled();
+  });
+
+  it("o CRON está publicando nela (retry ligado + 'pending') ⇒ recua sem POST e sem tocar na linha", async () => {
+    (ListingRepository.createReservedPlaceholderIfAbsent as any).mockResolvedValue({
+      existing: linhaSobLock({ retryEnabled: true, status: "pending" }),
+    });
+    const r = await criar();
+    expect(ListingRepository.claimInteractiveRetry).not.toHaveBeenCalled();
+    expect(ListingRepository.takeOverScheduledRetry).not.toHaveBeenCalled();
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+    expect((r as any).code).toBe("PUBLICATION_IN_PROGRESS");
+  });
+});

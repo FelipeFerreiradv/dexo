@@ -450,6 +450,28 @@ export class ListingRetryService {
 
         const product = cand.product as any;
 
+        // Anti-duplicata: a tentativa anterior terminou em timeout/5xx e pode
+        // ter criado o item no ML sem a Dexo saber. Confere na conta ANTES de
+        // criar de novo; achou ⇒ adota o item, não cria.
+        //
+        // ANTES da guarda de estoque/preço: a conferência não cria nada, só
+        // adota. A peça de 1 unidade que vendeu entre o POST perdido e esta
+        // passada tem stock=0 — a guarda marcava terminal, apagava o
+        // [VERIFICAR] e o item criado ficava à venda no ML sem vínculo (o sync
+        // de estoque da adoção nunca rodava). Adotado, o job de estoque da
+        // adoção acerta a quantidade dele.
+        if (
+          typeof cand.lastError === "string" &&
+          cand.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR)
+        ) {
+          const conferencia = await this.reconcileBeforeRecreate(
+            cand as any,
+            account as any,
+          );
+          // adopted / ambiguous / search_failed: nada a criar nesta passada.
+          if (conferencia !== "not_found") continue;
+        }
+
         // Guard terminal: stock/price inválidos nunca serão aceitos pelo ML
         // (item.stock.invalid / item.price.invalid). O createMLListing valida o
         // mesmo, mas retorna sem marcar terminal — o candidato gastaria os 5
@@ -502,20 +524,6 @@ export class ListingRetryService {
         //
         // createMLListing REUSA a linha existente (findByProductAndAccount),
         // entao o placeholder deste candidato e atualizado no lugar.
-        // Anti-duplicata: a tentativa anterior terminou em timeout/5xx e pode
-        // ter criado o item no ML sem a Dexo saber. Confere na conta ANTES de
-        // criar de novo; achou ⇒ adota o item, não cria.
-        if (
-          typeof cand.lastError === "string" &&
-          cand.lastError.startsWith(LAST_ERROR_MARKER.VERIFICAR)
-        ) {
-          const conferencia = await this.reconcileBeforeRecreate(
-            cand as any,
-            account as any,
-          );
-          // adopted / ambiguous / search_failed: nada a criar nesta passada.
-          if (conferencia !== "not_found") continue;
-        }
 
         const { ListingUseCase } = await import("../usecases/listing.usercase");
         // Configurações escolhidas na criação (tipo de anúncio, frete, garantia),
@@ -853,6 +861,34 @@ export class ListingRetryService {
       return "not_found";
     }
 
+    // O item adotado não passou pelo pós-criação (compatibilidade; estoque
+    // do momento da criação). O botão não espera a escada de compatibilidade;
+    // o cron espera (o lease dele cobre).
+    const completarAdocao = async (listingId: string, productId: string) => {
+      const completar = (async () => {
+        try {
+          const { ListingUseCase } = await import(
+            "../usecases/listing.usercase"
+          );
+          await ListingUseCase.completeAdoptedMLListing({
+            accessToken: account.accessToken,
+            itemId: achado.id,
+            listingId,
+            productId,
+          });
+        } catch (e) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.publish.reconcile.complete_failed",
+              listingId,
+              error: errMsg(e),
+            }),
+          );
+        }
+      })();
+      if (!opts.interactive) await completar;
+    };
+
     // Já existe OUTRA linha para este anúncio nesta conta (unique): não duplica
     // o vínculo — encerra o placeholder apontando para ele.
     const jaVinculado = await ListingRepository.findLinkByExternalListingId(
@@ -889,6 +925,11 @@ export class ListingRetryService {
           externalListingId: achado.id,
         }),
       );
+      // O item é o do POST perdido deste pendente — só que o webhook `items`
+      // (autodetect) ou um pedido o vincularam antes em outra linha do mesmo
+      // produto. Essa linha também nunca passou pelo pós-criação.
+      const produtoDoVinculo = jaVinculado.productId || cand.productId;
+      if (produtoDoVinculo) await completarAdocao(jaVinculado.id, produtoDoVinculo);
       return "adopted";
     }
 
@@ -911,33 +952,7 @@ export class ListingRetryService {
         remoteStatus: achado.status,
       }),
     );
-    // O item adotado não passou pelo pós-criação (compatibilidade; estoque
-    // do momento da criação). O botão não espera a escada de compatibilidade;
-    // o cron espera (o lease dele cobre).
-    if (cand.productId) {
-      const completar = (async () => {
-        try {
-          const { ListingUseCase } = await import(
-            "../usecases/listing.usercase"
-          );
-          await ListingUseCase.completeAdoptedMLListing({
-            accessToken: account.accessToken,
-            itemId: achado.id,
-            listingId: cand.id,
-            productId: cand.productId!,
-          });
-        } catch (e) {
-          console.warn(
-            JSON.stringify({
-              event: "ml.publish.reconcile.complete_failed",
-              listingId: cand.id,
-              error: errMsg(e),
-            }),
-          );
-        }
-      })();
-      if (!opts.interactive) await completar;
-    }
+    if (cand.productId) await completarAdocao(cand.id, cand.productId);
     return "adopted";
   }
 
