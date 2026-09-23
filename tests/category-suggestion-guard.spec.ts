@@ -5,9 +5,11 @@ import {
   categoryPatchForAutoDetected,
   isManualCategory,
   createCategoryGuard,
+  manualCategoryOrigins,
   markAuto,
   markEmpty,
   markManual,
+  markRestoredCategory,
   mayApplyAutoCategory,
   mlSuggestionChipAction,
   resetCategoryGuard,
@@ -271,5 +273,73 @@ describe("chip 'Usar sugestão' da categoria ML (revisão 23/09)", () => {
 
   it("sem escolha manual ⇒ não há chip (a sugestão aplica sozinha)", () => {
     expect(mlSuggestionChipAction({ ...base, manual: false })).toBe("keep");
+  });
+});
+
+describe("categoria que VOLTA para o formulário (hotfix de 23/09/2026)", () => {
+  it("sem origem gravada (histórico, rascunho antigo) ⇒ entra como SUGESTÃO", () => {
+    for (const origem of [undefined, null, "auto", "imported", "xyz"]) {
+      const g = createCategoryGuard();
+      expect(markRestoredCategory(g, "ml", "MLB_FAROL", origem)).toBe("auto");
+      expect(isManualCategory(g, "ml")).toBe(false);
+      // a sugestão do título novo pode trocá-la…
+      expect(mayApplyAutoCategory(g, "ml", { current: "MLB_FAROL" })).toBe(true);
+      // …e, se ninguém mexer, o submit grava "auto"
+      expect(resolveCategorySource(g, "ml", "MLB_FAROL")).toBe("auto");
+    }
+  });
+
+  it("origem gravada 'manual' (rascunho do MESMO cadastro) ⇒ continua travada", () => {
+    const g = createCategoryGuard();
+    expect(markRestoredCategory(g, "ml", "MLB_ESCOLHIDA", "manual")).toBe("manual");
+    expect(isManualCategory(g, "ml")).toBe(true);
+    expect(mayApplyAutoCategory(g, "ml", { current: "MLB_ESCOLHIDA" })).toBe(false);
+    expect(resolveCategorySource(g, "ml", "MLB_ESCOLHIDA")).toBe("manual");
+  });
+
+  it("campo vazio ⇒ nada muda", () => {
+    const g = createCategoryGuard();
+    expect(markRestoredCategory(g, "ml", "", "manual")).toBeNull();
+    expect(markRestoredCategory(g, "ml", undefined)).toBeNull();
+    expect(g.ml.origin).toBe("empty");
+  });
+
+  it("CENÁRIO DE PRODUÇÃO: 'Usar último' em série com peças diferentes ⇒ cada peça segue a sugestão do próprio título", () => {
+    // pedal de freio copiado do cadastro da moldura: a categoria da moldura
+    // entra como sugestão, a sugestão do título novo a troca, o submit é "auto"
+    const g = createCategoryGuard();
+    markRestoredCategory(g, "ml", "MLB_ACESSORIOS"); // histórico não passa origem
+    expect(mayApplyAutoCategory(g, "ml", { current: "MLB_ACESSORIOS" })).toBe(true);
+    markAuto(g, "ml", "MLB_PEDAL_FREIO"); // sugestão do título "Pedal freio…"
+    expect(resolveCategorySource(g, "ml", "MLB_PEDAL_FREIO")).toBe("auto");
+  });
+
+  it("escolha no seletor DEPOIS de copiar do histórico ⇒ trava e grava 'manual' (o conserto do #359 continua)", () => {
+    const g = createCategoryGuard();
+    markRestoredCategory(g, "ml", "MLB_ACESSORIOS");
+    markManual(g, "ml");
+    expect(mayApplyAutoCategory(g, "ml", { current: "MLB_ACESSORIOS" })).toBe(false);
+    expect(resolveCategorySource(g, "ml", "MLB_ACESSORIOS")).toBe("manual");
+  });
+
+  it("manualCategoryOrigins guarda SÓ as escolhas da pessoa", () => {
+    const g = createCategoryGuard();
+    markManual(g, "ml");
+    markAuto(g, "shopee", "100");
+    markManual(g, "fb");
+    expect(manualCategoryOrigins(g)).toEqual({ ml: "manual", fb: "manual" });
+    expect(manualCategoryOrigins(createCategoryGuard())).toEqual({});
+  });
+
+  it("ida e volta do rascunho: a escolha manual volta travada; a sugestão volta como sugestão", () => {
+    const antes = createCategoryGuard();
+    markManual(antes, "ml");
+    markAuto(antes, "shopee", "SHP_1");
+    const origens = manualCategoryOrigins(antes);
+    const depois = createCategoryGuard();
+    markRestoredCategory(depois, "ml", "MLB_ESCOLHIDA", origens.ml);
+    markRestoredCategory(depois, "shopee", "SHP_1", origens.shopee);
+    expect(isManualCategory(depois, "ml")).toBe(true);
+    expect(isManualCategory(depois, "shopee")).toBe(false);
   });
 });

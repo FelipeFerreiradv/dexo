@@ -80,6 +80,49 @@ export function markAuto(
   state[channel].lastAutoValue = value;
 }
 
+/**
+ * Categoria que VOLTA para o formulário: "Continuar" do rascunho ou "Usar
+ * último"/"Usar este" do histórico. É escolha da pessoa só quando a origem
+ * gravada diz "manual" — e só o rascunho grava a origem, porque é o MESMO
+ * cadastro. O histórico traz a categoria de OUTRO produto: entra como sugestão
+ * (a sugestão do título novo pode trocá-la), como antes do #359.
+ *
+ * Hotfix de 23/09/2026: travar tudo o que voltava fazia o "Usar último" grudar
+ * a categoria da peça anterior em toda a série (pedal de freio, console e
+ * mangueira do ar em "Acessórios", publicados assim no ML) e gravar
+ * `mlCategorySource="manual"` em cadastro que ninguém escolheu.
+ *
+ * Devolve o que marcou; `null` = campo vazio (nada muda).
+ */
+export function markRestoredCategory(
+  state: CategoryGuardState,
+  channel: CategoryChannel,
+  value: unknown,
+  recordedOrigin?: unknown,
+): "manual" | "auto" | null {
+  if (!norm(value)) return null;
+  if (recordedOrigin === "manual") {
+    markManual(state, channel);
+    return "manual";
+  }
+  markAuto(state, channel, String(value));
+  return "auto";
+}
+
+/**
+ * Origens a gravar no rascunho: só as escolhas manuais. Na volta, o que não
+ * estiver aqui entra como sugestão (ver `markRestoredCategory`).
+ */
+export function manualCategoryOrigins(
+  state: CategoryGuardState,
+): Partial<Record<CategoryChannel, "manual">> {
+  const out: Partial<Record<CategoryChannel, "manual">> = {};
+  for (const c of CHANNELS) {
+    if (state[c].origin === "manual") out[c] = "manual";
+  }
+  return out;
+}
+
 /** A sugestão automática limpou o campo (título deixou de indicar categoria). */
 export function markEmpty(
   state: CategoryGuardState,
