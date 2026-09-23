@@ -159,7 +159,8 @@ export class NfeNumeracaoService {
         prova: cls.conclusiva || alvo === "AUTORIZADO" ? "RESPOSTA_CONCLUSIVA" : null,
         respondidaEm: consulta ? t.respondidaEm : agora, consultadaEm: consulta ? agora : t.consultadaEm });
       if (alvo === "AUTORIZADO") {
-        await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "AUTHORIZED", chaveAcesso: resultado.chaveAcesso,
+        // Nota autorizada não carrega o cStat de uma tentativa rejeitada anterior: o claim da reemissão só limpa `motivoRejeicao`.
+        await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "AUTHORIZED", chaveAcesso: resultado.chaveAcesso, cStatRejeicao: null,
           protocoloAutorizacao: resultado.protocolo ?? null, dataAutorizacao: resultado.dataAutorizacao ?? agora, xmlAssinadoPath: t.xmlAssinadoPath });
       } else if (alvo !== "INCERTO" && alvo !== "BLOQUEADO") {
         await tx.atualizarNota(r.userId, t.nfeId, ["SENDING"], { status: "REJECTED", motivoRejeicao: cls.mensagem, cStatRejeicao: cls.cStat });
@@ -244,7 +245,9 @@ export class NfeNumeracaoService {
         autorizada=await tx.inserirReserva({userId:r.userId,companyFiscalConfigId:r.companyFiscalConfigId,ambiente:r.ambiente,modelo:r.modelo,serie:real.serie,numero:real.numero,nfeId:r.nfeId,estado:"AUTORIZADO",origem:"READBACK_FOCUS",cNF:result.chaveAcesso!.slice(35,43)});
       }
       await tx.avancarContador(seq!.id,key.cfc,real.numero+1);
-      await tx.atualizarNota(r.userId,t.nfeId,["SENDING"],{status:"AUTHORIZED",chaveAcesso:result.chaveAcesso,protocoloAutorizacao:result.protocolo??null,dataAutorizacao:result.dataAutorizacao??this.agora()});
+      // cStatRejeicao: mesmo motivo do ramo AUTORIZADO de aplicarResultado — o claim da reemissao
+      // limpa so o motivo e deixa o cStat da tentativa rejeitada vivo numa nota que autorizou.
+      await tx.atualizarNota(r.userId,t.nfeId,["SENDING"],{status:"AUTHORIZED",chaveAcesso:result.chaveAcesso,protocoloAutorizacao:result.protocolo??null,dataAutorizacao:result.dataAutorizacao??this.agora(),cStatRejeicao:null});
       if(tx.sql) {
         await tx.sql.$executeRawUnsafe('SAVEPOINT focus_numero');
         try{await tx.atualizarNota(r.userId,t.nfeId,["AUTHORIZED"],{status:"AUTHORIZED",numero:real.numero,serie:real.serie});}

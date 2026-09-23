@@ -1,6 +1,6 @@
 # Numeração NF-e V2 — operação
 
-As flags são avaliadas no servidor a cada chamada. Habilitar exige `NFE_NUMERACAO_V2_ENABLED=true` e o ID da **configuração fiscal** em `NFE_NUMERACAO_V2_CONFIG_IDS`. Lista vazia não habilita nenhuma empresa; `*` habilita todas. O modelo padrão é 55. Focus exige também `NFE_NUMERACAO_V2_FOCUS_ENABLED=true`.
+As flags são avaliadas no servidor a cada chamada. Habilitar exige `NFE_NUMERACAO_V2_ENABLED=true` e o ID da **configuração fiscal** em `NFE_NUMERACAO_V2_CONFIG_IDS`. Lista vazia não habilita nenhuma empresa; `*` habilita todas. O modelo padrão é 55. Focus exige também `NFE_NUMERACAO_V2_FOCUS_ENABLED=true`, que **não tem allowlist própria: lê a mesma `NFE_NUMERACAO_V2_CONFIG_IDS`** — ligá-la vale para toda config da lista, não por empresa.
 
 ## Persistência e concorrência
 
@@ -38,7 +38,7 @@ GET/PUT `/fiscal/config/resp-tec` ou `/fiscal/companies/:id/resp-tec`. Modos: PA
 
 ## Rollout e rollback
 
-1. Revisar o relatório técnico e pendências externas. As flags permanecem desligadas por padrão.
+1. Revisar o relatório técnico e pendências externas. As flags são fail-closed: sem `..._ENABLED=true` e sem o id na allowlist, nenhuma empresa entra na V2. Em produção, desde 22/09/2026, `NFE_NUMERACAO_V2_ENABLED=true` com **uma única config na allowlist** (DLS AUTO PEÇAS, `cmr9omjlt30xw18jqt3m5oyc3`, modelo 55); `NFE_NUMERACAO_V2_FOCUS_ENABLED`, `NFE_DEVOLUCAO_ENABLED` e `NFE_RESP_TEC_EMPRESA_ENABLED` seguem desligadas, e todo o resto da base continua no V1. Para incluir outra empresa, **acrescentar** o id à lista: redefinir a variável com um id só retira a DLS da V2.
 2. Com autorização operacional separada, aplicar os três DDLs versionados de 18/09/2026 e verificar índices/constraints/RLS. Nunca usar `prisma db push`.
 3. Executar o diagnóstico somente leitura e revisar divergências históricas. Nenhuma correção histórica é automática.
 4. Validar em homologação, em série dedicada, com autorização explícita para emissão. Habilitar primeiro uma configuração.
@@ -46,6 +46,14 @@ GET/PUT `/fiscal/config/resp-tec` ou `/fiscal/companies/:id/resp-tec`. Modos: PA
 6. Rollback: retirar a configuração da allowlist (ou a sub-flag Focus) — **não** desligar `NFE_NUMERACAO_V2_ENABLED`, senão o ledger deixa de ser consultado no cancelamento e na exclusão. Nota com reserva viva numa config fora da V2 responde 409 `NUMERACAO_EMITENTE_FORA_V2` (emitir pelo V1 deixaria o número órfão); libere reativando a empresa ou descartando o número na exclusão. Trocar ambiente/token com nota pendente de consulta responde 409. Não apagar reservas ou tentativas. Antes de alternar Focus/V1, consultar envios pendentes e preservar a referência registrada; não renumerar automaticamente documentos incertos.
 
 Tabela V2 ausente é detectada **antes do claim** e conserva o caminho V1 para notas comuns. Devolução habilitada nunca cai para emissão V1. Falha após mutação V2 não dispara fallback.
+
+### Canário em produção (22–23/09/2026)
+
+Ativada em 22/09/2026 para a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`, modelo 55); VPS no commit `21270f2`. Com a sub-flag Focus desligada, o canário corre pelo **SEFAZ direto** — é o único provedor que `isNumeracaoV2ParaEmissao` libera nessa configuração.
+
+Primeira emissão real em 23/09/2026. A nota 710 levou três tentativas — cStat 232, 232 e então 100, autorizada, protocolo `242260451012429` — **mantendo o mesmo número e a mesma chave de acesso**. A nota 711 autorizou de primeira. O contador foi de 710 para 712: nenhum número queimado, que é a invariante que a V2 existe para sustentar.
+
+A chave se repete entre as tentativas porque **o `cNF` mora na reserva, não na tentativa**. Isso é deliberado: sortear um `cNF` novo na retransmissão geraria uma segunda chave para o mesmo (CNPJ, modelo, série, nNF), e é exatamente esse par chave-nova/número-repetido que a SEFAZ devolve como cStat 539. Reenviar a chave idêntica, no pior caso, volta como 204.
 
 ## Diagnóstico e testes locais
 
@@ -56,3 +64,5 @@ Os testes PostgreSQL são opt-in por `NFE_TEST_DATABASE_URL`: somente localhost 
 ## Dependências externas
 
 Focus: confirmar CNPJ do RT, CSRT no PR, respeito a número/série explícitos, re-POST da mesma ref após rejeição, resposta a duplicidade, evolução do contador interno e webhook. Kiko: verificar token do ambiente, habilitação da empresa e autorização de uso do fornecedor no UPD com o contador. Tributos da devolução dependem de revisão do responsável fiscal quando sinalizados. Nenhum desses itens é provado por testes de código.
+
+Notas presas: **zero**. As 14 que restavam foram encerradas em 23/09/2026, depois de a auditoria provar que **nenhuma chegou a ser transmitida à SEFAZ** — todas pararam antes do envio (CA bundle local ausente, token Focus inválido, empresa não habilitada na Focus). Fechadas como `REJECTED` com o motivo real e **`cStatRejeicao` nulo**, porque não houve rejeição da SEFAZ para registrar; backup em `ops_backup.nfe_presas_sending_20260923`. ⚠️ Fechar a nota **não devolve o número ao contador**: os números 8–10 da série 3 da Kiko seguem livres na SEFAZ mas viram vão na numeração do Dexo (inutilização disponível até 10/10/2026). Nenhuma faixa foi liberada automaticamente. Kiko 4x4 e VN Motors (cujo CNPJ padrão é o da Veiga Auto Peças LTDA, 65416054000188) seguem **ativos e usando o sistema** — nenhum dos dois cancelou, e "Veiga" não é um cliente.

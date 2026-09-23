@@ -4,6 +4,14 @@ import fs from "fs";
 import XLSX from "xlsx";
 import { Prisma } from "@prisma/client";
 import prisma from "../app/lib/prisma";
+import {
+  ORDEM_SEQUENCIA,
+  carregarConfigsFiscais,
+  dadosDoEmitente,
+  resolverEscopoSequencia,
+  whereSequencia,
+  type EscopoSequencia,
+} from "./lib/nfe-sequence-scope";
 
 /**
  * Migração das NF-e emitidas do cliente 704 (vaapt) — export do sistema antigo
@@ -18,6 +26,11 @@ import prisma from "../app/lib/prisma";
  *   npx tsx scripts/migracao-vaapt-nfes.ts --dry-run
  *   npx tsx scripts/migracao-vaapt-nfes.ts --apply
  *   npx tsx scripts/migracao-vaapt-nfes.ts --apply --seq-start=339
+ *
+ * Multi-CNPJ: `NfeSequence` é POR CNPJ. O emitente sai da chave de acesso das
+ * notas importadas; em tenant com mais de uma `CompanyFiscalConfig` e sem
+ * chave que resolva, informe `--config-id=<id>` (ou `--cnpj=<14 dígitos>`) —
+ * ver `scripts/lib/nfe-sequence-scope.ts`.
  */
 
 type RawRow = Record<string, unknown>;
@@ -36,6 +49,9 @@ interface Flags {
   seqStart: number | null; // próximo nº a emitir; null = deriva de (maxNumero + 1)
   skipSeqAdvance: boolean;
   tenant: string;
+  // Multi-CNPJ: de qual emitente é o contador. Vazio = deriva da chave das notas.
+  configId: string | null;
+  cnpj: string | null;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -55,6 +71,8 @@ function parseFlags(argv: string[]): Flags {
     seqStart: seqRaw && /^\d+$/.test(seqRaw) ? parseInt(seqRaw, 10) : null,
     skipSeqAdvance: has("skip-seq-advance"),
     tenant: get("tenant") ?? "704",
+    configId: get("config-id") ?? null,
+    cnpj: get("cnpj") ?? null,
   };
 }
 
@@ -231,10 +249,46 @@ async function main(): Promise<void> {
     cnpjs: new Set<string>(),
     numero_min: chosen.length ? chosen[0].numero : 0,
     numero_max: chosen.length ? chosen[chosen.length - 1].numero : 0,
+    seq_emitente: "",
     seq_de: 0,
     seq_para: 0,
     details: [] as unknown[],
   };
+
+  // Multi-CNPJ: de QUAL emitente é o contador que este script vai avançar.
+  // `NfeSequence` é por CNPJ — sem este recorte o findFirst lá embaixo pode
+  // pegar (e avançar) a linha do OUTRO CNPJ do tenant, em silêncio.
+  //
+  // O CNPJ sai da chave de acesso (posições 6..20). Varredura PRÓPRIA, e não
+  // o `sum.cnpjs` do laço: o laço pula as notas já importadas, então numa
+  // reexecução idempotente o conjunto viria vazio — justo quando o operador
+  // mais precisa que o escopo continue se resolvendo sozinho.
+  //
+  // Resolvido AQUI, antes de qualquer escrita: tenant ambíguo aborta com 0
+  // notas criadas, em vez de criar tudo e só então falhar na numeração.
+  const cnpjsDaChave = new Set<string>();
+  for (const { row } of chosen) {
+    const ch = asString(get(row, "Chave de Acesso"));
+    if (ch && /^\d{44}$/.test(ch)) cnpjsDaChave.add(ch.slice(6, 20));
+  }
+  //
+  // Com --skip-seq-advance nada disso roda: o operador já disse para não
+  // encostar na numeração, e derrubar o import de um tenant multi-CNPJ por
+  // causa de um contador que este comando nem vai ler seria regressão.
+  let escopoSeq: EscopoSequencia | null = null;
+  if (flags.skipSeqAdvance) {
+    sum.seq_emitente = "não resolvido (--skip-seq-advance)";
+  } else {
+    escopoSeq = resolverEscopoSequencia(
+      await carregarConfigsFiscais(prisma, flags.userId),
+      {
+        configId: flags.configId,
+        cnpj: flags.cnpj ?? (cnpjsDaChave.size === 1 ? [...cnpjsDaChave][0] : null),
+      },
+    );
+    sum.seq_emitente = escopoSeq.motivo;
+    console.log(`[seq] emitente do contador: ${escopoSeq.motivo}`);
+  }
 
   for (const { numero, row } of chosen) {
     const situacao = asString(get(row, "Status da NFe"));
@@ -315,11 +369,17 @@ async function main(): Promise<void> {
   // Avança NfeSequence (serie 1, PRODUCAO) para o próximo número — só p/ frente.
   // Sem --seq-start explícito, deriva do maior número importado + 1.
   const effectiveSeqStart = flags.seqStart ?? sum.numero_max + 1;
-  {
+  if (escopoSeq) {
     // Multi-CNPJ: o @@unique composto saiu do schema — findFirst + update por
-    // id (forma válida no client velho E novo). Migração é de tenant 1-CNPJ.
+    // id (forma válida no client velho E novo). O `where` vem do escopo por
+    // EMITENTE resolvido lá em cima; o `orderBy` (ASC = NULLS LAST) prefere a
+    // linha já adotada à legada NULL, igual ao NfeSequenceService.
     const existingSeq = await prisma.nfeSequence.findFirst({
-      where: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" },
+      where: whereSequencia(
+        { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" },
+        escopoSeq,
+      ),
+      orderBy: ORDEM_SEQUENCIA,
       select: { id: true, proximoNumero: true },
     });
     const current = existingSeq?.proximoNumero ?? 1;
@@ -333,8 +393,16 @@ async function main(): Promise<void> {
           data: { proximoNumero: novo },
         });
       } else {
+        // Linha nova já nasce carimbada com o emitente, senão a emissão real
+        // (que filtra por configId) não a enxerga e recomeça o contador em 1.
         await prisma.nfeSequence.create({
-          data: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, proximoNumero: novo },
+          data: {
+            userId: flags.userId,
+            ambiente: AMBIENTE,
+            serie: 1,
+            proximoNumero: novo,
+            ...dadosDoEmitente(escopoSeq),
+          },
         });
       }
     }
@@ -366,6 +434,7 @@ async function main(): Promise<void> {
   console.log(`  sem chave:             ${sum.sem_chave}  | CNPJs: ${[...sum.cnpjs].join(", ")}`);
   console.log(`  erros:                 ${sum.errors}`);
   console.log(`  NfeSequence série 1:   ${sum.seq_de} → ${sum.seq_para}${flags.dryRun ? " (dry-run)" : ""}`);
+  console.log(`  emitente do contador:  ${sum.seq_emitente}`);
   console.log("===========================\n");
 
   await prisma.$disconnect();

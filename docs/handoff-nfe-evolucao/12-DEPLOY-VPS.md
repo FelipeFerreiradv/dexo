@@ -43,4 +43,14 @@ CSV correspondente no mesmo diretório. O diagnóstico encontrou 4 divergências
 - Homologação real e UAT das telas ativadas, após liberar o canário conforme o plano.
 - PostgreSQL local isolado: pendência encerrada nesta execução. Após iniciar o Docker Desktop, os dois testes passaram em PostgreSQL 16 Alpine, banco descartável `nfe_test` vinculado somente a 127.0.0.1:54329. Concorrência de 40 reservas e rollback após incremento aprovados. O container foi encerrado após o teste; nenhum teste de escrita foi apontado ao banco de produção.
 
-A publicação, os DDLs e o smoke estão concluídos. A ativação do V2 e a homologação não estão concluídas.
+A publicação, os DDLs e o smoke estão concluídos. A ativação do V2 e a homologação continuaram pendentes ao fim desta execução; o que aconteceu depois está na atualização abaixo.
+
+## Atualização de 23/09/2026 — V2 ativada e primeira emissão real
+
+Esta seção supera o estado descrito em "Focus/Kiko: estado real": as flags novas **foram** adicionadas ao ambiente.
+
+- **22/09/2026 — ativação.** `NFE_NUMERACAO_V2_ENABLED=true`, `NFE_NUMERACAO_V2_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3` (DLS AUTO PEÇAS; uma única config), `NFE_NUMERACAO_V2_MODELOS=55`, `NFE_NUMERACAO_V2_FOCUS_ENABLED=false`. VPS no commit `21270f2` (= `origin/main`).
+- **23/09/2026 — primeira emissão real pelo V2.** Nota 710: três tentativas (cStat 232, 232 e 100 autorizada, protocolo `242260451012429`) com o mesmo número e a mesma chave; nota 711 autorizada de primeira; contador de 710 para 712, sem número queimado. Evidência e a mecânica do `cNF` em [operação da numeração V2](../fiscal-numeracao-v2.md).
+- **A Focus continua fora.** Com `NFE_NUMERACAO_V2_FOCUS_ENABLED=false` só o SEFAZ direto passa pelo V2; as confirmações do suporte Focus sobre número/série/ref seguem pendentes e o canário Focus/Kiko **não** foi executado. Nada aqui autoriza dizer ao cliente que a emissão pela Focus foi homologada ou que a rejeição 974 foi resolvida.
+- **Notas presas:** encerradas em 23/09/2026 (eram 14 — 11 em homologação e 3 em produção da Kiko). Nenhuma foi transmitida à SEFAZ: pararam antes do envio (CA bundle local ausente, token Focus inválido, empresa não habilitada na Focus). Fechadas como `REJECTED` com motivo real e sem cStat; backup em `ops_backup.nfe_presas_sending_20260923`. Produção ficou com **zero** notas em `SENDING`.
+- **Clientes:** a Kiko 4x4 segue ativa. "Veiga" não é cliente: é o CNPJ padrão (Veiga Auto Peças LTDA, 65416054000188) dentro do tenant VN Motors, também ativo. Nenhum dos dois cancelou.
