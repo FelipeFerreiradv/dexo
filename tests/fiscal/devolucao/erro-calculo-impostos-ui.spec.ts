@@ -18,6 +18,7 @@ import {
   MENSAGEM_CALCULO_GENERICA,
   LINK_NOTAS_EMITIDAS,
   ROTULO_IR_PARA_NOTAS_EMITIDAS,
+  TITULO_PASSO_A_PASSO,
 } from "../../../app/notas-fiscais/lib/nfe-erro-calculo-ui";
 import {
   DEVOLUCAO_ERRO_CODIGOS,
@@ -68,6 +69,30 @@ describe("erro do cálculo de impostos — rascunho de devolução não gerencia
     const iDevolver = passos.findIndex((p) => p.includes('"Devolver total"'));
     expect(iOriginal).toBeGreaterThanOrEqual(0);
     expect(iDevolver).toBeGreaterThan(iOriginal);
+  });
+
+  it("não esconde o caminho da devolução de COMPRA — o caso real da DLS", () => {
+    // O passo a passo acima é o da devolução de VENDA: ele manda achar a "nota
+    // de VENDA original". Para quem devolve uma COMPRA essa nota NÃO EXISTE no
+    // Dexo (a original é a do fornecedor, que entrou por XML) — e era
+    // exatamente o caso da DLS, que devolvia 2 de 6 itens para a DISAUTO. O
+    // quadro que existe para tirá-la do beco não pode mandá-la para outro.
+    const v = viewErroCalculo(RESPOSTA_404);
+    expect(v.mensagem).toContain("COMPRADA de um fornecedor");
+    // Rótulos exatos das telas: o quadro "Devolução manual" (devolucao-manual
+    // .tsx) vive na lista de "Notas Emitidas" (nfe-list.tsx).
+    expect(v.mensagem).toContain('"Devolução manual"');
+    expect(v.mensagem).toContain('"Notas Emitidas"');
+    expect(v.mensagem).toContain("XML que o fornecedor mandou");
+    // E os dois caminhos ficam nomeados, para ela saber qual é o dela.
+    expect(v.mensagem).toContain("VENDIDA por você");
+  });
+
+  it("o título do passo a passo diz de quem ele é", () => {
+    // "Como emitir esta devolução do jeito certo:" fazia a lista da VENDA
+    // parecer o único caminho que existe.
+    expect(TITULO_PASSO_A_PASSO).toContain("VENDEU");
+    expect(TITULO_PASSO_A_PASSO).not.toBe("Como emitir esta devolução do jeito certo:");
   });
 
   it("o link de saída aponta para a lista onde os botões existem", () => {

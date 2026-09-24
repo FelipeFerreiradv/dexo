@@ -49,6 +49,17 @@ export interface SinaisAmbiente {
 export interface EntradaAvisoEmissao extends SinaisAmbiente {
   /** Finalidade do rascunho. "DEVOLUCAO" muda o que a nota faz. */
   finalidade?: string | null;
+  /**
+   * `tipoOperacao` do rascunho ("ENTRADA" | "SAIDA"). E o que separa as DUAS
+   * devolucoes, e elas sao opostas: devolucao de VENDA e nota de ENTRADA
+   * (tpNF=0) e referencia a nota que VOCE emitiu; devolucao de COMPRA e nota de
+   * SAIDA (tpNF=1) e referencia a nota do FORNECEDOR. E a propria regra do
+   * servidor (`validacao.ts`, TIPO_OPERACAO_INCOERENTE) e o que o
+   * `devolucao-editor.tsx` ja escreve dois passos antes ("Devolucao de compra
+   * (saida)"). Sem este sinal o aviso chamava toda devolucao de "nota de
+   * ENTRADA" — errado justamente para a DLS, que devolvia uma COMPRA.
+   */
+  tipoOperacao?: string | null;
 }
 
 export interface AvisoEmissao {
@@ -110,6 +121,33 @@ const DEVOLUCAO_REAL =
   "É uma nota de ENTRADA: ela referencia a nota de venda original. É só fiscal — o estoque do Dexo não muda com ela.";
 const DEVOLUCAO_TESTE =
   "É uma nota de ENTRADA: ela referencia a nota de venda original.";
+// Devolucao de COMPRA: a peca voltou para o FORNECEDOR, entao a nota sai do
+// desmanche (SAIDA, tpNF=1) e a original e a que o fornecedor emitiu. Dizer
+// "ENTRADA ... nota de venda original" aqui e errado duas vezes, e contradiz o
+// "Devolucao de compra (saida)" que a propria tela escreve dois passos antes.
+const DEVOLUCAO_COMPRA_REAL =
+  "É uma nota de SAÍDA: ela referencia a nota do fornecedor que você está devolvendo. É só fiscal — o estoque do Dexo não muda com ela.";
+const DEVOLUCAO_COMPRA_TESTE =
+  "É uma nota de SAÍDA: ela referencia a nota do fornecedor que você está devolvendo.";
+
+/**
+ * `true` so quando o rascunho diz SAIDA. Qualquer outra coisa (ENTRADA, vazio,
+ * lixo) mantem, palavra por palavra, o texto de venda que a tela ja mostrava:
+ * `tipoOperacao` e campo OBRIGATORIO do formulario (`nfe-form-schema.ts`,
+ * `z.enum(["ENTRADA","SAIDA"])`), entao o caso sem sinal nao existe na tela —
+ * e, nao existindo, nao e hora de inventar texto novo para ele.
+ */
+function ehDevolucaoDeCompra(tipoOperacao?: string | null): boolean {
+  return typeof tipoOperacao === "string" && tipoOperacao.trim().toUpperCase() === "SAIDA";
+}
+
+/** A linha extra da devolucao, no sentido certo e no tom do ambiente. */
+function linhaDevolucao(tipoOperacao: string | null | undefined, real: boolean): string {
+  if (ehDevolucaoDeCompra(tipoOperacao)) {
+    return real ? DEVOLUCAO_COMPRA_REAL : DEVOLUCAO_COMPRA_TESTE;
+  }
+  return real ? DEVOLUCAO_REAL : DEVOLUCAO_TESTE;
+}
 
 /**
  * Texto do bloco final do wizard. Sem estado, sem rede: so os sinais que a
@@ -127,7 +165,7 @@ export function avisoEmissao(entrada: EntradaAvisoEmissao): AvisoEmissao {
       titulo: "Ambiente de homologação — sem valor fiscal",
       linhas: [
         ACAO_HOMOLOGACAO,
-        ...(devolucao ? [DEVOLUCAO_TESTE] : []),
+        ...(devolucao ? [linhaDevolucao(entrada.tipoOperacao, false)] : []),
         "É uma emissão de teste: não tem valor fiscal, não vale para o Fisco e não acompanha mercadoria.",
       ],
     };
@@ -139,7 +177,11 @@ export function avisoEmissao(entrada: EntradaAvisoEmissao): AvisoEmissao {
       valeDeVerdade: true,
       tom: "atencao",
       titulo: devolucao ? "Esta devolução vale de verdade" : "Esta nota vale de verdade",
-      linhas: [ACAO_PRODUCAO, ...(devolucao ? [DEVOLUCAO_REAL] : []), NUMERO_DEFINITIVO],
+      linhas: [
+        ACAO_PRODUCAO,
+        ...(devolucao ? [linhaDevolucao(entrada.tipoOperacao, true)] : []),
+        NUMERO_DEFINITIVO,
+      ],
     };
   }
 
@@ -150,7 +192,7 @@ export function avisoEmissao(entrada: EntradaAvisoEmissao): AvisoEmissao {
     titulo: "Confirme o ambiente antes de emitir",
     linhas: [
       ACAO_DESCONHECIDO,
-      ...(devolucao ? [DEVOLUCAO_REAL] : []),
+      ...(devolucao ? [linhaDevolucao(entrada.tipoOperacao, true)] : []),
       "Não foi possível confirmar aqui em que ambiente o emissor está. Trate como emissão real: o número é definitivo e a nota pode valer para o Fisco.",
     ],
   };

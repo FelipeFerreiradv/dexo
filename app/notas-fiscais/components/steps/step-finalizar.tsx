@@ -93,6 +93,11 @@ export function StepFinalizar({ getValues, ambienteRascunho, email }: Props) {
     ambienteRascunho,
     configResolvida,
     finalidade: data.finalidade,
+    // Devolucao de VENDA e nota de ENTRADA; a de COMPRA e de SAIDA e referencia
+    // a nota do FORNECEDOR. O campo ja esta no formulario (e a Revisao logo
+    // abaixo ja o mostra em "Tipo Operacao"): sem ele o aviso chamava toda
+    // devolucao de "nota de ENTRADA" — errado para quem devolve uma compra.
+    tipoOperacao: data.tipoOperacao,
   });
 
   const totalProdutos = (data.itens ?? []).reduce(

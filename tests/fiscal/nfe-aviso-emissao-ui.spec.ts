@@ -192,6 +192,70 @@ describe("avisoEmissao: DEVOLUCAO (o fluxo da DLS)", () => {
   });
 });
 
+describe("avisoEmissao: devolucao de COMPRA e nota de SAIDA (o caso da DLS)", () => {
+  // As duas devolucoes sao OPOSTAS: a de VENDA e nota de ENTRADA (tpNF=0) e
+  // referencia a nota que o desmanche emitiu; a de COMPRA e nota de SAIDA
+  // (tpNF=1) e referencia a nota do FORNECEDOR. E a regra do servidor
+  // (`validacao.ts`, TIPO_OPERACAO_INCOERENTE) e o que o `devolucao-editor.tsx`
+  // ja escreve dois passos antes ("Devolucao de compra (saida)").
+  //
+  // A DLS devolvia uma COMPRA para a DISAUTO. O aviso chamava a nota dela de
+  // "nota de ENTRADA" que "referencia a nota de venda original" — errado duas
+  // vezes, na ULTIMA tela antes do clique, e contradizendo a propria tela.
+  const comTipo = (tipoOperacao?: string | null, ambienteConfig = "PRODUCAO") =>
+    avisoEmissao({ ambienteConfig, finalidade: "DEVOLUCAO", tipoOperacao });
+
+  it("em producao, diz SAIDA e cita a nota do fornecedor", () => {
+    const t = texto(comTipo("SAIDA"));
+    expect(t).toContain("nota de saída");
+    expect(t).toContain("nota do fornecedor");
+    expect(t).not.toContain("nota de entrada");
+    expect(t).not.toContain("nota de venda original");
+    // O resto do bloco nao muda: segue so fiscal e com numero definitivo.
+    expect(t).toContain("o estoque do dexo não muda");
+    expect(t).toContain("número é definitivo");
+  });
+
+  it("SAIDA nunca vira ENTRADA em nenhum dos tres ambientes", () => {
+    for (const ambiente of ["PRODUCAO", "HOMOLOGACAO", ""]) {
+      const t = texto(comTipo("SAIDA", ambiente));
+      expect(t, ambiente).toContain("nota de saída");
+      expect(t, ambiente).not.toContain("nota de entrada");
+      expect(t, ambiente).not.toContain("nota de venda original");
+    }
+  });
+
+  it("ENTRADA mantem o texto da devolucao de venda, letra por letra", () => {
+    expect(comTipo("ENTRADA").linhas).toEqual(comTipo(undefined).linhas);
+    expect(texto(comTipo("ENTRADA"))).toContain("nota de entrada");
+  });
+
+  it("so 'SAIDA' conta como sinal; lixo nao inventa texto novo", () => {
+    // `tipoOperacao` e campo obrigatorio do formulario, entao o caso sem sinal
+    // nao existe na tela — e, nao existindo, mantem o texto de hoje.
+    for (const v of [undefined, null, "", "   ", "ENTRADA", "entrada", "0", "saida-x"])
+      expect(texto(comTipo(v)), String(v)).toContain("nota de entrada");
+    // Caixa e espaco nao sao sinal novo, como no resto do modulo.
+    expect(texto(comTipo(" saida "))).toContain("nota de saída");
+  });
+
+  it("fora da devolucao, tipoOperacao nao muda uma linha", () => {
+    for (const finalidade of ["NORMAL", "COMPLEMENTAR", "AJUSTE"]) {
+      const comSaida = avisoEmissao({ ambienteConfig: "PRODUCAO", finalidade, tipoOperacao: "SAIDA" });
+      const semTipo = avisoEmissao({ ambienteConfig: "PRODUCAO", finalidade });
+      expect(comSaida.linhas, finalidade).toEqual(semTipo.linhas);
+    }
+  });
+
+  it("a linha da devolucao continua sendo UMA so, nos dois sentidos", () => {
+    for (const tipoOperacao of ["ENTRADA", "SAIDA"]) {
+      const comDev = avisoEmissao({ ambienteConfig: "PRODUCAO", finalidade: "DEVOLUCAO", tipoOperacao });
+      const semDev = avisoEmissao({ ambienteConfig: "PRODUCAO", finalidade: "NORMAL", tipoOperacao });
+      expect(comDev.linhas.length, tipoOperacao).toBe(semDev.linhas.length + 1);
+    }
+  });
+});
+
 describe("invariante: a tela so fala em homologacao/teste quando o dado diz homologacao", () => {
   const SINAIS = ["PRODUCAO", "HOMOLOGACAO", undefined, null, "", "sandbox"];
   const FINALIDADES = ["NORMAL", "DEVOLUCAO", "COMPLEMENTAR", undefined];
