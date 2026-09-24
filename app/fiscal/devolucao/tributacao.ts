@@ -15,6 +15,11 @@
  *
  * Arredondamento: 2 casas, meio-para-cima. Quantidades em 1/10000 (saldo.ts).
  *
+ * A mesma allowlist alimenta a TELA: `regimeEmitenteDevolucao` (o que vai no
+ * `DevolucaoDetalhe.emitente`) e `checarCodigoIcmsDevolucao` (recusa na hora,
+ * com o motivo). A lista de códigos é DERIVADA das tabelas acima — nunca
+ * copiada à mão — para o seletor não sair de sincronia com o construtor.
+ *
  * Módulo PURO — seguro para backend, testes e client.
  */
 
@@ -27,8 +32,12 @@ import type {
   ImpostoOriginal,
   IpiOriginal,
   MotivoRevisaoTributacao,
+  OpcaoIcmsDevolucao,
   PisOriginal,
+  RegimeEmitenteDevolucao,
+  ResultadoCodigoIcms,
   TagIcmsDevolucao,
+  TipoCodigoIcms,
   TributacaoDevolucaoItem,
   TributacaoOverride,
   TributoPisCofinsDevolucao,
@@ -190,7 +199,13 @@ export function normalizarImpostoOriginal(raw: unknown): ImpostoOriginal {
 
 // ───────────────────────────── allowlists ─────────────────────────────
 
-const TAG_POR_CSOSN: Readonly<Record<string, TagIcmsDevolucao>> = {
+/**
+ * A allowlist do SERVIDOR: todo código que a devolução aceita, e o grupo que ele
+ * monta no XML. Exportada porque é a FONTE — o seletor da tela e os rótulos
+ * (`CODIGOS_ICMS_DEVOLUCAO`) têm de cobrir exatamente estas chaves, nos dois
+ * sentidos, e é a suíte que prende isso.
+ */
+export const TAG_POR_CSOSN: Readonly<Record<string, TagIcmsDevolucao>> = {
   "102": "ICMSSN102",
   "103": "ICMSSN102",
   "300": "ICMSSN102",
@@ -199,7 +214,7 @@ const TAG_POR_CSOSN: Readonly<Record<string, TagIcmsDevolucao>> = {
   "900": "ICMSSN900",
 };
 
-const TAG_POR_CST: Readonly<Record<string, TagIcmsDevolucao>> = {
+export const TAG_POR_CST: Readonly<Record<string, TagIcmsDevolucao>> = {
   "00": "ICMS00",
   "40": "ICMS40",
   "41": "ICMS40",
@@ -243,6 +258,200 @@ export function familiaDaTag(tag: TagIcmsDevolucao): "SN" | "NORMAL" {
 export function tagCompativelComCrt(tag: TagIcmsDevolucao, crt: unknown): boolean {
   const f = familiaDoCrt(crt);
   return f === null || f === familiaDaTag(tag);
+}
+
+// ─────────── o que a TELA pode oferecer: regime do emitente → códigos ───────────
+
+/**
+ * Rótulo de CADA código aceito, agrupado pela tag que ele monta no XML — quem lê
+ * a tela é a dona do desmanche, não a contadora: o número vem primeiro, a
+ * explicação depois.
+ *
+ * ⚠️ 103/300/400 NÃO são apelidos de 102, nem 41/50 de 40: o construtor escreve o
+ * código LITERAL dentro do grupo (ver `nfe-xml-builder-sefaz.service.ts`), então
+ * `<CSOSN>400</CSOSN>` (não tributada) e `<CSOSN>102</CSOSN>` (tributada sem
+ * crédito) são notas diferentes. Mostrar um código por grupo obrigaria a operadora
+ * a declarar o que a peça não é. Os textos seguem a tabela oficial de CST/CSOSN.
+ *
+ * O `Record` por tag é EXAUSTIVO de propósito: somar um grupo a `TagIcmsDevolucao`
+ * sem escrever os rótulos dele quebra o `tsc`.
+ */
+export const CODIGOS_ICMS_DEVOLUCAO: Readonly<
+  Record<TagIcmsDevolucao, ReadonlyArray<{ codigo: string; rotulo: string }>>
+> = {
+  ICMSSN102: [
+    { codigo: "102", rotulo: "102 — Tributada pelo Simples: o ICMS já está na guia do Simples, sem crédito para quem compra" },
+    { codigo: "103", rotulo: "103 — Isenta do ICMS no Simples Nacional, pela faixa de receita da empresa" },
+    { codigo: "300", rotulo: "300 — Imune: a mercadoria não pode ser tributada por ICMS" },
+    { codigo: "400", rotulo: "400 — Não tributada pelo Simples Nacional" },
+  ],
+  ICMSSN500: [
+    { codigo: "500", rotulo: "500 — ICMS já cobrado antes por substituição tributária ou antecipação" },
+  ],
+  ICMSSN900: [
+    { codigo: "900", rotulo: "900 — Outros casos do Simples: você informa a alíquota do ICMS" },
+  ],
+  ICMS00: [
+    { codigo: "00", rotulo: "00 — Tributada integralmente: ICMS com base e alíquota na nota" },
+  ],
+  ICMS40: [
+    { codigo: "40", rotulo: "40 — Isenta: a nota sai sem ICMS" },
+    { codigo: "41", rotulo: "41 — Não tributada: a operação está fora da cobrança do ICMS" },
+    { codigo: "50", rotulo: "50 — Suspensão: o ICMS fica suspenso até um evento futuro" },
+  ],
+  ICMS60: [
+    { codigo: "60", rotulo: "60 — ICMS já cobrado antes por substituição tributária" },
+  ],
+  ICMS90: [
+    { codigo: "90", rotulo: "90 — Outras: você informa a alíquota do ICMS" },
+  ],
+};
+
+/** Compatibilidade: um rótulo por grupo, o do PRIMEIRO código dele. */
+export const ROTULO_ICMS_DEVOLUCAO: Readonly<Record<TagIcmsDevolucao, string>> = Object.fromEntries(
+  (Object.keys(CODIGOS_ICMS_DEVOLUCAO) as TagIcmsDevolucao[]).map((tag) => [
+    tag,
+    CODIGOS_ICMS_DEVOLUCAO[tag][0].rotulo,
+  ]),
+) as Readonly<Record<TagIcmsDevolucao, string>>;
+
+/**
+ * TODOS os códigos aceitos, na ordem em que os grupos estão escritos acima —
+ * 12 opções, não 7. Um código por grupo era REGRESSÃO: o construtor escreve o
+ * código literal, então esconder o 400 obrigaria a operadora do Simples a
+ * declarar 102 (tributada) numa peça NÃO tributada.
+ *
+ * Código sem lugar na allowlist do servidor some da lista em vez de derrubar o
+ * import; é o teste de sincronia que acusa a falta — nos dois sentidos.
+ */
+const TODAS_AS_OPCOES: readonly OpcaoIcmsDevolucao[] = (
+  Object.keys(CODIGOS_ICMS_DEVOLUCAO) as TagIcmsDevolucao[]
+).flatMap((tag) => {
+  const sn = familiaDaTag(tag) === "SN";
+  const tipo: TipoCodigoIcms = sn ? "CSOSN" : "CST";
+  const aceitos = sn ? TAG_POR_CSOSN : TAG_POR_CST;
+  // Só entra o código que o servidor de fato aceita para esta tag: rótulo escrito
+  // para código fora da allowlist não vira opção (o teste acusa a divergência).
+  return CODIGOS_ICMS_DEVOLUCAO[tag]
+    .filter(({ codigo }) => aceitos[codigo] === tag)
+    .map(({ codigo, rotulo }) => ({ codigo, tipo, tag, rotulo, exigeValores: TAGS_COM_VALORES.has(tag) }));
+});
+
+const OPCOES_CSOSN: readonly OpcaoIcmsDevolucao[] = TODAS_AS_OPCOES.filter((o) => o.tipo === "CSOSN");
+const OPCOES_CST: readonly OpcaoIcmsDevolucao[] = TODAS_AS_OPCOES.filter((o) => o.tipo === "CST");
+
+/**
+ * Códigos de ICMS que um emitente com este CRT pode usar na devolução.
+ * CRT nulo/desconhecido devolve os dois conjuntos — é EXATAMENTE o que
+ * `tagIcmsParaDevolucao` aceita sem CRT, para a tela nunca recusar o que o
+ * servidor aceitaria.
+ */
+export function opcoesIcmsDevolucao(crt: CrtEmitente | string | null | undefined): OpcaoIcmsDevolucao[] {
+  const familia = familiaDoCrt(crt);
+  if (familia === "SN") return OPCOES_CSOSN.map((o) => ({ ...o }));
+  if (familia === "NORMAL") return OPCOES_CST.map((o) => ({ ...o }));
+  return TODAS_AS_OPCOES.map((o) => ({ ...o }));
+}
+
+function enumerar(codigos: readonly string[]): string {
+  if (codigos.length === 0) return "";
+  if (codigos.length === 1) return codigos[0];
+  return `${codigos.slice(0, -1).join(", ")} ou ${codigos[codigos.length - 1]}`;
+}
+
+function tipoDoCrt(crt: CrtEmitente | string | null | undefined): TipoCodigoIcms | null {
+  const f = familiaDoCrt(crt);
+  return f === "SN" ? "CSOSN" : f === "NORMAL" ? "CST" : null;
+}
+
+/**
+ * O bloco que o detalhe da devolução entrega à tela para ela recusar o código na
+ * hora. O CRT sai de `crtDeRegime` — a MESMA conversão que a validação do
+ * servidor usa, para a tela nunca discordar dela.
+ */
+export function regimeEmitenteDevolucao(regime: string | null | undefined): RegimeEmitenteDevolucao {
+  const regimeTributario = typeof regime === "string" && regime.trim() ? regime : null;
+  const crt = crtDeRegime(regimeTributario);
+  const tipoCodigoIcms = tipoDoCrt(crt);
+  const icmsOpcoes = opcoesIcmsDevolucao(crt);
+  const codigos = enumerar(icmsOpcoes.map((o) => o.codigo));
+  const ajuda =
+    tipoCodigoIcms === "CSOSN"
+      ? `Sua empresa é do Simples Nacional: aqui o código do ICMS é o CSOSN, de 3 dígitos (${codigos}).`
+      : tipoCodigoIcms === "CST"
+        ? `Sua empresa é do regime normal: aqui o código do ICMS é o CST, de 2 dígitos (${codigos}).`
+        : "O regime tributário desta empresa não está cadastrado no Dexo, então o campo não tem como conferir o código. Confirme a tributação com o contador antes de emitir.";
+  return { regimeTributario, crt, tipoCodigoIcms, icmsOpcoes, ajuda };
+}
+
+const NOME_DO_REGIME: Readonly<Record<"SN" | "NORMAL", string>> = {
+  SN: "do Simples Nacional",
+  NORMAL: "do regime normal",
+};
+
+/**
+ * O código digitado serve para este emitente? Recusa com o motivo escrito, na
+ * hora — sem esperar a rejeição 590/591 da SEFAZ.
+ *
+ * A leitura do que foi digitado é a MESMA do campo de hoje (3 dígitos = CSOSN,
+ * 1 ou 2 = CST) e o veredito delega a `tagIcmsParaDevolucao`: a tela não fica
+ * nem mais rígida nem mais frouxa que o servidor. Em `ok`, `codigo` volta
+ * normalizado com os zeros à esquerda ("0" → "00") — é ele que deve ser salvo.
+ *
+ * ⚠️ A recusa NÃO enumera os códigos aceitos, de propósito. Enumerava quando
+ * eram 3 por regime; com 12 códigos a frase vira parede de número ("…102, 103,
+ * 300, 400, 500, 900, 00, 40, 41, 50, 60 ou 90"), e ela se repete em CADA item
+ * recusado. O campo hoje é um SELETOR: a lista está logo abaixo da frase, com
+ * cada número junto do que ele significa — que é o que dá para agir. A frase
+ * fica com o que a lista NÃO diz: qual é o código que ela tem, de que regime ele
+ * é, e como o código dela se chama. A enumeração completa continua existindo em
+ * `regimeEmitenteDevolucao.ajuda`, que aparece UMA vez no topo e nunca mistura
+ * os dois regimes.
+ */
+export function checarCodigoIcmsDevolucao(entrada: {
+  crt: CrtEmitente | string | null | undefined;
+  codigo: string | null | undefined;
+}): ResultadoCodigoIcms {
+  const bruto = (entrada.codigo ?? "").trim();
+  if (!bruto) return { ok: false, codigo: "", causa: "VAZIO", motivo: "Informe o código do ICMS." };
+  if (!/^\d{1,3}$/.test(bruto)) {
+    return {
+      ok: false,
+      codigo: bruto,
+      causa: "FORMATO",
+      motivo: "O código do ICMS é só número: 2 dígitos (CST) ou 3 dígitos (CSOSN).",
+    };
+  }
+
+  const tipo: TipoCodigoIcms = bruto.length === 3 ? "CSOSN" : "CST";
+  const codigo = tipo === "CST" ? bruto.padStart(2, "0") : bruto;
+  const tag = tagIcmsParaDevolucao({
+    crt: entrada.crt,
+    cst: tipo === "CST" ? codigo : null,
+    csosn: tipo === "CSOSN" ? codigo : null,
+  });
+  if (tag) return { ok: true, codigo, tipo, tag };
+
+  const conhecida = tipo === "CSOSN" ? TAG_POR_CSOSN[codigo] : TAG_POR_CST[codigo];
+  const familiaEmitente = familiaDoCrt(entrada.crt);
+  if (conhecida && familiaEmitente && familiaDaTag(conhecida) !== familiaEmitente) {
+    const digitosDoSeu = familiaEmitente === "SN" ? "CSOSN, de 3 dígitos" : "CST, de 2 dígitos";
+    const deQuem = tipo === "CSOSN" ? NOME_DO_REGIME.SN : NOME_DO_REGIME.NORMAL;
+    return {
+      ok: false,
+      codigo,
+      causa: "REGIME",
+      motivo:
+        `${codigo} é ${tipo}, de empresa ${deQuem}. A sua empresa é ${NOME_DO_REGIME[familiaEmitente]}, ` +
+        `onde o código é o ${digitosDoSeu} — escolha um na lista.`,
+    };
+  }
+  return {
+    ok: false,
+    codigo,
+    causa: "NAO_SUPORTADO",
+    motivo: `O Dexo não emite devolução com ${tipo} ${codigo}. Escolha na lista um dos códigos que ele emite.`,
+  };
 }
 
 export const MENSAGEM_MOTIVO_REVISAO: Readonly<Record<MotivoRevisaoTributacao, string>> = {

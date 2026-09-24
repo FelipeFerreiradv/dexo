@@ -30,6 +30,7 @@ import type {
   FonteDevolucao,
   IndFinalDevolucao,
   ModoReferenciaDevolucao,
+  RegimeEmitenteDevolucao,
   SaldoItemOriginal,
   TipoDevolucao,
   TributacaoDevolucaoItem,
@@ -254,6 +255,13 @@ export interface DevolucaoDetalhe {
   confirmadoSemXml: boolean;
   indFinal: IndFinalDevolucao;
   modoReferencia: ModoReferenciaDevolucao;
+  /**
+   * Regime do emitente DESTA devolução e os códigos de ICMS que ele pode usar
+   * (`regimeEmitenteDevolucao`). É o que deixa o campo de ICMS recusar CST no
+   * Simples — e CSOSN no regime normal — na hora, em vez de deixar salvar e
+   * travar na emissão com a rejeição 591.
+   */
+  emitente: RegimeEmitenteDevolucao;
   originais: OrigemResumo[];
   itens: DevolucaoItemDetalhe[];
   /** Prévia de validarDevolucao. */

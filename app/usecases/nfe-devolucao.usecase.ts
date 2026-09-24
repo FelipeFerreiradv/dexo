@@ -9,7 +9,7 @@ import { parseNfeXml } from "../fiscal/sefaz/nfe-xml-parser.service";
 import { montarRascunhoDeOriginal } from "../fiscal/devolucao/montagem";
 import { montarRascunhoManual } from "../fiscal/devolucao/montagem-manual";
 import { calcularSaldoPorItem } from "../fiscal/devolucao/saldo";
-import { crtDeRegime, proporcionalizar, aplicarOverrideTributacao, round2 } from "../fiscal/devolucao/tributacao";
+import { crtDeRegime, proporcionalizar, aplicarOverrideTributacao, regimeEmitenteDevolucao, round2 } from "../fiscal/devolucao/tributacao";
 import { mapearCfopDevolucao, isCfopPermitidoEmDevolucao, idDestDoCfop } from "../fiscal/domain/devolucao-cfop";
 import { validarDevolucao, temBloqueio } from "../fiscal/devolucao/validacao";
 import { modoReferenciaDevolucao } from "../fiscal/devolucao/modo-referencia";
@@ -98,10 +98,14 @@ export class NfeDevolucaoUseCase {
     // não o da linha (ambiente de criação do rascunho): rascunho criado em homologação e
     // emitido depois da troca para produção cai em AMBIENTE_DIVERGENTE.
     const ambienteEmissao=config.ambiente;
-    const issues=validarDevolucao({cabecalho:h,nota:{...n,ambiente:ambienteEmissao,destinatarioCpfCnpj:n.destinatarioJson?.cpfCnpj},emitente:{cnpj:config.cnpj,crt:crtDeRegime(config.regimeTributario)},itens:n.itens,
+    // Regime do emitente: o MESMO `crtDeRegime` que a validação (rejeições 590/591)
+    // e o `aplicarOverrideTributacao` de `itens()` usam — por isso sai daqui um só,
+    // para a tela nunca recusar o que o servidor aceita, nem aceitar o que ele recusa.
+    const emitente=regimeEmitenteDevolucao(config.regimeTributario);
+    const issues=validarDevolucao({cabecalho:h,nota:{...n,ambiente:ambienteEmissao,destinatarioCpfCnpj:n.destinatarioJson?.cpfCnpj},emitente:{cnpj:config.cnpj,crt:emitente.crt},itens:n.itens,
       refs:d.refs.map(r=>({...r,chaveAcesso:r.chaveAcessoOriginal,nItem:r.nItemOriginal})),saldos,originais,idDestOriginal:h.origensJson[0]?.idDest});
     return {draftId:n.id,status:n.status,tipo:h.tipo,fonte:h.fonte,escopo:h.escopoSolicitado,devolvidaAposEntrega:h.devolvidaAposEntrega,confirmadoSemXml:h.confirmadoSemXml,indFinal:h.indFinal,
-      modoReferencia:modoReferenciaDevolucao(ambienteEmissao,new Date(),devolucaoRefItemProdDesde()),
+      modoReferencia:modoReferenciaDevolucao(ambienteEmissao,new Date(),devolucaoRefItemProdDesde()),emitente,
       originais:h.origensJson.map(o=>({...o,destinatarioNome:null})),issues,podeEmitir:!temBloqueio(issues),
       itens:d.refs.map(r=>{
         const item=n.itens.find(i=>i.numero===r.ordem);const s=saldos.find(s=>s.chaveAcesso===r.chaveAcessoOriginal && s.nItem===r.nItemOriginal);
