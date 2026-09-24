@@ -231,7 +231,12 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
   },
   PAGAMENTO_SERA_90: {
     falta: "A forma de pagamento preenchida não vai nesta nota",
-    comoResolver: 'A devolução sai como "Sem pagamento". Não precisa fazer nada.',
+    // "Sem Pagamento" com as duas maiusculas: e assim, letra por letra, que a
+    // opcao aparece na etapa "Pagamentos" (MEIO_PAGAMENTO_LABELS, em
+    // `nfe-defaults.ts`) e assim que o quadro de conferencia do passo
+    // "Finalizar" ja a cita (`nfe-conferencia-valores.ts`). Rotulo citado com
+    // outra grafia manda ela procurar na tela uma coisa que nao esta escrita.
+    comoResolver: 'A devolução sai como "Sem Pagamento". Não precisa fazer nada.',
   },
   COBRANCA_NAO_ENVIADA: {
     falta: "As duplicatas preenchidas não vão nesta nota",

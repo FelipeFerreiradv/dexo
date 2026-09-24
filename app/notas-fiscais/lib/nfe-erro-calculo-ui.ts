@@ -60,7 +60,12 @@ export const MENSAGEM_CALCULO_GENERICA = "Erro ao calcular impostos";
 /** Lista de notas emitidas — é lá que ficam "Devolver total" e "Devolver parcial". */
 export const LINK_NOTAS_EMITIDAS = "/notas-fiscais/emitidas";
 export const ROTULO_IR_PARA_NOTAS_EMITIDAS = "Ir para Notas Emitidas";
-export const TITULO_PASSO_A_PASSO = "Como emitir esta devolução do jeito certo:";
+// O passo a passo abaixo e o da devolucao de VENDA. Dizer so "esta devolução"
+// deixava a lista parecer o unico caminho, e ela NAO serve para quem devolve uma
+// COMPRA (nao existe "nota de venda original" para procurar) — que era
+// justamente o caso da DLS. O caminho da compra vai na mensagem, acima da lista.
+export const TITULO_PASSO_A_PASSO =
+  "Como emitir a devolução de uma peça que você VENDEU:";
 
 /**
  * Passo a passo do caminho que REALMENTE monta a devolução, em linguagem de
@@ -87,7 +92,7 @@ const PERMANENTES: Readonly<Record<string, Omit<ErroCalculoView, "codigo">>> = {
     permanente: true,
     titulo: "Esta devolução foi começada à mão — não dá para emitir por esta tela",
     mensagem:
-      "Este rascunho foi começado à mão, antes de o Dexo passar a montar devolução sozinho, então ele não está amarrado a nenhuma nota de venda. Sem essa amarração o Dexo não sabe o que está voltando: não calcula o imposto nem emite. Não adianta tentar de novo e não dá para aproveitar este rascunho — a devolução certa começa pela nota de venda original.",
+      "Este rascunho foi começado à mão, antes de o Dexo passar a montar devolução sozinho, então ele não está amarrado a nenhuma nota de venda. Sem essa amarração o Dexo não sabe o que está voltando: não calcula o imposto nem emite. Não adianta tentar de novo e não dá para aproveitar este rascunho. Se a peça que está voltando foi VENDIDA por você, a devolução certa começa pela nota de venda original — é o passo a passo abaixo. Se ela foi COMPRADA de um fornecedor, o caminho é outro: em \"Notas Emitidas\", use o quadro \"Devolução manual\" com o XML que o fornecedor mandou.",
     passos: PASSOS_DEVOLUCAO_PELA_NOTA_ORIGINAL,
     acao: "IR_PARA_NOTAS_EMITIDAS",
   },

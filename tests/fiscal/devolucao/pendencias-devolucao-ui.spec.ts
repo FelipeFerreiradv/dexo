@@ -30,6 +30,8 @@ import {
 import { viewErroCalculo } from "../../../app/notas-fiscais/lib/nfe-erro-calculo-ui";
 import { DEVOLUCAO_ERRO_MENSAGEM } from "../../../app/fiscal/devolucao/contrato";
 import type { DevolucaoIssue } from "../../../app/fiscal/devolucao/tipos";
+import { MEIO_PAGAMENTO_LABELS } from "../../../app/notas-fiscais/lib/nfe-defaults";
+import { conferirValores } from "../../../app/notas-fiscais/lib/nfe-conferencia-valores";
 
 /** O rascunho da DLS: os 6 itens vieram do XML do FORNECEDOR (CFOP de venda
  *  dele), então `requerRevisao = true` e `confirmada = false` em todos. É o que
@@ -369,5 +371,41 @@ describe("erro do passo Impostos — o mesmo corpo, a mesma lista", () => {
       }).pendencias,
     ).toBeUndefined();
     expect(viewErroCalculo().pendencias).toBeUndefined();
+  });
+});
+
+describe("rótulo citado tem de existir na tela, com a grafia da tela", () => {
+  it('PAGAMENTO_SERA_90 cita "Sem Pagamento" como a etapa "Pagamentos" escreve', () => {
+    // A opção se chama "Sem Pagamento" (MEIO_PAGAMENTO_LABELS, nfe-defaults.ts)
+    // e é assim que o quadro de conferência do passo "Finalizar" já a cita.
+    // Citada com outra grafia, ela procura na tela uma coisa que não está
+    // escrita — pior do que não citar rótulo nenhum.
+    const [p] = pendenciasDeIssues([
+      {
+        code: "PAGAMENTO_SERA_90",
+        severidade: "AVISO",
+        mensagem:
+          'Nota de devolução não tem forma de pagamento: será enviado "Sem pagamento" (tPag 90, Rejeição 871).',
+      },
+    ]);
+    expect(p.severidade).toBe("AVISO");
+    expect(p.comoResolver).toContain(`"${MEIO_PAGAMENTO_LABELS.SEM_PAGAMENTO}"`);
+  });
+
+  it("as duas telas do mesmo assunto citam o MESMO rótulo", () => {
+    // O aviso do bloqueio e o quadro de conferência podem aparecer juntos no
+    // passo 9. Se cada um escrever o meio de um jeito, ela lê como se fossem
+    // duas coisas diferentes.
+    const [pendencia] = pendenciasDeIssues([
+      { code: "PAGAMENTO_SERA_90", severidade: "AVISO", mensagem: "x" },
+    ]);
+    const conferencia = conferirValores({
+      finalidade: "DEVOLUCAO",
+      totalProdutos: 864.58,
+      pagamentos: [{ meio: "PIX", valor: 500 }],
+    });
+    const rotulo = `"${MEIO_PAGAMENTO_LABELS.SEM_PAGAMENTO}"`;
+    expect(pendencia.comoResolver).toContain(rotulo);
+    expect(conferencia.linhas.join(" ")).toContain(rotulo);
   });
 });
