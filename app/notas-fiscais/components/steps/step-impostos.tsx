@@ -1,5 +1,10 @@
 "use client";
 
+// React explicito, como no `ajuste-numeracao-card.tsx` ao lado: o tsconfig
+// usa jsx em modo preserve, entao o esbuild do vitest compila o JSX para o
+// React.createElement classico e o componente so monta em jsdom com o React
+// em escopo. Em producao o Next segue com o runtime automatico.
+import * as React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { UseFormGetValues } from "react-hook-form";
 import { Calculator, Loader2, RefreshCw } from "lucide-react";
@@ -7,6 +12,14 @@ import { Button } from "@/components/ui/button";
 import { formatToBRL } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
+import {
+  viewErroCalculo,
+  LINK_NOTAS_EMITIDAS,
+  ROTULO_IR_PARA_NOTAS_EMITIDAS,
+  TITULO_PASSO_A_PASSO,
+  type ErroCalculoView,
+} from "../../lib/nfe-erro-calculo-ui";
+import { PendenciasDevolucao } from "../pendencias-devolucao";
 import type { NfeTotais } from "@/app/fiscal/domain/nfe.types";
 
 interface Props {
@@ -24,11 +37,13 @@ export function StepImpostos({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [totais, setTotais] = useState<NfeTotais | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // O erro deixou de ser string: a decisao de tela (permanente x passageiro,
+  // "Tentar novamente" x caminho de saida) mora em `nfe-erro-calculo-ui`.
+  const [erro, setErro] = useState<ErroCalculoView | null>(null);
 
   const calculate = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setErro(null);
     try {
       const res = await fetch(
         `${getApiBaseUrl()}/fiscal/nfe/draft/${draftId}/calculate`,
@@ -40,13 +55,23 @@ export function StepImpostos({
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Erro ao calcular impostos");
+        // Nao joga mais fora o `code`: era ele que distinguia o erro que
+        // some ao tentar de novo do que nunca vai sumir.
+        setErro(viewErroCalculo(data));
+        return;
       }
       const data = await res.json();
       setTotais(data.totais ?? null);
       onTotaisCalculated?.(data.totais ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao calcular");
+      // Sem resposta (rede caiu, JSON quebrado): sem codigo, logo passageiro
+      // — segue com o mesmo texto e o mesmo "Tentar novamente" de sempre.
+      setErro(
+        viewErroCalculo(
+          { error: err instanceof Error ? err.message : undefined },
+          "Erro ao calcular",
+        ),
+      );
     } finally {
       setLoading(false);
     }
@@ -69,22 +94,67 @@ export function StepImpostos({
     );
   }
 
-  if (error && !totais) {
+  if (erro && !totais) {
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-6 text-center">
-          <p className="text-sm text-amber-700">{error}</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={calculate}
-            className="mt-3"
+        <div
+          role="alert"
+          className={
+            "rounded-lg border border-amber-500/40 bg-amber-500/10 p-6 " +
+            (erro.permanente ? "text-left" : "text-center")
+          }
+        >
+          {erro.titulo && (
+            <p className="text-sm font-semibold text-amber-800">
+              {erro.titulo}
+            </p>
+          )}
+          <p
+            className={
+              "text-sm text-amber-700" + (erro.titulo ? " mt-2" : "")
+            }
           >
-            <RefreshCw className="h-4 w-4 mr-1" />
-            Tentar novamente
-          </Button>
+            {erro.mensagem}
+          </p>
+          {erro.passos.length > 0 && (
+            <>
+              <p className="mt-4 text-sm font-semibold text-amber-800">
+                {TITULO_PASSO_A_PASSO}
+              </p>
+              <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-amber-700">
+                {erro.passos.map((passo) => (
+                  <li key={passo}>{passo}</li>
+                ))}
+              </ol>
+            </>
+          )}
+          {/* Erro que nunca muda sozinho nao ganha botao que so repete o
+              erro: ganha o caminho de saida. Os demais seguem com o
+              "Tentar novamente" de sempre. */}
+          {erro.acao === "TENTAR_NOVAMENTE" ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={calculate}
+              className="mt-3"
+            >
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Tentar novamente
+            </Button>
+          ) : (
+            <a
+              href={LINK_NOTAS_EMITIDAS}
+              className="mt-4 inline-block text-sm font-medium text-primary underline"
+            >
+              {ROTULO_IR_PARA_NOTAS_EMITIDAS}
+            </a>
+          )}
         </div>
+        {/* Bloqueio da devolucao (422 DEVOLUCAO_INVALIDA): a frase generica do
+            servidor fica no quadro acima e a LISTA do que falta vem aqui, item
+            a item. Ausente em todo o resto — nada mudou nos outros erros. */}
+        {erro.pendencias && <PendenciasDevolucao view={erro.pendencias} />}
       </div>
     );
   }
