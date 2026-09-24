@@ -445,6 +445,17 @@ export function partesDaChave(chave: unknown): PartesChaveAcesso | null {
   };
 }
 
+/**
+ * CNPJ do emitente na forma EXATA em que a chave de acesso o carrega (posições
+ * 7-20): só dígitos e, quando o emitente é pessoa física, `000` + CPF. Qualquer
+ * outra coisa ⇒ null (ausente/ilegível — quem compara decide o que fazer).
+ */
+export function cnpjNaChave(valor: unknown): string | null {
+  const d = typeof valor === "string" ? valor.replace(/\D/g, "") : "";
+  const cnpj = d.length === 11 ? d.padStart(14, "0") : d; // emitente CPF: chave usa 000+CPF
+  return cnpj.length === 14 ? cnpj : null;
+}
+
 export type DecisaoReadbackFocus =
   | { resultado: "IGUAL"; numero: number; serie: number }
   | { resultado: "DIVERGENTE"; numero: number; serie: number }
@@ -463,9 +474,8 @@ export function decidirReadbackFocus(e: {
   const numero = partes ? Number(partes.nNF) : NaN;
   if (!partes || !(numero >= 1)) return { resultado: "INCONSISTENTE", motivo: "CHAVE_INVALIDA" };
 
-  let cnpj = typeof e.cnpjConfig === "string" ? e.cnpjConfig.replace(/\D/g, "") : "";
-  if (cnpj.length === 11) cnpj = cnpj.padStart(14, "0"); // emitente CPF: chave usa 000+CPF
-  if (cnpj.length !== 14 || cnpj !== partes.CNPJ) {
+  const cnpj = cnpjNaChave(e.cnpjConfig);
+  if (cnpj === null || cnpj !== partes.CNPJ) {
     return { resultado: "INCONSISTENTE", motivo: "CNPJ_DIVERGENTE" };
   }
   if (partes.mod !== e.modelo) return { resultado: "INCONSISTENTE", motivo: "MODELO_DIVERGENTE" };

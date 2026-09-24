@@ -7,6 +7,14 @@ import { Prisma } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { normalizeSku } from "../app/lib/sku";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
+import {
+  ORDEM_SEQUENCIA,
+  carregarConfigsFiscais,
+  dadosDoEmitente,
+  resolverEscopoSequencia,
+  whereSequencia,
+  type EscopoSequencia,
+} from "./lib/nfe-sequence-scope";
 
 /**
  * Migração do cliente "IBR" (sistema antigo, formato diferente do 704) → Dexo.
@@ -50,6 +58,9 @@ interface Flags {
   skipZeroPrice: boolean;
   verifyMlInDryRun: boolean;
   skipSeqAdvance: boolean;
+  // Multi-CNPJ: de qual emitente é a numeração. Vazio = deriva da chave de acesso.
+  configId: string | null;
+  cnpj: string | null;
   tenant: string;
   produtos: string;
   sucatas: string;
@@ -96,6 +107,8 @@ function parseFlags(argv: string[]): Flags {
     skipZeroPrice: has("skip-zero-price"),
     verifyMlInDryRun: has("verify-ml-in-dry-run"),
     skipSeqAdvance: has("skip-seq-advance"),
+    configId: get("config-id") ?? null,
+    cnpj: get("cnpj") ?? null,
     tenant: get("tenant") ?? "IBR",
     produtos: get("produtos") ?? path.join(DATA_DIR, "produtos.xlsx"),
     sucatas: get("sucatas") ?? path.join(DATA_DIR, "sucatas.xlsx"),
@@ -1199,6 +1212,11 @@ async function phase4Images(flags: Flags): Promise<void> {
  * Ao fim, AVANÇA `NfeSequence.proximoNumero` p/ (max numero + 1) por série —
  * continua a numeração real do cliente e evita colisão na próxima emissão.
  * Desligável com --skip-seq-advance.
+ *
+ * Multi-CNPJ: o contador é POR CNPJ. O emitente sai da chave de acesso; em
+ * tenant com mais de uma `CompanyFiscalConfig` cujas notas não resolvam
+ * sozinhas, informe `--config-id=<id>` (ou `--cnpj=`). Ver
+ * `scripts/lib/nfe-sequence-scope.ts`.
  */
 async function phaseNfes(flags: Flags): Promise<void> {
   const rows = readSheet(flags.nfes);
@@ -1234,6 +1252,39 @@ async function phaseNfes(flags: Flags): Promise<void> {
 
   const seen = new Set<string>();
   const maxNumeroBySerie = new Map<string, number>(); // `${ambiente}|${serie}` → max
+
+  // Multi-CNPJ: de QUAL emitente é cada contador. `NfeSequence` é por CNPJ —
+  // sem este recorte o findFirst do avanço pega uma linha arbitrária e pode
+  // empurrar, em silêncio, o contador do OUTRO CNPJ do tenant.
+  //
+  // Pré-passe PRÓPRIA sobre `sliced`, e não o laço principal: o laço pula a
+  // nota já importada, então numa reexecução idempotente o conjunto viria
+  // vazio. E resolvida ANTES de qualquer escrita — tenant ambíguo aborta com
+  // 0 notas criadas em vez de criar tudo e só então falhar na numeração.
+  const cnpjsBySerie = new Map<string, Set<string>>(); // `${ambiente}|${serie}` → CNPJs
+  for (const row of sliced) {
+    const ch = asString(makeRowGetter(row)("Chave de Acesso"));
+    const p = ch ? parseChave(ch) : null;
+    if (!p) continue;
+    const k = `PRODUCAO|${p.serie}`;
+    (cnpjsBySerie.get(k) ?? cnpjsBySerie.set(k, new Set()).get(k)!).add(p.cnpj);
+  }
+  //
+  // Com --skip-seq-advance nada disso roda: o operador já disse para não
+  // encostar na numeração, e derrubar o import de um tenant multi-CNPJ por
+  // causa de um contador que este comando nem vai ler seria regressão.
+  const escopoBySerie = new Map<string, EscopoSequencia>();
+  if (!flags.skipSeqAdvance) {
+    const configsFiscais = await carregarConfigsFiscais(prisma, flags.userId);
+    for (const [k, cnpjs] of cnpjsBySerie) {
+      const escopo = resolverEscopoSequencia(configsFiscais, {
+        configId: flags.configId,
+        cnpj: flags.cnpj ?? (cnpjs.size === 1 ? [...cnpjs][0] : null),
+      });
+      escopoBySerie.set(k, escopo);
+      console.log(`[nfes] contador ${k}: emitente por ${escopo.motivo}`);
+    }
+  }
 
   for (const row of sliced) {
     const get = makeRowGetter(row);
@@ -1337,9 +1388,19 @@ async function phaseNfes(flags: Flags): Promise<void> {
     }
     if (flags.skipSeqAdvance) continue;
     // Multi-CNPJ: o @@unique composto saiu do schema — findFirst + update por
-    // id (forma válida no client velho E novo). Migração é de tenant 1-CNPJ.
+    // id (forma válida no client velho E novo). O `where` carrega o recorte
+    // por EMITENTE resolvido lá em cima; o `orderBy` (ASC = NULLS LAST)
+    // prefere a linha já adotada à legada NULL, igual ao NfeSequenceService.
+    const escopo = escopoBySerie.get(key);
+    if (!escopo) {
+      // Chave sem escopo = nota sem chave de acesso válida; não dá para saber
+      // o emitente, e avançar contador às cegas é o defeito que se corrige aqui.
+      sum.sequence_advanced.push({ ambiente, serie, erro: "emitente indeterminado (sem chave válida)" });
+      continue;
+    }
     const existingSeq = await prisma.nfeSequence.findFirst({
-      where: { userId: flags.userId, ambiente, serie, modelo: "55" },
+      where: whereSequencia({ userId: flags.userId, ambiente, serie, modelo: "55" }, escopo),
+      orderBy: ORDEM_SEQUENCIA,
       select: { id: true, proximoNumero: true },
     });
     const current = existingSeq?.proximoNumero ?? 1;
@@ -1351,11 +1412,19 @@ async function phaseNfes(flags: Flags): Promise<void> {
           data: { proximoNumero: novo },
         });
       } else {
+        // Linha nova já nasce carimbada com o emitente, senão a emissão real
+        // (que filtra por configId) não a enxerga e recomeça o contador em 1.
         await prisma.nfeSequence.create({
-          data: { userId: flags.userId, ambiente, serie, proximoNumero: novo },
+          data: {
+            userId: flags.userId,
+            ambiente,
+            serie,
+            proximoNumero: novo,
+            ...dadosDoEmitente(escopo),
+          },
         });
       }
-      sum.sequence_advanced.push({ ambiente, serie, de: current, para: novo });
+      sum.sequence_advanced.push({ ambiente, serie, de: current, para: novo, emitente: escopo.motivo });
     }
   }
 

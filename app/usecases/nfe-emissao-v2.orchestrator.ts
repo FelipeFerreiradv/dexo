@@ -82,7 +82,7 @@ export class NfeEmissaoV2Orchestrator {
         if(!tx.sql)throw new Error("Transação fiscal indisponível");
         await dev.validarReserva(userId,id,devolucao.dados,tx.sql);
       }:undefined;
-      const reserva=await this.numeros.reservarOuReutilizar({actorUserId:opts.actorUserId,claimEm,calculo:calculada,userId,nfeId:id,key,isDefault:config.isDefault===true,row:{...draft,companyFiscalConfigId:draft.companyFiscalConfigId??null},providerName:config.providerName==="SEFAZ_DIRECT"?"SEFAZ_DIRECT":"FOCUS_NFE",confirmarDescarte:opts.confirmarDescarteNumero,emitenteSnapshot:this.hooks.snapshot(config)},validarNaTransacao);
+      const reserva=await this.numeros.reservarOuReutilizar({actorUserId:opts.actorUserId,claimEm,calculo:calculada,userId,nfeId:id,key,isDefault:config.isDefault===true,row:{...draft,companyFiscalConfigId:draft.companyFiscalConfigId??null},providerName:config.providerName==="SEFAZ_DIRECT"?"SEFAZ_DIRECT":"FOCUS_NFE",confirmarDescarte:opts.confirmarDescarteNumero,cnpjEmitente:config.cnpj,emitenteSnapshot:this.hooks.snapshot(config)},validarNaTransacao);
       calculada={...calculada,numero:reserva.numero,ambiente:config.ambiente,companyFiscalConfigId:config.id};
       logNumeracao("reserva",{userId,nfeId:id,reservaId:reserva.id,numero:reserva.numero,serie:reserva.serie,origem:reserva.origemDecisao});
       const provider=await createNfeProviderFromConfig(config);
@@ -160,7 +160,12 @@ export class NfeEmissaoV2Orchestrator {
             const partes=partesDaChave(referida);
             const mesmaIdentidade=partes && partes.CNPJ===c.cnpj.replace(/\D/g,"") && partes.mod===r.modelo && Number(partes.serie)===r.serie && Number(partes.nNF)===r.numero;
             const nossa=ts.some(at=>at.chaveAcesso===referida);
-            if(!referida || !mesmaIdentidade)result.classificacao={...result.classificacao,estadoAlvo:"BLOQUEADO",conclusiva:false,mensagem:"Duplicidade sem chave fiscal consistente — conferência manual"};
+            // O cStat da duplicidade veio no ENVIO (`t.cStat`, ex.: 613) — a resposta da CONSULTA
+            // traz outro (217 "não consta", p.ex.) e sobrescreveria a tentativa, apagando o único
+            // código que explica a retenção. Preserva-se o real; nada é inventado. No ramo da Focus
+            // a duplicidade vem na própria consulta, então lá `result.classificacao.cStat` já é ele.
+            const cStatDuplicidade=t.cStat??result.classificacao.cStat;
+            if(!referida || !mesmaIdentidade)result.classificacao={...result.classificacao,estadoAlvo:"BLOQUEADO",conclusiva:false,classe:"DUPLICIDADE_OUTRA_CHAVE",cStat:cStatDuplicidade,mensagem:`Duplicidade sem chave fiscal consistente (cStat ${cStatDuplicidade}) — conferência manual`};
             else if(!nossa && raw.transporte===null && [100,150,101,151,155,110,301,302,303].includes(raw.cStat??0) && raw.nProt && raw.chNFe===referida)result.classificacao={...result.classificacao,estadoAlvo:"CONSUMIDO_EXTERNO",conclusiva:true,mensagem:"Número registrado na SEFAZ por outro documento"};
             else if(!nossa)result.classificacao={...result.classificacao,classe:"DUPLICIDADE_OUTRA_CHAVE",chaveReferida:referida,estadoAlvo:null,conclusiva:false,mensagem:"Duplicidade ainda sem confirmação — consulte novamente"};
           }

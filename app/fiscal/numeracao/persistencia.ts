@@ -72,6 +72,13 @@ export interface ContextoReserva {
   confirmarDescarte?: boolean;
   actorUserId?:string;
   emitenteSnapshot: unknown;
+  /**
+   * CNPJ da config do emitente desta chave. Só o piso por evidência usa: a chave
+   * de acesso carrega o CNPJ de quem emitiu, e nota histórica importada de OUTRA
+   * empresa não pode definir o piso desta. Ausente ⇒ cai no `emitenteSnapshot`
+   * e, sem ele, o piso fica como era (sem filtro).
+   */
+  cnpjEmitente?: string | null;
 }
 
 export type NovaReserva = Pick<Reserva, "userId" | "companyFiscalConfigId" | "ambiente" | "modelo" | "serie" | "numero" | "nfeId" | "estado" | "origem" | "cNF"> & Partial<Pick<Reserva, "ultimoCStat">>;

@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import prisma from "../../lib/prisma";
+import { cnpjNaChave } from "./decisao";
 import type { ChaveFiscal, EventoTrilha } from "./decisao";
 import { assertTransicao } from "./estados";
 import { concorrencia, NumeracaoError } from "./numeracao.errors";
@@ -11,6 +12,17 @@ type SqlClient = Pick<Prisma.TransactionClient, "$queryRawUnsafe"|"$executeRawUn
 const RESERVA_COLUNAS = ["motivo", "requerInutilizacao", "bloqueadoAte", "leaseAte", "consumidoEm", "provedorUltimo", "ultimaClasse", "ultimoCStat", "ultimoCodigoProvedor"];
 const TENTATIVA_COLUNAS = ["fase", "httpStatus", "transporte", "cStat", "codigoProvedor", "classe", "prova", "mensagem", "protocolo", "numeroLido", "serieLida", "nRec", "respondidaEm", "consultadaEm"];
 const NOTA_COLUNAS = ["status", "motivoRejeicao", "cStatRejeicao", "chaveAcesso", "protocoloAutorizacao", "dataAutorizacao", "dataEmissao", "xmlAssinadoPath", "numero", "serie"];
+
+/**
+ * CNPJ do emitente desta chave fiscal, como a chave de acesso o grava (só
+ * dígitos; CPF vira `000`+CPF). Preferência ao campo explícito; sem ele, o
+ * snapshot do emitente que a própria reserva já persiste em `emitenteJson`.
+ * `null` ⇒ não dá para afirmar de quem é a nota, e o piso não filtra.
+ */
+function cnpjDoContexto(c: ContextoReserva): string | null {
+  const snapshot = c.emitenteSnapshot as { cnpj?: unknown } | null | undefined;
+  return cnpjNaChave(c.cnpjEmitente) ?? cnpjNaChave(snapshot?.cnpj);
+}
 
 /** Identificadores vêm exclusivamente destas allowlists; valores sempre são parâmetros. */
 function setters(patch: object, allowed: readonly string[], values: unknown[]): string[] {
@@ -83,6 +95,11 @@ class SqlNumeracaoTx implements NumeracaoTx {
   }
 
   async ocupacao(c: ContextoReserva, numero: number): Promise<Ocupacao> {
+    // NÃO filtrar por CNPJ da chave aqui (ver `pisoPorEvidencia`): a pergunta é outra.
+    // O piso pergunta "até onde a SEFAZ já numerou ESTA empresa"; a ocupação pergunta
+    // "esta linha já existe na minha base". Nota importada de outro CNPJ ainda ocupa a
+    // tupla do índice único (cfc, ambiente, série, número, modelo) — ignorá-la faria o
+    // `gravarNumero` estourar unicidade e travar a emissão. Drafts nem têm chave.
     const k = c.key;
     const result = await this.rows<Ocupacao>(`SELECT
       EXISTS(SELECT 1 FROM "NfeEmitida" WHERE "userId"=$1 AND "ambiente"=$3 AND "modelo"=$4 AND "serie"=$5 AND "numero"=$6 AND "id"<>$7
@@ -97,6 +114,20 @@ class SqlNumeracaoTx implements NumeracaoTx {
   async pisoPorEvidencia(c: ContextoReserva): Promise<number> {
     // Uses the authorized access key, never MAX(numero)+1 over draft numbers.
     const k = c.key;
+    // Chave de acesso (44): cUF 1-2, AAMM 3-6, CNPJ 7-20, mod 21-22, série 23-25, nNF 26-34.
+    //
+    // (a) EVIDÊNCIA: o nNF só conta quando o CNPJ da chave (7-20) é o do próprio
+    //     emitente. Debaixo de uma config convivem notas históricas IMPORTADAS de
+    //     empresas anteriores do mesmo dono, e a numeração delas não é a desta.
+    //     Sem CNPJ conhecido ($7 NULL) esta metade fica exatamente como sempre foi.
+    // (b) OCUPAÇÃO: número que ESTA base já materializou como documento emitido
+    //     nesta série entra no piso mesmo sendo de terceiro — não como evidência da
+    //     SEFAZ, mas porque o índice único (cfc, ambiente, série, número, modelo)
+    //     torna impossível escolhê-lo. Sem esta metade, tirar a numeração do
+    //     terceiro do piso jogaria o contador lá atrás e o laço de escolha teria de
+    //     pular esses números um a um — e ele desiste em 50 (COLISOES_EXCESSIVAS),
+    //     trocando "número errado, nota sai" por "nota travada". Só documento
+    //     emitido: rascunho continua fora (o piso nunca foi MAX(numero)+1).
     const rows = await this.rows<{piso: number}>(`WITH chaves AS (
       SELECT regexp_replace(COALESCE("chaveAcesso",''),'[^0-9]','','g') AS chave FROM "NfeEmitida"
       WHERE "userId"=$1 AND "ambiente"=$3 AND "status" IN ('AUTHORIZED','CANCELLED','SENDING')
@@ -104,9 +135,13 @@ class SqlNumeracaoTx implements NumeracaoTx {
     ), numeros AS (
       SELECT substring(chave,26,9)::integer AS numero FROM chaves
       WHERE length(chave)=44 AND substring(chave,21,2)=$4 AND substring(chave,23,3)::integer=$5
+      AND ($7::text IS NULL OR substring(chave,7,14)=$7::text)
+      UNION ALL SELECT "numero" FROM "NfeEmitida" WHERE "userId"=$1 AND "ambiente"=$3 AND "modelo"=$4 AND "serie"=$5
+      AND "numero">0 AND "status" IN ('AUTHORIZED','CANCELLED','SENDING')
+      AND ("companyFiscalConfigId"=$2 OR ($6 AND "companyFiscalConfigId" IS NULL))
       UNION ALL SELECT "numeroFinal" FROM "NfeInutilizacao" WHERE "userId"=$1 AND "ambiente"=$3 AND "serie"=$5
       AND $4='55' AND "status"='ACEITA' AND ("companyFiscalConfigId"=$2 OR ($6 AND "companyFiscalConfigId" IS NULL))
-    ) SELECT COALESCE(MAX(numero),0)::integer AS piso FROM numeros`, [c.userId, k.cfc, k.ambiente, k.modelo, k.serie, c.isDefault]);
+    ) SELECT COALESCE(MAX(numero),0)::integer AS piso FROM numeros`, [c.userId, k.cfc, k.ambiente, k.modelo, k.serie, c.isDefault, cnpjDoContexto(c)]);
     return rows[0].piso;
   }
   trilha(userId: string, nfeId: string): Promise<EventoTrilha[]> {

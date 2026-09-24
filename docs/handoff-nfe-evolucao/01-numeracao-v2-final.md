@@ -1,5 +1,9 @@
 # Numbering V2: verdict on designs A, B and C, and the final design
 
+> **Registro de desenho pré-implementação, congelado no HEAD `1549bc4`.**
+> **A implementação final divergiu deste desenho:** a allowlist é por `companyFiscalConfigId` (`NFE_NUMERACAO_V2_CONFIG_IDS`, ver `app/fiscal/flags.ts`); `NFE_NUMERACAO_V2_USER_IDS`, citada adiante, nunca foi lida pelo código.
+> O runbook válido é [`docs/roteiro-emissao-focus-nfe.md`](../roteiro-emissao-focus-nfe.md).
+
 I judged all three designs. **C wins (8.0), then A (7.5), then B (6.5).** The final design below uses C as the backbone and adds A's lock order, its evidence rules for adopting old rows, its Focus `ref` rule and its logging whitelist. From B it takes the UI keying off the API payload, the Focus sub-flag chosen by provider and the explicit "discard number" confirmation. Four things the code showed must shape the result:
 
 - **SEFAZ direct has no "local error" path today.** Build, sign and QR failures come back as `erro` after the point of no return, so the note sits in SENDING with its number burned. This is exactly the reported scenario.

@@ -2,7 +2,7 @@
 
 ## O que está pronto
 
-O código local integra a Focus ao fluxo V2 e passou nos testes simulados de emissão, rejeição, correção com o mesmo número e próxima numeração. Implantado na VPS pelo PR #353 em 18/09/2026, com os DDLs aplicados e smoke aprovado. A numeração V2 permanece desligada enquanto faltam as confirmações da Focus; não houve homologação com a conta do cliente. Consulte o [registro do deploy](handoff-nfe-evolucao/12-DEPLOY-VPS.md).
+O código local integra a Focus ao fluxo V2 e passou nos testes simulados de emissão, rejeição, correção com o mesmo número e próxima numeração. Implantado na VPS pelo PR #353 em 18/09/2026, com os DDLs aplicados e smoke aprovado; a VPS roda hoje o commit `21270f2`. Desde 22/09/2026 a numeração V2 está **ligada em produção para uma única configuração fiscal**, a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`, modelo 55), e em 23/09/2026 ela autorizou notas reais dessa empresa. **Isso não é homologação da Focus:** `NFE_NUMERACAO_V2_FOCUS_ENABLED` continua `false`, e com a sub-flag desligada só o SEFAZ direto passa pelo V2 (`isNumeracaoV2ParaEmissao`, em `app/fiscal/flags.ts`). As confirmações da Focus seguem pendentes e nenhuma empresa emite pela Focus com numeração V2. Consulte o [registro do deploy](handoff-nfe-evolucao/12-DEPLOY-VPS.md) e a evidência do canário em [operação da numeração V2](fiscal-numeracao-v2.md).
 
 ## 1. Conferir a empresa na Focus
 
@@ -40,16 +40,26 @@ Se o card de responsável técnico por empresa estiver habilitado, use o modo **
 
 Obtenha o `id` da configuração fiscal (`CompanyFiscalConfig.id`) pela resposta autenticada de `GET /fiscal/config` ou pela configuração da empresa em `/fiscal/companies`. **Não use o userId, CNPJ ou companyId.**
 
-Configure no ambiente do processo da API, substituindo o marcador:
+**A allowlist já não está vazia em produção: ela contém a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`).** Quem *definir* `NFE_NUMERACAO_V2_CONFIG_IDS` com o id de um cliente novo **retira a DLS da V2 sem perceber**, e as notas dela com número reservado passam a responder 409 `NUMERACAO_EMITENTE_FORA_V2` (ver "Retorno ao estado anterior"). Um cliente novo se **acrescenta** à lista existente, separado por vírgula:
+
+```dotenv
+NFE_NUMERACAO_V2_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3,ID_DA_CONFIGURACAO_FISCAL
+```
+
+**`NFE_NUMERACAO_V2_FOCUS_ENABLED` não tem allowlist própria: usa a MESMA `NFE_NUMERACAO_V2_CONFIG_IDS`** (`ENV_ALLOWLIST` em `app/fiscal/flags.ts`). Ligá-la não é uma decisão sobre a empresa piloto: vale de uma vez para toda config da lista que emita pela Focus.
+
+Estado configurado hoje no ambiente do processo da API (produção, desde 22/09/2026):
 
 ```dotenv
 NFE_NUMERACAO_V2_ENABLED=true
-NFE_NUMERACAO_V2_CONFIG_IDS=ID_DA_CONFIGURACAO_FISCAL
+NFE_NUMERACAO_V2_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3
 NFE_NUMERACAO_V2_MODELOS=55
-NFE_NUMERACAO_V2_FOCUS_ENABLED=true
+NFE_NUMERACAO_V2_FOCUS_ENABLED=false
 NFE_DEVOLUCAO_ENABLED=false
 NFE_RESP_TEC_EMPRESA_ENABLED=false
 ```
+
+Passar `NFE_NUMERACAO_V2_FOCUS_ENABLED=true` só depois das confirmações do fornecedor (seção 1); enquanto estiver `false`, apenas o SEFAZ direto passa pelo V2.
 
 Recarregue o serviço pelo procedimento de implantação existente para que receba essas variáveis. Lista vazia não habilita nenhuma empresa; não usar `*` para o primeiro cliente. Não criar `.env` no worktree de desenvolvimento. Flags são de servidor e não usam `NEXT_PUBLIC_`.
 

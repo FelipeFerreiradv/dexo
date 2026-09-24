@@ -2,6 +2,9 @@
 
 Scope: this is a design only. Nothing was edited, run, deployed or called on SEFAZ or Focus. Line numbers refer to worktree HEAD `1549bc4`.
 
+> **A implementação final divergiu deste desenho:** a allowlist é por `companyFiscalConfigId` (`NFE_NUMERACAO_V2_CONFIG_IDS`, ver `app/fiscal/flags.ts`); `NFE_NUMERACAO_V2_USER_IDS`, citada adiante, nunca foi lida pelo código.
+> O runbook válido é [`docs/roteiro-emissao-focus-nfe.md`](../roteiro-emissao-focus-nfe.md).
+
 ---
 
 ## 0. Core idea, invariants, flags
