@@ -3,6 +3,8 @@ import {useRef,useState} from "react";
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 import {getApiBaseUrl} from "@/lib/api";
+import {PendenciasDevolucao} from "./pendencias-devolucao";
+import {viewPendenciasDoDetalhe} from "../lib/nfe-devolucao-pendencias-ui";
 import type {DevolucaoDetalhe,AtualizarItemBody} from "@/app/fiscal/devolucao/contrato";
 
 /** Explicit saves: this editor never mirrors server state into RHF through effects. */
@@ -38,7 +40,11 @@ export function DevolucaoEditor({value,email,onSaved,step}:{value:DevolucaoDetal
         <label className="flex gap-2"><input type="checkbox" checked={item.confirmarTributacao===true} onChange={e=>update(index,{confirmarTributacao:e.target.checked})}/>Revisei a tributação deste item</label>
       </>}
     </div>;})}
-    {value.issues.map((i,index)=><p key={index} className="text-sm">{i.mensagem}</p>)}
+    {/* A prévia do MESMO `validarDevolucao` que recusa a emissão depois. Era
+        uma pilha de <p> sem hierarquia, uma por item, em que "Item 1: revise e
+        confirme a tributação." aparecia seis vezes quase igual; agora agrupa,
+        diz em quais itens está e o que fazer (lib/nfe-devolucao-pendencias-ui). */}
+    {value.issues.length>0 && <PendenciasDevolucao view={viewPendenciasDoDetalhe(value)}/>}
     <Button type="button" disabled={busy} onClick={save}>{busy?"Salvando…":"Salvar devolução"}</Button>
     {message && <p role="status">{message}</p>}
   </section>;
