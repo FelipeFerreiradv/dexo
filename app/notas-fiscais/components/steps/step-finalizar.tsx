@@ -1,5 +1,11 @@
 "use client";
 
+// React explicito, como no `step-impostos.tsx` ao lado: o tsconfig usa jsx em
+// modo preserve, entao o esbuild do vitest compila o JSX para o
+// React.createElement classico e o componente so monta em jsdom com o React em
+// escopo. Em producao o Next segue com o runtime automatico.
+import * as React from "react";
+import { useEffect, useState } from "react";
 import { UseFormGetValues } from "react-hook-form";
 import {
   FileText,
@@ -11,6 +17,12 @@ import {
 } from "lucide-react";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { formatToBRL } from "@/components/ui/currency-input";
+import { getApiBaseUrl } from "@/lib/api";
+import { avisoEmissao } from "../../lib/nfe-aviso-emissao";
+import {
+  conferirValores,
+  somarPagamentos,
+} from "../../lib/nfe-conferencia-valores";
 import {
   TIPO_OPERACAO_LABELS,
   FINALIDADE_LABELS,
@@ -25,20 +37,72 @@ const FRETE_MEDIDAS_ENABLED =
 
 interface Props {
   getValues: UseFormGetValues<NfeDraftFormData>;
+  /**
+   * `ambiente` da linha do rascunho (o wizard ja o tem em maos: vem do draft
+   * carregado/criado). Opcional de proposito — ausente, o aviso NAO afirma
+   * homologacao, ele fica neutro. Ver lib/nfe-aviso-emissao.
+   */
+  ambienteRascunho?: string | null;
+  /** E-mail da sessao, so para o GET best-effort da config fiscal. */
+  email?: string;
 }
 
-export function StepFinalizar({ getValues }: Props) {
+export function StepFinalizar({ getValues, ambienteRascunho, email }: Props) {
   const data = getValues();
+
+  // Ambiente da CONFIGURACAO fiscal — a autoridade sobre o ambiente da emissao
+  // (o NfeEmissionUseCase le `config.ambiente`; a coluna do rascunho pode estar
+  // velha). Best-effort, mesmo padrao do NCM padrao em step-produtos.tsx:
+  // falhou, fica null e o aviso cai no rascunho / no texto neutro — nunca em
+  // "homologacao". Roda so aqui, no ultimo passo, uma vez.
+  const [ambienteConfig, setAmbienteConfig] = useState<string | null>(null);
+  // Enquanto esta leitura nao volta, um rascunho marcado HOMOLOGACAO nao pode
+  // pintar a tela de "teste": pode ser justamente o rascunho velho. Ate la o
+  // aviso fica neutro (ver resolverAmbienteEmissao).
+  const [configResolvida, setConfigResolvida] = useState(false);
+  useEffect(() => {
+    // Sem e-mail nao ha como ler a config: fica NAO resolvida de proposito. O
+    // atalho antigo marcava resolvida aqui, e um rascunho velho (que nasce
+    // HOMOLOGACAO por historico) voltava a afirmar "sem valor fiscal" para quem
+    // emite em producao — a mentira que este arquivo existe para matar.
+    if (!email) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/fiscal/config`, {
+          headers: { email },
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (cancelled) return;
+        setAmbienteConfig(json?.config?.ambiente ?? null);
+        // `resolvida` SO no caminho de sucesso: leitura que falhou nao pode dar
+        // ao rascunho a autoridade que ele nao tem. Falhou ⇒ texto neutro.
+        setConfigResolvida(true);
+      } catch {
+        /* silencioso: segue nao resolvida */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [email]);
+
+  const aviso = avisoEmissao({
+    ambienteConfig,
+    ambienteRascunho,
+    configResolvida,
+    finalidade: data.finalidade,
+  });
 
   const totalProdutos = (data.itens ?? []).reduce(
     (sum, item) => sum + (Number(item.valorTotal) || 0),
     0,
   );
 
-  const totalPagamentos = (data.pagamentos ?? []).reduce(
-    (sum, p) => sum + (Number(p.valor) || 0),
-    0,
-  );
+  // Mesma soma de antes, agora num so lugar: o total exibido no fim da tela e o
+  // total conferido no quadro nao podem divergir entre si.
+  const totalPagamentos = somarPagamentos(data.pagamentos);
 
   // O frete entra no total da nota (regra W16). Sem soma-lo, a Revisao diria
   // "tudo certo" logo depois de a etapa de Pagamentos ter avisado da diferenca
@@ -46,7 +110,16 @@ export function StepFinalizar({ getValues }: Props) {
   const valorFrete = FRETE_MEDIDAS_ENABLED
     ? Number(data.valorFrete) || 0
     : 0;
-  const diff = Math.abs(totalProdutos + valorFrete - totalPagamentos);
+
+  // Quadro de conferencia: o texto sai de lib/nfe-conferencia-valores (puro,
+  // testado); aqui so a moldura. Em DEVOLUCAO o antigo "Divergencia nos
+  // valores" disparava SEMPRE e mentia — devolucao nao tem pagamento.
+  const conferencia = conferirValores({
+    finalidade: data.finalidade,
+    totalProdutos,
+    totalFrete: valorFrete,
+    pagamentos: data.pagamentos,
+  });
 
   return (
     <div className="space-y-6">
@@ -54,16 +127,16 @@ export function StepFinalizar({ getValues }: Props) {
         Revisao da NF-e
       </h3>
 
-      {diff > 0.01 && (
+      {conferencia.mostrar && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 flex items-start gap-2">
           <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-          <div className="text-sm text-amber-700">
-            <p className="font-medium">Divergencia nos valores</p>
-            <p className="text-xs mt-1">
-              Total dos produtos (R$ {formatToBRL(totalProdutos)}) difere do
-              total dos pagamentos (R$ {formatToBRL(totalPagamentos)}).
-              Diferenca: R$ {formatToBRL(diff)}.
-            </p>
+          <div className="text-sm text-amber-700 dark:text-amber-200">
+            <p className="font-medium">{conferencia.titulo}</p>
+            {conferencia.linhas.map((linha, idx) => (
+              <p key={idx} className="text-xs mt-1">
+                {linha}
+              </p>
+            ))}
           </div>
         </div>
       )}
@@ -189,10 +262,21 @@ export function StepFinalizar({ getValues }: Props) {
         </div>
       </div>
 
-      <div className="rounded-lg border border-blue-500/40 bg-blue-500/10 p-4 text-center text-sm text-blue-600">
-        Ao clicar em <strong>"Emitir NF-e"</strong>, a nota sera validada,
-        numerada e enviada para autorizacao na SEFAZ em ambiente de
-        homologacao.
+      {/* Aviso do que o proximo clique faz DE VERDADE. O texto sai de
+          lib/nfe-aviso-emissao (puro, testado): aqui so a moldura. */}
+      <div
+        className={
+          aviso.tom === "atencao"
+            ? "rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-200"
+            : "rounded-lg border border-blue-500/40 bg-blue-500/10 p-4 text-sm text-blue-600 dark:text-blue-300"
+        }
+      >
+        <p className="font-semibold">{aviso.titulo}</p>
+        {aviso.linhas.map((linha, idx) => (
+          <p key={idx} className="mt-1 text-xs">
+            {linha}
+          </p>
+        ))}
       </div>
     </div>
   );

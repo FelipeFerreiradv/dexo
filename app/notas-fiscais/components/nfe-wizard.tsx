@@ -5,6 +5,11 @@ import { DevolucaoEditor } from "./devolucao-editor";
 import { NumeracaoActions } from "./numeracao-actions";
 import type { NumeracaoView } from "./numeracao-actions";
 import { desfechoConsulta, desfechoEmissao, type DesfechoTela } from "../lib/nfe-numeracao-ui";
+import { PendenciasDevolucao } from "./pendencias-devolucao";
+import {
+  viewPendenciasDaResposta,
+  type PendenciasDevolucaoView,
+} from "../lib/nfe-devolucao-pendencias-ui";
 import type { DevolucaoDetalhe } from "@/app/fiscal/devolucao/contrato";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -104,6 +109,15 @@ export function NfeWizard() {
   const [currentStep, setCurrentStep] = useState(1);
   const [draftId, setDraftId] = useState<string | null>(null);
   const [devolucao,setDevolucao]=useState<DevolucaoDetalhe|null>(null);
+  // Pendencias que impediram a emissao (422 DEVOLUCAO_INVALIDA). O toast diz
+  // que falhou; a LISTA do que falta nao cabe num toast e vinha sendo jogada
+  // fora — `issues` ja chega no corpo do erro (fiscal.routes.ts). Null = a
+  // ultima emissao nao foi esse bloqueio: a tela segue exatamente como antes.
+  const [pendenciasEmissao,setPendenciasEmissao]=useState<PendenciasDevolucaoView|null>(null);
+  // Ambiente da linha do rascunho (draft.ambiente), repassado ao ultimo passo
+  // para o aviso dizer o ambiente REAL. Nao entra no formulario: e leitura, nao
+  // e campo editavel, e nao pode viajar de volta no PUT do autosave.
+  const [ambienteRascunho,setAmbienteRascunho]=useState<string|null>(null);
   const [numeracao,setNumeracao]=useState<NumeracaoView|null>(null);
   const emitindoRef=useRef(false);
   const [confirmarDescarte,setConfirmarDescarte]=useState(false);
@@ -186,6 +200,7 @@ export function NfeWizard() {
           if (draft) {
             setDraftId(existingId);
             setDraftCompanyId(draft.companyFiscalConfigId ?? null);
+            setAmbienteRascunho(draft.ambiente ?? null);
             populateFormFromDraft(draft);
             setNumeracao(draft.numeracao??null);
             if(draft.finalidade==="DEVOLUCAO") {
@@ -217,6 +232,7 @@ export function NfeWizard() {
         if (newDraft) {
           setDraftId(newDraft.id);
           setDraftCompanyId(newDraft.companyFiscalConfigId ?? null);
+          setAmbienteRascunho(newDraft.ambiente ?? null);
           // A série padrão vem da configuração fiscal (CompanyFiscalConfig.
           // serieNfe), já resolvida pelo backend ao criar o draft. Sem isto o
           // form ficaria preso no default hardcoded (série 1). Toca SÓ a série;
@@ -486,6 +502,9 @@ export function NfeWizard() {
   const handleEmitir = async () => {
     if (!draftId || isEmitting || emitindoRef.current) return;
     emitindoRef.current=true;
+    // Lista velha some antes de tentar de novo: mostrar pendencia ja resolvida
+    // seria mandar a operadora consertar o que ela acabou de consertar.
+    setPendenciasEmissao(null);
 
     // Aguarda o save do passo atual TERMINAR antes de emitir. saveCurrentStep
     // agora retorna a promise do PUT /draft/:id — assim o rascunho e gravado
@@ -502,6 +521,10 @@ export function NfeWizard() {
       });
 
       const data = await res.json();
+      // ADITIVO: o toast continua sendo exatamente o de antes. Isto aqui só
+      // aproveita as `issues` que já vinham no corpo do 422 e eram descartadas.
+      // Fora do DEVOLUCAO_INVALIDA devolve null e nada muda na tela.
+      if (!res.ok) setPendenciasEmissao(viewPendenciasDaResposta(data));
       // Decisão em lib/nfe-numeracao-ui (testada em node): resposta V1 segue o
       // caminho de sempre; V2 em andamento (202/INCERTO, claim perdido) é info.
       aplicarDesfecho(desfechoEmissao(res.ok, data));
@@ -566,7 +589,7 @@ export function NfeWizard() {
       <div className="min-h-[300px]">
         {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={d=>aplicarDesfecho(desfechoConsulta(d))}/>}
         {confirmarDescarte && <p role="alert">Ao clicar em emitir novamente, você confirma o descarte do número anterior. Em produção ele precisará ser inutilizado.</p>}
-        {devolucao && [1,3,8].includes(currentStep) && <DevolucaoEditor key={`${devolucao.draftId}-${currentStep}`} step={currentStep} value={devolucao} email={email} onSaved={async d=>{setDevolucao(d);const fresh=await loadDraft(d.draftId);if(fresh)populateFormFromDraft(fresh);}}/>}
+        {devolucao && [1,3,8].includes(currentStep) && <DevolucaoEditor key={`${devolucao.draftId}-${currentStep}`} step={currentStep} value={devolucao} email={email} onSaved={async d=>{setDevolucao(d);setPendenciasEmissao(null);const fresh=await loadDraft(d.draftId);if(fresh)populateFormFromDraft(fresh);}}/>}
         {currentStep === 1 && !devolucao && (
           <StepInformacoesGerais
             control={control}
@@ -622,7 +645,18 @@ export function NfeWizard() {
           />
         )}
         {currentStep === 9 && (
-          <StepFinalizar getValues={getValues} />
+          <StepFinalizar
+            getValues={getValues}
+            ambienteRascunho={ambienteRascunho}
+            email={email}
+          />
+        )}
+        {/* O que impediu a emissao, logo acima do proprio botao "Emitir NF-e".
+            O toast continua aparecendo — ele avisa que falhou; este quadro diz
+            QUAL pendencia, em QUAL item e o que fazer, que e o que nao cabe
+            num toast e era a informacao que a cliente passou o dia caçando. */}
+        {currentStep === 9 && pendenciasEmissao && (
+          <PendenciasDevolucao view={pendenciasEmissao} />
         )}
       </div>
 
