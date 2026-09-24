@@ -240,6 +240,59 @@ export interface TributacaoOverride {
   ipiDevol?: boolean;
 }
 
+// ──────────────── Regime do emitente → códigos de ICMS que a tela oferece ────────────────
+
+/** Como o código de ICMS se chama no regime: CSOSN (3 dígitos) ou CST (2 dígitos). */
+export type TipoCodigoIcms = "CSOSN" | "CST";
+
+/**
+ * Um código de ICMS emitível na devolução por este emitente. A lista sai das
+ * MESMAS tabelas que o montador usa (`tributacao.ts`), nunca de um literal na tela.
+ */
+export interface OpcaoIcmsDevolucao {
+  /**
+   * "102" | "103" | "300" | "400" | "500" | "900" (CSOSN) ·
+   * "00" | "40" | "41" | "50" | "60" | "90" (CST).
+   *
+   * É o código LITERAL que vai no XML, não o nome do grupo: 400 e 102 caem os
+   * dois em `ICMSSN102`, mas `<CSOSN>400</CSOSN>` (não tributada) e
+   * `<CSOSN>102</CSOSN>` (tributada sem crédito) são notas diferentes.
+   */
+  codigo: string;
+  tipo: TipoCodigoIcms;
+  /** Grupo do XML que este código monta. */
+  tag: TagIcmsDevolucao;
+  /** Frase em português para quem não é contadora ler num seletor. */
+  rotulo: string;
+  /** true ⇒ o grupo leva base e alíquota (a tela precisa pedir a alíquota). */
+  exigeValores: boolean;
+}
+
+/** Por que um código digitado não serve para este emitente. */
+export type CausaRecusaIcms = "VAZIO" | "FORMATO" | "REGIME" | "NAO_SUPORTADO";
+
+export type ResultadoCodigoIcms =
+  | { ok: true; codigo: string; tipo: TipoCodigoIcms; tag: TagIcmsDevolucao }
+  | { ok: false; codigo: string; causa: CausaRecusaIcms; motivo: string };
+
+/**
+ * O regime do emitente DA DEVOLUÇÃO, do jeito que a tela precisa para recusar o
+ * código na hora (rejeições 590/591 da SEFAZ) em vez de deixar salvar e travar
+ * na emissão.
+ */
+export interface RegimeEmitenteDevolucao {
+  /** Regime da CompanyFiscalConfig ("SIMPLES", "LUCRO_REAL"…); null = não cadastrado. */
+  regimeTributario: string | null;
+  /** CRT do emitente; null = regime não cadastrado/desconhecido. */
+  crt: CrtEmitente | null;
+  /** null = regime desconhecido: os dois valem (o servidor também aceita os dois). */
+  tipoCodigoIcms: TipoCodigoIcms | null;
+  /** Só os códigos que ESTE emitente pode usar. Com regime desconhecido, todos. */
+  icmsOpcoes: OpcaoIcmsDevolucao[];
+  /** Frase pronta para o campo ("Sua empresa é Simples Nacional…"). */
+  ajuda: string;
+}
+
 // ─────────────────────────────── Saldo ───────────────────────────────
 
 export interface SaldoItemOriginal {
