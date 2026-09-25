@@ -20,6 +20,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { getApiBaseUrl } from "@/lib/api";
+import {
+  IMPORT_COLUMNS,
+  buildExportWorkbook,
+  exportRetryDelayMs,
+  type ExportPage,
+  type ExportProduct,
+} from "../lib/product-export.logic";
 
 type ToastFn = (
   message: string,
@@ -32,25 +39,30 @@ interface ImportExportProductsProps {
   onToast: ToastFn;
 }
 
-const IMPORT_COLUMNS = [
-  "SKU",
-  "Nome",
-  "Descrição",
-  "Preço",
-  "Custo",
-  "Estoque",
-  "Marca",
-  "Modelo",
-  "Ano",
-  "Categoria",
-  "Part Number",
-  "Qualidade",
-  "Altura (cm)",
-  "Largura (cm)",
-  "Comprimento (cm)",
-  "Peso (kg)",
-  "URL Imagem",
-] as const;
+/**
+ * Produtos por página da exportação (teto da rota). O maior cliente dá ~60
+ * páginas — metade das requisições contra o limite de 300/min por IP.
+ */
+const EXPORT_PAGE_SIZE = 1000;
+
+/**
+ * Busca uma página tentando de novo em 429, 5xx e falha de rede: uma página
+ * perdida no meio jogaria fora tudo o que já foi lido.
+ */
+async function fetchExportPage(url: string, email: string): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const resp = await fetch(url, { headers: { email } });
+      const delay = exportRetryDelayMs(resp.status, attempt);
+      if (delay === null) return resp;
+      await new Promise((r) => setTimeout(r, delay));
+    } catch (err) {
+      const delay = exportRetryDelayMs(null, attempt);
+      if (delay === null) throw err;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
 
 const QUALITY_MAP: Record<string, string> = {
   novo: "NOVO",
@@ -201,6 +213,11 @@ export function ImportExportProducts({
 }: ImportExportProductsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState({
+    done: 0,
+    total: 0,
+    building: false,
+  });
   const [isImporting, setIsImporting] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importProgress, setImportProgress] = useState({ done: 0, total: 0 });
@@ -238,25 +255,38 @@ export function ImportExportProducts({
       return;
     }
     setIsExporting(true);
+    setExportProgress({ done: 0, total: 0, building: false });
     try {
       const XLSX = await import("xlsx");
-      const all: any[] = [];
-      let page = 1;
-      const limit = 100;
-      while (true) {
-        const resp = await fetch(
-          `${getApiBaseUrl()}/products?page=${page}&limit=${limit}`,
-          { headers: { email } },
+      const all: ExportProduct[] = [];
+      let cursor: string | null = null;
+      let total = 0;
+      // Paginação por cursor de id (GET /products/export): a listagem pagina
+      // por OFFSET sobre createdAt empatado e repetia/perdia produtos.
+      for (let guard = 0; guard < 10_000; guard++) {
+        const qs = new URLSearchParams({ limit: String(EXPORT_PAGE_SIZE) });
+        if (cursor) qs.set("cursor", cursor);
+        const resp = await fetchExportPage(
+          `${getApiBaseUrl()}/products/export?${qs.toString()}`,
+          email,
         );
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
-          throw new Error(err.error || `Falha ao buscar página ${page}`);
+          throw new Error(
+            err.error || `Falha ao buscar produtos (${all.length} lidos)`,
+          );
         }
-        const data = await resp.json();
+        const data = (await resp.json()) as ExportPage;
+        if (typeof data.total === "number") total = data.total;
         all.push(...(data.products ?? []));
-        const totalPages = data.pagination?.totalPages ?? 1;
-        if (page >= totalPages) break;
-        page++;
+        setExportProgress({
+          done: all.length,
+          total: Math.max(total, all.length),
+          building: false,
+        });
+        const next: string | null = data.nextCursor ?? null;
+        if (!next || next === cursor) break;
+        cursor = next;
       }
 
       if (all.length === 0) {
@@ -264,32 +294,11 @@ export function ImportExportProducts({
         return;
       }
 
-      const rows = all.map((p) => ({
-        SKU: p.sku ?? "",
-        Nome: p.name ?? "",
-        Descrição: p.description ?? "",
-        Preço: Number(p.price ?? 0),
-        Custo: p.costPrice != null ? Number(p.costPrice) : "",
-        Estoque: Number(p.stock ?? 0),
-        Marca: p.brand ?? "",
-        Modelo: p.model ?? "",
-        Ano: p.year ?? "",
-        Categoria: p.category ?? "",
-        "Part Number": p.partNumber ?? "",
-        Qualidade: p.quality ?? "",
-        "Altura (cm)": p.heightCm != null ? Number(p.heightCm) : "",
-        "Largura (cm)": p.widthCm != null ? Number(p.widthCm) : "",
-        "Comprimento (cm)": p.lengthCm != null ? Number(p.lengthCm) : "",
-        "Peso (kg)": p.weightKg != null ? Number(p.weightKg) : "",
-        "URL Imagem": p.imageUrl ?? "",
-      }));
-
-      const ws = XLSX.utils.json_to_sheet(rows, {
-        header: IMPORT_COLUMNS as unknown as string[],
-      });
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Produtos");
-      const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      // Montar o arquivo trava a aba por alguns segundos em base grande:
+      // avisa antes e deixa o navegador redesenhar o botão.
+      setExportProgress((prev) => ({ ...prev, building: true }));
+      await new Promise((r) => setTimeout(r, 50));
+      const buf = buildExportWorkbook(XLSX, all);
       const stamp = new Date().toISOString().slice(0, 10);
       await triggerDownload(
         new Blob([buf], {
@@ -427,7 +436,11 @@ export function ImportExportProducts({
             ) : (
               <FileDown className="mr-2 h-4 w-4" />
             )}
-            Importar / Exportar
+            {isExporting && exportProgress.building
+              ? "Gerando planilha…"
+              : isExporting && exportProgress.total > 0
+              ? `Exportando ${exportProgress.done.toLocaleString("pt-BR")} de ${exportProgress.total.toLocaleString("pt-BR")}`
+              : "Importar / Exportar"}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-56">
