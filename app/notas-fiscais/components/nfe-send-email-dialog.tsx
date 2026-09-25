@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { Mail } from "lucide-react";
 
@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getApiBaseUrl } from "@/lib/api";
+import { resultadoEnvioEmail } from "../lib/nfe-email-resultado";
 
 interface NfeSendEmailDialogProps {
   nfeId: string | null;
@@ -37,6 +38,15 @@ export function NfeSendEmailDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  // O aviso é DESTE envio e DESTA nota. O componente fica montado e só troca o
+  // `nfeId`, e o "Cancelar" do rodapé fecha por fora do <Dialog> (não passa pelo
+  // onOpenChange interno): sem isto, o aviso "a nota está CANCELADA" reaparecia
+  // ao abrir o e-mail de OUTRA nota — a confusão 716 × 717 que isto combate.
+  useEffect(() => {
+    setAviso(null);
+  }, [open, nfeId]);
 
   const canSubmit = email.trim().length > 0 && email.includes("@");
 
@@ -46,6 +56,7 @@ export function NfeSendEmailDialog({
     setLoading(true);
     setError(null);
     setSuccess(false);
+    setAviso(null);
 
     try {
       const apiBase = getApiBaseUrl();
@@ -63,8 +74,16 @@ export function NfeSendEmailDialog({
 
       const data = await response.json();
 
-      if (!response.ok || !data.success) {
-        setError(data.error || "Erro ao enviar e-mail");
+      const resultado = resultadoEnvioEmail(response.ok, data);
+      if (resultado.tipo === "erro") {
+        setError(resultado.texto);
+        return;
+      }
+      // Foi, mas sem o DANFE (nota cancelada que não pôde ser marcada): o
+      // diálogo NÃO fecha sozinho — o operador precisa ler o que faltou — e NÃO
+      // chama `onSent`, que nas duas telas é o toast "E-mail enviado com sucesso".
+      if (resultado.tipo === "enviado-com-aviso") {
+        setAviso(resultado.texto);
         return;
       }
 
@@ -90,6 +109,7 @@ export function NfeSendEmailDialog({
           setEmail("");
           setError(null);
           setSuccess(false);
+          setAviso(null);
         }
         onOpenChange(v);
       }}
@@ -127,6 +147,11 @@ export function NfeSendEmailDialog({
           {success && (
             <div className="rounded-md border border-green-500/40 bg-green-500/5 p-2 text-sm text-green-600">
               E-mail enviado com sucesso!
+            </div>
+          )}
+          {aviso && (
+            <div role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-sm text-amber-800">
+              {aviso}
             </div>
           )}
         </div>

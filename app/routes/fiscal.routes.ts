@@ -29,6 +29,7 @@ import type {
   RegimeTributario,
 } from "../fiscal/domain/nfe.types";
 import { isNfeFreteMedidasEnabled } from "../fiscal/domain/frete";
+import type { CancelamentoDanfe } from "../fiscal/generators/danfe-carimbo-cancelada";
 
 /**
  * Remove segredos do CompanyFiscalConfig antes de devolver ao cliente e deriva
@@ -113,6 +114,61 @@ export async function tryRerenderDanfe(
     return null;
   }
 }
+
+/**
+ * Data e protocolo do cancelamento. A única fonte é o evento CANCELADA da
+ * auditoria: a NfeEmitida guarda só o status (e a justificativa em
+ * `motivoRejeicao`). Best-effort: sem evento, ou com falha de leitura, a marca
+ * sai sem a data e o protocolo — mas sai.
+ */
+export async function lerCancelamentoDanfe(
+  db: any,
+  nfeId: string,
+  userId: string,
+): Promise<CancelamentoDanfe> {
+  try {
+    const ev = await db.nfeAuditLog.findFirst({
+      where: { nfeId, userId, evento: "CANCELADA" },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true, detalhes: true },
+    });
+    const d =
+      ev?.detalhes && typeof ev.detalhes === "object" && !Array.isArray(ev.detalhes)
+        ? (ev.detalhes as Record<string, unknown>)
+        : {};
+    const bruto = typeof d.protocolo === "number" ? String(d.protocolo) : d.protocolo;
+    const protocolo = typeof bruto === "string" && bruto.trim() !== "" ? bruto.trim() : null;
+    return { em: ev?.createdAt instanceof Date ? ev.createdAt : null, protocolo };
+  } catch {
+    return { em: null, protocolo: null };
+  }
+}
+
+/**
+ * O PDF do DANFE que sai para o usuário (download, impressão do PDV e anexo de
+ * e-mail). Nota CANCELADA sai carimbada — "NF-e CANCELADA" em diagonal, data e
+ * protocolo do cancelamento — tanto o re-render quanto o arquivo guardado, que
+ * não é sobrescrito. Qualquer outro status devolve o MESMO objeto recebido: byte a
+ * byte o que saía antes. Lança se não conseguir carimbar — entregar a nota
+ * cancelada sem a marca é o defeito que isto corrige (a DLS quase cancelou a nota
+ * certa por causa do DANFE da cancelada, 25/09/2026).
+ */
+export async function danfeParaEntrega(
+  conteudo: Buffer | Uint8Array,
+  nota: { id: string; status?: string | null; modelo?: string | number | null },
+  userId: string,
+  db: any = prisma,
+): Promise<Buffer | Uint8Array> {
+  if (nota.status !== "CANCELLED") return conteudo;
+  const cancelamento = await lerCancelamentoDanfe(db, nota.id, userId);
+  const { carimbarDanfeCancelada } = await import(
+    "../fiscal/generators/danfe-carimbo-cancelada"
+  );
+  return carimbarDanfeCancelada(conteudo, { modelo: nota.modelo, cancelamento });
+}
+
+export const DANFE_CANCELADA_SEM_CARIMBO =
+  "Esta nota está CANCELADA e não foi possível marcar o DANFE como cancelado. Use o XML da nota.";
 
 export function sanitizeFiscalConfig(
   config: Awaited<ReturnType<CompanyFiscalUseCase["getByUserId"]>> | null,
@@ -1348,6 +1404,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             numero: true,
             serie: true,
             modelo: true,
+            status: true,
           },
         });
         if (!row) {
@@ -1373,13 +1430,26 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         if (!content) {
           return reply.status(404).send({ error: "Arquivo DANFE nao encontrado" });
         }
+        // Nota CANCELADA sai carimbada (re-render OU arquivo guardado); as demais
+        // recebem de volta o mesmo `content`. Sem conseguir carimbar, não entrega:
+        // o DANFE de nota cancelada idêntico ao de nota válida é o defeito.
+        let entregue: Buffer | Uint8Array;
+        try {
+          entregue = await danfeParaEntrega(
+            content,
+            { id, status: row.status, modelo: row.modelo },
+            userId,
+          );
+        } catch {
+          return reply.status(500).send({ error: DANFE_CANCELADA_SEM_CARIMBO });
+        }
         const prefixo = String(row.modelo) === "65" ? "cupom" : "danfe";
         // `storage.readFile` já devolve Buffer; só o re-render devolve
         // Uint8Array. Copiar o que já é Buffer duplicaria o PDF inteiro em
         // memória a cada download servido do disco — o caminho mais comum.
-        const corpo = Buffer.isBuffer(content)
-          ? content
-          : Buffer.from(content as Uint8Array);
+        const corpo = Buffer.isBuffer(entregue)
+          ? entregue
+          : Buffer.from(entregue as Uint8Array);
         return reply
           .header("Content-Type", "application/pdf")
           .header(
@@ -1617,6 +1687,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             xmlAutorizadoPath: true,
             xmlOriginalPath: true,
             danfePdfPath: true,
+            modelo: true,
           },
         });
 
@@ -1654,6 +1725,12 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         // acrescentar um anexo onde antes não havia mudaria o conteúdo de uma
         // mensagem que vai para o cliente final. O que o re-render altera é só o
         // LAYOUT do anexo que já sairia.
+        //
+        // Nota CANCELADA: o anexo sai carimbado, como no download. Se o carimbo
+        // falhar, o DANFE NÃO vai — mandar ao cliente final a nota cancelada sem
+        // a marca é o defeito que isto corrige; o XML segue anexado e a resposta
+        // diz o que faltou.
+        let danfeOmitido = false;
         if (nfe.danfePdfPath) {
           const danfeFresh = await tryRerenderDanfe(
             storage,
@@ -1662,12 +1739,25 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           );
           const pdfContent = danfeFresh ?? (await storage.readFile(nfe.danfePdfPath));
           if (pdfContent) {
-            attachments.push({
-              filename: `danfe-${nfe.serie}-${nfe.numero}.pdf`,
-              content: Buffer.isBuffer(pdfContent)
-                ? pdfContent
-                : Buffer.from(pdfContent as Uint8Array),
-            });
+            let anexo: Buffer | Uint8Array | null;
+            try {
+              anexo = await danfeParaEntrega(
+                pdfContent,
+                { id: nfe.id, status: nfe.status, modelo: nfe.modelo },
+                userId,
+              );
+            } catch {
+              anexo = null;
+              danfeOmitido = true;
+            }
+            if (anexo) {
+              attachments.push({
+                filename: `danfe-${nfe.serie}-${nfe.numero}.pdf`,
+                content: Buffer.isBuffer(anexo)
+                  ? anexo
+                  : Buffer.from(anexo as Uint8Array),
+              });
+            }
           }
         }
 
@@ -1681,11 +1771,16 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         await nfeRepo.addAuditLog(id, userId, "XML_REENVIADO", {
           email,
           attachmentCount: attachments.length,
+          ...(danfeOmitido ? { danfeOmitido: "CANCELADA_SEM_CARIMBO" } : {}),
         });
 
         return reply.status(200).send({
           success: true,
-          mensagem: `E-mail enviado para ${email}`,
+          mensagem: danfeOmitido
+            ? `E-mail enviado para ${email} sem o DANFE: a nota está CANCELADA e não foi possível marcar o PDF como cancelado.`
+            : `E-mail enviado para ${email}`,
+          // Sinal estruturado para a tela avisar em vez de "enviado com sucesso".
+          ...(danfeOmitido ? { danfeOmitido: true } : {}),
         });
       } catch (error) {
         if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
