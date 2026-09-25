@@ -319,7 +319,8 @@ export function NfeDetailSheet({
                   tem e o que ainda dá para devolver; nesta devolução, de qual
                   nota ela é. Nada aparece fora da devolução do Dexo. */}
               <DevolucaoVinculo key={nfe.id} nota={nfe} email={session?.user?.email??""} onElegivel={setDevolucaoElegivel}/>
-              <NumeracaoActions id={nfe.id} email={session?.user?.email??""} numeracao={nfe.numeracao} onChanged={fetchNfe}/>
+              {/* Excluído o rascunho (nº BLOQUEADO), a nota não existe mais: fecha a ficha e a lista recarrega. */}
+              <NumeracaoActions id={nfe.id} email={session?.user?.email??""} numeracao={nfe.numeracao} retomavel={nfe.retomavel} onChanged={fetchNfe} onExcluido={()=>{onOpenChange(false);onStatusChanged?.();}}/>
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"

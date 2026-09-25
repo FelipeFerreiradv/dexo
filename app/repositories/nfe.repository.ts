@@ -3,6 +3,7 @@ import { numeroPlaceholderRascunho } from "../fiscal/domain/draft-number";
 import { attachFiscalLista } from "../fiscal/numeracao/metadata";
 import { isDevolucaoAtiva } from "../fiscal/flags";
 import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { NfeDevolucaoRepository, erroRascunhoComDevolucaoDesligada } from "../fiscal/devolucao/devolucao.repository";
 import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 import { normalizeSku } from "../lib/sku";
 import { isCodeLikeQuery } from "./product-search-terms";
@@ -233,7 +234,10 @@ export class NfeRepository {
    * rascunho cmubl7is, com a reserva de número viva). Reaproveitado, ele virava nota
    * normal com o número reservado junto. Rascunho sem empresa gravada é da empresa PADRÃO
    * (isDefault desc, createdAt asc — a de findByUserId). Sem a devolução ligada, o
-   * `where` é idêntico ao de antes.
+   * `where` é idêntico ao de antes — exceto o GERENCIADO (com cabeçalho), que fica SEMPRE
+   * fora: depois de um rollback por config (empresa tirada da allowlist) ele virava base de
+   * uma venda com a devolução pendurada (as linhas de NfeDevolucaoItem contariam a venda
+   * como devolução da original). Mesma consulta de antes, com 1 booleano a mais.
    */
   async findExistingDraft(
     userId: string,
@@ -242,10 +246,11 @@ export class NfeRepository {
     let excluidos:string[]=[];
     if(process.env.NFE_DEVOLUCAO_ENABLED==="true") {
       try{
-        const rows=await prisma.$queryRawUnsafe<Array<{id:string;companyFiscalConfigId:string|null}>>(`SELECT n."id",COALESCE(n."companyFiscalConfigId",(SELECT c."id" FROM "CompanyFiscalConfig" c WHERE c."userId"=n."userId" ORDER BY c."isDefault" DESC,c."createdAt" ASC LIMIT 1)) AS "companyFiscalConfigId"
+        const rows=await prisma.$queryRawUnsafe<Array<{id:string;companyFiscalConfigId:string|null;cabecalho?:boolean}>>(`SELECT n."id",COALESCE(n."companyFiscalConfigId",(SELECT c."id" FROM "CompanyFiscalConfig" c WHERE c."userId"=n."userId" ORDER BY c."isDefault" DESC,c."createdAt" ASC LIMIT 1)) AS "companyFiscalConfigId",
+            EXISTS(SELECT 1 FROM "NfeDevolucao" h WHERE h."nfeId"=n."id" AND h."userId"=n."userId") AS "cabecalho"
           FROM "NfeEmitida" n WHERE n."userId"=$1 AND n."status"='DRAFT' AND n."modelo"=$2
             AND (n."finalidade"='DEVOLUCAO' OR EXISTS(SELECT 1 FROM "NfeDevolucao" d WHERE d."nfeId"=n."id" AND d."userId"=n."userId"))`,userId,modelo);
-        excluidos=rows.filter(r=>isDevolucaoAtiva(r.companyFiscalConfigId)).map(r=>r.id);
+        excluidos=rows.filter(r=>r.cabecalho===true || isDevolucaoAtiva(r.companyFiscalConfigId)).map(r=>r.id);
       }catch(e){if(!tabelaFiscalAusente(e))throw e;}
     }
     const row = await (prisma as any).nfeEmitida.findFirst({
@@ -369,12 +374,17 @@ export class NfeRepository {
     input: NfeDraftUpdateInput,
   ): Promise<NfeDraftResponse> {
     if(process.env.NFE_DEVOLUCAO_ENABLED==="true") {
-      let rows:Array<{companyFiscalConfigId:string}>=[];
-      try{rows=await prisma.$queryRawUnsafe<Array<{companyFiscalConfigId:string}>>(`SELECT n."companyFiscalConfigId" FROM "NfeEmitida" n JOIN "NfeDevolucao" d ON d."nfeId"=n."id" WHERE n."id"=$1 AND n."userId"=$2`,id,userId);}catch(e){if(!tabelaFiscalAusente(e))throw e;}
-      if(rows[0] && isDevolucaoAtiva(rows[0].companyFiscalConfigId)) {
-        const protegidos=["itens","totaisJson","notasReferenciadasJson","pagamentosJson","duplicatasJson","finalidade","tipoOperacao","destinoOperacao","companyFiscalConfigId"] as const;
-        if(protegidos.some(k=>input[k]!==undefined))throw new DevolucaoError("RASCUNHO_ALTERADO");
-      }
+      // Rascunho GERENCIADO pela devolução (com cabeçalho): estes campos só mudam pelas rotas
+      // da devolução — com OU sem a devolução ligada para a empresa. Depois de um rollback por
+      // config, trocar a finalidade para NORMAL emitiria uma venda com o cabeçalho e as linhas
+      // de NfeDevolucaoItem pendurados. A consulta só roda quando o pedido toca um campo
+      // protegido (o autosave comum não paga) e traz cabeçalho e empresa na mesma ida.
+      // A recusa diz a verdade: com a devolução ligada, a de sempre (RASCUNHO_ALTERADO); depois
+      // do rollback, a do rollback — o /calculate cai no ramo comum e grava `totaisJson`, e o
+      // "tente novamente" da frase padrão virava um botão que repetia o mesmo 409 para sempre.
+      const protegidos=["itens","totaisJson","notasReferenciadasJson","pagamentosJson","duplicatasJson","finalidade","tipoOperacao","destinoOperacao","companyFiscalConfigId"] as const;
+      const gerenciado=protegidos.some(k=>input[k]!==undefined)?await new NfeDevolucaoRepository().empresaDoRascunhoGerenciado(userId,id):null;
+      if(gerenciado)throw isDevolucaoAtiva(gerenciado.companyFiscalConfigId)?new DevolucaoError("RASCUNHO_ALTERADO"):erroRascunhoComDevolucaoDesligada(id);
     }
     // Build update data — only set fields that were provided. A guarda atomica
     // abaixo (updateMany condicional a userId + status) substitui a antiga

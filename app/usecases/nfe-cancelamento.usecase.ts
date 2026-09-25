@@ -197,19 +197,42 @@ export class NfeCancelamentoUseCase {
       mensagem: "NF-e cancelada com sucesso",
     };
     };
+    // A devolução grava a chave da original com 44 dígitos (CHECK ^[0-9]{44}$); a Focus V1
+    // grava "NFe"+44. Lock e saldo usam a normalizada; o provider recebe a chave crua.
+    const chaveOriginal=normalizarChaveAcesso(nfe.chaveAcesso)??nfe.chaveAcesso;
     if(isDevolucaoAtiva(config.id)) {
       const devolucao=new NfeDevolucaoRepository();
-      // A devolução grava a chave da original com 44 dígitos (CHECK ^[0-9]{44}$); a Focus V1
-      // grava "NFe"+44. Lock e saldo usam a normalizada; o provider recebe a chave crua.
-      const chaveOriginal=normalizarChaveAcesso(nfe.chaveAcesso)??nfe.chaveAcesso;
       return prisma.$transaction(async tx=>{
+        // O provedor é chamado DENTRO desta transação (o lock serializa com a emissão de uma
+        // devolução da mesma original), e a conexão fica "idle in transaction" enquanto a
+        // SEFAZ/Focus responde. Em produção o papel `postgres` tem
+        // idle_in_transaction_session_timeout=120s: SEFAZ lenta ⇒ o Postgres derrubava a sessão,
+        // a nota já cancelada ficava CANCELLED (gravada pela outra conexão) e o COMMIT falhava
+        // (erro para o usuário, lock solto no meio). 11 min cobre o timeout de 600 s abaixo.
+        // SET LOCAL vale só nesta transação: no pooler em modo transação volta ao padrão no
+        // COMMIT/ROLLBACK e nunca passa para outro cliente. maxWait 30 s = pool_timeout do
+        // Prisma: com o pool cheio, o cancelamento não falha antes do que falharia no V1.
+        await tx.$executeRawUnsafe(`SET LOCAL idle_in_transaction_session_timeout = '11min'`);
         await devolucao.lockOrigens(tx,userId,[chaveOriginal]);
         const linhas=await devolucao.linhasSaldo(userId,chaveOriginal,tx);
         // A MESMA regra (autorizada ou em envio), agora citando CADA devolução: nº e id.
         const bloqueio=erroOriginalComDevolucao(linhas);
         if(bloqueio)throw bloqueio;
         return executeCancel();
-      },{timeout:600000,maxWait:5000});
+      },{timeout:600000,maxWait:30000});
+    }
+    // Devolução DESLIGADA para a config (rollback por config — tirada da allowlist — ou config
+    // que nunca teve devolução): a trava continua valendo para a original que TEM devolução
+    // autorizada ou em envio, agora FORA de transação. Sem a devolução ligada a config não
+    // emite devolução (o V1 recusa o rascunho com cabeçalho), então não há corrida para o lock
+    // serializar. Só com o gate global ligado (desligado: nenhuma consulta, V1 byte a byte);
+    // 1 SELECT indexado por cancelamento, que só acha linha onde existe NfeDevolucaoItem.
+    if(process.env.NFE_DEVOLUCAO_ENABLED==="true") {
+      let linhas:Awaited<ReturnType<NfeDevolucaoRepository["linhasSaldo"]>>=[];
+      try{linhas=await new NfeDevolucaoRepository().linhasSaldo(userId,chaveOriginal);}
+      catch(e){if(!tabelaFiscalAusente(e))throw e;}
+      const bloqueio=erroOriginalComDevolucao(linhas);
+      if(bloqueio)throw bloqueio;
     }
     return executeCancel();
   }

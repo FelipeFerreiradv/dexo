@@ -663,14 +663,23 @@ Normally leave the tables in place; they are inert. **Forbidden pair:** flags ON
 
 ### 6.2 VPS deploy (per PR)
 
+Standard deploy since 25/09/2026. The build runs **in** `/var/www/dexo`: `.next` stores absolute paths, so a build made in another folder cannot be moved in. The site is unstable for about 3 minutes while `next build` rewrites `.next`; the API stays up. The deploy never runs `prisma migrate deploy` or `db push`: DDL is a separate, reviewed step, applied before the code that uses it.
+
 ```bash
-cd /var/www/dexo && git status --porcelain && git log -1 --oneline   # clean; expect 1549bc4 or the current prod sha
+cd /var/www/dexo && git status --porcelain && git log -1 --oneline   # clean; note the current prod sha
+ANTES=$(git rev-parse HEAD)
 git pull --ff-only
-npm ci                                             # postinstall = prisma generate. Never restart pm2 after a failed install
-ls -l node_modules/.prisma/client/index.js         # > 200KB
+git diff --name-only "$ANTES"..HEAD -- package-lock.json prisma/schema.prisma   # decides the next step
+# package-lock.json listed → npm ci (postinstall = prisma generate). Never restart pm2 after a failed install
+# only prisma/schema.prisma listed → pinned generate, never `npx prisma` (`npm run build` does not generate the client):
+#   node node_modules/prisma/build/index.js generate --schema=prisma/schema.prisma
+# either way, node_modules/.prisma/client/index.js must be > 200KB: a stale client breaks dexo-api at runtime (tsx does no type check)
+cp -a .next .next.bak-$(date +%Y%m%d-%H%M%S)      # frontend rollback point
 npm run build; echo "rc=$?"                        # build-id + next build
-pm2 restart dexo-api && pm2 restart dexo-frontend  # NEVER --update-env; avoid `restart all` (re-runs the catalog-stats batch)
-pm2 save
+# routine pre-flight gate right here, read-only (docs/fiscal-numeracao-v2.md, "Gate de pré-voo"): no EM_TRANSMISSAO/INCERTO
+#   reservation with a live lease, no note in VALIDATING/SIGNING/SENDING, no pending inutilização. A parked BLOQUEADO does not
+#   count here; switching a flag on, widening a list or rolling back uses the strict gate instead
+pm2 restart dexo-api dexo-frontend                 # + dexo-sync-orders when sync code changed. NEVER --update-env; NEVER `restart all` (re-runs the catalog-stats batch)
 curl -s http://127.0.0.1:3000/api/version          # new sha in build id
 pm2 logs dexo-api --lines 100 --nostream
 ```
@@ -682,15 +691,25 @@ pm2 logs dexo-api --lines 100 --nostream
 | 0 | Diagnostic snapshot **T0**, read-only (§6.4) | saved to `/var/www/dexo-diag/diag-T0.csv` |
 | 1 | Deploy PR-0/PR-1 code, **flags OFF, no DDL** | 24h: homologação smoke on T-SEFAZ and T-FOCUS gives the same audit event sequence as before; `/fiscal/nfe/:id/issue` error rate unchanged (query `SystemLog` by `details.url`, never by `action`) |
 | 2 | Apply DDL 1 (and 2, 3 when their code is live) | VERIFY clean |
-| 3 | Backend allowlists = homologação ids only; edit `.env`, `pm2 restart dexo-api` | manual matrix (§5) passes; diagnostic shows no new holes |
+| 3 | Backend allowlists = homologação ids only; edit `.env`, `pm2 restart dexo-api` | manual matrix (§5) passes; diagnostic shows no new holes. **Superseded — see Status on 25/09/2026 below** (the homologação UAT was replaced) |
 | 4 | `NEXT_PUBLIC_*` UI flags → `npm run build` → `pm2 restart dexo-frontend` | UI shows features only where the capabilities endpoint says the config is allowlisted |
 | 5 | **Production canary, numbering v2:** add 1 low-volume, consenting SEFAZ-direct PRODUCAO config | 3 business days: 0 P2002 in numbering; 0 ledger numbers with two active bindings; 0 `numero ≠ nNF(chave)`; 0 INCERTO older than 15 min; no increase in `/issue` 500s; no new abandoned numbers in the diagnostic |
-| 6 | 3 configs, then `*` | same criteria |
+| 6 | **Replaced on 25/09/2026 (owner's decision):** the "3 configs for 48 h" step gives way to an explicit list of every SEFAZ_DIRECT config in **both** allowlists, never `*` | 24 h and 48 h vigil (below) |
 | 7 | Focus Dexo numbering + read-back in prod | only for a Focus prod tenant, **on from its first prod note** (Kiko after UPD authorization) |
 | 8 | RT per company | Kiko row `modo=PROVEDOR` (send nothing); SEFAZ-direct tenants with no row fall back to env, byte-identical per golden |
-| 9 | Devolução | homologação now; **prod not before 05/10/2026**, when `DFeReferenciado` becomes mandatory in production |
+| 9 | Devolução | ~~homologação now; prod not before 05/10/2026, when `DFeReferenciado` becomes mandatory in production~~ **Superseded — see Status on 25/09/2026 below** (live in production for the DLS since 24/09/2026, referencing by note until 04/10) |
 
-**Stop rule:** any criterion breached → remove the id from the allowlist and `pm2 restart dexo-api` (seconds). Rollback is safe because the counter is shared (R-1, P9). A binary rollback also works with the new tables present: old code never touches them.
+**Stop rule:** any criterion breached → remove the id from **both** allowlists (never set `NFE_NUMERACAO_V2_ENABLED=false`: the note would fall to V1 and be renumbered), run the strict pre-flight gate and `pm2 restart dexo-api` (seconds). Rollback is safe because the counter is shared (R-1, P9). A binary rollback also works with the new tables present: old code never touches them.
+
+**Status on 25/09/2026.** The runbook for everything below is in `docs/fiscal-numeracao-v2.md`, "Rollout e rollback".
+- Step 5 is done: the DLS config has been the production canary since 22/09/2026. Its criteria, measured on 25/09/2026, passed: no double binding, no INCERTO, no `numero ≠ nNF(chave)`, P2002 only from `OrderRepository`, no `/issue` 500 for the DLS.
+- Step 6 and the homologação UAT of step 3 were replaced by the owner's decision. The wider rollout puts the same **explicit list** of the SEFAZ_DIRECT configs in `NFE_NUMERACAO_V2_CONFIG_IDS` and `NFE_DEVOLUCAO_CONFIG_IDS` at once: devolução goes on together with numbering (owner's decision of 25/09/2026). The per-config devolução rollback protection and the cancellation that survives a slow SEFAZ are deployed before that switch. Never `*`: `isDevolucaoAtiva` ignores the provider, and the Focus sub-flag reads the same allowlist. A new SEFAZ_DIRECT config joins both lists at onboarding.
+- Vigil at 24 h and 48 h after each widening, read-only: reservations in `EM_TRANSMISSAO`/`INCERTO`/`BLOQUEADO` untouched for more than 15 min; `ABANDONADO`/`INUTILIZADO`/`CONSUMIDO_EXTERNO` reservations moved there since the switch (by `updatedAt`, so an older reservation that changes state counts), reading `motivo`; `numero ≠ nNF(chave)` on model-55 AUTHORIZED/CANCELLED notes since the switch; `grep -h P2002 ~/.pm2/logs/dexo-api-*.log | grep -v OrderRepository`; `/issue` 500s in `SystemLog` by `details.url`; `SEQUENCIA_ATRAS_DA_SEFAZ` in the log. Anything unexplained → stop rule.
+- Every restart that switches on, widens or rolls back a list is preceded by the strict pre-flight gate (0 reservations in `EM_TRANSMISSAO`/`INCERTO`/`BLOQUEADO` in any config, 0 notes in `VALIDATING`/`SIGNING`/`SENDING`, 0 pending inutilização) and restarts only `dexo-api`, the only process that reads these flags. Rolling back one config adds the pre-flight filtered by that config. A routine code deploy, with no flag change, uses the routine gate (live lease instead of any `EM_TRANSMISSAO`/`INCERTO`/`BLOQUEADO`); the definition of both lives only in `docs/fiscal-numeracao-v2.md`, "Gate de pré-voo".
+- Devolução on the wider list: watch by cStat the first devolução of each authorizer that never received one (GO, MG, PR, SP) and, from 05/10, the first by-item devolução of each authorizer in production; 225, 321 or 1010 → remove that UF's configs from `NFE_DEVOLUCAO_CONFIG_IDS` only. The by-item format was authorized in homologação at SVRS on 25/09/2026 (protocol 342260000975434).
+- Step 4 does not apply to numbering v2 or devolução: neither has a `NEXT_PUBLIC_*` flag. The UI follows the server (`numeracao` in the responses, `GET /fiscal/nfe/devolucao/disponibilidade`).
+- Step 7 stays off: `NFE_NUMERACAO_V2_FOCUS_ENABLED=false` until the Focus prerequisites in `docs/roteiro-emissao-focus-nfe.md` are met.
+- Step 9: devolução has been live in production for the DLS since 24/09/2026. Until 04/10 production references the original by note; from 05/10 by item (`NFE_DEVOLUCAO_REF_ITEM_PROD_DESDE`, default 2026-10-05, one global value).
 
 ### 6.4 Read-only diagnostic: `scripts/fiscal/diagnostico-numeracao-nfe.ts`
 

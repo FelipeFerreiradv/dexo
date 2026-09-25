@@ -1141,6 +1141,22 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // Numeração V2: descarta o nº RETIDO para conferência (reserva BLOQUEADO) sem excluir a nota,
+  // que volta a rascunho e recebe número novo ao emitir (paridade com o V1). Contrato da tela:
+  // 200 {ok, numeroDescartado, serie}; 409 NUMERACAO_CONFIRMAR_DESCARTE {numero, serie} sem
+  // `confirmar:true`; 409 NUMERACAO_NAO_BLOQUEADA; 404 nota inexistente/de outro tenant.
+  fastify.post<{Params:{id:string};Body:{confirmar?:unknown}|undefined}>("/nfe/:id/numeracao/descartar-bloqueado",{preHandler:[authMiddleware,exigeAcessoFiscal]},async(request,reply)=>{
+    try{
+      const user=(request as FastifyRequest & {user:{id?:string;dataOwnerId:string}}).user;
+      const r=await nfeDraft.descartarNumeroBloqueado(user.dataOwnerId,request.params.id,request.body?.confirmar===true,user.id);
+      return reply.status(200).send({ok:true,numeroDescartado:r.numero,serie:r.serie});
+    }catch(error){
+      if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});
+      request.log?.error?.(error);
+      return reply.code(500).send({error:"Não foi possível descartar o número"});
+    }
+  });
+
   // ── Listagem de notas emitidas (F6) ──
   fastify.post<{Params:{id:string}}>("/nfe/:id/consultar-situacao",{preHandler:[authMiddleware,exigeAcessoFiscal]},async(request,reply)=>{
     try{return await nfeEmission.consultarSituacao((request as FastifyRequest & {user:{dataOwnerId:string}}).user.dataOwnerId,request.params.id);}
@@ -1615,6 +1631,10 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           numeroFinal: Number(body.numeroFinal),
           justificativa: body.justificativa ?? "",
           companyFiscalConfigId: inutCompanyId,
+          // Numeração V2: só o booleano true confirma o descarte dos números reservados da
+          // faixa (409 NUMERACAO_CONFIRMAR_DESCARTE sem ele). O ramo V1 ignora os dois campos.
+          confirmarDescarteNumeros: body.confirmarDescarteNumeros === true,
+          actorUserId: (request as any).user?.id as string | undefined,
         });
         return reply.status(result.success ? 200 : 422).send(result);
       } catch (error) {

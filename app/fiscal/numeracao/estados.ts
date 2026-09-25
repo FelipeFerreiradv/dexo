@@ -54,10 +54,18 @@ export const ESTADOS_RESERVA: readonly EstadoReserva[] = [
  * rotina: nenhum caminho automático alcança uma reserva BLOQUEADA
  * (`aplicarResultado`, `naoConstaConfirmado`, `devolverIncerto` e `tomarLease`
  * exigem reserva aberta; `reservarOuReutilizar` exige reusável; `emitir` para
- * em BLOQUEADA_MANUAL). Quem transiciona é `abandonarPorExclusao` — exclusão do
- * rascunho com descarte CONFIRMADO, exigido aqui em qualquer ambiente, e com
- * `requerInutilizacao` em produção. Sem essa aresta o número virava beco sem
- * saída, destravável só por SQL em produção.
+ * em BLOQUEADA_MANUAL). Quem transiciona, sempre com descarte CONFIRMADO (em
+ * qualquer ambiente) e `requerInutilizacao` em produção:
+ *  - `abandonarPorExclusao` — exclusão do rascunho;
+ *  - `descartarNumeroBloqueado` — descarta só o número; a nota volta a rascunho
+ *    e é reemitida com número novo (paridade com o V1);
+ *  - `inutilizacaoGuard` — inutilização da faixa que o contém.
+ * Sem essa aresta o número virava beco sem saída, destravável só por SQL em
+ * produção.
+ *
+ * RESERVADO/REJEITADO → ABANDONADO também é percorrida pela inutilização com
+ * descarte confirmado (`inutilizacaoGuard`), seguida de ABANDONADO → INUTILIZADO
+ * na ACEITA (`inutilizacaoPos`).
  *
  * BLOQUEADO → RESERVADO segue PROIBIDA de propósito: devolveria ao pool de
  * reuso (e daí a EM_TRANSMISSAO) um número que pode estar autorizado na SEFAZ

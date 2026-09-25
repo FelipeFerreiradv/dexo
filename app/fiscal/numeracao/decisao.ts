@@ -6,7 +6,8 @@
  *  - `decidirAdocaoLegado`: adotar o número de uma linha V1 na mesma linha, só
  *    com evidência (§4.5). Linha da Focus nunca é adotada.
  *  - `decidirReadbackFocus`: nº/série REAIS lidos da chave autorizada (§4.7).
- *  - `avaliarFaixa`: guarda da inutilização V2 (§4.15).
+ *  - `avaliarFaixa`: guarda da inutilização V2 (§4.15) — bloqueia, pede confirmação de
+ *    descarte (`mensagemDescarteFaixa`) ou segue.
  *  - `hashConteudo`: impressão digital do conteúdo do rascunho (L1).
  *
  * Só do servidor: `hashConteudo` usa `node:crypto`. Nada daqui vai para o client.
@@ -496,6 +497,33 @@ export interface BloqueioFaixa {
   nfeId?: string;
 }
 
+/** Reserva da faixa que a inutilização só pode descartar com confirmação explícita. */
+export interface DescarteFaixa {
+  numero: number;
+  estado: string;
+  /** Reserva e nota vinculada: o serviço transiciona a reserva e devolve a nota ao placeholder. */
+  reservaId?: string;
+  nfeId?: string | null;
+}
+
+export type AcaoFaixa = "SEGUIR" | "BLOQUEAR" | "CONFIRMAR_DESCARTE";
+
+/**
+ * Reservas que a inutilização descarta COM confirmação: o número nunca chegou à SEFAZ
+ * (RESERVADO), a SEFAZ recusou (REJEITADO) ou ela já respondeu e o que falta é a
+ * conferência humana (BLOQUEADO — a confirmação diz que o nº NÃO foi autorizado; se foi,
+ * a própria SEFAZ recusa a inutilização, falha segura). Transmissão aberta
+ * (EM_TRANSMISSAO/INCERTO) e número consumido nunca entram aqui.
+ */
+const RESERVA_DESCARTAVEL_NA_FAIXA = new Set(["RESERVADO", "REJEITADO", "BLOQUEADO"]);
+
+/**
+ * Linha que NÃO barra a faixa: rascunho/rejeitada sem reserva no número é legado do V1,
+ * que inutiliza e deixa a linha como está (a reemissão não reusa o número: a adoção recusa
+ * NUMERO_INUTILIZADO). Com reserva no número, quem decide é a reserva (regra abaixo).
+ */
+const LINHA_SEM_DOCUMENTO_FISCAL = new Set(["INUTILIZED", "DRAFT", "REJECTED"]);
+
 function motivoLinha(numero: number, id: string, status: string): string {
   switch (status) {
     case "AUTHORIZED":
@@ -506,48 +534,81 @@ function motivoLinha(numero: number, id: string, status: string): string {
     case "VALIDATING":
     case "SIGNING":
       return `nº ${numero} está em emissão (${id})`;
-    case "DRAFT":
-    case "REJECTED":
-      return `nº ${numero} está no rascunho ${id} — exclua o rascunho antes de inutilizar`;
     default:
       return `nº ${numero} está em uso (${id}, situação ${status})`;
   }
 }
 
 /**
- * Guarda da inutilização V2: bloqueia a faixa quando algum número está numa
- * NF-e (qualquer situação exceto INUTILIZED) ou numa reserva que não seja
- * ABANDONADO. Linhas e reservas fora de [ini, fim] são ignoradas.
+ * Guarda da inutilização V2. Linhas e reservas fora de [ini, fim] são ignoradas.
+ *  - BLOQUEAR: número em NF-e emitida ou em emissão (qualquer situação fora de
+ *    INUTILIZED/DRAFT/REJECTED) ou em reserva que pode estar (ou vai estar) na SEFAZ.
+ *    Prevalece sobre o descarte: confirmar não abre atalho.
+ *  - CONFIRMAR_DESCARTE: só há reservas RESERVADO/REJEITADO/BLOQUEADO e o operador
+ *    ainda não confirmou descartá-las.
+ *  - SEGUIR: faixa livre, ou descarte confirmado (`descartes` lista o que descartar).
  */
 export function avaliarFaixa(e: {
   linhas: ReadonlyArray<{ id: string; numero: number; status: string }>;
-  reservas: ReadonlyArray<{ numero: number; estado: string }>;
+  reservas: ReadonlyArray<{ numero: number; estado: string; id?: string; nfeId?: string | null }>;
   ini: number;
   fim: number;
-}): { ok: boolean; bloqueios: BloqueioFaixa[] } {
+  /** Operador confirmou descartar as reservas RESERVADO/REJEITADO/BLOQUEADO da faixa. */
+  confirmarDescarte?: boolean;
+}): { ok: boolean; acao: AcaoFaixa; bloqueios: BloqueioFaixa[]; descartes: DescarteFaixa[] } {
   const { ini, fim } = e;
   if (!Number.isInteger(ini) || !Number.isInteger(fim) || ini < 1 || fim < ini) {
     return {
       ok: false,
+      acao: "BLOQUEAR",
       bloqueios: [{ numero: Number.isInteger(ini) ? ini : 0, motivo: "Faixa de numeração inválida" }],
+      descartes: [],
     };
   }
   const dentro = (n: number) => Number.isInteger(n) && n >= ini && n <= fim;
   const bloqueios: BloqueioFaixa[] = [];
+  const descartes: DescarteFaixa[] = [];
 
   for (const l of e.linhas) {
-    if (!dentro(l.numero) || l.status === "INUTILIZED") continue;
+    if (!dentro(l.numero) || LINHA_SEM_DOCUMENTO_FISCAL.has(l.status)) continue;
     bloqueios.push({ numero: l.numero, nfeId: l.id, motivo: motivoLinha(l.numero, l.id, l.status) });
   }
   for (const r of e.reservas) {
     if (!dentro(r.numero) || r.estado === "ABANDONADO") continue;
+    if (RESERVA_DESCARTAVEL_NA_FAIXA.has(r.estado)) {
+      descartes.push({ numero: r.numero, estado: r.estado, reservaId: r.id, nfeId: r.nfeId ?? null });
+      continue;
+    }
     bloqueios.push({
       numero: r.numero,
       motivo: `nº ${r.numero} tem reserva de numeração em ${r.estado}`,
     });
   }
   bloqueios.sort((a, b) => a.numero - b.numero);
-  return { ok: bloqueios.length === 0, bloqueios };
+  descartes.sort((a, b) => a.numero - b.numero);
+  const acao: AcaoFaixa = bloqueios.length
+    ? "BLOQUEAR"
+    : descartes.length && e.confirmarDescarte !== true
+      ? "CONFIRMAR_DESCARTE"
+      : "SEGUIR";
+  return { ok: acao === "SEGUIR", acao, bloqueios, descartes };
+}
+
+/**
+ * Texto do 409 NUMERACAO_CONFIRMAR_DESCARTE da inutilização: o que acontece com a nota
+ * (volta a rascunho e recebe número novo) e, para BLOQUEADO, a conferência exigida.
+ */
+export function mensagemDescarteFaixa(descartes: ReadonlyArray<Pick<DescarteFaixa, "numero" | "estado">>, serie: number): string {
+  const numeros = descartes.map((d) => d.numero);
+  const retidos = descartes.filter((d) => d.estado === "BLOQUEADO").map((d) => d.numero);
+  const um = numeros.length === 1;
+  const base = um
+    ? `O nº ${numeros[0]} (série ${serie}) está reservado para uma NF-e não autorizada: inutilizá-lo descarta o número — a nota volta a rascunho e, ao emitir de novo, recebe número novo.`
+    : `Os nºs ${numeros.join(", ")} (série ${serie}) estão reservados para NF-e não autorizadas: inutilizá-los descarta esses números — as notas voltam a rascunho e, ao emitir de novo, recebem número novo.`;
+  if (!retidos.length) return `${base} Confirme para continuar.`;
+  return retidos.length === 1
+    ? `${base} O nº ${retidos[0]} está retido para conferência: confirme que ele NÃO foi autorizado na SEFAZ antes de descartá-lo.`
+    : `${base} Os nºs ${retidos.join(", ")} estão retidos para conferência: confirme que eles NÃO foram autorizados na SEFAZ antes de descartá-los.`;
 }
 
 /** Texto único para o erro da faixa: até `max` bloqueios e a contagem do resto. */
