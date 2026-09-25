@@ -180,21 +180,37 @@ describe("pendências da devolução — lista vazia", () => {
 });
 
 describe("pendências da devolução — o texto tem de LER bem", () => {
-  it("frase que começa pelos itens sai com maiúscula, com ou sem item", () => {
+  it("origem não informada: diz onde a origem se escolhe e como sair de um rascunho já criado sem ela", () => {
+    const [p] = viewPendencias([
+      { code: "ICMS_ORIGEM_NAO_INFORMADA", severidade: "ERRO", ordem: 1, mensagem: "Item 1: a origem da mercadoria não foi informada." },
+    ]).bloqueios;
+    expect(p.titulo).toBe("Falta informar a origem da mercadoria");
+    // O assistente não tem o campo: a origem só se escolhe no quadro de criação.
+    expect(p.comoResolver).toContain('"Devolução manual"');
+    // Saída para o rascunho que nasceu sem ela (antes da origem virar obrigatória).
+    expect(p.comoResolver).toContain('descarte-a em "Devoluções em andamento"');
+  });
+
+  it("IBS/CBS: a frase lê bem com um item, com vários e sem item", () => {
     const [comItem] = viewPendencias([
       { code: "IBS_CBS_NAO_ENVIADO", severidade: "AVISO", ordem: 2, mensagem: "Item 2: IBS/CBS da nota original não é enviado na devolução." },
     ]).avisos;
     expect(comItem.titulo).toBe(
-      "O item 2 tem IBS/CBS na nota original, e a devolução não envia esse grupo",
+      "A nota original tem IBS/CBS no item 2, e a devolução não envia esse grupo",
     );
     // "…na devolução no item 2" (dois "no" seguidos) era o motivo de esta
     // entrada citar o item na frente.
     expect(comItem.titulo).not.toContain("devolução no item");
+    // Plural: "Os itens 1 e 2 tem IBS/CBS…" errava a concordância; a frase nova não depende do verbo.
+    const [doisItens] = viewPendencias([
+      { code: "IBS_CBS_NAO_ENVIADO", severidade: "AVISO", ordem: 1, mensagem: "Item 1: IBS/CBS da nota original não é enviado na devolução." },
+      { code: "IBS_CBS_NAO_ENVIADO", severidade: "AVISO", ordem: 2, mensagem: "Item 2: IBS/CBS da nota original não é enviado na devolução." },
+    ]).avisos;
+    expect(doisItens.titulo).toBe("A nota original tem IBS/CBS nos itens 1 e 2, e a devolução não envia esse grupo");
     const [semItem] = viewPendencias([
       { code: "IBS_CBS_NAO_ENVIADO", severidade: "AVISO", mensagem: "IBS/CBS não é enviado." },
     ]).avisos;
-    expect(semItem.titulo.charAt(0)).toBe(semItem.titulo.charAt(0).toUpperCase());
-    expect(semItem.titulo.startsWith("Tem IBS/CBS")).toBe(true);
+    expect(semItem.titulo).toBe("A nota original tem IBS/CBS, e a devolução não envia esse grupo");
   });
 
   it("detalhe que repete o título palavra por palavra não aparece duas vezes", () => {

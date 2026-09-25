@@ -325,8 +325,9 @@ export interface LinhaItemDigitado {
   quantidade: string;
   /**
    * Origem da mercadoria (0 a 8), como está na nota original. SEM valor
-   * pré-escolhido: vazio = não informada, e o Dexo não inventa (o servidor grava
-   * nula). Na venda do Dexo ("Devolver pela chave") vem da própria nota.
+   * pré-escolhido — o Dexo não inventa —, mas OBRIGATÓRIA para criar: sem ela a
+   * emissão recusa (ICMS_ORIGEM_NAO_INFORMADA) e o assistente não tem onde
+   * informar depois. Na venda do Dexo ("Devolver pela chave") vem da própria nota.
    */
   origem?: string;
   /**
@@ -410,10 +411,18 @@ export function lerItensDigitados(linhas: readonly LinhaItemDigitado[]): { itens
     if (l.codigo.trim() === "") erros.push({ campo: `${p}codigo`, mensagem: "Informe o código da peça na nota." });
     if (l.descricao.trim() === "") erros.push({ campo: `${p}descricao`, mensagem: "Informe a descrição da peça na nota." });
     if (l.unidade.trim() === "") erros.push({ campo: `${p}unidade`, mensagem: "Informe a unidade (UN, PC…)." });
-    // Opcionais: vazios não vão no corpo (o servidor não inventa nada no lugar).
+    // Origem: obrigatória. Em branco, o rascunho nascia travado — a emissão recusa
+    // (ICMS_ORIGEM_NAO_INFORMADA) e o assistente não tem campo de origem. É a mesma
+    // regra do servidor, dita aqui, antes de criar.
     const origemTexto = (l.origem ?? "").trim();
-    const origemOk = origemTexto === "" || /^[0-8]$/.test(origemTexto);
-    if (!origemOk) erros.push({ campo: `${p}origem`, mensagem: "Escolha a origem na lista (0 a 8)." });
+    const origemOk = /^[0-8]$/.test(origemTexto);
+    if (!origemOk) {
+      erros.push({
+        campo: `${p}origem`,
+        mensagem: origemTexto === "" ? "Escolha a origem da mercadoria desta peça." : "Escolha a origem na lista (0 a 8).",
+      });
+    }
+    // Opcional: vazia não vai no corpo (o servidor não inventa nada no lugar).
     const qOrigTexto = (l.quantidadeOriginal ?? "").trim();
     const qOrig = qOrigTexto === "" ? null : lerNumeroDigitado(qOrigTexto, { casas: 4 });
     if (qOrig && !qOrig.ok) erros.push({ campo: `${p}quantidadeOriginal`, mensagem: qOrig.mensagem });

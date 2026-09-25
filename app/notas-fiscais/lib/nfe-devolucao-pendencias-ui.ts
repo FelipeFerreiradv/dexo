@@ -308,7 +308,7 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
   ICMS_ORIGEM_NAO_INFORMADA: {
     falta: "Falta informar a origem da mercadoria",
     comoResolver:
-      'Na devolução pela chave, escolha a "Origem da mercadoria" de cada peça (nacional, importada…). O Dexo não escolhe por você: com o campo em branco a nota sairia como nacional, o que está errado para peça importada.',
+      'A origem de cada peça (nacional, importada…) é escolhida no quadro "Devolução manual", ao criar a devolução pela chave. O Dexo não escolhe por você: com o campo em branco a nota sairia como nacional, o que está errado para peça importada. Se esta devolução já foi criada sem a origem, descarte-a em "Devoluções em andamento" e crie de novo pela chave, escolhendo a origem de cada peça.',
   },
   REGIME_NAO_CADASTRADO: {
     falta: "O regime tributário da empresa não está cadastrado",
@@ -407,8 +407,9 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
       'No passo 3 ("Produtos"), baixe a quantidade até o "Disponível para devolver" que aparece na própria peça. Se ele estiver em 0, não sobrou nada dela para devolver: tire-a com o botão "Tirar desta devolução". Depois clique em "Salvar devolução".',
   },
   OUTRA_DEVOLUCAO_EM_ENVIO: {
-    // Começa pelos itens pelo mesmo motivo do IBS/CBS: "…à SEFAZ no item 2".
-    falta: "{OS_ITENS} também está numa outra devolução que está sendo enviada à SEFAZ",
+    // Os itens vão no FIM, como objeto ("…também inclui os itens 3 e 4"): o verbo não
+    // depende do número — "Os itens 3 e 4 também está…" errava a concordância.
+    falta: "Outra devolução, que está sendo enviada à SEFAZ, também inclui {OS_ITENS}",
     comoResolver:
       "A quantidade daquela devolução já saiu do que ainda pode ser devolvido desta peça; se ela for recusada, a quantidade volta. Confira o resultado dela em \"Notas Emitidas\" antes de emitir esta. Isto não impede a emissão.",
   },
@@ -467,9 +468,9 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
     comoResolver: "Confirme com o seu contador. Isto não impede a emissão.",
   },
   IBS_CBS_NAO_ENVIADO: {
-    // Frase que começa pelos itens: "…na devolução no item 2" sairia com dois
-    // "no" seguidos. A maiúscula do começo é posta por `expandirTokens`.
-    falta: "{OS_ITENS} tem IBS/CBS na nota original, e a devolução não envia esse grupo",
+    // "no item 2" logo depois de IBS/CBS (no fim, "…na devolução no item 2", sairiam dois
+    // "no" seguidos), e o verbo não depende do número: "Os itens 1 e 2 tem…" errava.
+    falta: "A nota original tem IBS/CBS {NOS_ITENS}, e a devolução não envia esse grupo",
     comoResolver: "Não precisa fazer nada: isto não impede a emissão.",
   },
   PIS_COFINS_NAO_SUPORTADO: {

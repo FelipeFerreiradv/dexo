@@ -326,4 +326,33 @@ describe("registrarAutorizacao: idempotente (o replay depois de queda pode chama
     await casoDeUso(repo).registrarAutorizacao("tenant", "dev-dls");
     expect(chamadas.audits.map((a) => a.evento)).toEqual(["DEVOLUCAO_SALDO_EXCEDIDO", "DEVOLUCAO_AUTORIZADA"]);
   });
+
+  // Peça vendida em fração (mangueira em metro, óleo em litro): 0,1 + 0,2 em ponto
+  // flutuante dá 0,30000000000000004 e gravava "devolução acima da nota" numa nota de 0,3.
+  it("soma fracionada exata não é excesso: 0,1 + 0,2 de uma nota com 0,3 não grava alarme", async () => {
+    const dados = persistida({ fonte: "MANUAL", itens: [ITEM6] });
+    const { repo, chamadas } = repoEmMemoria({
+      persistidas: { "dev-dls": dados },
+      linhas: [
+        linha(6, 0.1, "AUTHORIZED", { fonteDevolucao: "XML_IMPORTADO", quantidadeOriginal: "0.3" }),
+        linha(6, 0.2, "AUTHORIZED", { devolucaoNfeId: "dev-dls" }),
+      ],
+    });
+    await casoDeUso(repo).registrarAutorizacao("tenant", "dev-dls");
+    expect(chamadas.audits.map((a) => a.evento)).toEqual(["DEVOLUCAO_AUTORIZADA"]);
+  });
+
+  it("excesso fracionado de verdade continua detectado, com a quantidade exata no detalhe: 0,2 + 0,2 de 0,3", async () => {
+    const dados = persistida({ fonte: "MANUAL", itens: [ITEM6] });
+    const { repo, chamadas } = repoEmMemoria({
+      persistidas: { "dev-dls": dados },
+      linhas: [
+        linha(6, 0.2, "AUTHORIZED", { fonteDevolucao: "XML_IMPORTADO", quantidadeOriginal: "0.3" }),
+        linha(6, 0.2, "AUTHORIZED", { devolucaoNfeId: "dev-dls" }),
+      ],
+    });
+    await casoDeUso(repo).registrarAutorizacao("tenant", "dev-dls");
+    expect(chamadas.audits.map((a) => a.evento)).toEqual(["DEVOLUCAO_SALDO_EXCEDIDO", "DEVOLUCAO_AUTORIZADA"]);
+    expect((chamadas.audits[0] as { detalhes?: { quantidade?: number } }).detalhes?.quantidade).toBe(0.4);
+  });
 });

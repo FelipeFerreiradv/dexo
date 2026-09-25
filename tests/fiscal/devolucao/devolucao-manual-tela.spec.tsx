@@ -260,11 +260,12 @@ describe("pela chave — colar do DANFE, vírgula e o fornecedor pela chave", ()
     expect(valor.value).toBe("45,");
     await digitar(valor, "45,90");
     expect(valor.value).toBe("45,90");
+    await digitar(campo("Origem da mercadoria"), "0");
     await clicar(Array.from(container.querySelectorAll('input[type="checkbox"]')).at(-1) as HTMLInputElement);
     await clicar(botao("Criar rascunho de devolução"));
     const corpo = posts("/fiscal/nfe/devolucao/manual")[0].corpo;
     expect(corpo.chaveAcesso).toBe(CHAVE);
-    expect(corpo.itens).toEqual([{ nItem: 5, codigo: "F5", descricao: "Farol direito", ncm: "87081000", unidade: "UN", cfopOriginal: null, valorUnitario: 45.9, quantidade: 1 }]);
+    expect(corpo.itens).toEqual([{ nItem: 5, codigo: "F5", descricao: "Farol direito", ncm: "87081000", unidade: "UN", cfopOriginal: null, valorUnitario: 45.9, quantidade: 1, origem: 0 }]);
     expect(corpo.destinatario).toEqual({ tipoPessoa: "PJ", cpfCnpj: "11.222.333/0001-81", nome: "DISAUTO DISTRIBUIDORA", uf: "SC" });
     expect(h.navegacoes).toEqual(["/notas-fiscais/nfe?draft=k1"]);
   });
@@ -279,6 +280,20 @@ describe("pela chave — colar do DANFE, vírgula e o fornecedor pela chave", ()
     expect(alertas()).toContain(CONFIRA_OS_CAMPOS);
   });
 
+  it("origem em branco: o erro aparece NO campo e nada é enviado (antes nascia um rascunho que nunca emitia)", async () => {
+    await modoChave();
+    await digitar(campo("Chave de acesso"), CHAVE_DANFE);
+    await digitar(campo("Destinatário"), "DISAUTO");
+    await digitar(campo("Código"), "F5");
+    await digitar(campo("Descrição"), "Farol");
+    await digitar(campo("NCM"), "87081000");
+    await digitar(campo("Valor unitário (R$)"), "10");
+    await clicar(Array.from(container.querySelectorAll('input[type="checkbox"]')).at(-1) as HTMLInputElement);
+    await clicar(botao("Criar rascunho de devolução"));
+    expect(alertas()).toContain("Escolha a origem da mercadoria desta peça.");
+    expect(posts("/fiscal/nfe/devolucao/manual")).toHaveLength(0);
+  });
+
   it("recusa do servidor por campo aparece no campo (UF de outro estado, 1194…)", async () => {
     rotas["POST /fiscal/nfe/devolucao/manual"] = [{ status: 400, body: { error: "Dados da requisição inválidos.", code: "PAYLOAD_INVALIDO", erros: [{ campo: "chaveAcesso", mensagem: "Esta chave é de uma nota emitida pela sua própria empresa." }, { campo: "itens[0].ncm", mensagem: "NCM com 8 dígitos." }, { campo: "tipo", mensagem: "Informe o tipo de devolução." }] } }];
     await modoChave();
@@ -288,6 +303,7 @@ describe("pela chave — colar do DANFE, vírgula e o fornecedor pela chave", ()
     await digitar(campo("Descrição"), "Farol");
     await digitar(campo("NCM"), "87081000");
     await digitar(campo("Valor unitário (R$)"), "10");
+    await digitar(campo("Origem da mercadoria"), "1");
     await clicar(Array.from(container.querySelectorAll('input[type="checkbox"]')).at(-1) as HTMLInputElement);
     await clicar(botao("Criar rascunho de devolução"));
     expect(alertas()).toContain("Esta chave é de uma nota emitida pela sua própria empresa.");

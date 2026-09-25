@@ -328,11 +328,12 @@ describe("prévia pelo XML: ela escolhe as peças (nasciam TODAS, na quantidade 
 describe("itens digitados pela chave e prefill da nota do Dexo", () => {
   it("converte no envio; erro fica no campo, com a chave que o servidor usaria", () => {
     const r = lerItensDigitados([
-      { nItem: "3", codigo: "X", descricao: "Porta", ncm: "8708.29.99", unidade: "un", cfopOriginal: "5.102", valorUnitario: "45,90", quantidade: "1" },
+      { nItem: "3", codigo: "X", descricao: "Porta", ncm: "8708.29.99", unidade: "un", cfopOriginal: "5.102", valorUnitario: "45,90", quantidade: "1", origem: "0" },
       { nItem: "", codigo: "", descricao: "Y", ncm: "123", unidade: "UN", cfopOriginal: "", valorUnitario: "45,", quantidade: "1" },
     ]);
-    expect(r.itens).toEqual([{ nItem: 3, codigo: "X", descricao: "Porta", ncm: "87082999", unidade: "UN", cfopOriginal: "5102", valorUnitario: 45.9, quantidade: 1 }]);
-    expect(r.erros.map((e) => e.campo).sort()).toEqual(["itens[1].codigo", "itens[1].nItem", "itens[1].ncm", "itens[1].valorUnitario"]);
+    expect(r.itens).toEqual([{ nItem: 3, codigo: "X", descricao: "Porta", ncm: "87082999", unidade: "UN", cfopOriginal: "5102", valorUnitario: 45.9, quantidade: 1, origem: 0 }]);
+    // A segunda linha também não tem origem: obrigatória desde que o rascunho sem ela nascia travado.
+    expect(r.erros.map((e) => e.campo).sort()).toEqual(["itens[1].codigo", "itens[1].nItem", "itens[1].ncm", "itens[1].origem", "itens[1].valorUnitario"]);
   });
   it("a venda do Dexo vira linhas com vírgula; o param da lista acha a nota", () => {
     expect(linhasDaNota([{ numero: 2, codigo: "P", descricao: "Porta", ncm: "87082999", unidade: "UN", cfop: "5102", valorUnitario: 45.9, quantidade: 1 }])[0]).toEqual({ nItem: "2", codigo: "P", descricao: "Porta", ncm: "87082999", unidade: "UN", cfopOriginal: "5102", valorUnitario: "45,9", quantidade: "1" });
