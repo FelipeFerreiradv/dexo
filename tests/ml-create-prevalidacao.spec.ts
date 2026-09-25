@@ -148,6 +148,14 @@ const CATALOGO = [
     allowedUnits: ["°"],
     defaultUnit: "°",
   },
+  {
+    id: "INMETRO_CERTIFICATION_REGISTRATION_NUMBER",
+    name: "Número de registro/certificação INMETRO",
+    valueType: "string",
+    required: false,
+    variationRequired: false,
+  },
+  { id: "COLOR", name: "Cor", valueType: "string", required: false, variationRequired: false },
 ];
 
 const erroMl = (message: string, cause: any[], status = 400) => {
@@ -279,14 +287,18 @@ describe("valores da ficha técnica antes do POST", () => {
       id: "l-velha",
       externalListingId: "PENDING_1",
     });
-    produto.attributes = { REGULATORY_INFORMATION_QR_CODE: { value_name: "1" } };
+    // (Antes o exemplo era o QR code com texto; desde 25/09 ele sai do envio
+    // em vez de bloquear — a medida sem unidade segue bloqueando.)
+    produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "1" } };
     await criar();
     expect(ListingRepository.updateListing).toHaveBeenCalledWith(
       "l-velha",
       expect.objectContaining({
         status: "error",
         retryEnabled: false,
-        lastError: expect.stringMatching(/^\[TERMINAL\]\[CORRIGIVEL\] O campo "QR code/),
+        lastError: expect.stringMatching(
+          /^\[TERMINAL\]\[CORRIGIVEL\] O campo "Ângulo máximo de abertura"/,
+        ),
       }),
     );
   });
@@ -752,5 +764,92 @@ describe("descrição com emoji no corpo do POST /items (23/09/2026 — SKU 7167
     expect(chamadas()[0].description.plain_text).toContain(
       "Peça original — usada.\n• 90 dias de garantia",
     );
+  });
+});
+
+describe("ficha da Revisão individual × ficha gravada no produto (Xaxim, 25/09/2026)", () => {
+  // A revisão passou a abrir com a ficha do produto e a mandar só o que a
+  // pessoa MUDOU (null = apagou). Antes o valor gravado sempre vencia: o "10
+  // cm" digitado era descartado e o INMETRO de texto de busca voltava ao ML.
+  const criarComFicha = (ficha: Record<string, unknown>) =>
+    ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB46723",
+      "acct-1",
+      undefined,
+      undefined,
+      "actor-1",
+      ficha as any,
+    );
+
+  beforeEach(() => {
+    process.env.ML_REQUIRED_ATTRS_BLOCK = "1";
+    (MLApiService.createItem as any).mockRejectedValue(erroMl("Validation error", [INMETRO_3702]));
+  });
+
+  it("medida gravada SEM unidade + corrigida na revisão ⇒ vai a da revisão (não bloqueia)", async () => {
+    produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "1" } };
+    await criarComFicha({ MAXIMUM_OPENING_ANGLE: { value_name: "90 °" } });
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    expect(attr(chamadas()[0], "MAXIMUM_OPENING_ANGLE")).toMatchObject({ value_name: "90 °" });
+  });
+
+  it("correção que TAMBÉM é inválida ⇒ não substitui; segue o bloqueio pelo valor do produto", async () => {
+    produto.attributes = { MAXIMUM_OPENING_ANGLE: { value_name: "1" } };
+    await criarComFicha({ MAXIMUM_OPENING_ANGLE: { value_name: "10" } });
+    expect(MLApiService.createItem).not.toHaveBeenCalled();
+  });
+
+  it("INMETRO gravado com texto de busca + apagado na revisão (null) ⇒ não vai ao ML", async () => {
+    produto.attributes = {
+      INMETRO_CERTIFICATION_REGISTRATION_NUMBER: { value_name: "sensor maf medidor fluxo ar nissan" },
+    };
+    await criarComFicha({ INMETRO_CERTIFICATION_REGISTRATION_NUMBER: null });
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    expect(attr(chamadas()[0], "INMETRO_CERTIFICATION_REGISTRATION_NUMBER")).toBeUndefined();
+  });
+
+  it("INMETRO gravado com texto + número digitado na revisão ⇒ vai o número", async () => {
+    produto.attributes = {
+      INMETRO_CERTIFICATION_REGISTRATION_NUMBER: { value_name: "tbi corpo borboleta citroen c4" },
+    };
+    await criarComFicha({ INMETRO_CERTIFICATION_REGISTRATION_NUMBER: { value_name: "008512/2019" } });
+    expect(attr(chamadas()[0], "INMETRO_CERTIFICATION_REGISTRATION_NUMBER")).toMatchObject({
+      value_name: "008512/2019",
+    });
+  });
+
+  it("QR code com texto gravado no produto ⇒ não bloqueia e não vai ao ML", async () => {
+    produto.attributes = { REGULATORY_INFORMATION_QR_CODE: { value_name: "1" } };
+    await criar();
+    expect(MLApiService.createItem).toHaveBeenCalled();
+    expect(attr(chamadas()[0], "REGULATORY_INFORMATION_QR_CODE")).toBeUndefined();
+  });
+
+  it("SEM REGRESSÃO: valor VÁLIDO do produto segue vencendo o da revisão na criação (opcional)", async () => {
+    produto.attributes = { COLOR: { value_name: "Preto" } };
+    await criarComFicha({ COLOR: { value_name: "Cinza" } });
+    expect(attr(chamadas()[0], "COLOR")).toMatchObject({ value_name: "Preto" });
+  });
+
+  it("SEM REGRESSÃO: apagar campo que o produto NÃO tem não muda nada", async () => {
+    produto.attributes = { COLOR: { value_name: "Preto" } };
+    await criarComFicha({ INMETRO_CERTIFICATION_REGISTRATION_NUMBER: null });
+    expect(attr(chamadas()[0], "COLOR")).toMatchObject({ value_name: "Preto" });
+  });
+
+  it("o placeholder guarda a correção para a retentativa, mas NUNCA o null do apagar", async () => {
+    produto.attributes = {
+      MAXIMUM_OPENING_ANGLE: { value_name: "1" },
+      INMETRO_CERTIFICATION_REGISTRATION_NUMBER: { value_name: "texto de busca" },
+    };
+    await criarComFicha({
+      MAXIMUM_OPENING_ANGLE: { value_name: "90 °" },
+      INMETRO_CERTIFICATION_REGISTRATION_NUMBER: null,
+    });
+    const criada = (ListingRepository.createListing as any).mock.calls[0]?.[0];
+    expect(criada.attributesOverride).toEqual({ MAXIMUM_OPENING_ANGLE: { value_name: "90 °" } });
+    expect(JSON.stringify(criada.attributesOverride)).not.toContain("null");
   });
 });

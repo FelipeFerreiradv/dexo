@@ -13,6 +13,11 @@
 // não importar código de servidor no bundle do cliente.
 
 import { z } from "zod";
+import {
+  diffMlFicha,
+  seedMlFicha,
+  type MlFicha,
+} from "@/app/produtos/lib/ml-ficha.logic";
 
 // ---- Config por produto (estado do formulário) ---------------------------
 
@@ -102,6 +107,20 @@ export interface ReviewProduct {
   imageUrls?: string[] | null;
   mlCategoryId?: string | null;
   shopeeCategoryId?: string | null;
+  /** Ficha técnica GRAVADA no produto (semente da ficha da revisão). */
+  attributes?: unknown;
+}
+
+/**
+ * Semente da ficha de cada produto da revisão (a ficha gravada no produto).
+ * O que vai ao servidor é só a diferença para ela (`diffMlFicha`).
+ */
+export function reviewFichaSeeds(
+  products: Array<Pick<ReviewProduct, "id" | "attributes">>,
+): Record<string, MlFicha> {
+  const out: Record<string, MlFicha> = {};
+  for (const p of products) out[p.id] = seedMlFicha(p.attributes);
+  return out;
 }
 
 /** Conta de marketplace (subconjunto usado nos componentes do modo Revisão). */
@@ -142,7 +161,11 @@ export interface PerProductMlOverride {
   manufacturingTime?: number;
   listingPrice?: number;
   catalogProductId?: string;
-  attributes?: Record<string, { value_id?: string; value_name?: string }>;
+  /**
+   * Só o que a pessoa mudou na ficha em relação ao produto. `null` = ela
+   * apagou o campo (o valor do produto não vai nesta criação).
+   */
+  attributes?: Record<string, { value_id?: string; value_name?: string } | null>;
 }
 
 export interface PerProductShopeeOverride {
@@ -265,6 +288,12 @@ export function buildPerProductOverrides(
   globalMagaluIds: string[] = [],
   globalOlxIds: string[] = [],
   globalFacebookIds: string[] = [],
+  /**
+   * Ficha gravada de cada produto (ver `reviewFichaSeeds`). Com ela, vai só a
+   * diferença + os campos apagados; sem ela, a ficha inteira do formulário
+   * (comportamento anterior).
+   */
+  fichaSeeds?: Record<string, MlFicha>,
 ): PerProductOverrides {
   const out: PerProductOverrides = {};
 
@@ -289,8 +318,9 @@ export function buildPerProductOverrides(
           manufacturingTime: cfg.mlManufacturingTime ?? undefined,
           listingPrice: cfg.mlListingPrice ?? undefined,
           catalogProductId: cfg.mlCatalogProductId ?? undefined,
-          attributes:
-            cfg.attributes && Object.keys(cfg.attributes).length > 0
+          attributes: fichaSeeds
+            ? diffMlFicha(fichaSeeds[productId] ?? {}, cfg.attributes)
+            : cfg.attributes && Object.keys(cfg.attributes).length > 0
               ? cfg.attributes
               : undefined,
         }) as PerProductMlOverride;

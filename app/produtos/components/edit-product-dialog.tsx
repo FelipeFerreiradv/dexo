@@ -95,6 +95,7 @@ import {
   mapSuggestedCategory,
 } from "../../lib/product-parser";
 import { getMeasurementsForCategory } from "../../lib/ml-measurements";
+import { sameMlFicha, seedMlFicha, type MlFicha } from "../lib/ml-ficha.logic";
 
 // Category suggestion centralized in `suggestCategoryFromTitle` in app/lib/product-parser.ts
 // Schema de validação com campos de autopeças
@@ -660,9 +661,11 @@ export function EditProductDialog({
           : product.imageUrl
             ? [product.imageUrl]
             : [],
-      attributes: product.attributes || {},
+      attributes: seedMlFicha(product.attributes),
     },
   });
+  // Ficha como estava ao abrir: salvar só envia `attributes` se ela mudou.
+  const fichaAbertaRef = useRef<MlFicha>(seedMlFicha(product.attributes));
 
   // Watch para campos automáticos
   const watchName = watch("name");
@@ -1110,6 +1113,8 @@ export function EditProductDialog({
       originalCategoryRef.current = product.category || "";
       originalMlCategoryRef.current = product.mlCategory || "";
 
+      const fichaAberta = seedMlFicha(product.attributes);
+      fichaAbertaRef.current = fichaAberta;
       reset({
         name: product.name,
         description: product.description || "",
@@ -1144,6 +1149,10 @@ export function EditProductDialog({
             : product.imageUrl
               ? [product.imageUrl]
               : [],
+        // Ficha técnica do ML. Sem ela aqui, o reset deixava a ficha VAZIA
+        // (desde 23/04): a tela escondia o que estava gravado e salvar com a
+        // ficha mexida substituía a ficha inteira só pelo que foi digitado.
+        attributes: fichaAberta,
       });
       // Abrir seção de autopeças se houver dados
       setShowAutopartsSection(hasAutopartsData);
@@ -2131,6 +2140,13 @@ export function EditProductDialog({
 
       // Modo "editar produto" (sem listingContext): fluxo original — PUT no
       // produto + dispatcher. Aqui é onde editar produto afeta TODOS os anúncios.
+      //
+      // A ficha só vai se MUDOU: ausente, o servidor não mexe nela (como antes,
+      // quando o formulário nem tinha a ficha). Mandar sempre regravaria a
+      // ficha a cada salvar e dispararia o re-arme e a limpeza de overrides.
+      if (sameMlFicha(cleanData.attributes, fichaAbertaRef.current)) {
+        delete cleanData.attributes;
+      }
       const response = await fetch(
         `${getApiBaseUrl()}/products/${product.id}`,
         {

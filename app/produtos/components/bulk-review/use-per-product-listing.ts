@@ -20,6 +20,7 @@ import {
   type ReviewProduct,
   type ReviewCategoryOption,
 } from "./per-product-types";
+import { seedMlFicha } from "@/app/produtos/lib/ml-ficha.logic";
 
 interface UsePerProductListingArgs {
   products: ReviewProduct[];
@@ -309,6 +310,12 @@ export function usePerProductListing({
         // produto (resolveMLCategory via findById). shopeeCategoryId JÁ é externo
         // (SHP_...), então pode semear direto.
         if (p.shopeeCategoryId) cfg.shopeeCategory = p.shopeeCategoryId;
+        // Ficha do ML começa com a GRAVADA no produto: a pessoa vê o que vai
+        // ser enviado (inclusive valor inválido) e pode corrigir ou apagar. Ao
+        // servidor vai só a diferença (buildPerProductOverrides com as
+        // sementes). Antes começava vazia e escondia o que estava gravado.
+        const ficha = seedMlFicha(p.attributes);
+        if (Object.keys(ficha).length > 0) cfg.attributes = ficha;
         writeConfig(p.id, cfg);
       }
       form.reset(cfg);

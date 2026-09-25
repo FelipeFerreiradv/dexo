@@ -70,6 +70,7 @@ export type ValueIssueCode =
   | "LIST_ID_REMAPPED"
   | "LIST_VALUE_NOT_IN_CATEGORY"
   | "PICTURE_ATTRIBUTE_WITH_TEXT"
+  | "PICTURE_ATTRIBUTE_DROPPED"
   | "NUMBER_WITHOUT_UNIT"
   | "NUMBER_DECIMAL_COMMA"
   | "GTIN_INVALID_FORMAT"
@@ -245,16 +246,20 @@ export function validateMLAttributeValues(
       continue;
     }
 
-    // Atributo do tipo imagem: a Dexo não envia imagem por aqui; qualquer
-    // valor digitado é recusado (422 "invalid picture ID").
+    // Atributo do tipo imagem: a Dexo não envia imagem por aqui, e o ML
+    // recusa texto nele (422 "invalid picture ID"). O valor sai do envio em
+    // vez de bloquear: o campo não tem caixa de digitação, então bloquear
+    // deixava a pessoa presa num "1" que ela não conseguia apagar (Xaxim,
+    // 25/09/2026). Nada que o ML guardaria se perde.
     if (cat.valueType === "picture_id") {
       const v = valorTexto(attr).trim() || String(attr.value_id ?? "").trim();
       if (v) {
-        recusar({
+        issues.push({
           attributeId: attr.id,
           attributeName: nome,
-          code: "PICTURE_ATTRIBUTE_WITH_TEXT",
-          message: `O campo "${nome}" da ficha técnica é do tipo imagem e está preenchido com "${v}". Apague esse valor na ficha técnica.`,
+          severity: "fix",
+          code: "PICTURE_ATTRIBUTE_DROPPED",
+          message: `O campo "${nome}" da ficha técnica é do tipo imagem e estava com "${v}"; o valor não foi enviado ao Mercado Livre.`,
           value: v,
         });
         continue;
@@ -347,11 +352,22 @@ export function validateMLAttributeValues(
           cat.allowedUnits.find((u) => u !== '"') ||
           cat.allowedUnits[0];
         const ex = exemplo === '"' ? '10"' : `"10 ${exemplo}"`;
+        // O que está errado, dito com precisão: sem unidade ("1"), unidade
+        // que o campo não aceita ("30 kg") ou nem é número ("Aço").
+        const partes = NUMERO_UNIDADE.exec(v);
+        const problema = !partes
+          ? "que não é uma medida (número com unidade)"
+          : partes[1]
+            ? `e "${partes[1]}" não é uma unidade aceita neste campo`
+            : "sem a unidade de medida";
         recusar({
           attributeId: attr.id,
           attributeName: nome,
           code: "NUMBER_WITHOUT_UNIT",
-          message: `O campo "${nome}" precisa de número com unidade (ex.: ${ex}) e está com "${v}". Informe a unidade na ficha técnica ou apague o valor.`,
+          // O problema vem primeiro e o exemplo é marcado como exemplo: no
+          // texto antigo ("precisa de número com unidade (ex.: 10") e está
+          // com "1"") a pessoa lia que precisava digitar 10.
+          message: `O campo "${nome}" está com "${v}", ${problema}. Informe a medida real com a unidade (por exemplo: ${ex}) ou apague o valor na ficha técnica.`,
           value: v,
         });
         continue;

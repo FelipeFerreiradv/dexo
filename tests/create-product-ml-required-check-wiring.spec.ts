@@ -125,7 +125,9 @@ describe("bulk-listing-wizard — checagem de obrigatórios do ML", () => {
     const chamada = corpo.slice(decide, corpo.indexOf("});", decide));
     expect(chamada).toContain("blocked: mlBlockedRef.current,");
     expect(chamada).toContain("evaluatedKeys: mlEvaluatedKeysRef.current,");
-    expect(chamada).toContain("buildMlReviewCheckItems(idsSelecionados, reviewMap)");
+    expect(chamada).toContain(
+      "buildMlReviewCheckItems(idsSelecionados, reviewMap, reviewSeeds)",
+    );
     expect(chamada).toContain("recheck: runMlRequiredCheck,");
     const exclusao = corpo.indexOf("withDisabledMlAccounts(", decide);
     expect(corpo.slice(exclusao, exclusao + 200)).toContain("excluidosDoMl,");

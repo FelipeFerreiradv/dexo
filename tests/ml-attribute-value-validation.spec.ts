@@ -247,11 +247,18 @@ describe("lista fechada com id de outra categoria (3510 SIDE_POSITION)", () => {
 });
 
 describe("atributo do tipo imagem (422 REGULATORY_INFORMATION_QR_CODE='1')", () => {
-  it("texto no campo de imagem ⇒ bloqueia pedindo para apagar", () => {
+  it("texto no campo de imagem ⇒ NÃO bloqueia: o valor sai do envio, com aviso (Xaxim 25/09)", () => {
+    // O campo não tem caixa de digitação: bloquear deixava a pessoa presa num
+    // "1" que ela não conseguia apagar.
     const r = valida([{ id: QR.id, value_name: "1" }], [QR]);
-    expect(r.blocked).toBe(true);
-    expect(r.issues[0].code).toBe("PICTURE_ATTRIBUTE_WITH_TEXT");
-    expect(r.issues[0].message).toMatch(/QR code.*"1".*Apague/);
+    expect(r.blocked).toBe(false);
+    expect(r.attributes).toEqual([]);
+    expect(r.issues[0]).toMatchObject({
+      code: "PICTURE_ATTRIBUTE_DROPPED",
+      severity: "fix",
+      value: "1",
+    });
+    expect(r.issues[0].message).toMatch(/QR code.*"1".*não foi enviado/);
   });
 
   it("vazio não bloqueia", () => {
@@ -264,7 +271,11 @@ describe("número sem unidade (3708 — também em campo OPCIONAL)", () => {
     const r = valida([{ id: ANGULO.id, value_name: "1" }], [ANGULO]);
     expect(r.blocked).toBe(true);
     expect(r.issues[0]).toMatchObject({ code: "NUMBER_WITHOUT_UNIT", severity: "block" });
-    expect(r.issues[0].message).toMatch(/Ângulo máximo de abertura.*"10 °".*"1"/);
+    // O problema vem primeiro; o 10 é marcado como exemplo (a cliente leu
+    // "precisa ... (ex.: 10) e está com 1" como "tem que colocar 10").
+    expect(r.issues[0].message).toBe(
+      'O campo "Ângulo máximo de abertura" está com "1", sem a unidade de medida. Informe a medida real com a unidade (por exemplo: "10 °") ou apague o valor na ficha técnica.',
+    );
   });
 
   it("polegada (\") primeiro na lista: o exemplo usa outra unidade, não '\"10 \"\"'", () => {
@@ -275,7 +286,7 @@ describe("número sem unidade (3708 — também em campo OPCIONAL)", () => {
       allowedUnits: ['"', "mm", "cm"],
     };
     const r = valida([{ id: DIAMETRO.id, value_name: "1" }], [DIAMETRO]);
-    expect(r.issues[0].message).toContain('(ex.: "10 mm")');
+    expect(r.issues[0].message).toContain('(por exemplo: "10 mm")');
     expect(r.issues[0].message).not.toContain('"10 ""');
   });
 
@@ -288,7 +299,7 @@ describe("número sem unidade (3708 — também em campo OPCIONAL)", () => {
       defaultUnit: '"',
     };
     const r = valida([{ id: ARO.id, value_name: "15" }], [ARO]);
-    expect(r.issues[0].message).toContain('(ex.: 10")');
+    expect(r.issues[0].message).toContain('(por exemplo: 10")');
     expect(r.issues[0].message).not.toContain("10 cm");
   });
 
@@ -301,11 +312,19 @@ describe("número sem unidade (3708 — também em campo OPCIONAL)", () => {
       defaultUnit: '"',
     };
     const r = valida([{ id: SO_POL.id, value_name: "15" }], [SO_POL]);
-    expect(r.issues[0].message).toContain('(ex.: 10")');
+    expect(r.issues[0].message).toContain('(por exemplo: 10")');
   });
 
-  it("unidade que a categoria não aceita ⇒ bloqueia", () => {
-    expect(valida([{ id: "WIDTH", value_name: "30 kg" }], [LARGURA]).blocked).toBe(true);
+  it("unidade que a categoria não aceita ⇒ bloqueia, e a mensagem diz qual unidade é o problema", () => {
+    const r = valida([{ id: "WIDTH", value_name: "30 kg" }], [LARGURA]);
+    expect(r.blocked).toBe(true);
+    expect(r.issues[0].message).toContain('está com "30 kg", e "kg" não é uma unidade aceita neste campo');
+  });
+
+  it("texto que não é número ⇒ a mensagem diz que não é uma medida", () => {
+    const r = valida([{ id: "WIDTH", value_name: "Aço" }], [LARGURA]);
+    expect(r.blocked).toBe(true);
+    expect(r.issues[0].message).toContain('está com "Aço", que não é uma medida (número com unidade)');
   });
 
   it("com unidade válida passa (sem espaço, caixa diferente, polegada)", () => {
@@ -432,14 +451,14 @@ describe("OEM (402 repetido / 395 valor único)", () => {
 describe("mensagem e catálogo", () => {
   it("summarizeValueBlocks: nenhum ⇒ null; um ⇒ a mensagem; vários ⇒ contagem", () => {
     expect(summarizeValueBlocks([])).toBeNull();
-    const r1 = valida([{ id: QR.id, value_name: "1" }], [QR]);
-    expect(summarizeValueBlocks(r1.issues)).toMatch(/^O campo "QR code.*retomada\.$/);
+    const r1 = valida([{ id: ANGULO.id, value_name: "1" }], [ANGULO]);
+    expect(summarizeValueBlocks(r1.issues)).toMatch(/^O campo "Ângulo.*retomada\.$/);
     const r2 = valida(
       [
-        { id: QR.id, value_name: "1" },
+        { id: ANGULO.id, value_name: "1" },
         { id: "GTIN", value_name: "abc" },
       ],
-      [QR, GTIN],
+      [ANGULO, GTIN],
     );
     expect(summarizeValueBlocks(r2.issues)).toMatch(/^A ficha técnica tem 2 valores/);
   });

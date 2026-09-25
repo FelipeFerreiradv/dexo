@@ -1302,6 +1302,8 @@ export function ProductsList() {
           mlCategoryId: p.mlCategoryId ?? null,
           shopeeCategoryId: p.shopeeCategoryId ?? null,
           compatibilitiesCount: null,
+          // A listagem projeta `attributes` (productSelect), fora do tipo.
+          attributes: (p as { attributes?: unknown }).attributes ?? null,
         })),
     [products, selectedIds],
   );

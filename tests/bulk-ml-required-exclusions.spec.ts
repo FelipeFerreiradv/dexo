@@ -184,13 +184,13 @@ describe("D8: chave avaliada × chave do envio (Revisão individual)", () => {
 describe("mensagens do wizard (M11, M12, M14)", () => {
   it("textos exatos", () => {
     expect(mlBlockedBannerMessage(2)).toBe(
-      "2 produto(s) não serão enviados ao Mercado Livre porque faltam campos obrigatórios da categoria. Os demais anúncios seguem normalmente.",
+      "2 produto(s) não serão enviados ao Mercado Livre porque a ficha técnica precisa de correção. Os demais anúncios seguem normalmente.",
     );
     expect(ML_ALL_BLOCKED_MESSAGE).toBe(
-      "Nenhum anúncio do Mercado Livre pode ser enviado: todos os produtos selecionados têm campos obrigatórios da categoria sem preencher. Corrija os produtos ou remova as contas do Mercado Livre.",
+      "Nenhum anúncio do Mercado Livre pode ser enviado: a ficha técnica de todos os produtos selecionados precisa de correção (campo obrigatório vazio ou valor que o Mercado Livre não aceita). Corrija os produtos ou remova as contas do Mercado Livre.",
     );
     expect(mlExcludedConfirmMessage(3)).toBe(
-      "3 anúncio(s) do Mercado Livre não serão enviados por falta de campos obrigatórios:",
+      "3 anúncio(s) do Mercado Livre não serão enviados porque a ficha técnica precisa de correção:",
     );
   });
 
