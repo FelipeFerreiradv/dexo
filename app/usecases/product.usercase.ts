@@ -23,6 +23,7 @@ import {
 import { User } from "../interfaces/user.interface";
 import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
+import { createLocationPathResolver } from "../lib/location-path";
 import { deriveMarkupForUpdate } from "../lib/money/markup";
 import { getVehicleBrands } from "../lib/vehicle-catalog";
 import { maskCorruptVehicleCategoriesInProducts } from "../marketplaces/services/category-resolution.service";
@@ -338,24 +339,9 @@ export class ProductUseCase {
     });
     if (locs.length === 0) return;
 
-    const byId = new Map(locs.map((l) => [l.id, l]));
-    const pathCache = new Map<string, string>();
-    const buildPath = (id: string): string => {
-      const cached = pathCache.get(id);
-      if (cached !== undefined) return cached;
-      const parts: string[] = [];
-      let cur: string | null = id;
-      let guard = 0;
-      while (cur && guard++ < 25) {
-        const node = byId.get(cur);
-        if (!node) break;
-        parts.unshift(node.code);
-        cur = node.parentId;
-      }
-      const path = parts.join(" > ");
-      pathCache.set(id, path);
-      return path;
-    };
+    // Código que já é o caminho inteiro ("BARR. > CORR.-B") não é repetido —
+    // ver app/lib/location-path.ts.
+    const buildPath = createLocationPathResolver(locs);
 
     for (const p of products) {
       const locId = (p as any).locationId as string | null | undefined;

@@ -24,6 +24,12 @@ import {
   ListingDispatchRequest,
 } from "../marketplaces/services/listing-dispatcher.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import {
+  ExportParamError,
+  exportProductsPage,
+  parseExportCursor,
+  parseExportLimit,
+} from "../usecases/product-export.usecase";
 import { isScrapRelinkEnabled } from "../produtos/lib/scrap-relink";
 import { SystemLogService } from "../services/system-log.service";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
@@ -275,6 +281,43 @@ export const productRoutes = async (fastify: FastifyInstance) => {
               ? error.message
               : "Erro ao carregar opções de filtro",
         });
+      }
+    },
+  );
+
+  /**
+   * GET /products/export?cursor=&limit=
+   * Base COMPLETA para a planilha "Exportar todos os produtos": localização,
+   * compatibilidades, ficha técnica, anúncios… Paginada por cursor de id —
+   * a listagem (OFFSET sobre createdAt empatado) repetia e perdia produtos.
+   * Ver app/usecases/product-export.usecase.ts.
+   */
+  fastify.get<{ Querystring: { cursor?: string; limit?: string } }>(
+    "/export",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{
+        Querystring: { cursor?: string; limit?: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        if (!userId) {
+          return reply.status(401).send({ error: "Sessão inválida" });
+        }
+        const cursor = parseExportCursor(request.query.cursor);
+        const limit = parseExportLimit(request.query.limit);
+        const page = await exportProductsPage({ userId, cursor, limit });
+        return reply.status(200).send(page);
+      } catch (error) {
+        if (error instanceof ExportParamError) {
+          return reply.status(400).send({ error: error.message });
+        }
+        request.log?.error?.(error, "[product-export] falha");
+        return reply
+          .status(500)
+          .send({ error: "Erro ao exportar produtos. Tente novamente." });
       }
     },
   );
