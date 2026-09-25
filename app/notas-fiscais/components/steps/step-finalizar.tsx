@@ -16,6 +16,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
+import type { TotaisDevolucao } from "@/app/fiscal/devolucao/tipos";
 import { formatToBRL } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import { avisoEmissao } from "../../lib/nfe-aviso-emissao";
@@ -45,9 +46,22 @@ interface Props {
   ambienteRascunho?: string | null;
   /** E-mail da sessao, so para o GET best-effort da config fiscal. */
   email?: string;
+  /**
+   * Multi-CNPJ: a empresa (CompanyFiscalConfig) DESTE rascunho. A emissao usa a
+   * config dele, nao a padrao — com dois CNPJs em ambientes diferentes, ler a
+   * padrao (GET /fiscal/config) fazia o aviso dizer o ambiente errado.
+   * Ausente/null: le a padrao, exatamente como antes.
+   */
+  companyFiscalConfigId?: string | null;
+  /**
+   * Devolucao: os totais que a EMISSAO vai calcular (`DevolucaoDetalhe.totais`,
+   * a mesma conta de `calcularDevolucao`). O valor da nota da devolucao inclui o
+   * IPI devolvido, que a soma dos produtos abaixo nao ve. Ausente: nada muda.
+   */
+  totaisDevolucao?: TotaisDevolucao | null;
 }
 
-export function StepFinalizar({ getValues, ambienteRascunho, email }: Props) {
+export function StepFinalizar({ getValues, ambienteRascunho, email, companyFiscalConfigId, totaisDevolucao }: Props) {
   const data = getValues();
 
   // Ambiente da CONFIGURACAO fiscal — a autoridade sobre o ambiente da emissao
@@ -69,6 +83,24 @@ export function StepFinalizar({ getValues, ambienteRascunho, email }: Props) {
     let cancelled = false;
     (async () => {
       try {
+        // Multi-CNPJ: a empresa do rascunho, pela lista de empresas. Nao
+        // achou a empresa ⇒ segue NAO resolvida (texto neutro), nunca cai na
+        // padrao, que e justamente a que pode estar no outro ambiente.
+        if (companyFiscalConfigId) {
+          const res = await fetch(`${getApiBaseUrl()}/fiscal/companies`, {
+            headers: { email },
+          });
+          if (!res.ok) return;
+          const json = await res.json();
+          if (cancelled) return;
+          const empresa = Array.isArray(json?.companies)
+            ? json.companies.find((c: { id?: unknown }) => c?.id === companyFiscalConfigId)
+            : null;
+          if (!empresa) return;
+          setAmbienteConfig(empresa.ambiente ?? null);
+          setConfigResolvida(true);
+          return;
+        }
         const res = await fetch(`${getApiBaseUrl()}/fiscal/config`, {
           headers: { email },
         });
@@ -86,7 +118,7 @@ export function StepFinalizar({ getValues, ambienteRascunho, email }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [email]);
+  }, [email, companyFiscalConfigId]);
 
   const aviso = avisoEmissao({
     ambienteConfig,
@@ -219,6 +251,55 @@ export function StepFinalizar({ getValues, ambienteRascunho, email }: Props) {
           Total: R$ {formatToBRL(totalProdutos)}
         </div>
       </div>
+
+      {/* Devolucao: o valor que a nota vai ter DE VERDADE (vNF), com o IPI
+          devolvido — o "Total" dos produtos acima nao o inclui. Prevista
+          enquanto algum item ainda nao fecha. Os numeros saem do servidor, da
+          mesma conta da emissao; aqui so a moldura. */}
+      {totaisDevolucao && (
+        <div
+          className="rounded-lg border border-border/60 bg-card/40 p-4 space-y-2"
+          aria-label="Valor da nota de devolucao"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Package className="h-4 w-4 text-muted-foreground" />
+            {totaisDevolucao.completo ? "Valor da nota de devolução" : "Valor da nota de devolução (prévia)"}
+          </div>
+          <div className="grid grid-cols-1 gap-1 md:grid-cols-2 text-sm">
+            {(
+              [
+                ["Produtos", totaisDevolucao.totalProdutos],
+                ...(totaisDevolucao.totalDesconto > 0 ? [["Desconto", -totaisDevolucao.totalDesconto]] : []),
+                ...(totaisDevolucao.totalFrete > 0 ? [["Frete", totaisDevolucao.totalFrete]] : []),
+                ...(totaisDevolucao.totalIpiDevol > 0 ? [["IPI devolvido", totaisDevolucao.totalIpiDevol]] : []),
+                ["ICMS", totaisDevolucao.totalIcms],
+                ["PIS", totaisDevolucao.totalPis],
+                ["COFINS", totaisDevolucao.totalCofins],
+              ] as [string, number][]
+            ).map(([rotulo, valor]) => (
+              <div key={rotulo}>
+                <span className="text-muted-foreground">{rotulo}: </span>
+                <span>R$ {formatToBRL(valor)}</span>
+              </div>
+            ))}
+          </div>
+          {/* Mesma frase do quadro do editor: ICMS/PIS/COFINS ao lado de
+              "Produtos" pareciam parcelas a somar, e o valor da nota "não batia". */}
+          <p className="text-xs text-muted-foreground">
+            ICMS, PIS e COFINS aparecem destacados na nota, mas não somam de novo ao valor dela.
+          </p>
+          <div className="flex justify-end pt-1 text-sm font-semibold">
+            Valor da nota: R$ {formatToBRL(totaisDevolucao.totalNota)}
+          </div>
+          {!totaisDevolucao.completo && (
+            <p className="text-xs text-amber-700 dark:text-amber-200">
+              {totaisDevolucao.itensPendentes.length > 0
+                ? `Prévia: ${totaisDevolucao.itensPendentes.length === 1 ? "o item" : "os itens"} ${totaisDevolucao.itensPendentes.join(", ")} ainda ${totaisDevolucao.itensPendentes.length === 1 ? "não fecha" : "não fecham"} (imposto a escolher ou a revisar no passo Impostos). O valor pode mudar.`
+                : "Prévia: há imposto a escolher ou a revisar no passo Impostos. O valor pode mudar."}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Frete */}
       <SectionCard

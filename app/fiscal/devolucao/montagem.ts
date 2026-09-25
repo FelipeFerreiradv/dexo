@@ -313,6 +313,8 @@ export function montarRascunhoDeOriginal(input: MontarRascunhoDeOriginalInput): 
       crtEmitente,
       crtOriginal: parsed.emit?.CRT ?? null,
       tipoOperacao: "ENTRADA",
+      // O MESMO desconto proporcional do NfeItem: a base que nasce do item fica líquida dele.
+      descontoDevolvido: desconto,
     });
 
     itens.push({

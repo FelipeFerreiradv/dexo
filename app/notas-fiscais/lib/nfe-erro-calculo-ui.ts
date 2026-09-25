@@ -76,11 +76,15 @@ export const TITULO_PASSO_A_PASSO =
 const PASSOS_DEVOLUCAO_PELA_NOTA_ORIGINAL: readonly string[] = [
   'Abra o menu "Notas Fiscais" e clique em "Notas Emitidas".',
   "Ache a nota de VENDA original: a que você emitiu para o cliente e cuja peça está voltando.",
-  'Na linha dessa nota, clique em "Devolver total" (voltou tudo) ou "Devolver parcial" (voltou só parte). Se os botões não couberem na linha, abra a nota no olho — eles também ficam lá em cima.',
+  'Na linha dessa nota, clique em "Devolver total" (voltou tudo) ou "Devolver parcial" (voltou só parte). Se os botões não couberem na linha, abra a nota no olho — eles também ficam lá em cima. Se a nota for antiga e não tiver o XML guardado no Dexo, o botão se chama "Devolver pela chave".',
   "O Dexo abre uma devolução NOVA já amarrada na nota original, com os produtos, os valores e o CFOP já preenchidos.",
   'Confira as quantidades que estão voltando e clique em "Salvar devolução".',
   'Vá avançando os passos e, no último, clique em "Emitir NF-e".',
-  "Quando a devolução nova for autorizada, este rascunho aqui pode ser descartado — ele não serve para nada.",
+  // Onde descartar: o quadro "Devoluções em andamento" da lista de Notas
+  // Emitidas (`nfe-devolucoes-abertas-ui.ts`) lista este rascunho como "feito à
+  // mão", com o botão "Descartar". Antes a frase dizia "pode ser descartado"
+  // sem existir botão de descarte em lugar nenhum.
+  'Quando a devolução nova for autorizada, descarte este rascunho em "Notas Emitidas" › "Devoluções em andamento", no botão "Descartar" — ele não serve para nada.',
 ];
 
 /**

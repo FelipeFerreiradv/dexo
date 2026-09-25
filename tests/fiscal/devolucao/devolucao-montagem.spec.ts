@@ -255,7 +255,16 @@ describe("montarRascunhoDeOriginal — itens, referências e saldo", () => {
     expect(r.refs[0].impostoOriginal?.icms?.csosn).toBe("102");
     expect(r.origem.itens).toHaveLength(2);
     // Só falta a resposta "foi entregue?" — o resto está pronto.
-    expect(r.issues.map((i) => i.code)).toEqual(["ESCOLHA_PENDENTE"]);
+    // ATUALIZADO (onda 5, decisão 4 do dono): o XML desta venda do Simples traz
+    // PIS/COFINS 49 (CST de SAÍDA) e a devolução de venda é nota de ENTRADA — o
+    // servidor agora AVISA isso, igual ao campo da tela (antes só a tela avisava).
+    // É AVISO: o único impedimento continua sendo a resposta da entrega.
+    expect(r.issues.filter((i) => i.severidade === "ERRO").map((i) => i.code)).toEqual(["ESCOLHA_PENDENTE"]);
+    expect(r.issues.filter((i) => i.severidade === "AVISO").map((i) => [i.code, i.ordem])).toEqual([
+      ["PIS_CST_SAIDA_EM_ENTRADA", 1],
+      ["PIS_CST_SAIDA_EM_ENTRADA", 2],
+    ]);
+    expect(r.issues).toHaveLength(3);
   });
 
   it("parcial: saldo desconta autorizada/em processamento; item zerado sai e o nItem não é posicional", () => {
@@ -377,7 +386,12 @@ describe("1010 impossível por construção", () => {
       originais: [{ chaveAcesso: CHAVE, status: "AUTHORIZED", ambiente: "HOMOLOGACAO" }],
       idDestOriginal: 1,
     });
-    expect(issues).toEqual([]);
+    // ATUALIZADO (onda 5, decisão 4 do dono): o PIS/COFINS 49 herdado desta
+    // venda do Simples, numa devolução de venda (nota de entrada), agora gera o
+    // AVISO PIS_CST_SAIDA_EM_ENTRADA também no servidor. Nenhuma pendência de
+    // referência (o que este teste prende: 1010 impossível) nem nenhum ERRO.
+    expect(issues.filter((i) => i.severidade === "ERRO")).toEqual([]);
+    expect(issues.map((i) => i.code)).toEqual(["PIS_CST_SAIDA_EM_ENTRADA", "PIS_CST_SAIDA_EM_ENTRADA"]);
     for (const amb of ["HOMOLOGACAO", "PRODUCAO"]) {
       for (const d of ["2026-10-04T12:00:00Z", "2026-10-05T12:00:00Z"]) {
         expect(["ITEM", "NOTA"]).toContain(modoReferenciaDevolucao(amb, new Date(d), "2026-10-05"));

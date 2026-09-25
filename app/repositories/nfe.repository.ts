@@ -226,6 +226,14 @@ export class NfeRepository {
    * o usuário preenchia uma NF-e e o motor emitia NFC-e (rejeição 706 quando
    * a operação era de entrada; pior: documento fiscal errado quando não era).
    * Default "55" preserva exatamente o comportamento do wizard.
+   *
+   * Devolução (decisão 6 do dono): com a devolução ligada para a empresa do rascunho,
+   * "Emitir NF-e" NUNCA reaproveita um rascunho de devolução — nem o gerenciado (com
+   * NfeDevolucao) nem o feito À MÃO (finalidade DEVOLUCAO sem cabeçalho: o nº 712 da DLS,
+   * rascunho cmubl7is, com a reserva de número viva). Reaproveitado, ele virava nota
+   * normal com o número reservado junto. Rascunho sem empresa gravada é da empresa PADRÃO
+   * (isDefault desc, createdAt asc — a de findByUserId). Sem a devolução ligada, o
+   * `where` é idêntico ao de antes.
    */
   async findExistingDraft(
     userId: string,
@@ -233,7 +241,12 @@ export class NfeRepository {
   ): Promise<NfeDraftResponse | null> {
     let excluidos:string[]=[];
     if(process.env.NFE_DEVOLUCAO_ENABLED==="true") {
-      try{const rows=await prisma.$queryRawUnsafe<Array<{nfeId:string;companyFiscalConfigId:string}>>(`SELECT d."nfeId",n."companyFiscalConfigId" FROM "NfeDevolucao" d JOIN "NfeEmitida" n ON n."id"=d."nfeId" WHERE d."userId"=$1 AND n."status"='DRAFT'`,userId);excluidos=rows.filter(r=>isDevolucaoAtiva(r.companyFiscalConfigId)).map(r=>r.nfeId);}catch(e){if(!tabelaFiscalAusente(e))throw e;}
+      try{
+        const rows=await prisma.$queryRawUnsafe<Array<{id:string;companyFiscalConfigId:string|null}>>(`SELECT n."id",COALESCE(n."companyFiscalConfigId",(SELECT c."id" FROM "CompanyFiscalConfig" c WHERE c."userId"=n."userId" ORDER BY c."isDefault" DESC,c."createdAt" ASC LIMIT 1)) AS "companyFiscalConfigId"
+          FROM "NfeEmitida" n WHERE n."userId"=$1 AND n."status"='DRAFT' AND n."modelo"=$2
+            AND (n."finalidade"='DEVOLUCAO' OR EXISTS(SELECT 1 FROM "NfeDevolucao" d WHERE d."nfeId"=n."id" AND d."userId"=n."userId"))`,userId,modelo);
+        excluidos=rows.filter(r=>isDevolucaoAtiva(r.companyFiscalConfigId)).map(r=>r.id);
+      }catch(e){if(!tabelaFiscalAusente(e))throw e;}
     }
     const row = await (prisma as any).nfeEmitida.findFirst({
       where: { userId, status: "DRAFT", modelo,...(excluidos.length?{id:{notIn:excluidos}}:{}) },
@@ -836,8 +849,14 @@ export class NfeRepository {
       // direto (COALESCE p/ 0 quando não há notas). Usa o índice [userId,status].
       // O período entra como predicado opcional: com os dois parâmetros nulos o
       // plano é o mesmo de antes, sem consulta extra.
-      prisma.$queryRaw<Array<{ valorTotal: number }>>`
-        SELECT COALESCE(SUM(("totaisJson"->>'totalNota')::numeric), 0)::float8 AS "valorTotal"
+      // ENTRADAS (devolução de venda, nota de entrada) separadas NA MESMA consulta, sem
+      // mudar o `valorTotal` de sempre: ele continua somando entrada e saída (é o número que
+      // a tela e o contador já usam); `valorEntradas`/`autorizadasEntrada` dizem quanto dele
+      // é entrada, para a tela poder rotular.
+      prisma.$queryRaw<Array<{ valorTotal: number; valorEntradas?: number; autorizadasEntrada?: number }>>`
+        SELECT COALESCE(SUM(("totaisJson"->>'totalNota')::numeric), 0)::float8 AS "valorTotal",
+          COALESCE(SUM(("totaisJson"->>'totalNota')::numeric) FILTER (WHERE "tipoOperacao" = 'ENTRADA'), 0)::float8 AS "valorEntradas",
+          (COUNT(*) FILTER (WHERE "tipoOperacao" = 'ENTRADA'))::integer AS "autorizadasEntrada"
         FROM "NfeEmitida"
         WHERE "userId" = ${userId} AND "status" = 'AUTHORIZED'
           AND (${ini}::timestamp IS NULL OR COALESCE("dataEmissao", "createdAt") >= ${ini}::timestamp)
@@ -861,8 +880,10 @@ export class NfeRepository {
     }
 
     const valorTotal = Number(sumRows[0]?.valorTotal ?? 0);
+    const valorEntradas = Number(sumRows[0]?.valorEntradas ?? 0);
+    const autorizadasEntrada = Number(sumRows[0]?.autorizadasEntrada ?? 0);
 
-    return { total, autorizadas, rejeitadas, canceladas, valorTotal };
+    return { total, autorizadas, rejeitadas, canceladas, valorTotal, valorEntradas, autorizadasEntrada };
   }
 
   async findAllForExport(
@@ -947,6 +968,9 @@ export class NfeRepository {
         dataEmissao: true,
         dataAutorizacao: true,
         xmlAutorizadoPath: true,
+        // Para o relatório ROTULAR entrada e devolução (o valorTotal não muda).
+        tipoOperacao: true,
+        finalidade: true,
       },
     });
   }

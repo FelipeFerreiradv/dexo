@@ -279,5 +279,13 @@ export interface NfeStats {
   autorizadas: number;
   rejeitadas: number;
   canceladas: number;
+  /** Soma do totalNota das AUTORIZADAS — entrada E saída, como sempre foi. */
   valorTotal: number;
+  /**
+   * Quanto de `valorTotal` (e de `autorizadas`) é nota de ENTRADA — devolução de venda,
+   * nota de entrada. Para rotular o card sem mudar o número de sempre. Opcional:
+   * servidor antigo não manda.
+   */
+  valorEntradas?: number;
+  autorizadasEntrada?: number;
 }

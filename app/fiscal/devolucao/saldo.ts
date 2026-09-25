@@ -17,7 +17,7 @@
  */
 
 import { normalizarChaveAcesso } from "../domain/chave-acesso-dv";
-import type { SaldoItemOriginal } from "./tipos";
+import type { DevolucaoIssue, EscopoDevolucao, SaldoItemOriginal } from "./tipos";
 
 export const ESCALA_QUANTIDADE = 10_000;
 
@@ -105,6 +105,73 @@ export interface LinhaSaldoDevolucao {
   quantidade: number | string;
   statusDevolucao: string;
   devolucaoNfeId: string;
+  /**
+   * qCom da original gravado NESTA devolução (`NfeDevolucaoItem.quantidadeOriginal`,
+   * `numeric::text`); null = a devolução não sabia. Opcional: leitor antigo não traz.
+   */
+  quantidadeOriginal?: number | string | null;
+  /** `NfeDevolucao.fonte` da devolução desta linha (DEXO | XML_IMPORTADO | MANUAL). */
+  fonteDevolucao?: string | null;
+  /** nº e série da NF-e de devolução (nº negativo = rascunho, não é número fiscal). */
+  numeroDevolucao?: number | null;
+  serieDevolucao?: number | null;
+  /** Quando a devolução desta linha foi criada. */
+  criadaEm?: Date | string | null;
+}
+
+/**
+ * Só estas fontes montam a devolução a partir do XML AUTORIZADO da original — a
+ * quantidade original que gravaram é o qCom da SEFAZ. A fonte MANUAL é número
+ * digitado à mão e nunca serve de régua de saldo para outra devolução.
+ */
+const FONTES_QUANTIDADE_DO_XML: ReadonlySet<string> = new Set(["DEXO", "XML_IMPORTADO"]);
+
+/**
+ * A quantidade do item (chave, nItem) na nota ORIGINAL que o livro de devoluções
+ * já conhece — vinda de uma devolução montada do XML autorizado. `null` = nenhuma
+ * devolução confiável desse item gravou a quantidade.
+ *
+ * É o que impede a devolução pela CHAVE (sem XML) de devolver de novo uma peça que
+ * outra devolução, feita do XML, já devolveu: sem a quantidade original o saldo
+ * saía "não verificável" mesmo com o livro sabendo quanto a nota vendeu.
+ */
+export function quantidadeOriginalDoLivro(
+  linhas: readonly LinhaSaldoDevolucao[],
+  chave: string,
+  nItem: number,
+): number | null {
+  const alvo = normalizarChaveAcesso(chave);
+  let maior: number | null = null;
+  for (const l of linhas) {
+    if (l.nItem !== nItem || !FONTES_QUANTIDADE_DO_XML.has(l.fonteDevolucao ?? "")) continue;
+    if (normalizarChaveAcesso(l.chave) !== alvo) continue;
+    const u =
+      l.quantidadeOriginal === null || l.quantidadeOriginal === undefined
+        ? null
+        : quantidadeParaUnidades(l.quantidadeOriginal);
+    if (u === null || u <= 0) continue;
+    if (maior === null || u > maior) maior = u;
+  }
+  return maior === null ? null : unidadesParaQuantidade(maior);
+}
+
+/**
+ * `itensOriginais` para `calcularSaldoPorItem`: a quantidade do snapshot da
+ * devolução; quando ela é desconhecida (0/null — devolução pela chave sem a
+ * quantidade da nota), a que o livro conhece (`quantidadeOriginalDoLivro`).
+ */
+export function itensOriginaisComLivro(
+  itens: ReadonlyArray<{ nItem: number; quantidade: number | string | null }>,
+  linhas: readonly LinhaSaldoDevolucao[],
+  chave: string,
+): ItemOriginalParaSaldo[] {
+  return itens.map((i) => {
+    const u = i.quantidade === null || i.quantidade === undefined ? null : quantidadeParaUnidades(i.quantidade);
+    return {
+      nItem: i.nItem,
+      quantidade: u !== null && u > 0 ? i.quantidade : quantidadeOriginalDoLivro(linhas, chave, i.nItem),
+    };
+  });
 }
 
 export interface CalcularSaldoInput {
@@ -172,4 +239,85 @@ export function isTotalmenteDevolvida(saldos: readonly SaldoItemOriginal[]): boo
 /** Algum item já teve devolução autorizada ou em processamento. */
 export function temDevolucaoConsumindo(saldos: readonly SaldoItemOriginal[]): boolean {
   return saldos.some((s) => s.devolvidaAutorizada > 0 || s.emProcessamento > 0);
+}
+
+/**
+ * O escopo que a lista de itens DE FATO devolve — derivado, nunca pedido.
+ *
+ * TOTAL = a nota original inteira: todo item com quantidade original conhecida,
+ * nada dele devolvido ou em envio por OUTRA devolução, e esta devolvendo a
+ * quantidade cheia de cada um. Qualquer outra coisa é PARCIAL — inclusive item
+ * sem quantidade original (devolução pela chave): sem ela não há como provar que
+ * a devolução é total. É a mesma leitura de `montarRascunhoDeOriginal`, que
+ * recusa "total" numa nota já parcialmente devolvida.
+ *
+ * Existe porque o escopo era um seletor LIVRE com uma trava de igualdade: marcado
+ * "Total", devolver MENOS peças voltava "Quantidade maior que o saldo disponível"
+ * (DLS, 24/09, rascunho 36730421: três recusas em 12 minutos). O escopo não vai
+ * ao XML — não há campo total/parcial na NF-e —, então ele só descreve.
+ */
+export function escopoDaDevolucao(e: {
+  saldos: ReadonlyArray<SaldoItemOriginal & { chaveAcesso?: string | null }>;
+  itens: ReadonlyArray<{ chaveAcesso?: string | null; nItem: number; quantidade: number | string }>;
+}): EscopoDevolucao {
+  if (e.saldos.length === 0) return "PARCIAL";
+  const mesmaChave = (a?: string | null, b?: string | null) =>
+    !a || !b || normalizarChaveAcesso(a) === normalizarChaveAcesso(b);
+  const total = e.saldos.every((s) => {
+    const original = s.quantidadeOriginal === null ? null : quantidadeParaUnidades(s.quantidadeOriginal);
+    if (original === null || original <= 0) return false;
+    const disponivel = s.disponivel === null ? null : quantidadeParaUnidades(s.disponivel);
+    if (disponivel !== original) return false;
+    const item = e.itens.find((i) => i.nItem === s.nItem && mesmaChave(i.chaveAcesso, s.chaveAcesso));
+    return !!item && quantidadeParaUnidades(item.quantidade) === original;
+  });
+  return total ? "TOTAL" : "PARCIAL";
+}
+
+function quantidadeBR(q: number): string {
+  return String(q).replace(".", ",");
+}
+
+/**
+ * A recusa de saldo de UM item, com o que dá para agir: qual peça, quanto ela
+ * pediu, quanto ainda pode ser devolvido e onde está o resto. Antes a tela
+ * recebia só "Quantidade maior que o saldo disponível para devolução.", sem item
+ * nem número.
+ *
+ * `ordem` é o item como a tela o mostra; o código e o nº do item na nota
+ * original vão no texto, porque a ordem muda quando um item sai da lista.
+ */
+export function issueSaldoExcedido(e: {
+  ordem: number;
+  nItemOriginal: number;
+  codigo: string;
+  pedida: number;
+  /** Saldo do item; `disponivel: null` = só se conhece a quantidade original. */
+  saldo: Pick<SaldoItemOriginal, "disponivel" | "devolvidaAutorizada" | "emProcessamento"> | null;
+  /** Quantidade da nota original, quando o saldo não é conhecido. */
+  quantidadeOriginal?: number | null;
+}): DevolucaoIssue {
+  const peca = `Item ${e.ordem}: ${e.codigo} (item ${e.nItemOriginal} da nota original)`;
+  const partes: string[] = [];
+  if (e.saldo && e.saldo.devolvidaAutorizada > 0) {
+    partes.push(`${quantidadeBR(e.saldo.devolvidaAutorizada)} já devolvido em NF-e autorizada`);
+  }
+  if (e.saldo && e.saldo.emProcessamento > 0) {
+    partes.push(`${quantidadeBR(e.saldo.emProcessamento)} numa devolução em envio à SEFAZ`);
+  }
+  const porque = partes.length > 0 ? ` (${partes.join("; ")})` : "";
+  const disponivel = e.saldo?.disponivel ?? null;
+  let mensagem: string;
+  if (disponivel !== null && disponivel <= 0) {
+    mensagem = `${peca}: este item não tem mais saldo para devolver${porque}. Tire o item desta devolução.`;
+  } else if (disponivel !== null) {
+    mensagem =
+      `${peca}: a quantidade ${quantidadeBR(e.pedida)} passa do que ainda pode ser devolvido, ` +
+      `que é ${quantidadeBR(disponivel)}${porque}.`;
+  } else {
+    mensagem =
+      `${peca}: a quantidade ${quantidadeBR(e.pedida)} passa da quantidade da nota original, ` +
+      `que é ${quantidadeBR(e.quantidadeOriginal ?? 0)}.`;
+  }
+  return { code: "SALDO_EXCEDIDO", severidade: "ERRO", ordem: e.ordem, mensagem };
 }

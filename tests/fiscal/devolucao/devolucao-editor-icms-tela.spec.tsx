@@ -132,7 +132,11 @@ let root: Root;
 
 const texto = () => container.textContent ?? "";
 const selects = () => Array.from(container.querySelectorAll("select"));
-const seletorIcms = (i = 0) => selects()[i] as HTMLSelectElement;
+// PIS e COFINS também viraram seletor (K1, 24/09/2026) e o passo 3 ganhou o de
+// CFOP (K9): o seletor de ICMS de cada item é achado pelo rótulo, não pela posição.
+const seletoresIcms = () =>
+  selects().filter((s) => (s.getAttribute("aria-label") ?? "").startsWith("Código do ICMS"));
+const seletorIcms = (i = 0) => seletoresIcms()[i] as HTMLSelectElement;
 const opcoesDe = (s: HTMLSelectElement) => Array.from(s.options).map((o) => o.value);
 const caixas = () =>
   Array.from(container.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
@@ -194,8 +198,11 @@ describe("campo de ICMS na tela — DLS AUTO PEÇAS, Simples Nacional", () => {
     const rotulos = Array.from(s.options).map((o) => o.textContent ?? "");
     expect(rotulos.some((r) => r.startsWith("400 — ") && r.includes("Não tributada"))).toBe(true);
     expect(new Set(rotulos).size).toBe(rotulos.length);
-    // Um seletor por item, no lugar do campo livre que decidia pelo tamanho.
-    expect(selects()).toHaveLength(2);
+    // Um seletor de ICMS por item, no lugar do campo livre que decidia pelo
+    // tamanho. (Os outros dois seletores de cada item são o PIS e a COFINS, que
+    // também deixaram de ser campo livre — ver o bloco de PIS/COFINS abaixo.)
+    expect(seletoresIcms()).toHaveLength(2);
+    expect(selects()).toHaveLength(6);
     expect(s.value).toBe("");
     expect(texto()).toContain(PLACEHOLDER_ICMS);
   });
@@ -336,24 +343,40 @@ describe("campo de ICMS na tela — empresa FORA do Simples não regride", () =>
 describe("os outros passos do editor seguem iguais", () => {
   it("o passo 3 (quantidade e CFOP) não ganhou seletor de ICMS nem a frase do regime", async () => {
     await montar(DLS(), 3);
-    expect(selects()).toHaveLength(0);
+    expect(seletoresIcms()).toHaveLength(0);
+    // Os únicos seletores do passo 3 são os de CFOP, um por peça (K9: era campo livre).
+    expect(selects().map((s) => s.getAttribute("aria-label"))).toEqual(["CFOP de devolução", "CFOP de devolução"]);
     expect(texto()).not.toContain("Sua empresa é do Simples Nacional");
     expect(texto()).toContain("Quantidade");
     expect(texto()).toContain("CFOP");
   });
 
-  it("o passo 1 continua com escopo e entrega", async () => {
+  it("o passo 1 pergunta a entrega (sem o seletor de escopo, que o servidor agora deriva)", async () => {
+    // Antes: "Escopo" (Total/Parcial) + uma caixinha. O escopo passou a ser
+    // DERIVADO das quantidades no servidor (o do corpo é ignorado), e a caixinha
+    // virou pergunta de três estados (N-fluxo-3) — o texto que o catálogo de
+    // pendências manda marcar continua na tela, na opção "Sim".
     await montar(DLS(), 1);
-    expect(texto()).toContain("Escopo");
+    expect(texto()).not.toContain("Escopo");
     expect(texto()).toContain("A mercadoria foi entregue e está sendo devolvida");
+    expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(2);
   });
 
-  it("PIS e COFINS continuam campos livres de CST, intocados nesta tarefa", async () => {
+  it("PIS e COFINS são seletores com o significado de cada código — não mais campo livre de CST", async () => {
+    // Substitui o teste que prendia o campo livre "intocado nesta tarefa" (#373):
+    // a DLS ficou 70 minutos chutando CST nele (K1, 24/09/2026).
     await montar(DLS());
     const t = texto();
-    expect(t).toContain("PIS CST");
-    expect(t).toContain("COFINS CST");
-    expect(t).toContain("PIS alíquota (%)");
-    expect(t).toContain("COFINS alíquota (%)");
+    expect(t).not.toContain("PIS CST");
+    expect(t).not.toContain("COFINS CST");
+    expect(container.querySelector('input[placeholder="CST"]')).toBeNull();
+    const pis = selects().filter((s) => s.getAttribute("aria-label") === "Código do PIS (CST)");
+    const cofins = selects().filter((s) => s.getAttribute("aria-label") === "Código da COFINS (CST)");
+    expect(pis).toHaveLength(2);
+    expect(cofins).toHaveLength(2);
+    // O código gravado (49) aparece NO seletor, e não só numa linha miúda.
+    expect(pis[0].value).toBe("49");
+    expect(t).toContain("Alíquota do PIS (%)");
+    expect(t).toContain("Alíquota da COFINS (%)");
   });
 });

@@ -24,6 +24,7 @@
  */
 
 import { MEIO_PAGAMENTO_COD, type MeioPagamento } from "../domain/nfe.types";
+import { formatBRLNumber } from "./danfe-helpers";
 
 // ═══════════════════════════════════════════════════════════════════
 // Helpers de coerção
@@ -332,4 +333,72 @@ export function readItemImposto(imposto: unknown): ItemImpostoView | null {
     view.valorIpi !== null ||
     view.aliquotaIpi !== null;
   return temAlgo ? view : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// IPI devolvido (nota de devolução — `<ICMSTot><vIPIDevol>`)
+// ═══════════════════════════════════════════════════════════════════
+
+/** Valor > 0 com 2 casas, ou 0 (ausente, zero, negativo ou inválido). */
+function valorPositivo(v: unknown): number {
+  const n = num(v);
+  if (n === null || !(n > 0)) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Total do IPI devolvido de uma devolução, lido do `<ICMSTot>` do XML.
+ *
+ * O `vIPIDevol` ENTRA no `vNF` (regra W16), mas o parser
+ * (`nfe-xml-parser.service.ts`) não o lê. Sem esta leitura, o DANFE de uma
+ * devolução com IPI devolvido mostrava "VALOR TOTAL DO IPI 0,00" e um total
+ * maior que produtos + frete − desconto, sem dizer de onde vinha a diferença.
+ *
+ * Lê SÓ dentro de `<ICMSTot>`: cada item com IPI devolvido também traz o seu
+ * `<impostoDevol><IPI><vIPIDevol>`, e o primeiro `<vIPIDevol>` do documento é
+ * o do item 1, não o total da nota.
+ *
+ * Varredura linear (dois `indexOf` e uma regex sem retrocesso num trecho de
+ * ~1 KB). Nunca lança: qualquer coisa inesperada vira 0, que é o DANFE de antes.
+ */
+export function lerTotalIpiDevolDoXml(xml: unknown): number {
+  if (typeof xml !== "string") return 0;
+  const ini = xml.indexOf("<ICMSTot>");
+  if (ini < 0) return 0;
+  const fim = xml.indexOf("</ICMSTot>", ini);
+  if (fim < 0) return 0;
+  const m = /<vIPIDevol>([^<]*)<\/vIPIDevol>/.exec(xml.slice(ini, fim));
+  return m ? valorPositivo(m[1].trim()) : 0;
+}
+
+/**
+ * IPI devolvido gravado nos totais da nota (`totaisJson.totalIpiDevol`).
+ *
+ * `NfeTotais` (domínio) ainda não declara a chave, por isso a leitura é por
+ * `unknown`. No caminho XML quem a preenche é `DanfePdfService.generateFromXml`
+ * (a partir de `lerTotalIpiDevolDoXml`); no caminho do banco ela só existe
+ * quando a emissão da devolução a gravar. Ausente ⇒ 0 ⇒ DANFE igual ao de antes.
+ */
+export function totalIpiDevolDosTotais(totaisJson: unknown): number {
+  return isRecord(totaisJson) ? valorPositivo(totaisJson.totalIpiDevol) : 0;
+}
+
+/**
+ * Informações complementares do DANFE com a linha do IPI devolvido na frente.
+ *
+ * O quadro CÁLCULO DO IMPOSTO não ganhou campo para o `vIPIDevol` na NF-e 4.00,
+ * e a orientação do ENCAT (NT 2016.002) é mencioná-lo em INFORMAÇÕES
+ * COMPLEMENTARES. Somá-lo ao "VALOR TOTAL DO IPI" faria o DANFE contradizer o
+ * `<vIPI>` do XML. A linha diz que o valor já está no total da nota — é o que
+ * faz os números impressos fecharem para quem confere: produtos − desconto +
+ * frete + IPI + IPI devolvido = valor total da nota.
+ *
+ * Sem IPI devolvido devolve `infCpl` INALTERADO (a mesma string): toda nota que
+ * não é devolução com IPI devolvido sai idêntica à de antes.
+ */
+export function infCplComIpiDevolvido(infCpl: string, totaisJson: unknown): string {
+  const valor = totalIpiDevolDosTotais(totaisJson);
+  if (valor <= 0) return infCpl;
+  const linha = `Valor do IPI devolvido: R$ ${formatBRLNumber(valor)} (já somado ao valor total da nota)`;
+  return infCpl ? `${linha}\n${infCpl}` : linha;
 }

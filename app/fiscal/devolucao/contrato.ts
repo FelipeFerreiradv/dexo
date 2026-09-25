@@ -9,7 +9,10 @@
  * | GET  /fiscal/nfe/draft/:id/devolucao           | —                            | DevolucaoDetalhe |
  * | PUT  /fiscal/nfe/draft/:id/devolucao           | AtualizarCabecalhoBody       | DevolucaoDetalhe |
  * | PUT  /fiscal/nfe/draft/:id/devolucao/itens     | AtualizarItensBody           | DevolucaoDetalhe |
- * | POST /fiscal/nfe/devolucao/manual              | ManualBody                   | 201 ManualResposta |
+ * | POST /fiscal/nfe/devolucao/manual              | ManualBody                   | 201/200 ManualResposta |
+ * | POST /fiscal/nfe/devolucao/manual/previa       | ManualBody                   | PreviaDevolucaoManual |
+ * | GET  /fiscal/nfe/devolucao/abertas             | —                            | { abertas: DevolucaoAbertaResumo[] } |
+ * | GET  /fiscal/nfe/devolucao/disponibilidade     | —                            | DisponibilidadeDevolucaoResposta |
  *
  * Erros: `ErroDevolucaoResposta` com `code` ∈ DEVOLUCAO_ERRO_CODIGOS e o HTTP de
  * `DEVOLUCAO_ERRO_HTTP`. Feature desligada para a config ⇒ 404 sem `code`.
@@ -20,7 +23,7 @@
  * Módulo PURO — seguro para backend, testes e client.
  */
 
-import { validarChaveAcesso } from "../domain/chave-acesso-dv";
+import { UF_POR_CUF, parseChaveAcesso, validarChaveAcesso } from "../domain/chave-acesso-dv";
 import type { StatusMapeamentoCfop } from "../domain/devolucao-cfop";
 import type { NfeStatus } from "../domain/nfe.types";
 import { temAteQuatroCasas } from "./saldo";
@@ -28,11 +31,15 @@ import type {
   DevolucaoIssue,
   EscopoDevolucao,
   FonteDevolucao,
+  IdDest,
   IndFinalDevolucao,
   ModoReferenciaDevolucao,
+  OrigemItemSnapshot,
+  ReferenciaImpostoOriginal,
   RegimeEmitenteDevolucao,
   SaldoItemOriginal,
   TipoDevolucao,
+  TotaisDevolucao,
   TributacaoDevolucaoItem,
   TributacaoOverride,
 } from "./tipos";
@@ -66,8 +73,22 @@ export const DEVOLUCAO_ERRO_CODIGOS = [
   "CHAVE_INVALIDA",
   "NOTA_NAO_EMITIDA_PARA_ESTE_CNPJ",
   "CONFIRMACAO_SEM_XML_OBRIGATORIA",
+  /**
+   * Cancelar a nota ORIGINAL com devolução autorizada ou em envio. A frase (`error`)
+   * cita a devolução (nº fiscal, ou "em envio") e `issues` traz UMA por devolução,
+   * com `devolucaoNfeId`, `numeroDevolucao` e `serieDevolucao` (`erroOriginalComDevolucao`
+   * no caso de uso). O `code` de cada issue é EMISSAO_EM_ANDAMENTO (em envio) ou
+   * PARCIALMENTE_DEVOLVIDA (autorizada) — o catálogo de pendências é da devolução,
+   * não do cancelamento: a tela deve mostrar a `mensagem` da issue.
+   */
   "ORIGINAL_COM_DEVOLUCAO",
   "DEVOLUCAO_INVALIDA",
+  /**
+   * Devolução PELA CHAVE de uma nota emitida pelo próprio Dexo que TEM o XML
+   * autorizado guardado (K6-3): pela chave o saldo não é conferido; pela nota,
+   * é. O caso de uso já lê `notaPorChave(...).xmlAutorizadoPath` para decidir.
+   */
+  "ORIGINAL_TEM_XML_NO_DEXO",
 ] as const;
 
 export type DevolucaoErroCodigo = (typeof DEVOLUCAO_ERRO_CODIGOS)[number];
@@ -101,6 +122,7 @@ export const DEVOLUCAO_ERRO_HTTP: Readonly<Record<DevolucaoErroCodigo, 400 | 404
   CONFIRMACAO_SEM_XML_OBRIGATORIA: 422,
   ORIGINAL_COM_DEVOLUCAO: 409,
   DEVOLUCAO_INVALIDA: 422,
+  ORIGINAL_TEM_XML_NO_DEXO: 409,
 };
 
 export const DEVOLUCAO_ERRO_MENSAGEM: Readonly<Record<DevolucaoErroCodigo, string>> = {
@@ -118,7 +140,7 @@ export const DEVOLUCAO_ERRO_MENSAGEM: Readonly<Record<DevolucaoErroCodigo, strin
   ORIGINAL_ENTRADA: "Nota de entrada — devolução de compra usa a devolução manual.",
   JA_E_DEVOLUCAO: "Esta já é uma nota de devolução.",
   AMBIENTE_DIVERGENTE: "A nota original e o emissor estão em ambientes diferentes (homologação × produção).",
-  DEVOLUCAO_NAO_GERENCIADA: "Este rascunho não é uma devolução gerenciada.",
+  DEVOLUCAO_NAO_GERENCIADA: "Este rascunho não está ligado a nenhuma nota original.",
   DEVOLUCAO_EM_EMISSAO: "Esta nota já foi enviada à SEFAZ e não pode mais ser alterada.",
   ITEM_ORIGINAL_INEXISTENTE: "O item informado não existe na nota original.",
   CFOP_INVALIDO: "CFOP inválido para esta devolução.",
@@ -132,6 +154,8 @@ export const DEVOLUCAO_ERRO_MENSAGEM: Readonly<Record<DevolucaoErroCodigo, strin
   CONFIRMACAO_SEM_XML_OBRIGATORIA: "Sem o XML da nota original, confirme a devolução sem XML.",
   ORIGINAL_COM_DEVOLUCAO: "A nota tem devolução autorizada ou em envio — cancele a devolução antes.",
   DEVOLUCAO_INVALIDA: "A devolução tem pendências que impedem a emissão.",
+  ORIGINAL_TEM_XML_NO_DEXO:
+    'Esta nota foi emitida pelo Dexo e o XML dela está guardado: faça a devolução pela própria nota, em "Notas Emitidas" (botão "Devolver total" ou "Devolver parcial" na linha dela), e não pela chave.',
 };
 
 export function isDevolucaoErroCodigo(v: unknown): v is DevolucaoErroCodigo {
@@ -141,6 +165,14 @@ export function isDevolucaoErroCodigo(v: unknown): v is DevolucaoErroCodigo {
 export interface ErroCampo {
   campo: string;
   mensagem: string;
+  /**
+   * Em erro de campo "itens[i]…": o nº do item da nota original daquela linha,
+   * lido do corpo ENVIADO (para a tela achar o cartão da peça sem depender da
+   * posição). Opcional: parser antigo não manda.
+   */
+  nItem?: number;
+  /** Idem, a chave da nota original daquela linha (PUT dos itens). */
+  chaveAcesso?: string;
 }
 
 export interface ErroDevolucaoResposta {
@@ -173,6 +205,11 @@ export interface CriarDevolucaoBody {
 export interface CriarDevolucaoResposta {
   draftId: string;
   reutilizado: boolean;
+  /**
+   * Escopo do rascunho (derivado das quantidades). No reaproveitado, é o do
+   * rascunho que JÁ existia — o pedido não o muda. Opcional: servidor antigo não manda.
+   */
+  escopo?: EscopoDevolucao;
 }
 
 export interface SaldoItemResposta extends SaldoItemOriginal {
@@ -219,6 +256,31 @@ export interface OrigemResumo {
   serie: number;
   dataEmissao: string | null;
   destinatarioNome: string | null;
+  /**
+   * Destino da operação da nota original (a devolução espelha) — é ele que diz
+   * quais CFOPs de devolução servem. Já vai no JSON (o detalhe espalha o
+   * snapshot `origensJson`); opcional só por compatibilidade.
+   */
+  idDest?: IdDest;
+  /**
+   * Os itens da nota original, como estão no snapshot (`origensJson`) — de onde
+   * a tela recoloca uma peça tirada da devolução (K11). Já vai no JSON; opcional
+   * só por compatibilidade.
+   */
+  itens?: OrigemItemSnapshot[];
+}
+
+/** Outra devolução em que o MESMO item da nota original está (sem canceladas/inutilizadas). */
+export interface OutraDevolucaoDoItem {
+  nfeId: string;
+  /** NfeStatus da outra devolução (DRAFT/REJECTED = rascunho; VALIDATING/SIGNING/SENDING = em envio; AUTHORIZED). */
+  status: string;
+  /** null enquanto rascunho (placeholder negativo não é número fiscal). */
+  numero: number | null;
+  serie: number | null;
+  quantidade: number;
+  /** ISO; null quando não se sabe. */
+  criadaEm: string | null;
 }
 
 export interface DevolucaoItemDetalhe {
@@ -232,6 +294,12 @@ export interface DevolucaoItemDetalhe {
   quantidadeOriginal: number | null;
   devolvidaAutorizada: number;
   emProcessamento: number;
+  /**
+   * Quanto deste item está em OUTROS rascunhos (DRAFT/REJECTED) — não segura
+   * saldo, mas o primeiro a sair zera os outros. Já vai no JSON; opcional só por
+   * compatibilidade.
+   */
+  emRascunho?: number;
   disponivel: number | null;
   quantidade: number;
   valorUnitario: number;
@@ -242,6 +310,20 @@ export interface DevolucaoItemDetalhe {
   cfopOpcoes: string[];
   tributacao: TributacaoDevolucaoItem;
   requerRevisao: boolean;
+  /**
+   * Onde mais este item da nota original está: outros rascunhos e devoluções em
+   * envio ou autorizadas (sem canceladas/inutilizadas). Já vai no JSON; opcional
+   * só por compatibilidade.
+   */
+  outrasDevolucoes?: OutraDevolucaoDoItem[];
+  /**
+   * O imposto da nota ORIGINAL deste item, na proporção devolvida, com a frase
+   * pronta para a tela ("Na nota do fornecedor: CST 00 · base R$ 123,56 · 12% ·
+   * ICMS R$ 14,83"). Sai de `referenciaImpostoOriginal` (tributacao.ts). `null` =
+   * devolução manual sem XML (não há imposto original para conferir).
+   * Opcional: servidor antigo não manda.
+   */
+  referenciaOriginal?: ReferenciaImpostoOriginal | null;
 }
 
 export interface DevolucaoDetalhe {
@@ -267,6 +349,50 @@ export interface DevolucaoDetalhe {
   /** Prévia de validarDevolucao. */
   issues: DevolucaoIssue[];
   podeEmitir: boolean;
+  /**
+   * Totais que a emissão vai calcular (`totaisDevolucao`, a MESMA função de
+   * `calcularDevolucao`): ICMS, PIS, COFINS, IPI devolvido e o valor da nota
+   * (produtos − desconto + frete + IPI devolvido). `completo:false` = prévia com
+   * itens ainda por fechar (`itensPendentes`). Opcional: servidor antigo não manda.
+   */
+  totais?: TotaisDevolucao;
+  /**
+   * Itens da nota original (snapshot `origensJson`) que NÃO estão nesta devolução
+   * e ainda podem ser devolvidos (`disponivel` ≠ 0; `null` = saldo não verificável,
+   * pela chave) — para a peça tirada poder VOLTAR depois de recarregar a página
+   * (K11). Mesmo formato de `DevolucaoItemDetalhe`, com:
+   *  - `ordem: 0` (não está na nota);
+   *  - `quantidade` = o que voltaria (o `disponivel`; 0 quando não se sabe — ela digita);
+   *  - `cfop` = o sugerido ("" quando a escolha é dela, com `cfopOpcoes`);
+   *    `tributacao` = a de partida (o PUT recalcula ao voltar).
+   * Sem canceladas nem itens sem saldo. Opcional: servidor antigo não manda.
+   */
+  itensForaDaDevolucao?: DevolucaoItemDetalhe[];
+}
+
+/**
+ * GET /fiscal/nfe/devolucao/disponibilidade. 404 `{error:"Recurso indisponível"}`
+ * quando NENHUMA empresa do usuário tem a devolução ligada.
+ *  - `companyFiscalConfigId` (o de sempre): a empresa PADRÃO quando ela tem a
+ *    devolução ligada; senão, a única ligada; `null` quando há mais de uma ligada
+ *    e a padrão não está entre elas (a tela escolhe em `empresas`).
+ *  - `empresas` (novo): TODAS as empresas do usuário com a devolução ligada, a
+ *    padrão primeiro — para o seletor de CNPJ da devolução manual (K12).
+ */
+export interface DisponibilidadeDevolucaoResposta {
+  disponivel: true;
+  companyFiscalConfigId: string | null;
+  empresas: EmpresaComDevolucao[];
+}
+
+export interface EmpresaComDevolucao {
+  companyFiscalConfigId: string;
+  cnpj: string;
+  razaoSocial: string;
+  nomeFantasia: string | null;
+  uf: string | null;
+  ambiente: string;
+  isDefault: boolean;
 }
 
 export interface AtualizarCabecalhoBody {
@@ -368,8 +494,74 @@ export interface ManualValidadoChave extends ManualValidadoBase {
 
 export type ManualValidado = ManualValidadoXml | ManualValidadoChave;
 
+/**
+ * 201 com reutilizado=false; 200 com reutilizado=true quando já havia rascunho
+ * aberto (DRAFT/REJECTED) da mesma chave e do mesmo tipo — pela chave, só
+ * quando os itens digitados são os mesmos do rascunho.
+ */
 export interface ManualResposta {
   draftId: string;
+  reutilizado: boolean;
+}
+
+/**
+ * POST /fiscal/nfe/devolucao/manual/previa (mesmo corpo do /manual, só leitura):
+ * os itens da nota original com o que ainda pode ser devolvido de cada um e o
+ * CFOP sugerido, para a tela deixar escolher as peças ANTES de criar; e o
+ * rascunho já aberto desta nota, se houver (a criação vai reaproveitá-lo).
+ *
+ * Declarado AQUI para o front importar sem puxar código de servidor. O caso de
+ * uso (`nfe-devolucao.usecase.ts`) reexporta esta (`export type { PreviaDevolucaoManual } from …`).
+ */
+export interface PreviaDevolucaoManual {
+  chaveAcesso: string;
+  numero: number;
+  serie: number;
+  emitenteCnpjCpf: string;
+  /** Quem recebe a devolução: o fornecedor (compra) ou o cliente (venda). */
+  destinatarioNome: string | null;
+  /** Rascunho aberto desta nota e deste tipo: criar de novo devolve ELE (`reutilizado`). */
+  rascunhoAberto: string | null;
+  itens: Array<{
+    nItem: number;
+    codigo: string;
+    descricao: string;
+    unidade: string;
+    valorUnitario: number;
+    quantidadeOriginal: number | null;
+    devolvidaAutorizada: number;
+    emProcessamento: number;
+    emRascunho: number;
+    disponivel: number | null;
+    cfopOriginal: string | null;
+    cfopSugerido: string | null;
+    cfopOpcoes: string[];
+    cfopStatus: string;
+  }>;
+}
+
+/**
+ * GET /fiscal/nfe/devolucao/abertas → `{ abertas: DevolucaoAbertaResumo[] }`.
+ * Sem empresa com a devolução ligada: 200 `{ abertas: [] }`, SEM consulta ao banco
+ * por requisição (era 404 + um SELECT a cada carga da lista, em todo cliente).
+ * Declarado AQUI pelo mesmo motivo de `PreviaDevolucaoManual` (o caso de uso
+ * reexporta esta).
+ */
+export interface DevolucaoAbertaResumo {
+  draftId: string;
+  status: string;
+  /** false = rascunho com finalidade devolução feito à mão (sem cabeçalho): só dá para descartar. */
+  gerenciada: boolean;
+  tipo: TipoDevolucao | null;
+  fonte: FonteDevolucao | null;
+  tipoOperacao: string;
+  destinatarioNome: string | null;
+  originais: Array<{ chaveAcesso: string; numero: number; serie: number }>;
+  quantidadeItens: number;
+  criadaEm: string;
+  atualizadaEm: string;
+  /** Número fiscal preso a este rascunho (reserva viva). null = nenhum. */
+  numeracao: { numero: number; serie: number; estado: string; ambiente: string } | null;
 }
 
 // ─────────────────────────────── validadores ───────────────────────────────
@@ -771,9 +963,14 @@ export function parseManualBody(raw: unknown): ResultadoParse<ManualValidado> {
         if (v === null || (typeof v === "string" && v.length <= 256)) dest[campo] = v === null ? null : v.trim();
         else erros.push({ campo: `destinatario.${campo}`, mensagem: "Texto inválido." });
       }
+      // A UF decide o destino da operação (montagem-manual compara com a UF da
+      // empresa): "sc" minúsculo virava operação INTERESTADUAL.
+      if (typeof dest.uf === "string") dest.uf = dest.uf.toUpperCase();
       destinatario = dest;
     }
   }
+
+  if (destinatario) erros.push(...conferirDestinatarioDaChave(tipo, chave, destinatario));
 
   if (erros.length) return { ok: false, erros };
   return {
@@ -789,10 +986,158 @@ export function parseManualBody(raw: unknown): ResultadoParse<ManualValidado> {
   };
 }
 
+// ───────────────────── chave × destinatário × destino (modo CHAVE) ─────────────────────
+
+/** Siglas aceitas na UF do destinatário: as 27 da tabela do cUF (e "EX" para cliente do exterior). */
+const UFS_VALIDAS: ReadonlySet<string> = new Set(Object.values(UF_POR_CUF));
+
+function formatarCnpjCpf(doc14: string): string {
+  if (doc14.startsWith("000") && !/^0+$/.test(doc14)) {
+    const cpf = doc14.slice(3);
+    return `${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)}`;
+  }
+  return `${doc14.slice(0, 2)}.${doc14.slice(2, 5)}.${doc14.slice(5, 8)}/${doc14.slice(8, 12)}-${doc14.slice(12)}`;
+}
+
+/**
+ * O que dá para conferir SÓ com o corpo: a UF é sigla de verdade e, na
+ * devolução de COMPRA, o destinatário é o próprio emitente da chave (mesmo
+ * CPF/CNPJ, mesma UF do cUF). Sem isto o erro só aparecia na emissão — Rejeição
+ * 1194 (CNPJ) ou 772/773 (destino) —, com o destino já preso no rascunho.
+ */
+function conferirDestinatarioDaChave(
+  tipo: TipoDevolucao | undefined,
+  chave: string | null,
+  destinatario: Pick<ManualDestinatarioBody, "tipoPessoa" | "cpfCnpj" | "uf">,
+): ErroCampo[] {
+  const erros: ErroCampo[] = [];
+  const uf = (destinatario.uf ?? "").trim().toUpperCase();
+  const ufValida = uf === "" || UFS_VALIDAS.has(uf) || (uf === "EX" && destinatario.tipoPessoa === "EXTERIOR");
+  if (!ufValida) {
+    erros.push({ campo: "destinatario.uf", mensagem: "UF inválida: use a sigla do estado (SC, PR, SP...)." });
+  }
+  if (tipo !== "COMPRA_SAIDA" || !chave) return erros;
+  const partes = parseChaveAcesso(chave);
+  if (!partes) return erros;
+  const doc = destinatario.cpfCnpj.replace(/\D/g, "");
+  if (doc && doc.padStart(14, "0") !== partes.cnpjCpf) {
+    erros.push({
+      campo: "destinatario.cpfCnpj",
+      mensagem: `Na devolução de compra o destinatário é o fornecedor que emitiu a nota: pela chave de acesso, o CPF/CNPJ dele é ${formatarCnpjCpf(partes.cnpjCpf)}.`,
+    });
+  }
+  if (uf && ufValida && partes.uf && uf !== partes.uf) {
+    erros.push({
+      campo: "destinatario.uf",
+      mensagem: `O fornecedor desta chave é de ${partes.uf}: a UF do destinatário tem de ser ${partes.uf}.`,
+    });
+  }
+  return erros;
+}
+
+export interface ConferenciaChaveManual {
+  /** Recusas com o nome do campo (vão no 400 PAYLOAD_INVALIDO, como as de `parseManualBody`). */
+  erros: ErroCampo[];
+  /** Destino da operação: 1 interna, 2 interestadual, 3 exterior. null = não deu para saber (há erro dizendo o que falta). */
+  idDest: IdDest | null;
+  /** UF do destinatário (sigla) que vale para a nota: na devolução de compra, a do cUF da chave. */
+  ufDestinatario: string | null;
+}
+
+const IDDEST_POR_DIGITO_CFOP: Readonly<Record<string, IdDest>> = { "5": 1, "6": 2, "7": 3 };
+
+/**
+ * Confere a chave da devolução manual (modo CHAVE) contra a EMPRESA e deriva o
+ * destino da operação — o que `parseManualBody` não consegue sozinho, porque não
+ * conhece a config. Para o caso de uso chamar na criação, ANTES de montar o
+ * rascunho: depois disso a empresa e o destino ficam presos (origensJson e
+ * `destinoOperacao` são protegidos).
+ *
+ *  - COMPRA_SAIDA: a chave não pode ser da própria empresa; o destino sai do cUF
+ *    da chave (a UF do fornecedor) contra a UF da empresa — nunca da UF digitada.
+ *  - VENDA_ENTRADA: a chave tem de ser da própria empresa; o destino sai da UF
+ *    do cliente ou, sem ela, do 1º dígito do CFOP da venda (5/6/7); os dois
+ *    juntos têm de concordar. Cliente do exterior ⇒ 3.
+ *
+ * Modelo 65 NÃO é recusado: devolução pode referenciar NFC-e.
+ */
+export function conferirChaveDevolucaoManual(entrada: {
+  tipo: TipoDevolucao;
+  chaveAcesso: string;
+  destinatario: Pick<ManualDestinatarioBody, "tipoPessoa" | "cpfCnpj" | "uf"> | null;
+  itens?: ReadonlyArray<{ cfopOriginal?: string | null }>;
+  emitente: { cnpj: string; uf: string | null | undefined };
+}): ConferenciaChaveManual {
+  const erros: ErroCampo[] = [];
+  const partes = parseChaveAcesso(entrada.chaveAcesso);
+  if (!partes || !partes.dvValido) {
+    return { erros: [{ campo: "chaveAcesso", mensagem: "Chave de acesso inválida." }], idDest: null, ufDestinatario: null };
+  }
+  const cnpjEmitente = entrada.emitente.cnpj.replace(/\D/g, "").padStart(14, "0");
+  const ufEmitente = (entrada.emitente.uf ?? "").trim().toUpperCase() || null;
+  const ufDigitada = (entrada.destinatario?.uf ?? "").trim().toUpperCase() || null;
+
+  if (entrada.tipo === "COMPRA_SAIDA") {
+    if (partes.cnpjCpf === cnpjEmitente) {
+      erros.push({
+        campo: "chaveAcesso",
+        mensagem: "Esta chave é de uma nota emitida pela sua própria empresa. Na devolução de compra, a chave é a da nota do fornecedor.",
+      });
+    }
+    if (entrada.destinatario) {
+      erros.push(...conferirDestinatarioDaChave("COMPRA_SAIDA", partes.chave, entrada.destinatario));
+    }
+    const ufFornecedor = partes.uf;
+    if (!ufFornecedor) erros.push({ campo: "chaveAcesso", mensagem: "O código de estado desta chave não existe." });
+    const idDest: IdDest | null = ufFornecedor && ufEmitente ? (ufFornecedor === ufEmitente ? 1 : 2) : null;
+    return { erros, idDest, ufDestinatario: ufFornecedor };
+  }
+
+  if (partes.cnpjCpf !== cnpjEmitente) {
+    erros.push({
+      campo: "chaveAcesso",
+      mensagem: `Esta chave não é de uma nota emitida pela sua empresa (pela chave, quem emitiu foi ${formatarCnpjCpf(partes.cnpjCpf)}). Na devolução de venda, a chave é a da sua nota de venda.`,
+    });
+  }
+  if (entrada.destinatario?.tipoPessoa === "EXTERIOR") {
+    return { erros, idDest: 3, ufDestinatario: ufDigitada };
+  }
+  const digitos = new Set(
+    (entrada.itens ?? [])
+      .map((i) => (i.cfopOriginal ?? "").replace(/\D/g, ""))
+      .filter((c) => c.length === 4 && IDDEST_POR_DIGITO_CFOP[c[0]] !== undefined)
+      .map((c) => c[0]),
+  );
+  const idDestCfop: IdDest | null = digitos.size === 1 ? IDDEST_POR_DIGITO_CFOP[Array.from(digitos)[0]] : null;
+  const ufValida = ufDigitada !== null && UFS_VALIDAS.has(ufDigitada);
+  if (ufDigitada !== null && !ufValida) {
+    erros.push({ campo: "destinatario.uf", mensagem: "UF inválida: use a sigla do estado (SC, PR, SP...)." });
+  }
+  const idDestUf: IdDest | null = ufValida && ufEmitente ? (ufDigitada === ufEmitente ? 1 : 2) : null;
+  if (idDestUf !== null && idDestCfop !== null && idDestUf !== idDestCfop) {
+    const doCfop =
+      idDestCfop === 1 ? "de venda dentro do estado" : idDestCfop === 2 ? "de venda para fora do estado" : "de venda para o exterior";
+    erros.push({
+      campo: "destinatario.uf",
+      mensagem: `A UF do cliente (${ufDigitada}) não combina com o CFOP da venda original, que é ${doCfop}.`,
+    });
+  }
+  const idDest = idDestUf ?? idDestCfop;
+  if (idDest === null && ufDigitada === null) {
+    erros.push({
+      campo: "destinatario.uf",
+      mensagem: "Informe a UF do cliente: sem ela o Dexo não sabe se a devolução é de dentro ou de fora do estado.",
+    });
+  }
+  return { erros, idDest, ufDestinatario: ufValida ? ufDigitada : null };
+}
+
 /** Leitura defensiva da resposta 200/201 do POST de criação (cliente). */
 export function parseCriarDevolucaoResposta(raw: unknown): ResultadoParse<CriarDevolucaoResposta> {
   if (!isObj(raw) || typeof raw.draftId !== "string" || raw.draftId === "") {
     return { ok: false, erros: [{ campo: "draftId", mensagem: "Resposta sem draftId." }] };
   }
-  return { ok: true, value: { draftId: raw.draftId, reutilizado: raw.reutilizado === true } };
+  const value: CriarDevolucaoResposta = { draftId: raw.draftId, reutilizado: raw.reutilizado === true };
+  if (raw.escopo === "TOTAL" || raw.escopo === "PARCIAL") value.escopo = raw.escopo;
+  return { ok: true, value };
 }

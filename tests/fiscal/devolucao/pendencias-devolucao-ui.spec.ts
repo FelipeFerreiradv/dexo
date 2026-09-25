@@ -136,8 +136,13 @@ describe("pendências da devolução — issue sem ordem", () => {
     ]);
     const cabecalho = bloqueios.find((b) => b.codigo === "ESCOLHA_PENDENTE")!;
     expect(cabecalho.ordens).toEqual([]);
+    // ATUALIZADO (onda 5, revisão fiscal #7 e pedido do G3): o título sem o TIPO
+    // da devolução não pode dizer "pelo cliente" — na devolução de COMPRA quem
+    // recebe de volta é o fornecedor. Sem tipo, sai o texto neutro; com o tipo,
+    // o de cada um (teste "por tipo" mais abaixo). O que este teste prende — sem
+    // item inventado e sem buraco na frase — continua igual.
     expect(cabecalho.titulo).toBe(
-      "Falta responder se a mercadoria foi entregue e devolvida pelo cliente",
+      "Falta responder se a mercadoria foi entregue e está sendo devolvida",
     );
     // A frase de item, sem item, não pode sair com o buraco do token nem com
     // espaço sobrando antes da pontuação.

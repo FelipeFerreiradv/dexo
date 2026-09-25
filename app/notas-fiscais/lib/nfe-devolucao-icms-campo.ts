@@ -362,9 +362,13 @@ export function paresDoCodigoIcms(
  * Põe (ou tira) o ICMS do override que a tela envia.
  *
  * Duas armadilhas do servidor que esta função fecha:
- *  1. `aplicarOverrideTributacao` completa o que falta com o valor GRAVADO
- *     (`ov.icms.cst ?? t.icms.cst`). Mandar só a alíquota reenviaria o CST do
- *     fornecedor — por isso o código viaja SEMPRE junto da alíquota.
+ *  1. O servidor completa o que falta no corpo: primeiro com o ajuste que ela JÁ
+ *     gravou (`mesclarAjusteTributacao`, só quando a tributação gravada é dela) e,
+ *     sem ele, com a BASE do XML da nota original, recalculada a cada save
+ *     (`ov.icms.cst ?? t.icms.cst`, com `t` = `proporcionalizar` do XML) — nunca
+ *     com o que a tela mostra. Mandar só a alíquota reenviaria o CST do
+ *     fornecedor — por isso o código viaja SEMPRE junto da alíquota, e o editor
+ *     manda a alíquota que a caixa MOSTRA (`impostosDaLinha`).
  *  2. Um `icms` vazio ainda é um ajuste. Sem código que sirva, o grupo sai do
  *     corpo inteiro; e se não sobrar mais nada, o override some (`undefined`),
  *     que é o que mantém "não mexi em imposto" significando não mexer —

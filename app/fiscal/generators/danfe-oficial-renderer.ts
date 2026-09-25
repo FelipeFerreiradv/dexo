@@ -57,6 +57,7 @@ import {
   normalizeTransportadora,
   normalizeVolumes,
   normalizeDuplicatas,
+  infCplComIpiDevolvido,
   type ItemImpostoView,
 } from "./danfe-render-extras";
 import {
@@ -310,7 +311,10 @@ export async function renderDanfeOficial(
 
   // `toWinAnsiSafe` (não `...Line`) preserva os `\n` do usuário — é o que faz o
   // bloco de informações complementares respeitar os parágrafos digitados.
-  const infCpl = toWinAnsiSafe(composeInfCpl(nfe));
+  // Devolução com IPI devolvido: o valor entra no VALOR TOTAL DA NOTA mas o
+  // quadro CÁLCULO DO IMPOSTO não tem campo para ele (NT 2016.002 manda citar
+  // aqui). Sem IPI devolvido o texto sai exatamente como antes.
+  const infCpl = toWinAnsiSafe(infCplComIpiDevolvido(composeInfCpl(nfe), nfe.totaisJson));
 
   // ── Documento e fontes ──
   const doc = await PDFDocument.create();
@@ -756,6 +760,9 @@ export async function renderDanfeOficial(
     // dessas notas (e é o que o modelo de referência mostra).
     // O FRETE, esse sim, passou a ser informável: vem de `totais.totalFrete`,
     // ausente nos totaisJson antigos ⇒ `?? 0` mantém o DANFE de hoje.
+    // O IPI DEVOLVIDO (`vIPIDevol`, devolução) não tem campo nesta grade e NÃO
+    // é somado ao "VALOR TOTAL DO IPI" (contradiria o `<vIPI>` do XML): sai em
+    // DADOS ADICIONAIS, via `infCplComIpiDevolvido`.
     cur = fieldRow(cur, FIELD_ROW_H, [
       { w: 112, label: "BASE DE CÁLCULO DO ICMS", value: money(totais.totalBcIcms), align: "right" },
       { w: 112, label: "VALOR DO ICMS", value: money(totais.totalIcms), align: "right" },

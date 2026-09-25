@@ -12,7 +12,11 @@ import {
   renderDanfeOficial,
   type DanfeOficialExtras,
 } from "./danfe-oficial-renderer";
-import { readItemImposto } from "./danfe-render-extras";
+import {
+  readItemImposto,
+  infCplComIpiDevolvido,
+  lerTotalIpiDevolDoXml,
+} from "./danfe-render-extras";
 import { composeInfCpl } from "../domain/inf-cpl";
 import { toWinAnsiSafe, wrapTextLines, formatBRLNumber } from "./danfe-helpers";
 
@@ -313,7 +317,11 @@ export class DanfePdfService {
     );
 
     // ── Informações complementares (mesmo conteúdo do <infCpl> do XML) ──
-    const infCpl = toWinAnsiSafe(composeInfCpl(nfe));
+    // + a linha do IPI devolvido de uma devolução, que entra no TOTAL DA NOTA e
+    // não tem linha nos totais acima. Sem IPI devolvido, texto igual ao de antes.
+    const infCpl = toWinAnsiSafe(
+      infCplComIpiDevolvido(composeInfCpl(nfe), nfe.totaisJson),
+    );
     if (infCpl) {
       y -= lineHeight;
       if (y < margin + 40) {
@@ -403,6 +411,18 @@ export class DanfePdfService {
       );
     }
     const projected = projectParsedNfeToDraft(parsed);
+    // Devolução: o `<ICMSTot><vIPIDevol>` compõe o vNF, mas o parser não o lê
+    // e `NfeTotais` não tem a chave. Sem isto o DANFE mostrava um TOTAL DA NOTA
+    // maior que produtos + frete − desconto + IPI, sem dizer de onde vinha a
+    // diferença. Os renderers leem `totalIpiDevol` e o citam em DADOS
+    // ADICIONAIS. Nota sem IPI devolvido: totaisJson intocado.
+    const totalIpiDevol = lerTotalIpiDevolDoXml(xml);
+    if (totalIpiDevol > 0 && projected.draft.totaisJson) {
+      projected.draft.totaisJson = {
+        ...projected.draft.totaisJson,
+        totalIpiDevol,
+      } as NfeTotais;
+    }
     return this.generate(
       projected.draft,
       projected.config,
