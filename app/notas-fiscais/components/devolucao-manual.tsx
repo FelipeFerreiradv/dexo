@@ -231,7 +231,7 @@ export function DevolucaoManual({email}:{email:string}) {
       {travadoPelaChave && <p className="text-xs text-muted-foreground">{pelaChave?DESTINATARIO_TRAVADO_PELA_CHAVE:"Cole a chave primeiro: na devolução de compra, o CNPJ e a UF do fornecedor saem dela."}</p>}
       {linhas.map((linha,index)=><div className="space-y-1 rounded border p-2" key={index} aria-label={`Peça ${index+1}`}>
         <div className="grid grid-cols-3 gap-2">{CAMPOS_ITEM.map(k=><div key={k}><label>{ROTULOS_ITEM[k]}<Input value={linha[k]??""} inputMode={k==="nItem"?"numeric":k==="valorUnitario" || k==="quantidade" || k==="quantidadeOriginal"?"decimal":undefined} onChange={e=>{const v=e.target.value;setLinhas(old=>old.map((row,j)=>j===index?{...row,[k]:k==="nItem"?v.replace(/\D/g,""):v}:row));}}/></label><Erros mensagens={errosDoCampo(erros,`itens[${index}].${k}`)}/></div>)}
-          {/* Origem: SEM valor escolhido de saída — vazio vai como "não informada"
+          {/* Origem: SEM valor escolhido de saída, mas obrigatória para criar — vazio seria "não informada"
               (o Dexo não inventa). Na venda do Dexo, vem da própria nota. */}
           <div><label>{ROTULO_ORIGEM}<select className="w-full rounded border p-2" value={linha.origem??""} onChange={e=>{const v=e.target.value;setLinhas(old=>old.map((row,j)=>j===index?{...row,origem:v}:row));}}>
             <option value="">{PLACEHOLDER_ORIGEM}</option>

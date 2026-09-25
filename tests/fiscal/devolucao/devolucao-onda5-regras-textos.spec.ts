@@ -542,10 +542,16 @@ describe("catálogo de pendências — o texto manda fazer o que a tela TEM", ()
     expect(texto("SALDO_EXCEDIDO").comoResolver).toContain('"Disponível para devolver"');
   });
 
-  it("outra devolução em envio: título que começa pelo item e diz que não impede", () => {
+  it("outra devolução em envio: cita o item (no singular e no plural) e diz que não impede", () => {
     const [p] = pendenciasDeIssues([{ code: "OUTRA_DEVOLUCAO_EM_ENVIO", severidade: "AVISO", ordem: 3, mensagem: "Item 3: x" }]);
-    expect(p.titulo).toBe("O item 3 também está numa outra devolução que está sendo enviada à SEFAZ");
+    expect(p.titulo).toBe("Outra devolução, que está sendo enviada à SEFAZ, também inclui o item 3");
     expect(p.comoResolver).toContain("não impede");
+    // Plural: "Os itens 3 e 4 também está…" errava a concordância.
+    const [dois] = pendenciasDeIssues([
+      { code: "OUTRA_DEVOLUCAO_EM_ENVIO", severidade: "AVISO", ordem: 3, mensagem: "Item 3: x" },
+      { code: "OUTRA_DEVOLUCAO_EM_ENVIO", severidade: "AVISO", ordem: 4, mensagem: "Item 4: x" },
+    ]);
+    expect(dois.titulo).toBe("Outra devolução, que está sendo enviada à SEFAZ, também inclui os itens 3 e 4");
   });
 
   it("os códigos novos falam com a dona do desmanche: nada de jargão de sistema", () => {
