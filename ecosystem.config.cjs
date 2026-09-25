@@ -18,8 +18,27 @@
  * Migração (UMA vez, ~5s de indisponibilidade):
  *   cd /var/www/dexo && pm2 delete all && pm2 start ecosystem.config.cjs && pm2 save
  *
- * Deploy dali em diante:
- *   cd /var/www/dexo && git pull && npm ci && npm run build && pm2 restart all && pm2 save
+ * Deploy padrão (25/09/2026), um passo por vez. O build é feito NA pasta: o
+ * .next grava caminho absoluto e não se transplanta de outra pasta.
+ *   cd /var/www/dexo && git rev-parse HEAD && git pull --ff-only && cp -a .next .next.bak-$(date +%Y%m%d-%H%M%S)
+ *   → `git diff --name-only <sha anterior>..HEAD -- package-lock.json prisma/schema.prisma`:
+ *     - package-lock.json mudou: `npm ci` (o postinstall roda o prisma
+ *       generate). Install que falhou ⇒ não reiniciar nada.
+ *     - só prisma/schema.prisma mudou: generate com o binário pinado, nunca `npx prisma`
+ *       (o `npm run build` não gera o client):
+ *   cd /var/www/dexo && node node_modules/prisma/build/index.js generate --schema=prisma/schema.prisma
+ *     - nos dois casos, node_modules/.prisma/client/index.js tem de passar de
+ *       200 KB. Client velho quebra o dexo-api em runtime (o tsx não checa
+ *       tipo). DDL, se houver, é passo à parte, revisado e aplicado antes.
+ *   cd /var/www/dexo && npm run build
+ *   → gate de pré-voo de rotina da numeração NF-e (docs/fiscal-numeracao-v2.md,
+ *     "Gate de pré-voo"): nenhuma reserva EM_TRANSMISSAO/INCERTO com lease vivo,
+ *     nenhuma nota em VALIDATING/SIGNING/SENDING, nenhuma inutilização pendente.
+ *     Ligar flag, ampliar lista ou fazer rollback usa o gate estrito. Só então:
+ *   cd /var/www/dexo && pm2 restart dexo-api dexo-frontend
+ *  - `dexo-sync-orders` entra no restart só quando o código de sync muda.
+ *  - NUNCA `pm2 restart all`: também dispara o dexo-catalog-stats (batch
+ *    one-shot, ver abaixo) e reinicia o sync-orders sem necessidade.
  *
  * Comandos/paths espelham EXATAMENTE o `pm2 describe` da produção em
  * 23/07/2026 — nada de comportamento novo, só a porta explícita.
@@ -69,9 +88,9 @@ module.exports = {
       // (autorestart true) transformou-o em LOOP INFINITO na migração de
       // 23/07 (↺190 execuções seguidas em ~18h, queimando CPU e banco — o
       // `pm2 describe` que este arquivo espelhou não exibe esse campo, e o
-      // flag se perdeu). O agendamento diário continua sendo do cron do host;
-      // cada deploy (`pm2 restart all`) também dispara UMA execução, como
-      // sempre foi.
+      // flag se perdeu). O agendamento diário continua sendo do cron do host.
+      // O deploy padrão reinicia só os apps nomeados e não o dispara; um
+      // `pm2 restart all` dispararia UMA execução a mais.
       autorestart: false,
     },
   ],

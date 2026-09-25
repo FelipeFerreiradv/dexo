@@ -20,6 +20,8 @@ const schema = `nfe_verif_dev1_${randomUUID().replace(/-/g, "")}`;
 const h = vi.hoisted(() => ({
   configs: new Map<string, any>(),
   cancelCalls: [] as any[],
+  /** Atraso do provedor no cancelamento (G3: corrida com a emissão da devolução). */
+  atrasoMs: 0,
 }));
 
 vi.mock("../../../../app/repositories/company-fiscal.repository", () => ({
@@ -30,7 +32,11 @@ vi.mock("../../../../app/repositories/company-fiscal.repository", () => ({
 }));
 vi.mock("../../../../app/fiscal/providers/provider-factory", () => {
   const p = {
-    cancelar: async (i: any) => { h.cancelCalls.push(i); return { success: true, protocolo: "135CANC", mensagem: "ok" }; },
+    cancelar: async (i: any) => {
+      h.cancelCalls.push(i);
+      if (h.atrasoMs) await new Promise((r) => setTimeout(r, h.atrasoMs));
+      return { success: true, protocolo: "135CANC", mensagem: "ok" };
+    },
     buscarXml: async () => null,
   };
   return { createNfeProvider: () => p, createNfeProviderFromConfig: async () => p };
@@ -82,7 +88,7 @@ describePg("verificação devolucao-1: guarda do cancelamento × chave 'NFe'+44 
   let cfc: string;
   beforeEach(async () => {
     cfc = `cfg-${randomUUID().slice(0, 8)}`;
-    h.configs.clear(); h.cancelCalls = [];
+    h.configs.clear(); h.cancelCalls = []; h.atrasoMs = 0;
     // Mesmo CNPJ/ambiente do XML de amostra (emit 11222333000181, tpAmb 2).
     h.configs.set(cfc, makeConfig({ id: cfc, userId: "tenant", providerName: "FOCUS_NFE", providerToken: "tok", isDefault: true } as any));
     // Canário + devolução ligada para a empresa (pré-condição do achado).
@@ -164,5 +170,35 @@ describePg("verificação devolucao-1: guarda do cancelamento × chave 'NFe'+44 
     const diag = { guardaViu: vistasPelaGuarda.length, resultado: "ok" in r ? r.ok : String((r as any).erro), provedorChamadoCom: h.cancelCalls.map((c) => c.chaveAcesso), statusOriginal: await estado(original) };
     expect(diag, JSON.stringify(diag)).toMatchObject({ provedorChamadoCom: [], statusOriginal: "AUTHORIZED" });
     expect("erro" in r && (r as any).erro instanceof M.DevolucaoError && (r as any).erro.code).toBe("ORIGINAL_COM_DEVOLUCAO");
+  }, 60000);
+
+  // G3 (A3/F2): o SET LOCAL e o maxWait novos não podem afrouxar a serialização. Com o
+  // cancelamento parado no provedor (lock da original seguro DENTRO da transação), a validação
+  // da reserva de uma devolução da MESMA original (validarReserva, o passo da emissão V2) tem de
+  // ESPERAR o lock e, ao entrar, ver a original já CANCELLED — nunca AUTHORIZED. Se o saldo/lock
+  // saíssem da transação ("checa e solta"), a devolução passaria com a original sendo cancelada.
+  it("corrida: devolução validada durante o cancelamento em voo espera o lock e vê a original CANCELLED", async () => {
+    // SEFAZ direto: o cancelamento passa pelo provedor simulado (a Focus V2 faria HTTP real).
+    h.configs.set(cfc, makeConfig({ id: cfc, userId: "tenant", providerName: "SEFAZ_DIRECT", isDefault: true } as any));
+    const original = await criarOriginal(CHAVE44);
+    const storage = { readFile: async () => Buffer.from(XML_ORIGINAL, "utf8") };
+    const uc = new M.Devolucao(new M.DevolucaoRepo(), undefined, storage as never);
+    const { draftId } = await uc.criar("tenant", "tenant", original, { escopo: "TOTAL" });
+    const antes = await new M.DevolucaoRepo().get("tenant", draftId);
+
+    h.atrasoMs = 2000;
+    const ordem: string[] = [];
+    const cancelamento = new M.Cancel().cancel("tenant", original, "Cancelamento de teste por erro de digitacao")
+      .then((v: any) => { ordem.push("cancelamento-fim"); return v; });
+    for (let i = 0; i < 100 && h.cancelCalls.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(h.cancelCalls).toHaveLength(1); // provedor em voo, lock da original seguro
+
+    const repo = new M.DevolucaoRepo();
+    const validacao = await repo.transaction((tx: any) => uc.validarReserva("tenant", draftId, antes, tx))
+      .then(() => ({ ok: true }), (e: any) => ({ code: e?.code, issues: (e?.issues ?? []).map((i: any) => i.code) }));
+    ordem.push("validacao-fim");
+    expect(await cancelamento).toMatchObject({ success: true, status: "CANCELLED" });
+    expect({ ordem, validacao }).toMatchObject({ ordem: ["cancelamento-fim", "validacao-fim"], validacao: { code: "DEVOLUCAO_INVALIDA" } });
+    expect(await estado(original)).toBe("CANCELLED");
   }, 60000);
 });

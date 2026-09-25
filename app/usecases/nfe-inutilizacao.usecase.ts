@@ -19,6 +19,13 @@ export interface InutilizacaoInput {
   justificativa: string;
   /** Multi-CNPJ: emitente da faixa. Ausente/null = CNPJ padrão (comportamento atual). */
   companyFiscalConfigId?: string | null;
+  /**
+   * Numeração V2: confirma o descarte dos números RESERVADO/REJEITADO/BLOQUEADO da faixa
+   * (sem isto, 409 NUMERACAO_CONFIRMAR_DESCARTE). Ignorado no V1, que inutiliza sem guarda.
+   */
+  confirmarDescarteNumeros?: boolean;
+  /** Autor da ação (colaborador), para a auditoria do descarte na V2. */
+  actorUserId?: string;
 }
 
 export interface InutilizacaoResult {
@@ -115,7 +122,7 @@ export class NfeInutilizacaoUseCase {
       if(!tx.sql)throw new Error("Transação fiscal indisponível");
       const rows=await tx.sql.$queryRawUnsafe<Array<{id:string}>>(`INSERT INTO "NfeInutilizacao" ("id","userId","companyFiscalConfigId","ambiente","serie","numeroInicial","numeroFinal","justificativa","status") VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,'PENDENTE') RETURNING "id"`,userId,config.id,config.ambiente,input.serie,input.numeroInicial,input.numeroFinal,input.justificativa.trim());
       return rows[0];
-    }):await (prisma as any).nfeInutilizacao.create({
+    },{confirmarDescarte:input.confirmarDescarteNumeros===true,actorUserId:input.actorUserId}):await (prisma as any).nfeInutilizacao.create({
       data: {
         userId,
         companyFiscalConfigId: config.id,

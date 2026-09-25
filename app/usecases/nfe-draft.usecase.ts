@@ -1,7 +1,8 @@
 import { NfeRepository } from "../repositories/nfe.repository";
 import { attachNumeracao, configNumeracao } from "../fiscal/numeracao/metadata";
 import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
-import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
+import { naoBloqueada, NumeracaoError, tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
+import prisma from "../lib/prisma";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { CustomerRepository } from "../repositories/customer.repository";
 import { orderRepository } from "../repositories/order.repository";
@@ -601,6 +602,23 @@ export class NfeDraftUseCase {
       if(ddl && (viva || await configNumeracao(userId,existing))){await service.abandonarPorExclusao(userId,id,confirmarDescarte);return;}
     }
     await this.nfeRepo.deleteDraft(userId, id);
+  }
+
+  /**
+   * Numeração V2: descarta o nº RETIDO para conferência (reserva BLOQUEADO) SEM excluir a nota —
+   * ela volta a rascunho e "Emitir" reserva número novo, como o V1 faria. Só age sobre reserva
+   * BLOQUEADO existente (despacho pelo ledger, como a exclusão): sem ela, ou sem o DDL da V2,
+   * 409 NUMERACAO_NAO_BLOQUEADA. Sem `confirmar`: 409 NUMERACAO_CONFIRMAR_DESCARTE.
+   */
+  async descartarNumeroBloqueado(userId: string, id: string, confirmar = false, actorUserId?: string): Promise<{ numero: number; serie: number }> {
+    const nota = await prisma.nfeEmitida.findFirst({ where: { id, userId }, select: { id: true } });
+    if (!nota) throw new NumeracaoError("NFE_NAO_ENCONTRADA", 404, "NF-e não encontrada");
+    try {
+      return await new NfeNumeracaoService().descartarNumeroBloqueado(userId, id, confirmar, actorUserId);
+    } catch (e) {
+      if (tabelaFiscalAusente(e)) naoBloqueada();
+      throw e;
+    }
   }
 
   // ── Fase 8 — Cupom fiscal de venda balcão (Opção A: NF-e modelo 55) ──

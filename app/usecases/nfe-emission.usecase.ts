@@ -1,6 +1,7 @@
 import prisma from "../lib/prisma";
 import { isFiscalFeatureOn, isNumeracaoV2ParaEmissao, isDevolucaoAtiva } from "../fiscal/flags";
 import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { NfeDevolucaoRepository, erroRascunhoComDevolucaoDesligada } from "../fiscal/devolucao/devolucao.repository";
 import { NfeEmissaoV2Orchestrator } from "./nfe-emissao-v2.orchestrator";
 import type { EmitOpts, NumeracaoMetadata } from "./nfe-emissao-v2.orchestrator";
 import { NumeracaoError, tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
@@ -170,6 +171,15 @@ export class NfeEmissionUseCase {
     }
     const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
     if(draft.finalidade==="DEVOLUCAO" && isDevolucaoAtiva(config.id))throw new DevolucaoError("EXIGE_NUMERACAO_V2");
+    // Rollback por config (empresa tirada da allowlist) com rascunho GERENCIADO pela devolução
+    // (cabeçalho NfeDevolucao) e sem reserva: no V1 ele sairia finNFe 4 sem NFref (o montador
+    // só escreve a referência com o contexto da devolução) ⇒ Rejeição 321 e o número tomado.
+    // Recusa ANTES do claim. Só finalidade DEVOLUCAO paga a consulta (venda comum, nenhuma), e
+    // só com o gate global ligado (desligado: nenhuma consulta, como o ledger no I8). Rascunho
+    // feito à mão (sem cabeçalho) segue no V1 exatamente como antes. Mesma recusa (código e
+    // frase) do autosave e do /calculate — ver erroRascunhoComDevolucaoDesligada.
+    if(draft.finalidade==="DEVOLUCAO" && process.env.NFE_DEVOLUCAO_ENABLED==="true" && await new NfeDevolucaoRepository().temCabecalho(userId,nfeId))
+      throw erroRascunhoComDevolucaoDesligada(nfeId);
     // SEFAZ direto autentica por mTLS (certificado), nao por token. So Focus
     // exige providerToken.
     if (!isSefazDirect && !config.providerToken) {

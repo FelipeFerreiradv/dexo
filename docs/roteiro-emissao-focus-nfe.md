@@ -2,7 +2,7 @@
 
 ## O que está pronto
 
-O código local integra a Focus ao fluxo V2 e passou nos testes simulados de emissão, rejeição, correção com o mesmo número e próxima numeração. Implantado na VPS pelo PR #353 em 18/09/2026, com os DDLs aplicados e smoke aprovado; a VPS roda hoje o commit `21270f2`. Desde 22/09/2026 a numeração V2 está **ligada em produção para uma única configuração fiscal**, a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`, modelo 55), e em 23/09/2026 ela autorizou notas reais dessa empresa. **Isso não é homologação da Focus:** `NFE_NUMERACAO_V2_FOCUS_ENABLED` continua `false`, e com a sub-flag desligada só o SEFAZ direto passa pelo V2 (`isNumeracaoV2ParaEmissao`, em `app/fiscal/flags.ts`). As confirmações da Focus seguem pendentes e nenhuma empresa emite pela Focus com numeração V2. Consulte o [registro do deploy](handoff-nfe-evolucao/12-DEPLOY-VPS.md) e a evidência do canário em [operação da numeração V2](fiscal-numeracao-v2.md).
+O código local integra a Focus ao fluxo V2 e passou nos testes simulados de emissão, rejeição, correção com o mesmo número e próxima numeração. Implantado na VPS pelo PR #353 em 18/09/2026, com os DDLs aplicados e smoke aprovado; em 25/09/2026 a VPS roda o commit `db6fbd14`. Desde 22/09/2026 a numeração V2 está **ligada em produção para uma única configuração fiscal**, a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`, modelo 55), e em 23/09/2026 ela autorizou notas reais dessa empresa. Desde 24/09/2026 a devolução também está ligada, só para essa config. **Isso não é homologação da Focus:** `NFE_NUMERACAO_V2_FOCUS_ENABLED` continua `false`, e com a sub-flag desligada só o SEFAZ direto passa pelo V2 (`isNumeracaoV2ParaEmissao`, em `app/fiscal/flags.ts`). As confirmações da Focus seguem pendentes e nenhuma empresa emite pela Focus com numeração V2. Consulte o [registro do deploy](handoff-nfe-evolucao/12-DEPLOY-VPS.md) e a evidência do canário em [operação da numeração V2](fiscal-numeracao-v2.md).
 
 ## 1. Conferir a empresa na Focus
 
@@ -38,30 +38,50 @@ Se o card de responsável técnico por empresa estiver habilitado, use o modo **
 
 ## 4. Habilitar V2 somente para a empresa piloto — servidor
 
+⛔ Esta seção só vale depois de cumpridos os [pré-requisitos da trilha Focus](#pré-requisitos-da-trilha-focus). Até lá, `NFE_NUMERACAO_V2_FOCUS_ENABLED` fica `false` e nenhuma config Focus entra na V2.
+
 Obtenha o `id` da configuração fiscal (`CompanyFiscalConfig.id`) pela resposta autenticada de `GET /fiscal/config` ou pela configuração da empresa em `/fiscal/companies`. **Não use o userId, CNPJ ou companyId.**
 
-**A allowlist já não está vazia em produção: ela contém a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`).** Quem *definir* `NFE_NUMERACAO_V2_CONFIG_IDS` com o id de um cliente novo **retira a DLS da V2 sem perceber**, e as notas dela com número reservado passam a responder 409 `NUMERACAO_EMITENTE_FORA_V2` (ver "Retorno ao estado anterior"). Um cliente novo se **acrescenta** à lista existente, separado por vírgula:
+**A allowlist já não está vazia em produção: ela contém a DLS AUTO PEÇAS (`cmr9omjlt30xw18jqt3m5oyc3`) e, depois da fase A do plano de 25/09/2026, a lista explícita das configs SEFAZ direto.** Quem *definir* `NFE_NUMERACAO_V2_CONFIG_IDS` com o id de um cliente novo **retira as demais da V2 sem perceber**, e as notas delas com número reservado passam a responder 409 `NUMERACAO_EMITENTE_FORA_V2` (ver "Retorno ao estado anterior"). Um cliente novo se **acrescenta** à lista existente, separado por vírgula, partindo do valor atual da linha no `.env` (não do exemplo deste roteiro):
 
 ```dotenv
-NFE_NUMERACAO_V2_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3,ID_DA_CONFIGURACAO_FISCAL
+NFE_NUMERACAO_V2_CONFIG_IDS=<lista atual>,ID_DA_CONFIGURACAO_FISCAL
 ```
+
+Config Focus não entra em `NFE_DEVOLUCAO_CONFIG_IDS`: com a sub-flag desligada, a devolução dela termina em 422 `EXIGE_NUMERACAO_V2`.
 
 **`NFE_NUMERACAO_V2_FOCUS_ENABLED` não tem allowlist própria: usa a MESMA `NFE_NUMERACAO_V2_CONFIG_IDS`** (`ENV_ALLOWLIST` em `app/fiscal/flags.ts`). Ligá-la não é uma decisão sobre a empresa piloto: vale de uma vez para toda config da lista que emita pela Focus.
 
-Estado configurado hoje no ambiente do processo da API (produção, desde 22/09/2026):
+Estado configurado no ambiente do processo da API em 25/09/2026 (numeração desde 22/09, devolução desde 24/09):
 
 ```dotenv
 NFE_NUMERACAO_V2_ENABLED=true
 NFE_NUMERACAO_V2_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3
 NFE_NUMERACAO_V2_MODELOS=55
 NFE_NUMERACAO_V2_FOCUS_ENABLED=false
-NFE_DEVOLUCAO_ENABLED=false
+NFE_DEVOLUCAO_ENABLED=true
+NFE_DEVOLUCAO_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3
 NFE_RESP_TEC_EMPRESA_ENABLED=false
+# NFE_DEVOLUCAO_REF_ITEM_PROD_DESDE ausente: vale o padrão 2026-10-05
 ```
 
-Passar `NFE_NUMERACAO_V2_FOCUS_ENABLED=true` só depois das confirmações do fornecedor (seção 1); enquanto estiver `false`, apenas o SEFAZ direto passa pelo V2.
+Na fase A do plano de ligação, `NFE_NUMERACAO_V2_CONFIG_IDS` e `NFE_DEVOLUCAO_CONFIG_IDS` passam a ter a mesma lista explícita das configs `SEFAZ_DIRECT`, nenhuma Focus: a devolução liga junto com a numeração (decisão do dono, 25/09/2026). O procedimento, com gate de pré-voo e rollback, está em [operação da numeração V2](fiscal-numeracao-v2.md).
 
-Recarregue o serviço pelo procedimento de implantação existente para que receba essas variáveis. Lista vazia não habilita nenhuma empresa; não usar `*` para o primeiro cliente. Não criar `.env` no worktree de desenvolvimento. Flags são de servidor e não usam `NEXT_PUBLIC_`.
+Passar `NFE_NUMERACAO_V2_FOCUS_ENABLED=true` só depois de todos os pré-requisitos abaixo; enquanto estiver `false`, apenas o SEFAZ direto passa pelo V2. **Nunca** com `NFE_NUMERACAO_V2_CONFIG_IDS=*`.
+
+Recarregue só a API, depois do gate de pré-voo estrito: `pm2 restart dexo-api`, sem `--update-env` e sem `restart all`. Lista vazia não habilita nenhuma empresa; nunca usar `*`. Não criar `.env` no worktree de desenvolvimento. Flags são de servidor e não usam `NEXT_PUBLIC_`.
+
+### Pré-requisitos da trilha Focus
+
+Antes de qualquer `NFE_NUMERACAO_V2_FOCUS_ENABLED=true`, todos estes itens:
+
+1. **218/420 e 206/563 idempotentes no V2.** O V1 já trata "já cancelada" (218/420) e "já inutilizada" (206 em faixa de um número só, e 563) como sucesso; o cliente Focus V2 ainda os trata como falha. Sem isso, nota cancelada na SEFAZ fica `AUTHORIZED` no Dexo e a faixa inutilizada nunca fica aceita. A correção passa pelo ledger, no cliente V2 e no caso de uso, com prova pela consulta.
+2. **Allowlist própria da Focus**, fail-closed e exigida além de `NFE_NUMERACAO_V2_CONFIG_IDS`. Hoje a sub-flag lê a mesma lista da V2 e liga de uma vez toda config Focus que estiver nela.
+3. **Troca de token com nota pendente.** Com nota INCERTO e o token revogado na Focus, a consulta volta 401 e a troca de credencial é recusada com 409: a empresa para de emitir. É preciso liberar a troca do token (não do ambiente) quando a consulta pendente respondeu 401/403.
+4. **Numeração real medida por config.** No V1 quem numera é a Focus, e o contador do Dexo é fictício; a V2 manda número explícito. Antes de ligar, comparar o maior nNF real (chaves autorizadas, painel da Focus ou portal da SEFAZ) com o contador. Config desalinhada vai por série nova ou fica de fora.
+5. **Confirmações escritas da Focus** (seção 1): número/série explícitos, mesma `ref` depois de rejeição e comportamento do contador.
+6. **Homologação com token próprio**, não compartilhado: emitir, rejeitar e reenviar, cancelar duas vezes, inutilizar e repetir, com timeout.
+7. **Canário numa config só**, sem histórico ou em série nova, com os critérios de vigília da [operação da numeração V2](fiscal-numeracao-v2.md). Só então ampliar, config a config.
 
 ## 5. Fazer a primeira emissão de homologação
 
@@ -80,7 +100,7 @@ Endpoint de acompanhamento: `POST /fiscal/nfe/:id/consultar-situacao`. Consulta 
 
 Com autorização operacional, configure `FISCAL_PRODUCTION_UNLOCKED=true` no servidor; a aplicação preserva esse bloqueio existente. Depois selecione **Produção** na configuração da empresa e informe a credencial Focus apropriada. Confira a série e numeração com o histórico da empresa e da Focus antes da primeira emissão real.
 
-Mantenha a allowlist restrita à empresa piloto. Após emitir a primeira nota real autorizada, confira XML, chave, protocolo, número/série e DANFE. Libere outras empresas apenas depois dessa conferência.
+Mantenha a Focus restrita à config piloto. Após emitir a primeira nota real autorizada, confira XML, chave, protocolo, número/série e DANFE. Libere outras empresas apenas depois dessa conferência.
 
 ## Se não emitir
 
@@ -105,4 +125,4 @@ Depois de tirar a config da allowlist, rascunhos e notas rejeitadas que já tenh
 
 Trocar ambiente ou token da empresa é bloqueado com 409 enquanto houver nota pendente de consulta (reserva em transmissão ou incerta). Resolva pelo botão **Consultar situação** antes de passar a empresa para produção — a Focus usa um token por ambiente, e a consulta de uma nota de homologação com token de produção só devolve 401.
 
-Retirar a configuração da allowlist interrompe novos despachos V2. Antes disso, reconciliar as notas em andamento e revisar o contador da Focus. Preservar reservas e tentativas; não apagar dados nem liberar legado automaticamente. O rollback de numeração exige conferir o contador interno do fornecedor.
+Retirar a configuração da allowlist interrompe novos despachos V2. Antes disso, reconciliar as notas em andamento e revisar o contador da Focus. Preservar reservas e tentativas; não apagar dados nem liberar legado automaticamente. O rollback de numeração exige conferir o contador interno do fornecedor. O procedimento completo (pré-voo filtrado pela config, as duas listas, restart só do dexo-api) está em [operação da numeração V2](fiscal-numeracao-v2.md).

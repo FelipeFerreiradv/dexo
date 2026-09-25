@@ -10,7 +10,8 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { DevolucaoEditor } from "./devolucao-editor";
 import { NumeracaoActions } from "./numeracao-actions";
 import type { NumeracaoView } from "./numeracao-actions";
-import { desfechoConsulta, desfechoEmissao, type DesfechoTela } from "../lib/nfe-numeracao-ui";
+import { TITULO_SEQUENCIA_ATRAS, desfechoConsulta, desfechoEmissao, type DesfechoTela, type SequenciaAtrasView } from "../lib/nfe-numeracao-ui";
+import { AjusteNumeracaoCard } from "./steps/ajuste-numeracao-card";
 import { PendenciasDevolucao } from "./pendencias-devolucao";
 import {
   viewPendenciasDaResposta,
@@ -153,6 +154,10 @@ export function NfeWizard() {
   // e campo editavel, e nao pode viajar de volta no PUT do autosave.
   const [ambienteRascunho,setAmbienteRascunho]=useState<string|null>(null);
   const [numeracao,setNumeracao]=useState<NumeracaoView|null>(null);
+  // 409 SEQUENCIA_ATRAS_DA_SEFAZ da última emissão: quadro FIXO no passo 9 com o
+  // ajuste do contador ali mesmo. O toast de 4 s sumia com a instrução, que
+  // mandava ajustar em outra tela. Null = a última emissão não foi esse bloqueio.
+  const [sequenciaAtras,setSequenciaAtras]=useState<SequenciaAtrasView|null>(null);
   // ── Devolução: edição não salva no editor (DevolucaoEditor.onDirtyChange) ──
   // Nos passos 1, 3 e 8 da devolução só "Salvar devolução" grava; trocar de
   // passo jogava fora, calado, o que ela tinha mexido. `guarda` = a pergunta
@@ -676,7 +681,10 @@ export function NfeWizard() {
       if (!res.ok) setPendenciasEmissao(viewPendenciasDaResposta(data));
       // Decisão em lib/nfe-numeracao-ui (testada em node): resposta V1 segue o
       // caminho de sempre; V2 em andamento (202/INCERTO, claim perdido) é info.
-      aplicarDesfecho(desfechoEmissao(res.ok, data));
+      const desfecho = desfechoEmissao(res.ok, data);
+      // Qualquer outra resposta tira o quadro do contador atrasado (ajustou e passou, ou é outro erro).
+      setSequenciaAtras(desfecho.sequenciaAtras ?? null);
+      aplicarDesfecho(desfecho);
     } catch {
       showToast("Erro de conexao ao emitir NF-e", "error");
     } finally {
@@ -736,7 +744,11 @@ export function NfeWizard() {
       />
 
       <div className="min-h-[300px]">
-        {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={d=>aplicarDesfecho(desfechoConsulta(d))}/>}
+        {/* Nº BLOQUEADO: descartado, a nota fica AQUI (volta a rascunho) e o próximo
+            "Emitir" tira número novo; excluída, volta para Notas Emitidas. */}
+        {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={d=>aplicarDesfecho(desfechoConsulta(d))}
+          onDescartado={r=>{setNumeracao(null);setConfirmarDescarte(false);showToast(`Nº ${r.numeroDescartado} descartado. Clique em "Emitir NF-e" para sair com um número novo.`,"info");}}
+          onExcluido={()=>navegarPara("/notas-fiscais/emitidas")}/>}
         {confirmarDescarte && <p role="alert">Ao clicar em emitir novamente, você confirma o descarte do número anterior. Em produção ele precisará ser inutilizado.</p>}
         {/* Rascunho reaproveitado: "Devolver"/"Devolução manual" abriram a
             devolução que já existia desta nota, em vez de criar outra. */}
@@ -860,6 +872,25 @@ export function NfeWizard() {
             num toast e era a informacao que a cliente passou o dia caçando. */}
         {currentStep === 9 && pendenciasEmissao && (
           <PendenciasDevolucao view={pendenciasEmissao} />
+        )}
+        {/* Contador atrás da SEFAZ: o texto do servidor diz o que conferir e o
+            card de ajuste já vem aberto no emitente, ambiente e série DESTA
+            nota. O mínimo aparece como apoio — o campo fica em branco, porque o
+            número certo é o que ela conferiu no portal e o ajuste não volta. */}
+        {currentStep === 9 && sequenciaAtras && (
+          <div role="alert" aria-label={TITULO_SEQUENCIA_ATRAS} className="mt-4 space-y-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+            <p className="font-semibold">{TITULO_SEQUENCIA_ATRAS}</p>
+            <p>{sequenciaAtras.mensagem}</p>
+            <AjusteNumeracaoCard
+              userEmail={email}
+              configExists
+              companyId={draftCompanyId}
+              ambientePadrao={sequenciaAtras.ambiente ?? ambienteRascunho}
+              seriePadrao={sequenciaAtras.serie ?? getValues("serie")}
+              abertoInicial
+              pisoSugerido={sequenciaAtras.pisoSugerido}
+            />
+          </div>
         )}
       </div>
 

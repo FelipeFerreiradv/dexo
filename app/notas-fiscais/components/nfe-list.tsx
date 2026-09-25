@@ -89,6 +89,10 @@ interface NfeListItem {
   // Venda autorizada sem XML guardado no Dexo: devolve pela chave (attachFiscalLista).
   devolucaoPelaChave?:boolean;
   numeracao?:NumeracaoView|null;
+  // Config V2, nota sem NENHUMA reserva (V1 rejeitada antes da virada): regra V1, rótulo neutro.
+  legadoV1?:boolean;
+  // VALIDATING/SIGNING travada antes do envio: "Retomar emissão" (POST /issue direto).
+  retomavel?:boolean;
   id: string;
   orderId: string | null;
   ambiente: string;
@@ -788,7 +792,8 @@ export function NfeList() {
                               <Eye className="size-4" />
                             </Button>
                             <DevolucaoActions nota={nota} email={session?.user?.email??""}/>
-                            <NumeracaoActions id={nota.id} email={session?.user?.email??""} numeracao={nota.numeracao} onChanged={fetchNotas}/>
+                            {/* BLOQUEADO: descartar o nº (abre a nota no assistente) ou excluir o rascunho; linha V1 (sem `numeracao`) não ganha nada. */}
+                            <NumeracaoActions id={nota.id} email={session?.user?.email??""} numeracao={nota.numeracao} retomavel={nota.retomavel} compacto onChanged={fetchNotas}/>
                             {nota.hasXml && (
                               <Button
                                 variant="ghost"

@@ -1,7 +1,8 @@
 import { randomInt } from "node:crypto";
-import { avaliarFaixa, decidirAdocaoLegado, mensagemBloqueiosFaixa, motivoTrocaChave } from "./decisao";
+import { avaliarFaixa, decidirAdocaoLegado, mensagemBloqueiosFaixa, mensagemDescarteFaixa, motivoTrocaChave } from "./decisao";
 import type { ChaveFiscal } from "./decisao";
-import { concorrencia, NumeracaoError } from "./numeracao.errors";
+import { numeroPlaceholderRascunho } from "../domain/draft-number";
+import { concorrencia, naoBloqueada, NumeracaoError } from "./numeracao.errors";
 import { NfeNumeracaoRepository } from "./numeracao.repository";
 import { chaveDaReserva, chaveOrdenavel } from "./persistencia";
 import type { ContextoReserva, INfeNumeracaoRepository, NovaTentativa, NumeracaoTx, Reserva, ReservaPatch, Tentativa, TentativaPatch } from "./persistencia";
@@ -98,7 +99,7 @@ export class NfeNumeracaoService {
         if (seq.proximoNumero < minimo) {
           const numeros = bloqueantes.map(x => x.numero).sort((a, b) => a - b);
           throw new NumeracaoError("SEQUENCIA_ATRAS_DA_SEFAZ", 409,
-            `Os nºs ${numeros.join(", ")} da série ${c.key.serie} já existiam na SEFAZ com outra chave: o contador do Dexo está atrás da numeração real deste CNPJ, e nenhuma NF-e desta série sai enquanto ele não for corrigido. Para destravar, nesta ordem: 1) veja no portal da SEFAZ qual foi o último nº já usado por este CNPJ nesta série; 2) ponha o próximo número da série em ${minimo} ou mais (o maior entre esse valor e o último da SEFAZ + 1). Excluir o rascunho, tentar por outro usuário ou reenviar a mesma nota não destrava.`,
+            `Os nºs ${numeros.join(", ")} da série ${c.key.serie} já existiam na SEFAZ com outra chave: o contador do Dexo está atrás da numeração real deste CNPJ, e nenhuma NF-e desta série sai enquanto ele não for corrigido. Para destravar, nesta ordem: 1) veja no portal da SEFAZ qual foi o último nº já usado por este CNPJ nesta série; 2) em Configuração fiscal → empresa → Ambiente & Provedor → Ajustar próximo número, ponha o próximo número da série em ${minimo} ou mais (o maior entre esse valor e o último da SEFAZ + 1). Excluir o rascunho, tentar por outro usuário ou reenviar a mesma nota não destrava.`,
             { numeros, serie: c.key.serie, ambiente: c.key.ambiente, modelo: c.key.modelo,
               proximoNumeroAtual: seq.proximoNumero, proximoNumeroMinimo: minimo });
         }
@@ -310,15 +311,61 @@ export class NfeNumeracaoService {
     });
   }
 
-  /** Callback must insert PENDENTE in this transaction, closing the guard/send race. */
-  async inutilizacaoGuard<T>(userId: string, key: ChaveFiscal, isDefault: boolean, ini: number, fim: number, registrarPendente: (tx: NumeracaoTx) => Promise<T>): Promise<T> {
+  /**
+   * Paridade com o V1 no BLOQUEADO: descarta SÓ o número retido, sem excluir a nota — no V1 a
+   * mesma nota seria reemitida com número novo, e a exclusão (acima) é a única outra saída, que a
+   * tela só oferece nos quadros de devolução. Mesma régua da exclusão: lock da sequência, nada de
+   * documento registrado, confirmação em QUALQUER ambiente (o nº pode estar autorizado com outro
+   * cNF) e `requerInutilizacao` em produção. A nota volta a rascunho com placeholder e "Emitir"
+   * reserva número novo; o retido segue ABANDONADO (fora do pool) até ser inutilizado.
+   */
+  async descartarNumeroBloqueado(userId: string, nfeId: string, confirmar = false, actorUserId?: string): Promise<{ numero: number; serie: number }> {
+    const antes = await this.reservaViva(userId, nfeId);
+    if (!antes || antes.estado !== "BLOQUEADO") naoBloqueada();
+    const retida: Reserva = antes;
+    return this.repo.transaction(async tx => {
+      await tx.lockSequencia(userId, chaveDaReserva(retida), false);
+      const reservas = await tx.reservas(userId, nfeId, true);
+      if (reservas.some(r => ["AUTORIZADO", "CANCELADO", "DENEGADO"].includes(r.estado))) throw new NumeracaoError("DOCUMENTO_FISCAL_REGISTRADO", 409, "Documento fiscal já registrado");
+      const r = viva(reservas);
+      if (!r || r.id !== retida.id) concorrencia();
+      if (r.estado !== "BLOQUEADO") naoBloqueada();
+      this.confirmarDescarte(r, confirmar, "NUMERO_RETIDO_DESCARTADO");
+      // SENDING: nota retida antes de `aplicarResultado` passar a rebaixá-la a REJECTED — a SEFAZ
+      // já respondeu (BLOQUEADO é pós-resposta), então nada está em voo.
+      await this.descartarNumero(tx, r, "NUMERO_RETIDO_DESCARTADO", actorUserId, ["DRAFT", "REJECTED", "SENDING"]);
+      return { numero: r.numero, serie: r.serie };
+    });
+  }
+
+  /**
+   * Callback must insert PENDENTE in this transaction, closing the guard/send race.
+   *
+   * Reserva RESERVADO/REJEITADO/BLOQUEADO na faixa só sai com `confirmarDescarte` (409
+   * NUMERACAO_CONFIRMAR_DESCARTE sem ele): confirmada, vai a ABANDONADO nesta MESMA transação,
+   * sob o lock da sequência, e a nota que ainda segura o número volta a rascunho — senão ficaria
+   * presa a um número inutilizado. `inutilizacaoPos` leva a INUTILIZADO na ACEITA; se a SEFAZ
+   * recusar, fica ABANDONADO (com requerInutilizacao em produção) e o número não volta ao pool.
+   */
+  async inutilizacaoGuard<T>(userId: string, key: ChaveFiscal, isDefault: boolean, ini: number, fim: number, registrarPendente: (tx: NumeracaoTx) => Promise<T>,
+    opts: { confirmarDescarte?: boolean; actorUserId?: string } = {}): Promise<T> {
     this.validarChave(userId, key);
     return this.repo.transaction(async tx => {
       await tx.lockSequencia(userId, key, isDefault);
       const reservas = await tx.reservasNaChave(userId, key, true);
       const linhas = await tx.linhasNaFaixa(userId, key, isDefault, ini, fim);
-      const avaliacao = avaliarFaixa({ linhas, reservas, ini, fim });
-      if (!avaliacao.ok) throw new NumeracaoError("FAIXA_COM_NUMERO_VIVO", 400, mensagemBloqueiosFaixa(avaliacao.bloqueios));
+      const avaliacao = avaliarFaixa({ linhas, reservas, ini, fim, confirmarDescarte: opts.confirmarDescarte === true });
+      if (avaliacao.acao === "BLOQUEAR") throw new NumeracaoError("FAIXA_COM_NUMERO_VIVO", 400, mensagemBloqueiosFaixa(avaliacao.bloqueios));
+      if (avaliacao.acao === "CONFIRMAR_DESCARTE") throw new NumeracaoError("NUMERACAO_CONFIRMAR_DESCARTE", 409,
+        mensagemDescarteFaixa(avaliacao.descartes, key.serie), { numeros: avaliacao.descartes.map(d => d.numero), serie: key.serie });
+      for (const d of avaliacao.descartes) {
+        const r = reservas.find(x => x.id === d.reservaId);
+        if (!r) concorrencia();
+        // Só a nota que ainda segura ESTE número (lida sob o mesmo lock). Nota renumerada por fora
+        // fica como está: a reemissão não reusa o número (a reserva o ocupa para sempre).
+        const nota = linhas.find(l => l.id === r.nfeId && l.numero === r.numero && (l.status === "DRAFT" || l.status === "REJECTED"));
+        await this.descartarNumero(tx, r, "INUTILIZACAO_CONFIRMADA", opts.actorUserId, nota ? ["DRAFT", "REJECTED"] : null);
+      }
       return registrarPendente(tx);
     });
   }
@@ -367,6 +414,18 @@ export class NfeNumeracaoService {
   private patchResposta(r: ResultadoFiscal): TentativaPatch {
     return { classe: r.classificacao.classe, cStat: r.classificacao.cStat, codigoProvedor: r.classificacao.codigoProvedor?.slice(0, 64) ?? null,
       mensagem: `${r.classificacao.mensagem.slice(0, 400)}${r.classificacao.chaveReferida?` [chNFe:${r.classificacao.chaveReferida}]`:""}`, httpStatus: r.httpStatus, transporte: r.transporte, nRec: r.nRec, protocolo: r.protocolo };
+  }
+  /**
+   * Descarte confirmado SEM excluir a nota: ABANDONADO (+ requerInutilizacao em produção), a nota
+   * volta a DRAFT com placeholder — cStat/motivo da última recusa preservados; a chave de acesso
+   * sai porque carregava o nº descartado — e o mesmo evento NUMERACAO_DESCARTADA da troca de
+   * chave (gravado só se a nota existe: a reserva sobrevive à exclusão do rascunho).
+   */
+  private async descartarNumero(tx: NumeracaoTx, r: Reserva, motivo: string, actorUserId: string | undefined, estadosNota: string[] | null): Promise<void> {
+    await tx.transicionar(r, "ABANDONADO", { motivo, requerInutilizacao: r.ambiente === "PRODUCAO" });
+    if (estadosNota && r.nfeId) await tx.atualizarNota(r.userId, r.nfeId, estadosNota, { status: "DRAFT", numero: numeroPlaceholderRascunho(0), chaveAcesso: null });
+    if (tx.sql && r.nfeId) await tx.sql.$executeRawUnsafe(`INSERT INTO "NfeAuditLog" ("id","nfeId","userId","evento","detalhes") SELECT gen_random_uuid()::text,$1,$2,'NUMERACAO_DESCARTADA',$3::jsonb
+      WHERE EXISTS (SELECT 1 FROM "NfeEmitida" WHERE "id"=$1 AND "userId"=$2)`, r.nfeId, r.userId, JSON.stringify({ actorUserId: actorUserId ?? r.userId, numero: r.numero, serie: r.serie, motivo, confirmado: true }));
   }
   private confirmarDescarte(r: Reserva, confirmou: boolean, motivo: string): void {
     // Número BLOQUEADO pode estar autorizado na SEFAZ com outro cNF: o descarte exige confirmação

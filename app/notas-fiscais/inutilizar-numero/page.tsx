@@ -37,6 +37,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { getApiBaseUrl } from "@/lib/api";
+import {
+  lerConfirmacaoInutilizacao,
+  textoConfirmacaoInutilizacao,
+  type ConfirmacaoInutilizacao,
+} from "../lib/nfe-numeracao-ui";
+
+interface CorpoInutilizacao {
+  serie: number;
+  numeroInicial: number;
+  numeroFinal: number;
+  justificativa: string;
+  /** Só no reenvio depois da confirmação do 409 NUMERACAO_CONFIRMAR_DESCARTE (V2). */
+  confirmarDescarteNumeros?: true;
+}
 
 interface InutilizacaoItem {
   id: string;
@@ -72,6 +86,13 @@ export default function InutilizarNumeroPage() {
   const [items, setItems] = useState<InutilizacaoItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // V2: a faixa tem número preso em nota não emitida (409
+  // NUMERACAO_CONFIRMAR_DESCARTE). O corpo fica CONGELADO: mexer no formulário
+  // por trás da pergunta não muda o que será inutilizado.
+  const [descarte, setDescarte] = useState<{
+    confirmacao: ConfirmacaoInutilizacao;
+    corpo: CorpoInutilizacao;
+  } | null>(null);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -141,8 +162,8 @@ export default function InutilizarNumeroPage() {
     );
   }
 
-  const handleSubmit = async () => {
-    if (!session?.user?.email || !canSubmit) return;
+  const enviar = async (corpo: CorpoInutilizacao) => {
+    if (!session?.user?.email) return;
 
     setLoading(true);
 
@@ -153,17 +174,22 @@ export default function InutilizarNumeroPage() {
           "Content-Type": "application/json",
           email: session.user.email,
         },
-        body: JSON.stringify({
-          serie: Number(serie),
-          numeroInicial: Number(numeroInicial),
-          numeroFinal: Number(numeroFinal),
-          justificativa: justificativa.trim(),
-        }),
+        body: JSON.stringify(corpo),
       });
 
       const data = await response.json();
+      // Respondeu: a pergunta (se havia) está respondida.
+      setDescarte(null);
 
       if (!response.ok) {
+        // V2, contrato C1: número preso em nota não emitida. Nada foi
+        // gravado; a tela lista os números e só reenvia com a confirmação
+        // explícita. Já confirmado e de novo o 409: cai no toast abaixo.
+        const confirmacao = lerConfirmacaoInutilizacao(response.status, data);
+        if (confirmacao && corpo.confirmarDescarteNumeros !== true) {
+          setDescarte({ confirmacao, corpo });
+          return;
+        }
         // A recusa da SEFAZ volta 422 {success:false, mensagem} (sem `error`):
         // mostra a frase dela e recarrega o histórico (linha REJEITADA).
         showToast(data.error || data.mensagem || "Erro ao inutilizar", "error");
@@ -187,6 +213,23 @@ export default function InutilizarNumeroPage() {
       setLoading(false);
       setConfirmOpen(false);
     }
+  };
+
+  // O 1º envio NUNCA leva `confirmarDescarteNumeros`: quem confirma é a
+  // pessoa, depois de ver os números (e o ramo V1 ignora o campo).
+  const handleSubmit = async () => {
+    if (!session?.user?.email || !canSubmit) return;
+    await enviar({
+      serie: Number(serie),
+      numeroInicial: Number(numeroInicial),
+      numeroFinal: Number(numeroFinal),
+      justificativa: justificativa.trim(),
+    });
+  };
+
+  const confirmarDescarteNumeros = async () => {
+    if (!descarte) return;
+    await enviar({ ...descarte.corpo, confirmarDescarteNumeros: true });
   };
 
   const statusBadge = (status: string) => {
@@ -382,6 +425,48 @@ export default function InutilizarNumeroPage() {
             <AlertDialogCancel disabled={loading}>Voltar</AlertDialogCancel>
             <Button onClick={handleSubmit} disabled={loading}>
               {loading ? "Processando..." : "Confirmar Inutilizacao"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* V2: número da faixa preso em nota não emitida (rascunho, rejeitada ou
+          retida para conferência). O servidor não gravou nada; a pergunta
+          mostra QUAIS números e o que acontece com as notas. */}
+      <AlertDialog
+        open={descarte !== null}
+        onOpenChange={(open) => {
+          if (!open && !loading) setDescarte(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="size-5 text-amber-500" />
+              Números presos em notas não emitidas
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {descarte?.confirmacao.mensagem}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {descarte && (
+            <p className="text-sm">
+              {textoConfirmacaoInutilizacao(descarte.confirmacao)}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={loading}
+              onClick={() => setDescarte(null)}
+            >
+              Voltar
+            </AlertDialogCancel>
+            <Button
+              variant="destructive"
+              onClick={confirmarDescarteNumeros}
+              disabled={loading}
+            >
+              {loading ? "Processando..." : "Descartar os números e inutilizar"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

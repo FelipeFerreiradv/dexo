@@ -73,6 +73,7 @@ beforeEach(() => {
   casos = {
     listar: vi.spyOn(NfeListingUseCase.prototype, "list").mockResolvedValue({ data: [], total: 0 } as never),
     rascunho: vi.spyOn(NfeDraftUseCase.prototype, "create").mockResolvedValue({ id: "draft-1" } as never),
+    descartarBloqueado: vi.spyOn(NfeDraftUseCase.prototype, "descartarNumeroBloqueado").mockResolvedValue({ numero: 501, serie: 1 }),
     empresas: vi.spyOn(CompanyFiscalUseCase.prototype, "listByUserId").mockResolvedValue([] as never),
     disponibilidade: vi.spyOn(NfeDevolucaoUseCase.prototype, "disponibilidade").mockResolvedValue({ companyFiscalConfigId: "cfg-1" } as never),
     devolucao: vi.spyOn(NfeDevolucaoUseCase.prototype, "criar").mockResolvedValue({ reutilizado: false, draftId: "dev-1" } as never),
@@ -102,6 +103,7 @@ const SO_FISCAL = [
   { nome: "listagem de NF-e", req: { method: "GET", url: "/fiscal/nfe" }, caso: "listar" },
   { nome: "rascunho a partir do pedido", req: { method: "POST", url: "/fiscal/nfe/draft", payload: { orderId: "pedido-1" } }, caso: "rascunho" },
   { nome: "cancelamento", req: { method: "POST", url: "/fiscal/nfe/nfe-1/cancel", payload: { justificativa: "x".repeat(20) } }, caso: "cancelar" },
+  { nome: "descartar nº retido (BLOQUEADO)", req: { method: "POST", url: "/fiscal/nfe/nfe-1/numeracao/descartar-bloqueado", payload: { confirmar: true } }, caso: "descartarBloqueado" },
   { nome: "devolução: disponibilidade", req: { method: "GET", url: "/fiscal/nfe/devolucao/disponibilidade" }, caso: "disponibilidade" },
   { nome: "devolução: criar", req: { method: "POST", url: "/fiscal/nfe/nfe-1/devolucao", payload: {} }, caso: "devolucao" },
   { nome: "responsável técnico", req: { method: "GET", url: "/fiscal/config/resp-tec" }, caso: "respTec" },
@@ -259,6 +261,7 @@ describe("cobertura: TODA rota autenticada sob /fiscal tem exatamente um guard f
     expect(urls).toContain("GET /fiscal/nfe");
     expect(urls).toContain("POST /fiscal/nfe/devolucao/manual");
     expect(urls).toContain("PUT /fiscal/companies/:id/resp-tec");
+    expect(urls).toContain("POST /fiscal/nfe/:id/numeracao/descartar-bloqueado");
   });
 
   it("toda rota com authMiddleware tem um e só um guard fiscal, DEPOIS do authMiddleware", () => {

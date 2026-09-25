@@ -12,6 +12,7 @@ import {
   decidirReadbackFocus,
   hashConteudo,
   mensagemBloqueiosFaixa,
+  mensagemDescarteFaixa,
   motivoTrocaChave,
   partesDaChave,
   type EntradaAdocaoLegado,
@@ -585,42 +586,113 @@ describe("avaliarFaixa — guarda da inutilização V2", () => {
         ini: 100,
         fim: 105,
       }),
-    ).toEqual({ ok: true, bloqueios: [] });
+    ).toEqual({ ok: true, acao: "SEGUIR", bloqueios: [], descartes: [] });
   });
 
-  it.each([["AUTHORIZED"], ["CANCELLED"], ["SENDING"], ["VALIDATING"], ["SIGNING"], ["DRAFT"], ["REJECTED"], ["STATUS_NOVO"]])(
-    "linha %s com número na faixa ⇒ bloqueia",
+  // Documento fiscal emitido ou em emissão: número que pode estar (ou vai estar) na SEFAZ.
+  it.each([["AUTHORIZED"], ["CANCELLED"], ["SENDING"], ["VALIDATING"], ["SIGNING"], ["STATUS_NOVO"]])(
+    "linha %s com número na faixa ⇒ bloqueia (mesmo com o descarte confirmado)",
     (status) => {
-      const r = avaliarFaixa({ linhas: [{ id: "nota_x", numero: 101, status }], reservas: [], ini: 101, fim: 101 });
-      expect(r.ok).toBe(false);
-      expect(r.bloqueios).toHaveLength(1);
-      expect(r.bloqueios[0]).toMatchObject({ numero: 101, nfeId: "nota_x" });
-      expect(r.bloqueios[0].motivo).toContain("nº 101");
+      for (const confirmarDescarte of [false, true]) {
+        const r = avaliarFaixa({ linhas: [{ id: "nota_x", numero: 101, status }], reservas: [], ini: 101, fim: 101, confirmarDescarte });
+        expect(r.ok).toBe(false);
+        expect(r.acao).toBe("BLOQUEAR");
+        expect(r.bloqueios).toHaveLength(1);
+        expect(r.bloqueios[0]).toMatchObject({ numero: 101, nfeId: "nota_x" });
+        expect(r.bloqueios[0].motivo).toContain("nº 101");
+      }
     },
   );
 
-  it("rascunho orienta a excluir antes de inutilizar", () => {
-    const r = avaliarFaixa({ linhas: [{ id: "rasc_1", numero: 101, status: "DRAFT" }], reservas: [], ini: 100, fim: 101 });
-    expect(r.bloqueios[0].motivo).toContain("rascunho rasc_1");
-    expect(r.bloqueios[0].motivo).toContain("exclua");
+  // BLOQ-1: 3 das 9 inutilizações ACEITAS em produção cobriram nº preso em nota REJECTED do V1
+  // (Mesquita série 4 nº 1-2 e série 2 nº 99; Centro Jotabê série 4 nº 92-95). O V1 inutiliza
+  // e deixa a linha como está; a V2 recusava ("exclua o rascunho" — botão que a tela não tem).
+  it.each([["DRAFT"], ["REJECTED"]])(
+    "linha %s legada (sem reserva viva no número) ⇒ não bloqueia, sem pedir confirmação",
+    (status) => {
+      const r = avaliarFaixa({ linhas: [{ id: "legado_v1", numero: 101, status }], reservas: [], ini: 100, fim: 101 });
+      expect(r).toEqual({ ok: true, acao: "SEGUIR", bloqueios: [], descartes: [] });
+    },
+  );
+
+  it("nenhum motivo manda excluir rascunho (a tela não tem esse botão para NF-e comum)", () => {
+    const r = avaliarFaixa({
+      linhas: [
+        { id: "rasc_1", numero: 101, status: "DRAFT" },
+        { id: "rej_1", numero: 102, status: "REJECTED" },
+        { id: "env_1", numero: 103, status: "SENDING" },
+      ],
+      reservas: [{ numero: 101, estado: "EM_TRANSMISSAO", nfeId: "rasc_1" }],
+      ini: 100,
+      fim: 105,
+    });
+    expect(r.acao).toBe("BLOQUEAR");
+    expect(r.bloqueios.map((b) => b.numero)).toEqual([101, 103]);
+    for (const b of r.bloqueios) expect(b.motivo).not.toMatch(/exclua|excluir/i);
   });
 
   it.each([
-    ["RESERVADO"],
-    ["REJEITADO"],
     ["EM_TRANSMISSAO"],
     ["INCERTO"],
-    ["BLOQUEADO"],
     ["AUTORIZADO"],
     ["CANCELADO"],
     ["DENEGADO"],
     ["INUTILIZADO"],
     ["CONSUMIDO_EXTERNO"],
-  ])("reserva %s na faixa ⇒ bloqueia", (estado) => {
-    const r = avaliarFaixa({ linhas: [], reservas: [{ numero: 103, estado }], ini: 100, fim: 110 });
+  ])("reserva %s na faixa ⇒ bloqueia (confirmar o descarte não abre atalho)", (estado) => {
+    for (const confirmarDescarte of [false, true]) {
+      const r = avaliarFaixa({ linhas: [], reservas: [{ numero: 103, estado }], ini: 100, fim: 110, confirmarDescarte });
+      expect(r.ok).toBe(false);
+      expect(r.acao).toBe("BLOQUEAR");
+      expect(r.bloqueios[0].numero).toBe(103);
+      expect(r.bloqueios[0].motivo).toContain(estado);
+      expect(r.descartes).toEqual([]);
+    }
+  });
+
+  it.each([["RESERVADO"], ["REJEITADO"], ["BLOQUEADO"]])(
+    "reserva %s sem confirmação ⇒ CONFIRMAR_DESCARTE (não é número vivo na SEFAZ)",
+    (estado) => {
+      const r = avaliarFaixa({
+        linhas: [{ id: "nota_r", numero: 103, status: "REJECTED" }],
+        reservas: [{ id: "res_1", numero: 103, estado, nfeId: "nota_r" }],
+        ini: 100,
+        fim: 110,
+      });
+      expect(r.ok).toBe(false);
+      expect(r.acao).toBe("CONFIRMAR_DESCARTE");
+      expect(r.bloqueios).toEqual([]);
+      expect(r.descartes).toEqual([{ numero: 103, estado, reservaId: "res_1", nfeId: "nota_r" }]);
+    },
+  );
+
+  it.each([["RESERVADO"], ["REJEITADO"], ["BLOQUEADO"]])(
+    "reserva %s COM confirmação ⇒ SEGUIR, e a reserva vem listada para o descarte",
+    (estado) => {
+      const r = avaliarFaixa({
+        linhas: [{ id: "nota_r", numero: 103, status: "DRAFT" }],
+        reservas: [{ id: "res_1", numero: 103, estado, nfeId: "nota_r" }],
+        ini: 100,
+        fim: 110,
+        confirmarDescarte: true,
+      });
+      expect(r).toEqual({ ok: true, acao: "SEGUIR", bloqueios: [], descartes: [{ numero: 103, estado, reservaId: "res_1", nfeId: "nota_r" }] });
+    },
+  );
+
+  it("bloqueio prevalece sobre descarte: reserva RESERVADO com a nota em emissão (VALIDATING) não é descartável", () => {
+    // Emissão em curso (claim feito, reserva RESERVADO, envio a seguir): descartar o número
+    // agora deixaria a nota VALIDATING sem reserva — travada para sempre.
+    const r = avaliarFaixa({
+      linhas: [{ id: "em_curso", numero: 103, status: "VALIDATING" }],
+      reservas: [{ id: "res_1", numero: 103, estado: "RESERVADO", nfeId: "em_curso" }],
+      ini: 103,
+      fim: 103,
+      confirmarDescarte: true,
+    });
     expect(r.ok).toBe(false);
-    expect(r.bloqueios[0].numero).toBe(103);
-    expect(r.bloqueios[0].motivo).toContain(estado);
+    expect(r.acao).toBe("BLOQUEAR");
+    expect(r.bloqueios.map((b) => b.numero)).toEqual([103]);
   });
 
   it("fora da faixa não bloqueia (bordas inclusivas)", () => {
@@ -628,30 +700,36 @@ describe("avaliarFaixa — guarda da inutilização V2", () => {
       linhas: [
         { id: "a", numero: 99, status: "AUTHORIZED" },
         { id: "b", numero: 100, status: "AUTHORIZED" },
-        { id: "c", numero: 110, status: "DRAFT" },
-        { id: "d", numero: 111, status: "DRAFT" },
+        { id: "c", numero: 110, status: "SIGNING" },
+        { id: "d", numero: 111, status: "SIGNING" },
       ],
       reservas: [
         { numero: 99, estado: "INCERTO" },
         { numero: 111, estado: "INCERTO" },
+        { numero: 99, estado: "REJEITADO" },
+        { numero: 111, estado: "RESERVADO" },
       ],
       ini: 100,
       fim: 110,
     });
     expect(r.bloqueios.map((b) => b.numero)).toEqual([100, 110]);
+    expect(r.descartes).toEqual([]);
   });
 
-  it("bloqueios em ordem de número", () => {
+  it("bloqueios e descartes em ordem de número", () => {
     const r = avaliarFaixa({
       linhas: [{ id: "z", numero: 105, status: "SENDING" }],
       reservas: [
-        { numero: 107, estado: "RESERVADO" },
+        { numero: 107, estado: "CONSUMIDO_EXTERNO" },
         { numero: 101, estado: "INCERTO" },
+        { numero: 109, estado: "REJEITADO" },
+        { numero: 102, estado: "BLOQUEADO" },
       ],
       ini: 100,
       fim: 110,
     });
     expect(r.bloqueios.map((b) => b.numero)).toEqual([101, 105, 107]);
+    expect(r.descartes.map((d) => d.numero)).toEqual([102, 109]);
   });
 
   it.each([
@@ -670,6 +748,27 @@ describe("avaliarFaixa — guarda da inutilização V2", () => {
     expect(m).not.toContain("nº 110 ocupado");
     expect(m).toMatch(/e mais 3$/);
     expect(mensagemBloqueiosFaixa(bloqueios.slice(0, 2))).toBe("nº 100 ocupado; nº 101 ocupado");
+  });
+
+  it("mensagemDescarteFaixa: um número reservado — diz o que acontece com a nota, sem mandar excluir", () => {
+    const m = mensagemDescarteFaixa([{ numero: 7, estado: "REJEITADO" }], 1);
+    expect(m).toContain("nº 7");
+    expect(m).toContain("série 1");
+    expect(m).toContain("rascunho");
+    expect(m).toContain("número novo");
+    expect(m).not.toMatch(/exclua|excluir/i);
+    expect(m).not.toContain("NÃO foi autorizado");
+  });
+
+  it("mensagemDescarteFaixa: com BLOQUEADO, pede confirmar que o número NÃO foi autorizado na SEFAZ", () => {
+    const um = mensagemDescarteFaixa([{ numero: 7, estado: "RESERVADO" }, { numero: 9, estado: "BLOQUEADO" }], 2);
+    expect(um).toContain("7, 9");
+    expect(um).toContain("série 2");
+    expect(um).toContain("nº 9 está retido para conferência");
+    expect(um).toContain("NÃO foi autorizado na SEFAZ");
+    const dois = mensagemDescarteFaixa([{ numero: 9, estado: "BLOQUEADO" }, { numero: 11, estado: "BLOQUEADO" }], 2);
+    expect(dois).toContain("nºs 9, 11 estão retidos para conferência");
+    expect(dois).toContain("NÃO foram autorizados na SEFAZ");
   });
 });
 

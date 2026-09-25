@@ -65,6 +65,7 @@ import {
   type ModeloAjuste,
   type TipoToast,
 } from "../../lib/nfe-ajuste-numeracao-ui";
+import { avisoPisoSugerido } from "../../lib/nfe-numeracao-ui";
 
 // Kill-switch no padrão dos vizinhos (NEXT_PUBLIC_*_DISABLED): o caminho nasce
 // visível — a razão da tarefa é que hoje só existe SQL em produção —, mas dá
@@ -85,6 +86,13 @@ interface Props {
   /** Série padrão da NFC-e do formulário. A nota do PDV numera separado da
    *  NF-e: sem isso, trocar o tipo de nota manteria a série errada no campo. */
   serieNfcePadrao?: number | null;
+  /** Nasce aberto: o wizard mostra o card DEPOIS do 409 SEQUENCIA_ATRAS_DA_SEFAZ,
+   *  quando abrir já é a intenção. Ausente = fechado, como na configuração. */
+  abertoInicial?: boolean;
+  /** Mínimo que o 409 indicou (`detalhes.proximoNumeroMinimo`). Só TEXTO de
+   *  apoio: o campo do número continua em branco — o número certo é o que a
+   *  pessoa conferiu no portal, e o ajuste não pode ser desfeito. */
+  pisoSugerido?: number | null;
 }
 
 function seriePara(
@@ -120,8 +128,11 @@ export function AjusteNumeracaoCard({
   ambientePadrao,
   seriePadrao,
   serieNfcePadrao,
+  abertoInicial,
+  pisoSugerido,
 }: Props) {
-  const [aberto, setAberto] = useState(false);
+  const [aberto, setAberto] = useState(abertoInicial === true);
+  const avisoPiso = avisoPisoSugerido(pisoSugerido);
   const [form, setForm] = useState<FormAjuste>(() =>
     formAtual(ambientePadrao, seriePadrao, serieNfcePadrao),
   );
@@ -275,6 +286,11 @@ export function AjusteNumeracaoCard({
         </Button>
       ) : (
         <>
+          {avisoPiso && (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+              {avisoPiso}
+            </p>
+          )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="space-y-1">
               <Label htmlFor="ajuste-ambiente">Ambiente</Label>

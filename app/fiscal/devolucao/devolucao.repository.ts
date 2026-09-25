@@ -18,6 +18,20 @@ export type NotaDevolucao = NfeDraftResponse & {xmlAutorizadoPath:string|null;pr
 export interface DevolucaoPersistida {cabecalho:CabecalhoDevolucao;refs:RefDevolucaoItem[];nota:NotaDevolucao}
 import { numeroPlaceholderRascunho } from "../domain/draft-number";
 
+/**
+ * Rascunho GERENCIADO pela devolução (com cabeçalho) numa empresa com a devolução DESLIGADA
+ * (rollback por config: a empresa saiu da allowlist). A MESMA recusa no Emitir (V1), no
+ * autosave e no /calculate (updateDraft): ele não emite no V1 (sairia finNFe 4 sem NFref ⇒
+ * 321) e não pode virar nota comum. EXIGE_NUMERACAO_V2 (422), e não RASCUNHO_ALTERADO: a
+ * frase padrão deste manda "tentar novamente" e a tela oferece o botão, que repetiria o
+ * mesmo erro para sempre. A frase só promete o que existe: depois do rollback a tela não tem
+ * botão para excluir este rascunho (o quadro "Devoluções em andamento" só lista empresa com a
+ * devolução ligada) — quem religa a devolução ou exclui o rascunho é o suporte.
+ */
+export function erroRascunhoComDevolucaoDesligada(draftId:string):DevolucaoError {
+  return new DevolucaoError("EXIGE_NUMERACAO_V2",undefined,{draftId,mensagem:"Este rascunho foi criado pela Devolução do Dexo, que foi desligada para esta empresa: ele não pode ser emitido nem alterado como nota comum. Fale com o suporte do Dexo para religar a devolução desta empresa (aí este rascunho volta a emitir) ou para excluir este rascunho."});
+}
+
 export class NfeDevolucaoRepository {
   constructor(readonly db:PrismaClient=prisma) {}
   transaction<T>(fn:(tx:FiscalSql)=>Promise<T>):Promise<T> {return this.db.$transaction(fn,{maxWait:5000,timeout:15000});}
@@ -73,6 +87,30 @@ export class NfeDevolucaoRepository {
   async escopoDe(userId:string,nfeId:string,db:FiscalSql=this.db):Promise<EscopoDevolucao|null> {
     const rows=await db.$queryRawUnsafe<{escopoSolicitado:EscopoDevolucao}[]>(`SELECT "escopoSolicitado" FROM "NfeDevolucao" WHERE "userId"=$1 AND "nfeId"=$2`,userId,nfeId);
     return rows[0]?.escopoSolicitado??null;
+  }
+  /**
+   * Rascunho GERENCIADO pela devolução (tem cabeçalho NfeDevolucao)? Vale com ou sem a
+   * devolução ligada para a empresa: depois de um rollback por config o cabeçalho continua
+   * lá, e é ele que diz que a nota não pode seguir como nota comum. `SELECT 1` pelo índice
+   * único de "nfeId" (egress: nenhuma coluna). Tabela ausente ⇒ não tem.
+   */
+  async temCabecalho(userId:string,nfeId:string,db:FiscalSql=this.db):Promise<boolean> {
+    try{return (await db.$queryRawUnsafe<unknown[]>(`SELECT 1 FROM "NfeDevolucao" WHERE "nfeId"=$1 AND "userId"=$2 LIMIT 1`,nfeId,userId)).length>0;}
+    catch(e){if(tabelaFiscalAusente(e))return false;throw e;}
+  }
+  /**
+   * A empresa do rascunho GERENCIADO pela devolução, ou `null` quando ele não tem cabeçalho —
+   * a existência e a empresa na MESMA ida ao banco, para a proteção de campos do updateDraft
+   * escolher a recusa certa (devolução ligada: a de sempre; rollback por config: a do
+   * rollback). Rascunho sem empresa gravada é da empresa PADRÃO (a de findByUserId, como no
+   * findExistingDraft). Pelo PK da nota e o índice único de "nfeId"; tabela ausente ⇒ `null`.
+   */
+  async empresaDoRascunhoGerenciado(userId:string,nfeId:string,db:FiscalSql=this.db):Promise<{companyFiscalConfigId:string|null}|null> {
+    try{
+      const rows=await db.$queryRawUnsafe<Array<{companyFiscalConfigId:string|null}>>(`SELECT COALESCE(n."companyFiscalConfigId",(SELECT c."id" FROM "CompanyFiscalConfig" c WHERE c."userId"=n."userId" ORDER BY c."isDefault" DESC,c."createdAt" ASC LIMIT 1)) AS "companyFiscalConfigId"
+        FROM "NfeEmitida" n JOIN "NfeDevolucao" d ON d."nfeId"=n."id" AND d."userId"=n."userId" WHERE n."id"=$1 AND n."userId"=$2 LIMIT 1`,nfeId,userId);
+      return rows[0]?{companyFiscalConfigId:rows[0].companyFiscalConfigId}:null;
+    }catch(e){if(tabelaFiscalAusente(e))return null;throw e;}
   }
   /**
    * A nota do PRÓPRIO Dexo com esta chave (NF-e de saída autorizada), para a devolução

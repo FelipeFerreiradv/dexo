@@ -54,3 +54,29 @@ Esta seção supera o estado descrito em "Focus/Kiko: estado real": as flags nov
 - **A Focus continua fora.** Com `NFE_NUMERACAO_V2_FOCUS_ENABLED=false` só o SEFAZ direto passa pelo V2; as confirmações do suporte Focus sobre número/série/ref seguem pendentes e o canário Focus/Kiko **não** foi executado. Nada aqui autoriza dizer ao cliente que a emissão pela Focus foi homologada ou que a rejeição 974 foi resolvida.
 - **Notas presas:** encerradas em 23/09/2026 (eram 14 — 11 em homologação e 3 em produção da Kiko). Nenhuma foi transmitida à SEFAZ: pararam antes do envio (CA bundle local ausente, token Focus inválido, empresa não habilitada na Focus). Fechadas como `REJECTED` com motivo real e sem cStat; backup em `ops_backup.nfe_presas_sending_20260923`. Produção ficou com **zero** notas em `SENDING`.
 - **Clientes:** a Kiko 4x4 segue ativa. "Veiga" não é cliente: é o CNPJ padrão (Veiga Auto Peças LTDA, 65416054000188) dentro do tenant VN Motors, também ativo. Nenhum dos dois cancelou.
+
+## Atualização de 25/09/2026 — deploy padrão e plano de ligação
+
+- **Estado.** A VPS roda o commit `db6fbd14` (PR #378), implantado em 25/09/2026 pelo deploy padrão abaixo: backup do build em `.next.bak-20260925-144844`, gate de pré-voo zerado antes do restart e `dexo-sync-orders` reiniciado junto porque o código de sync mudou. A devolução está ligada desde 24/09/2026, só para a DLS (`NFE_DEVOLUCAO_ENABLED=true`, `NFE_DEVOLUCAO_CONFIG_IDS=cmr9omjlt30xw18jqt3m5oyc3`). Nenhuma outra config entrou nas listas, e a Focus continua fora.
+- **Deploy padrão.** O build é feito na própria pasta `/var/www/dexo`, porque o `.next` grava caminho absoluto e não se transplanta de outra pasta. O site fica instável por uns 3 minutos durante o build; a API segue de pé.
+
+  ```bash
+  cd /var/www/dexo && git status --porcelain && git log -1 --oneline
+  ANTES=$(git rev-parse HEAD)
+  git pull --ff-only
+  git diff --name-only "$ANTES"..HEAD -- package-lock.json prisma/schema.prisma   # decide o passo seguinte
+  # package-lock.json na lista: npm ci (o postinstall roda o prisma generate); install que falhou ⇒ não reiniciar nada
+  # só prisma/schema.prisma na lista: generate com o binário pinado, nunca `npx prisma` (o `npm run build` não gera o client):
+  #   node node_modules/prisma/build/index.js generate --schema=prisma/schema.prisma
+  # nos dois casos, node_modules/.prisma/client/index.js tem de passar de 200 KB
+  cp -a .next .next.bak-$(date +%Y%m%d-%H%M%S)
+  npm run build; echo "rc=$?"
+  # gate de pré-voo de rotina aqui (docs/fiscal-numeracao-v2.md, "Gate de pré-voo"): nenhuma reserva EM_TRANSMISSAO/INCERTO
+  #   com lease vivo, nenhuma nota em VALIDATING/SIGNING/SENDING, nenhuma inutilização pendente. BLOQUEADO estacionado
+  #   não conta aqui; ligar flag, ampliar lista ou fazer rollback usa o gate estrito
+  pm2 restart dexo-api dexo-frontend   # + dexo-sync-orders quando o código de sync muda
+  curl -s http://127.0.0.1:3000/api/version
+  ```
+
+  `npm ci` só quando o `package-lock.json` muda. Se o `prisma/schema.prisma` mudou sem `npm ci`, o generate acima é obrigatório: sem ele o `dexo-api` (tsx, sem checagem de tipo) sobe com o client velho e só descobre em runtime, com modelo `undefined` ou "Unknown argument". Nunca `--update-env` e nunca `pm2 restart all`. O deploy não roda DDL nem `prisma migrate`: o DDL é passo à parte, revisado e aplicado antes do código que o usa.
+- **Canário substituído.** O passo "3 configs por 48 h" do plano original (§6.3 de [05-testes-rollout.md](05-testes-rollout.md)) e a UAT de homologação foram substituídos por decisão do dono: ligação por **lista explícita** das configs SEFAZ direto, a mesma nas duas allowlists, nunca `*`, com vigília de 24 h e 48 h. Pela mesma decisão, a devolução liga junto com a numeração; a proteção de rollback da devolução por config sobe antes, no deploy de código. Os critérios do canário, medidos na DLS em 25/09/2026, passaram. Gate, fases, vigília e rollback estão em [operação da numeração V2](../fiscal-numeracao-v2.md).

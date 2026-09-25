@@ -16,9 +16,10 @@
 // DETERMINÍSTICO para ele. A DLS AUTO PEÇAS, já na V2, recebeu um 613 no nº 501.
 //
 // O que a correção NÃO faz: BLOQUEADO continua sem saída automática. A única aresta nova
-// é BLOQUEADO → ABANDONADO, percorrida apenas pela exclusão do rascunho com descarte
-// CONFIRMADO. BLOQUEADO → RESERVADO segue proibida de propósito (devolveria ao pool de
-// reuso um número que pode estar autorizado na SEFAZ com outro cNF).
+// é BLOQUEADO → ABANDONADO, percorrida só com descarte CONFIRMADO: pela exclusão do
+// rascunho, (c) pelo descarte do número sem excluir a nota, ou pela inutilização da faixa
+// (g1-inutilizacao-descarte.spec.ts). BLOQUEADO → RESERVADO segue proibida de propósito
+// (devolveria ao pool de reuso um número que pode estar autorizado na SEFAZ com outro cNF).
 
 import { describe, it, expect } from "vitest";
 import { NfeNumeracaoService } from "../../../app/fiscal/numeracao/numeracao.service";
@@ -221,5 +222,113 @@ describe("(b) a reserva BLOQUEADA só é encerrada pelo caminho humano com confi
       code: "NFE_NUMERO_PENDENTE_CONSULTA", httpStatus: 409,
     });
     expect(w.repo.state.reservas.get(reserva.id)!.estado).toBe("INCERTO");
+  });
+});
+
+// BLOQ-2 (paridade com o V1): a exclusão do rascunho era a ÚNICA saída do BLOQUEADO, e a tela
+// só a alcança nos quadros de devolução. NF-e comum retida por 613 morria ali — no V1 a mesma
+// nota seria reemitida com número novo. `descartarNumeroBloqueado` descarta SÓ o número: a nota
+// fica, volta a rascunho (placeholder) com o cStat/motivo da retenção, e "Emitir" reserva outro.
+describe("(c) descartarNumeroBloqueado: descarta o nº retido SEM excluir a nota", () => {
+  it("COM confirmação: X vai a ABANDONADO, a nota volta a DRAFT e emitir o MESMO nfeId recebe X+1", async () => {
+    const w = mundo();
+    const { reserva, numero } = await ateOBloqueio(w, "dls-501");
+
+    const r = await w.svc.descartarNumeroBloqueado("tenant", "dls-501", true);
+    expect(r).toEqual({ numero, serie: 1 });
+
+    const final = w.repo.state.reservas.get(reserva.id)!;
+    expect(final.estado).toBe("ABANDONADO");
+    expect(final.requerInutilizacao).toBe(true); // produção: o nº descartado tem de ser inutilizado
+    expect(final.motivo).toBe("NUMERO_RETIDO_DESCARTADO");
+
+    // A nota NÃO foi excluída: rascunho com placeholder, cStat e motivo da retenção preservados.
+    const nota = w.repo.state.notas.get("dls-501")!;
+    expect(nota.status).toBe("DRAFT");
+    expect(nota.numero).toBeLessThan(0);
+    expect(nota.cStatRejeicao).toBe(613);
+    expect(String(nota.motivoRejeicao)).toContain(`Nº ${numero} retido para conferência`);
+    expect(nota.chaveAcesso).toBeNull();
+
+    // "Emitir" de novo: o claim põe a nota em VALIDATING e a reserva sai do CONTADOR (X+1).
+    nota.status = "VALIDATING";
+    const c = w.ctx("dls-501");
+    const nova = await w.svc.reservarOuReutilizar({ ...c, row: { ...c.row, numero: nota.numero, status: "DRAFT" } });
+    expect(nova).toMatchObject({ numero: numero + 1, origemDecisao: "CONTADOR", estado: "RESERVADO" });
+    expect(w.repo.state.reservas.get(reserva.id)!.estado).toBe("ABANDONADO");
+    expect((await w.svc.reservaViva("tenant", "dls-501"))!.id).toBe(nova.id);
+  });
+
+  it("SEM confirmação: 409 NUMERACAO_CONFIRMAR_DESCARTE com número e série — nada muda", async () => {
+    const w = mundo();
+    const { reserva, numero } = await ateOBloqueio(w, "dls-501");
+    const notaAntes = structuredClone(w.repo.state.notas.get("dls-501"));
+
+    const erro = await erroDe(w.svc.descartarNumeroBloqueado("tenant", "dls-501", false));
+    expect(erro).toBeInstanceOf(NumeracaoError);
+    expect(erro).toMatchObject({ code: "NUMERACAO_CONFIRMAR_DESCARTE", httpStatus: 409 });
+    expect(erro.detalhes).toMatchObject({ numero, serie: 1 });
+    expect(erro.message).toContain("NÃO foi autorizado na SEFAZ");
+
+    expect(w.repo.state.reservas.get(reserva.id)!.estado).toBe("BLOQUEADO");
+    expect(w.repo.state.notas.get("dls-501")).toEqual(notaAntes);
+  });
+
+  it("HOMOLOGAÇÃO também exige confirmação; confirmado, não marca requerInutilizacao", async () => {
+    const w = mundo("HOMOLOGACAO");
+    const { reserva } = await ateOBloqueio(w, "homolog-1");
+    await expect(w.svc.descartarNumeroBloqueado("tenant", "homolog-1")).rejects.toMatchObject({ code: "NUMERACAO_CONFIRMAR_DESCARTE" });
+    await w.svc.descartarNumeroBloqueado("tenant", "homolog-1", true);
+    expect(w.repo.state.reservas.get(reserva.id)).toMatchObject({ estado: "ABANDONADO", requerInutilizacao: false });
+  });
+
+  it("nota legada ainda em SENDING com a reserva BLOQUEADA (antes da correção (a)) também sai pelo descarte", async () => {
+    const w = mundo();
+    const { reserva } = await ateOBloqueio(w, "legado-sending");
+    w.repo.state.notas.get("legado-sending")!.status = "SENDING";
+    await w.svc.descartarNumeroBloqueado("tenant", "legado-sending", true);
+    expect(w.repo.state.reservas.get(reserva.id)!.estado).toBe("ABANDONADO");
+    expect(w.repo.state.notas.get("legado-sending")).toMatchObject({ status: "DRAFT" });
+  });
+
+  it.each([["RESERVADO"], ["REJEITADO"], ["INCERTO"]])(
+    "reserva viva em %s (não BLOQUEADO) ⇒ 409 NUMERACAO_NAO_BLOQUEADA, mesmo confirmando — nada muda",
+    async (estado) => {
+      const w = mundo();
+      const c = w.ctx("outra");
+      const r = await w.svc.reservarOuReutilizar(c);
+      if (estado === "REJEITADO") {
+        const envio = await w.start(r);
+        await w.svc.registrarResposta(envio.reserva, envio.tentativa, { classificacao: classificarCStatSefaz(225) });
+      } else if (estado === "INCERTO") {
+        const envio = await w.start(r);
+        await w.svc.registrarResposta(envio.reserva, envio.tentativa, { classificacao: classificarCStatSefaz(613, { xMotivo: XMOTIVO_613 }) });
+      } else {
+        w.repo.state.notas.get("outra")!.status = "DRAFT";
+      }
+      expect(w.repo.state.reservas.get(r.id)!.estado).toBe(estado);
+      const notaAntes = structuredClone(w.repo.state.notas.get("outra"));
+
+      for (const confirmar of [false, true]) {
+        await expect(w.svc.descartarNumeroBloqueado("tenant", "outra", confirmar)).rejects.toMatchObject({
+          code: "NUMERACAO_NAO_BLOQUEADA", httpStatus: 409,
+        });
+      }
+      expect(w.repo.state.reservas.get(r.id)!.estado).toBe(estado);
+      expect(w.repo.state.notas.get("outra")).toEqual(notaAntes);
+    },
+  );
+
+  it("nota sem reserva viva ⇒ 409 NUMERACAO_NAO_BLOQUEADA", async () => {
+    const w = mundo();
+    w.repo.state.notas.set("sem-reserva", { id: "sem-reserva", userId: "tenant", numero: -1, status: "DRAFT", key: { cfc: "empresa", ambiente: "PRODUCAO", modelo: "55", serie: 1 } });
+    await expect(w.svc.descartarNumeroBloqueado("tenant", "sem-reserva", true)).rejects.toMatchObject({ code: "NUMERACAO_NAO_BLOQUEADA", httpStatus: 409 });
+  });
+
+  it("outro tenant não enxerga a reserva: NUMERACAO_NAO_BLOQUEADA e a reserva segue BLOQUEADA", async () => {
+    const w = mundo();
+    const { reserva } = await ateOBloqueio(w, "dls-501");
+    await expect(w.svc.descartarNumeroBloqueado("intruso", "dls-501", true)).rejects.toMatchObject({ code: "NUMERACAO_NAO_BLOQUEADA" });
+    expect(w.repo.state.reservas.get(reserva.id)!.estado).toBe("BLOQUEADO");
   });
 });
