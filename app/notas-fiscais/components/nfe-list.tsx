@@ -69,6 +69,11 @@ import {
   mostrarTentarNovamente,
   rotuloTentarNovamente,
 } from "../lib/nfe-numeracao-ui";
+import {
+  MENSAGEM_PADRAO_DOWNLOAD,
+  lerMensagemErroDownload,
+  nomeArquivoDownload,
+} from "../lib/nfe-download-arquivo";
 import { NfeDetailSheet } from "./nfe-detail-sheet";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
@@ -417,7 +422,11 @@ export function NfeList() {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const handleDownload = async (nfeId: string, type: "xml" | "danfe") => {
+  const handleDownload = async (
+    nfeId: string,
+    type: "xml" | "danfe",
+    status?: string,
+  ) => {
     if (!session?.user?.email) return;
     // Baixa via fetch (a ponte de auth injeta o Bearer) + blob, em vez de
     // window.open(?email=). Funciona no modo strict e não expõe credencial na URL.
@@ -428,18 +437,25 @@ export function NfeList() {
           headers: authHeaders(session),
         },
       );
-      if (!res.ok) return;
+      // Antes era `return` calado: o clique não fazia nada. O servidor diz por
+      // quê (DANFE da cancelada que não pôde ser marcado, acesso removido...).
+      if (!res.ok) {
+        showToast(await lerMensagemErroDownload(res), "error");
+        return;
+      }
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = blobUrl;
-      a.download = `nfe-${nfeId}.${type === "danfe" ? "pdf" : "xml"}`;
+      // PDF da nota cancelada: `nfe-<id>-CANCELADA.pdf`; o resto, como sempre.
+      a.download = nomeArquivoDownload(`nfe-${nfeId}`, type, status);
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
     } catch {
-      // silencioso (mesmo comportamento de antes em caso de falha)
+      // Rede caída: também avisa, em vez do silêncio de antes.
+      showToast(MENSAGEM_PADRAO_DOWNLOAD, "error");
     }
   };
 
@@ -788,7 +804,7 @@ export function NfeList() {
                                 variant="ghost"
                                 size="icon"
                                 className="size-8"
-                                onClick={() => handleDownload(nota.id, "danfe")}
+                                onClick={() => handleDownload(nota.id, "danfe", nota.status)}
                               >
                                 <Download className="size-4" />
                               </Button>

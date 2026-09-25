@@ -164,7 +164,10 @@ export default function InutilizarNumeroPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        showToast(data.error || "Erro ao inutilizar", "error");
+        // A recusa da SEFAZ volta 422 {success:false, mensagem} (sem `error`):
+        // mostra a frase dela e recarrega o histórico (linha REJEITADA).
+        showToast(data.error || data.mensagem || "Erro ao inutilizar", "error");
+        fetchItems();
         return;
       }
 

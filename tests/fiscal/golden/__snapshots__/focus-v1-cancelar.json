@@ -47,9 +47,9 @@
       }
     },
     "resultado": {
-      "success": true,
+      "success": false,
       "protocolo": null,
-      "mensagem": "Rejeicao: Prazo de cancelamento superior ao previsto na Legislacao"
+      "mensagem": "Cancelamento recusado pela SEFAZ (codigo 501): Rejeicao: Prazo de cancelamento superior ao previsto na Legislacao"
     }
   },
   "422-json": {

@@ -1,13 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { exigeAcessoFiscal } from "../middlewares/require-page-access.middleware";
 import { CompanyFiscalRespTecUseCase } from "../usecases/company-fiscal-resp-tec.usecase";
 import { NumeracaoError, tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 
 export async function fiscalRespTecRoutes(fastify: FastifyInstance) {
   const usecase = new CompanyFiscalRespTecUseCase();
+  // Configuração fiscal: exige a página "fiscal" do colaborador (exigeAcessoFiscal), além do login.
   for (const url of ["/config/resp-tec", "/companies/:id/resp-tec"]) {
     for (const method of ["GET", "PUT"] as const) {
-      fastify.route({ method,url,preHandler:[authMiddleware],handler:async (request: FastifyRequest,reply) => {
+      fastify.route({ method,url,preHandler:[authMiddleware,exigeAcessoFiscal],handler:async (request: FastifyRequest,reply) => {
         const auth = (request as FastifyRequest & {user:{id:string;dataOwnerId:string}}).user;
         const id = (request.params as {id?:string}).id;
         try {

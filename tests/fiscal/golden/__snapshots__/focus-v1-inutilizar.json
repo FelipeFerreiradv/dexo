@@ -55,9 +55,9 @@
       }
     },
     "resultado": {
-      "success": true,
+      "success": false,
       "protocolo": null,
-      "mensagem": "Rejeicao: Um numero da faixa ja foi utilizado"
+      "mensagem": "Inutilizacao recusada pela SEFAZ (codigo 241): Rejeicao: Um numero da faixa ja foi utilizado"
     }
   },
   "422-json": {

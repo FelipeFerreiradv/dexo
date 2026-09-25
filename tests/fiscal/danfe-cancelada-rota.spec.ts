@@ -351,3 +351,69 @@ describe("POST /fiscal/nfe/:id/resend-email — o anexo segue a mesma regra", ()
     });
   });
 });
+
+describe("POST /fiscal/nfe/:id/resend-email — assunto e corpo dizem quando a nota está CANCELADA", () => {
+  // O PDF cancelado já saía carimbado, mas o e-mail dizia só "Segue em anexo a
+  // NF-e numero 716": o destinatário lia a mensagem sem abrir o anexo e tomava a
+  // nota por válida. Nota autorizada: texto byte a byte o de antes.
+  const enviar = () =>
+    app.inject({ method: "POST", url: "/fiscal/nfe/nfe-716/resend-email", payload: { email: "compras@disauto.com.br" } });
+  const CHAVE = "4".repeat(44);
+  const mensagem = () => enviados[0] as unknown as { subject: string; text: string };
+
+  it("nota autorizada: assunto e corpo exatamente os de sempre", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DANFE_OFICIAL_ENABLED", "false");
+    db.nfeEmitida.findFirst.mockResolvedValue(nota());
+    expect((await enviar()).statusCode).toBe(200);
+    expect(mensagem().subject).toBe(`NF-e 1/716 - ${CHAVE}`);
+    expect(mensagem().text).toBe(`Segue em anexo a NF-e numero 716, serie 1.\n\nChave de acesso: ${CHAVE}`);
+  });
+
+  it("nota autorizada sem chave gravada: também o texto de sempre", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DANFE_OFICIAL_ENABLED", "false");
+    db.nfeEmitida.findFirst.mockResolvedValue(nota({ chaveAcesso: null }));
+    expect((await enviar()).statusCode).toBe(200);
+    expect(mensagem().subject).toBe("NF-e 1/716 - ");
+    expect(mensagem().text).toBe("Segue em anexo a NF-e numero 716, serie 1.\n\nChave de acesso: N/A");
+  });
+
+  it("nota cancelada: assunto e corpo dizem CANCELADA", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DANFE_OFICIAL_ENABLED", "false");
+    db.nfeEmitida.findFirst.mockResolvedValue(nota({ status: "CANCELLED" }));
+    expect((await enviar()).statusCode).toBe(200);
+    expect(mensagem().subject).toBe(`NF-e 1/716 CANCELADA - ${CHAVE}`);
+    expect(mensagem().text).toBe(
+      `Segue em anexo a NF-e número 716, série 1, que foi CANCELADA.\n\nChave de acesso: ${CHAVE}`,
+    );
+  });
+
+  it("nota cancelada sem chave gravada: assunto com CANCELADA e corpo terminando em 'Chave de acesso: N/A'", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DANFE_OFICIAL_ENABLED", "false");
+    db.nfeEmitida.findFirst.mockResolvedValue(nota({ status: "CANCELLED", chaveAcesso: null }));
+    expect((await enviar()).statusCode).toBe(200);
+    expect(mensagem().subject).toBe("NF-e 1/716 CANCELADA - ");
+    expect(mensagem().text).toContain("que foi CANCELADA");
+    expect(mensagem().text.endsWith("Chave de acesso: N/A")).toBe(true);
+  });
+
+  it("nota cancelada cujo DANFE ficou de fora: o e-mail segue dizendo CANCELADA", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DANFE_OFICIAL_ENABLED", "false");
+    arquivos.set(PDF_PATH, Buffer.from("arquivo corrompido"));
+    db.nfeEmitida.findFirst.mockResolvedValue(nota({ status: "CANCELLED", xmlAutorizadoPath: null, xmlOriginalPath: XML_PATH }));
+    const res = await enviar();
+    expect(res.json().danfeOmitido).toBe(true);
+    expect(mensagem().subject).toBe(`NF-e 1/716 CANCELADA - ${CHAVE}`);
+    expect(mensagem().text).toContain("que foi CANCELADA");
+  });
+
+  it("só o status CANCELLED muda o texto (nenhuma outra grafia)", async () => {
+    // A rota só aceita AUTHORIZED e CANCELLED; o que não for exatamente
+    // "CANCELLED" nem chega a enviar — e nunca sai rotulado como cancelado.
+    vi.stubEnv("NEXT_PUBLIC_DANFE_OFICIAL_ENABLED", "false");
+    for (const status of ["cancelled", "CANCELADA"]) {
+      db.nfeEmitida.findFirst.mockResolvedValue(nota({ status }));
+      expect((await enviar()).statusCode, status).toBe(400);
+    }
+    expect(enviados).toHaveLength(0);
+  });
+});

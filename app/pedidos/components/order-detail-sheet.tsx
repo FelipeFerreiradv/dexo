@@ -152,6 +152,7 @@ export function OrderDetailSheet({
         const err = await createRes.json().catch(() => ({}));
         setNfeError(
           err?.error ||
+            err?.message ||
             "Não foi possível criar o rascunho. Verifique a configuração fiscal.",
         );
         return;

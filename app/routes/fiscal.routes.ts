@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { loadTenantAvatar } from "../fiscal/generators/load-avatar";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { exigeAcessoFiscal, exigeAcessoFiscalOuPdv, exigeAcessoFiscalPdvOuClientes } from "../middlewares/require-page-access.middleware";
 import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
 import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
@@ -283,6 +284,12 @@ export function parseCompanyIdParam(v: unknown): string | null | undefined {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// Toda rota daqui exige a página "fiscal" (Notas fiscais) do colaborador, além
+// do login — antes a permissão só escondia o menu e a API atendia qualquer um.
+// Exceções: GET /companies aceita "fiscal OU pdv" (seletor de CNPJ do PDV) e
+// GET /nfe/:id/danfe aceita "fiscal, pdv OU clientes" (reimpressão no PDV e na
+// ficha do cliente). Rota nova precisa de um dos guards; o teste
+// tests/fiscal/permissao-fiscal-rotas.spec.ts quebra se faltar.
 export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
   const nfeDraft = new NfeDraftUseCase();
@@ -302,7 +309,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/config",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -323,7 +330,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/config",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -353,7 +360,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // Recebe multipart: campo `certificate` (arquivo .pfx) + campo `senha`.
   fastify.post(
     "/config/certificate",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -429,7 +436,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/companies",
-    { preHandler: [authMiddleware] },
+    // "fiscal OU pdv": o seletor de CNPJ do PDV (pdv-view.tsx) também lê esta lista.
+    { preHandler: [authMiddleware, exigeAcessoFiscalOuPdv] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -469,7 +477,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/companies",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         if (process.env.FISCAL_MULTI_CNPJ_ENABLED !== "true") {
@@ -498,7 +506,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/companies/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -522,7 +530,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/companies/:id/default",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -545,7 +553,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.delete(
     "/companies/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -568,7 +576,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // multipart da rota legada (/config/certificate), certificando o CNPJ DELA.
   fastify.post(
     "/companies/:id/certificate",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -619,7 +627,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // Lista enxuta das contas do tenant p/ a tela de configuração fiscal.
   fastify.get(
     "/marketplace-accounts",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -648,7 +656,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/marketplace-accounts/:accountId/company",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -707,7 +715,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // visualização; o número definitivo é reservado atomicamente na emissão.
   fastify.get(
     "/nfe/proximo-numero",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -778,7 +786,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // único registro é o explícito, com o rótulo certo (ADJUST_NFE_SEQUENCE).
   fastify.post(
     "/nfe/proximo-numero/ajuste",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -824,7 +832,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/draft",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -858,7 +866,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/draft/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -882,7 +890,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/nfe/draft/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -917,7 +925,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.delete(
     "/nfe/draft/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -942,7 +950,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/draft/:id/calculate",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1045,7 +1053,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/lookup/customers",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Querystring: { q?: string } }>,
       reply: FastifyReply,
@@ -1070,7 +1078,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/lookup/products",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Querystring: { q?: string } }>,
       reply: FastifyReply,
@@ -1097,7 +1105,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/issue",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1134,14 +1142,14 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   );
 
   // ── Listagem de notas emitidas (F6) ──
-  fastify.post<{Params:{id:string}}>("/nfe/:id/consultar-situacao",{preHandler:[authMiddleware]},async(request,reply)=>{
+  fastify.post<{Params:{id:string}}>("/nfe/:id/consultar-situacao",{preHandler:[authMiddleware,exigeAcessoFiscal]},async(request,reply)=>{
     try{return await nfeEmission.consultarSituacao((request as FastifyRequest & {user:{dataOwnerId:string}}).user.dataOwnerId,request.params.id);}
     catch(e){if(e instanceof NumeracaoError)return reply.code(e.httpStatus).send({error:e.message,code:e.code});return reply.code(500).send({error:"Não foi possível consultar a situação"});}
   });
 
   fastify.get(
     "/nfe",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1175,7 +1183,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1202,7 +1210,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/export",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1252,7 +1260,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/relatorio-mensal",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1308,7 +1316,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1344,7 +1352,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id/xml",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1388,7 +1396,9 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id/danfe",
-    { preHandler: [authMiddleware] },
+    // "fiscal, pdv OU clientes": a reimpressão do PdvSaleActions (pdv-fiscal-docs.ts)
+    // baixa por aqui, no PDV e na ficha do cliente (customer-purchases-sheet.tsx).
+    { preHandler: [authMiddleware, exigeAcessoFiscalPdvOuClientes] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1471,7 +1481,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id/events",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1509,7 +1519,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/cancel",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1548,7 +1558,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/carta-correcao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1587,7 +1597,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/inutilizacao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1629,7 +1639,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/inutilizacao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1652,7 +1662,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/resend-email",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1761,10 +1771,18 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           }
         }
 
+        // Nota CANCELADA diz isso no assunto e no corpo: o carimbo fica dentro do
+        // PDF, e quem lê só a mensagem tomaria a nota por válida. A autorizada
+        // segue com o texto de sempre, byte a byte.
+        const cancelada = nfe.status === "CANCELLED";
         await emailService.send({
           to: email,
-          subject: `NF-e ${nfe.serie}/${nfe.numero} - ${nfe.chaveAcesso ?? ""}`,
-          text: `Segue em anexo a NF-e numero ${nfe.numero}, serie ${nfe.serie}.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`,
+          subject: cancelada
+            ? `NF-e ${nfe.serie}/${nfe.numero} CANCELADA - ${nfe.chaveAcesso ?? ""}`
+            : `NF-e ${nfe.serie}/${nfe.numero} - ${nfe.chaveAcesso ?? ""}`,
+          text: cancelada
+            ? `Segue em anexo a NF-e número ${nfe.numero}, série ${nfe.serie}, que foi CANCELADA.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`
+            : `Segue em anexo a NF-e numero ${nfe.numero}, serie ${nfe.serie}.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`,
           attachments,
         });
 

@@ -205,6 +205,101 @@ export function geometriaCarimbo(e: {
   };
 }
 
+// ── Página com /Rotate ──
+// /Rotate gira a página no sentido HORÁRIO só na EXIBIÇÃO; o desenho continua no
+// espaço do usuário, que não gira. Sem conversão, em /Rotate 180 o carimbo sai de
+// cabeça para baixo na tela, e em 90/270, deitado. Os PDFs que a Dexo gera não têm
+// /Rotate (todos saem do pdf-lib), mas um PDF de terceiros guardado pode ter.
+
+export type RotacaoPagina = 0 | 90 | 180 | 270;
+
+/** /Rotate reduzido a 0/90/180/270. Fora de múltiplo de 90 (inválido) vale 0, como no pdf.js. */
+export function normalizarRotacao(graus: number): RotacaoPagina {
+  if (!Number.isFinite(graus) || graus % 90 !== 0) return 0;
+  return ((((graus % 360) + 360) % 360) || 0) as RotacaoPagina;
+}
+
+export interface CaixaPagina {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Leva um ponto do espaço VISUAL (a página como aparece na tela, já girada: origem
+ * no canto inferior esquerdo, x para a direita, y para cima) para o espaço do
+ * usuário, onde se desenha. `caixa` é o CropBox no espaço do usuário. Uma direção
+ * de α graus na tela vira α + rotação graus no espaço do usuário.
+ */
+export function visualParaUsuario(
+  p: { x: number; y: number },
+  caixa: CaixaPagina,
+  rotacao: RotacaoPagina,
+): { x: number; y: number } {
+  switch (rotacao) {
+    case 90:
+      return { x: caixa.x + caixa.width - p.y, y: caixa.y + p.x };
+    case 180:
+      return { x: caixa.x + caixa.width - p.x, y: caixa.y + caixa.height - p.y };
+    case 270:
+      return { x: caixa.x + p.y, y: caixa.y + caixa.height - p.x };
+    default:
+      return { x: caixa.x + p.x, y: caixa.y + p.y };
+  }
+}
+
+/**
+ * Geometria do carimbo no espaço do usuário de uma página com CropBox `caixa` e
+ * /Rotate `rotacao`. Sem rotação é `geometriaCarimbo` sobre o CropBox, exatamente
+ * como antes (o caso de todo PDF que a Dexo gera). Com rotação, o carimbo é montado
+ * na página COMO APARECE NA TELA (largura e altura trocadas em 90/270) e cada ponto
+ * e o ângulo são levados ao espaço do usuário: na tela, o rótulo sobe da
+ * esquerda-baixo para a direita-cima e a faixa fica legível, como sem rotação.
+ */
+export function geometriaCarimboNaPagina(e: {
+  caixa: CaixaPagina;
+  rotacao: RotacaoPagina;
+  rotuloEm1: { texto: string; largura: number };
+  linhasEm1: Array<{ texto: string; largura: number }>;
+}): GeometriaCarimbo {
+  const { caixa, rotacao, rotuloEm1, linhasEm1 } = e;
+  if (rotacao === 0) {
+    return geometriaCarimbo({
+      origemX: caixa.x,
+      origemY: caixa.y,
+      largura: caixa.width,
+      altura: caixa.height,
+      rotuloEm1,
+      linhasEm1,
+    });
+  }
+  const deitada = rotacao === 90 || rotacao === 270;
+  const g = geometriaCarimbo({
+    largura: deitada ? caixa.height : caixa.width,
+    altura: deitada ? caixa.width : caixa.height,
+    rotuloEm1,
+    linhasEm1,
+  });
+  const leva = (p: { x: number; y: number }) => visualParaUsuario(p, caixa, rotacao);
+  return {
+    anguloGraus: g.anguloGraus + rotacao,
+    rotulo: { ...g.rotulo, ...leva(g.rotulo) },
+    faixa: { ...g.faixa, ...leva(g.faixa) },
+    linhas: g.linhas.map((l) => ({ ...l, ...leva(l) })),
+    meiaExtensao: deitada ? { x: g.meiaExtensao.y, y: g.meiaExtensao.x } : g.meiaExtensao,
+  };
+}
+
+/** /Rotate da página (herdado inclusive). Valor que o pdf-lib não lê = sem rotação, como antes. */
+function rotacaoDaPagina(pagina: PDFPage): RotacaoPagina {
+  try {
+    return normalizarRotacao(pagina.getRotation().angle);
+  } catch {
+    return 0;
+  }
+}
+
 // ── Desenho ──
 
 const VERMELHO = rgb(0.78, 0.05, 0.05);
@@ -216,12 +311,9 @@ function carimbarPagina(
   rotulo: string,
   linhas: Array<{ texto: string; fonte: PDFFont }>,
 ): void {
-  const caixa = pagina.getCropBox();
-  const g = geometriaCarimbo({
-    origemX: caixa.x,
-    origemY: caixa.y,
-    largura: caixa.width,
-    altura: caixa.height,
+  const g = geometriaCarimboNaPagina({
+    caixa: pagina.getCropBox(),
+    rotacao: rotacaoDaPagina(pagina),
     rotuloEm1: { texto: rotulo, largura: negrito.widthOfTextAtSize(rotulo, 1) },
     linhasEm1: linhas.map((l) => ({ texto: l.texto, largura: l.fonte.widthOfTextAtSize(l.texto, 1) })),
   });

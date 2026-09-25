@@ -27,6 +27,10 @@ import {
 import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { NfeStatusBadge } from "../components/nfe-status-badge";
 import { NfeSendEmailDialog } from "../components/nfe-send-email-dialog";
+import {
+  MENSAGEM_PADRAO_DOWNLOAD,
+  lerMensagemErroDownload,
+} from "../lib/nfe-download-arquivo";
 
 interface NfeListItem {
   id: string;
@@ -143,7 +147,12 @@ export default function EnviarXmlPage() {
           headers: authHeaders(session),
         },
       );
-      if (!res.ok) return;
+      // Antes era `return` calado: o clique não fazia nada. O servidor diz por
+      // quê (acesso removido, arquivo indisponível...).
+      if (!res.ok) {
+        showToast(await lerMensagemErroDownload(res), "error");
+        return;
+      }
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -154,7 +163,8 @@ export default function EnviarXmlPage() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
     } catch {
-      // silencioso
+      // Rede caída: também avisa, em vez do silêncio de antes.
+      showToast(MENSAGEM_PADRAO_DOWNLOAD, "error");
     }
   };
 
