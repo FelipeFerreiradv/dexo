@@ -257,6 +257,22 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
     comoResolver:
       'No passo 1 ("Informacoes"), deixe o destino (dentro do estado, fora do estado ou exterior) igual ao da nota original.',
   },
+  // ── G1 (DLS, 24/09/2026): pendências novas da tributação e do cabeçalho ──
+  REGIME_NAO_CADASTRADO: {
+    falta: "O regime tributário da empresa não está cadastrado",
+    comoResolver:
+      'Cadastre o "Regime tributário" em "Notas Fiscais" › "Configuracao Fiscal" e volte a esta devolução. Sem ele o Dexo não sabe se o ICMS vai por CSOSN (Simples) ou por CST.',
+  },
+  DESTINATARIO_CONTRIBUINTE: {
+    falta: "O cliente desta devolução tem inscrição estadual (é contribuinte do ICMS)",
+    comoResolver:
+      "Normalmente é o próprio cliente quem emite a nota de devolução. Emita esta nota de entrada só se ele não for emitir a dele; se ele já emitiu, não emita esta. Isto não impede a emissão.",
+  },
+  DESTINATARIO_UF_DIVERGENTE_CHAVE: {
+    falta: "A UF do destinatário não é a do fornecedor que emitiu a nota de compra",
+    comoResolver:
+      'No passo 2 ("Destinatario"), ponha a UF que está na chave de acesso da nota do fornecedor e salve o rascunho.',
+  },
 
   // ── referência por item ──
   REFERENCIA_AUSENTE: {
@@ -391,6 +407,40 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
     // "no" seguidos. A maiúscula do começo é posta por `expandirTokens`.
     falta: "{OS_ITENS} tem IBS/CBS na nota original, e a devolução não envia esse grupo",
     comoResolver: "Não precisa fazer nada: isto não impede a emissão.",
+  },
+  PIS_COFINS_NAO_SUPORTADO: {
+    falta: "Falta escolher o código do PIS/COFINS {DOS_ITENS}",
+    comoResolver:
+      'Vá ao passo 8 ("Impostos"), escolha na lista o código do PIS e da COFINS de cada um deles com a sua contadora e clique em "Salvar devolução". O Dexo não escolhe por você.',
+  },
+  PIS_COFINS_REGIME_INCOMPATIVEL: {
+    falta: "O código do PIS/COFINS é de empresa do regime normal {NOS_ITENS}",
+    comoResolver:
+      'A sua empresa é do Simples Nacional: os códigos 01 e 02 (com alíquota do regime normal) não servem. Vá ao passo 8 ("Impostos"), escolha outro código na lista com a sua contadora e clique em "Salvar devolução".',
+  },
+  PIS_COFINS_ALIQUOTA_INVALIDA: {
+    falta: "O PIS/COFINS está como tributado, mas com alíquota zero {NOS_ITENS}",
+    comoResolver:
+      'Com os códigos 01 e 02 a alíquota não pode ser zero; para alíquota zero o código é o 06. Acerte no passo 8 ("Impostos") e clique em "Salvar devolução".',
+  },
+  PIS_CST_ENTRADA_EM_SAIDA: {
+    falta: "O código do PIS/COFINS é de entrada numa nota de saída {NOS_ITENS}",
+    comoResolver: "Confirme com a sua contadora. Isto não impede a emissão.",
+  },
+  ICMS_ST_NAO_DEVOLVIDO: {
+    falta: "A nota original cobrou ICMS-ST, e o Dexo ainda não devolve ICMS-ST {NOS_ITENS}",
+    comoResolver:
+      'Esse valor ficaria fora da nota, e marcar "Revisei a tributação deste item" não libera. Combine com a sua contadora como devolver estes itens. Para emitir o resto agora, tire-os desta devolução no passo 3 ("Produtos"), pondo a quantidade zero, e clique em "Salvar devolução".',
+  },
+  ICMS_COMPRA_A_MENOR: {
+    falta: "A devolução vai com menos ICMS do que a nota de compra destacou {NOS_ITENS}",
+    comoResolver:
+      "Pela Res. CGSN 140/2018, art. 59, a empresa do Simples que devolve uma compra informa a base e o ICMS da nota de compra nos campos próprios (no Simples, só o CSOSN 900 tem esses campos). Sem eles o fornecedor não estorna o imposto. A contadora confirma. Isto não impede a emissão.",
+  },
+  ICMS_500_SEM_ST: {
+    falta: "O CSOSN 500 declara uma substituição tributária que a compra não teve {NOS_ITENS}",
+    comoResolver:
+      "O 500 é para peça cujo ICMS já foi cobrado antes por substituição tributária. Confirme o código com a sua contadora. Isto não impede a emissão.",
   },
 
   // ── montagem do rascunho ──

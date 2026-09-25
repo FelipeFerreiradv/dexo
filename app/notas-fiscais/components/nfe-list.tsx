@@ -1,5 +1,10 @@
 "use client";
 
+// React explicito, como no `devolucao-editor.tsx`: o tsconfig usa jsx em modo
+// preserve, entao o esbuild do vitest compila o JSX para o React.createElement
+// classico e a lista so monta em jsdom com o React em escopo. Em producao o
+// Next segue com o runtime automatico.
+import * as React from "react";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -56,6 +61,9 @@ import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
 import { DevolucaoActions } from "./devolucao-actions";
 import { DevolucaoManual } from "./devolucao-manual";
+import { DevolucoesEmAndamento } from "./devolucoes-em-andamento";
+import { seloDevolucao } from "../lib/nfe-devolucao-vinculo-ui";
+import { notaParaAbrir } from "../lib/nfe-devolucao-wizard-ui";
 import { NumeracaoActions, type NumeracaoView } from "./numeracao-actions";
 import {
   mostrarTentarNovamente,
@@ -73,6 +81,8 @@ const REEMISSAO_REJEITADA_ENABLED =
 
 interface NfeListItem {
   devolucaoDisponivel?:boolean;
+  // Venda autorizada sem XML guardado no Dexo: devolve pela chave (attachFiscalLista).
+  devolucaoPelaChave?:boolean;
   numeracao?:NumeracaoView|null;
   id: string;
   orderId: string | null;
@@ -392,6 +402,15 @@ export function NfeList() {
     setIsDetailOpen(true);
   };
 
+  // Depois de autorizar, o assistente manda para cá com `?nfe=<id>`: a nota
+  // que acabou de sair já abre na ficha (XML, DANFE, e-mail). Sem o parâmetro,
+  // nada muda.
+  useEffect(() => {
+    const id = notaParaAbrir(window.location.search);
+    if (id) handleViewNfe(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleCopyKey = (key: string) => {
     navigator.clipboard.writeText(key);
     setCopiedKey(key);
@@ -622,6 +641,10 @@ export function NfeList() {
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <DevolucaoManual email={session?.user?.email??""}/>
+          {/* Rascunhos de devolução ficam fora da lista (ela só mostra nota com
+              número real): aqui ela os acha, continua ou descarta. Some quando
+              não há nenhum ou a empresa não tem a devolução ligada. */}
+          <DevolucoesEmAndamento email={session?.user?.email??""}/>
           <SectionHeading
             eyebrow="Notas Fiscais · Registro"
             title="Notas"
@@ -670,6 +693,15 @@ export function NfeList() {
                                 className="px-1.5 py-0 font-sans text-[10px] font-medium text-muted-foreground"
                               >
                                 NFC-e
+                              </Badge>
+                            )}
+                            {/* Devolução não é venda: sem o selo, as duas tinham a mesma cara. */}
+                            {seloDevolucao(nota) && (
+                              <Badge
+                                variant="outline"
+                                className="px-1.5 py-0 font-sans text-[10px] font-medium text-amber-700"
+                              >
+                                {seloDevolucao(nota)}
                               </Badge>
                             )}
                           </span>

@@ -1,5 +1,10 @@
 "use client";
 
+// React explicito, como no `devolucao-editor.tsx`: o tsconfig usa jsx em modo
+// preserve, entao o esbuild do vitest compila o JSX para o React.createElement
+// classico e a ficha so monta em jsdom com o React em escopo. Em producao o
+// Next segue com o runtime automatico.
+import * as React from "react";
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import {
@@ -31,6 +36,8 @@ import {
 import { getApiBaseUrl } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
 import { DevolucaoActions } from "./devolucao-actions";
+import { DevolucaoVinculo } from "./devolucao-vinculo";
+import { rotuloEvento } from "../lib/nfe-devolucao-vinculo-ui";
 import { NumeracaoActions } from "./numeracao-actions";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
@@ -69,6 +76,9 @@ export function NfeDetailSheet({
   const [isCancelOpen, setIsCancelOpen] = useState(false);
   const [isEmailOpen, setIsEmailOpen] = useState(false);
   const [copiedChave, setCopiedChave] = useState(false);
+  // Saldo da venda (DevolucaoVinculo): false = nada mais a devolver, e o
+  // "Devolver" some. undefined = não se sabe (ou não se aplica): como antes.
+  const [devolucaoElegivel, setDevolucaoElegivel] = useState<boolean | undefined>(undefined);
 
   const fetchNfe = useCallback(async () => {
     if (!nfeId || !session?.user?.email) return;
@@ -108,6 +118,7 @@ export function NfeDetailSheet({
       setNfe(null);
       setEvents([]);
       setCopiedChave(false);
+      setDevolucaoElegivel(undefined);
     }
   }, [open, nfeId, fetchNfe]);
 
@@ -282,7 +293,11 @@ export function NfeDetailSheet({
             {/* ── Body ── */}
             <div className="flex-1 space-y-6 overflow-y-auto px-6 pb-8 pt-6">
               {/* Ações rápidas */}
-              <DevolucaoActions nota={nfe} email={session?.user?.email??""}/>
+              <DevolucaoActions nota={nfe} email={session?.user?.email??""} elegivel={devolucaoElegivel}/>
+              {/* O vínculo com a devolução: nesta venda, quais devoluções ela
+                  tem e o que ainda dá para devolver; nesta devolução, de qual
+                  nota ela é. Nada aparece fora da devolução do Dexo. */}
+              <DevolucaoVinculo key={nfe.id} nota={nfe} email={session?.user?.email??""} onElegivel={setDevolucaoElegivel}/>
               <NumeracaoActions id={nfe.id} email={session?.user?.email??""} numeracao={nfe.numeracao} onChanged={fetchNfe}/>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -514,7 +529,9 @@ export function NfeDetailSheet({
                       >
                         <div className="flex-1">
                           <div className="font-medium text-foreground">
-                            {ev.evento}
+                            {/* Eventos da devolução em português; os demais
+                                saem como sempre saíram (o código). */}
+                            {rotuloEvento(ev)}
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {formatDateTime(ev.createdAt)}

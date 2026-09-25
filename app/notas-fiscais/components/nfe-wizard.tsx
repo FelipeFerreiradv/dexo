@@ -1,5 +1,11 @@
 "use client";
 
+// React explicito, como no `devolucao-editor.tsx` e no `step-finalizar.tsx`: o
+// tsconfig usa jsx em modo preserve, entao o esbuild do vitest compila o JSX
+// para o React.createElement classico e o wizard so monta em jsdom com o React
+// em escopo (e a guarda da devolucao precisa ser testada MONTADA). Em producao
+// o Next segue com o runtime automatico.
+import * as React from "react";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { DevolucaoEditor } from "./devolucao-editor";
 import { NumeracaoActions } from "./numeracao-actions";
@@ -11,7 +17,34 @@ import {
   type PendenciasDevolucaoView,
 } from "../lib/nfe-devolucao-pendencias-ui";
 import type { DevolucaoDetalhe } from "@/app/fiscal/devolucao/contrato";
-import { useForm } from "react-hook-form";
+// Devolução no wizard: a guarda de navegação (edição não salva), o rascunho
+// feito à mão, o reaproveitado e o destino depois de autorizar. Decisões e
+// textos no módulo puro, testado em node; aqui só a moldura.
+import {
+  ALTERACOES_NAO_SALVAS,
+  AVISO_REAPROVEITADA,
+  AVISO_SALVAR_DEVOLUCAO,
+  GUARDA_DESCARTAR_E_SEGUIR,
+  GUARDA_FICAR,
+  GUARDA_NAO_DA_PARA_SALVAR,
+  GUARDA_SALVANDO,
+  GUARDA_SALVAR_E_SEGUIR,
+  GUARDA_SALVE_NO_QUADRO,
+  GUARDA_TITULO,
+  PASSOS_COM_EDITOR_DEVOLUCAO,
+  QUADRO_EXIGE_NUMERACAO_V2,
+  destinoAposAutorizar,
+  guardaMensagem,
+  lerEstadoDevolucaoDoRascunho,
+  precisaConfirmarSaida,
+  quadroDevolucaoAMao,
+  ultimoSalvo,
+  veioReaproveitada,
+  type EstadoDevolucaoDoRascunho,
+} from "../lib/nfe-devolucao-wizard-ui";
+import { ROTULO_CANCELAR, ROTULO_DESCARTAR_CONFIRMADO, descartarRascunho } from "../lib/nfe-devolucoes-abertas-ui";
+import { navegarPara } from "../lib/nfe-navegacao";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   FileText,
@@ -119,6 +152,25 @@ export function NfeWizard() {
   // e campo editavel, e nao pode viajar de volta no PUT do autosave.
   const [ambienteRascunho,setAmbienteRascunho]=useState<string|null>(null);
   const [numeracao,setNumeracao]=useState<NumeracaoView|null>(null);
+  // ── Devolução: edição não salva no editor (DevolucaoEditor.onDirtyChange) ──
+  // Nos passos 1, 3 e 8 da devolução só "Salvar devolução" grava; trocar de
+  // passo jogava fora, calado, o que ela tinha mexido. `guarda` = a pergunta
+  // aberta (para qual passo ela queria ir). `navPendenteRef` = o passo para
+  // onde seguir quando o "Salvar e seguir" terminar de salvar (onSaved).
+  const [devolucaoSuja,setDevolucaoSuja]=useState(false);
+  const [guarda,setGuarda]=useState<{destino:number;estado:"PERGUNTA"|"SALVANDO"|"SEM_BOTAO"|"BLOQUEADO"}|null>(null);
+  const navPendenteRef=useRef<number|null>(null);
+  const editorRef=useRef<HTMLDivElement|null>(null);
+  // O save da devolução também é "salvo": o selo do rodapé só via o do rascunho comum.
+  const [devolucaoSalvaEm,setDevolucaoSalvaEm]=useState<Date|null>(null);
+  // ── Devolução: rascunho que NÃO é devolução do Dexo (feito à mão) ──
+  // null = não se aplica / não perguntado. `finalidadeSalva` diz se o rascunho
+  // já está gravado como devolução (quadro "não vai emitir", com descarte) ou
+  // se ela só escolheu agora no passo 1 (quadro "não se faz por aqui").
+  const [estadoDevolucao,setEstadoDevolucao]=useState<EstadoDevolucaoDoRascunho|null>(null);
+  const [finalidadeSalva,setFinalidadeSalva]=useState<string|null>(null);
+  const [descarte,setDescarte]=useState<{confirmar:string|null;erro:string|null;ocupado:boolean}>({confirmar:null,erro:null,ocupado:false});
+  const [reaproveitada,setReaproveitada]=useState(false);
   const emitindoRef=useRef(false);
   const [confirmarDescarte,setConfirmarDescarte]=useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -144,6 +196,8 @@ export function NfeWizard() {
     reset,
     formState: { errors },
   } = form;
+  // Só para o quadro do rascunho feito à mão: a finalidade escolhida no passo 1.
+  const finalidadeAtual = useWatch({ control, name: "finalidade" });
 
   const showToast = (msg: string, type: ToastType) => {
     setToast({ msg, type });
@@ -203,9 +257,15 @@ export function NfeWizard() {
             setAmbienteRascunho(draft.ambiente ?? null);
             populateFormFromDraft(draft);
             setNumeracao(draft.numeracao??null);
+            setFinalidadeSalva(draft.finalidade??null);
+            setReaproveitada(veioReaproveitada(window.location.search));
             if(draft.finalidade==="DEVOLUCAO") {
               const res=await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${existingId}/devolucao`,{headers:{email}});
               if(res.ok && !cancelled)setDevolucao(await res.json());
+              // O 404 DEVOLUCAO_NAO_GERENCIADA (rascunho feito à mão) e o 422
+              // EXIGE_NUMERACAO_V2 eram engolidos: ela preenchia 7 passos e
+              // batia no muro no 8. 404 sem código (devolução desligada) segue mudo.
+              else if(!res.ok && !cancelled)setEstadoDevolucao(lerEstadoDevolucaoDoRascunho(res.status,await res.json().catch(()=>null)));
             }
             // Reabrindo uma nota REJEITADA: guarda os dados para o banner do
             // motivo (gated). Nao altera o formulario nem o fluxo de emissao.
@@ -254,6 +314,33 @@ export function NfeWizard() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email]);
+
+  // Escolheu "Devolução" na Finalidade de uma NF-e comum: pergunta ao servidor
+  // se a devolução do Dexo está ligada para a empresa DESTE rascunho (é o GET
+  // da devolução dele que sabe, não a disponibilidade da empresa padrão). Se
+  // estiver, o quadro do passo 1 mostra o caminho certo antes de ela preencher
+  // tudo. Uma vez por rascunho; empresa sem a devolução nova = nada muda.
+  useEffect(()=>{
+    // Rascunho que JÁ veio como devolução: quem pergunta é o init, acima.
+    if(!email || !draftId || devolucao || estadoDevolucao!==null || finalidadeSalva==="DEVOLUCAO" || finalidadeAtual!=="DEVOLUCAO")return;
+    let cancelado=false;
+    (async()=>{try{
+      const res=await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${draftId}/devolucao`,{headers:{email}});
+      if(cancelado)return;
+      if(res.ok){setEstadoDevolucao("GERENCIADA");return;}
+      setEstadoDevolucao(lerEstadoDevolucaoDoRascunho(res.status,await res.json().catch(()=>null)));
+    }catch{/* rede: não afirma nada */}})();
+    return()=>{cancelado=true;};
+  },[email,draftId,devolucao,estadoDevolucao,finalidadeSalva,finalidadeAtual]);
+
+  // Recarregar ou fechar a aba com edição não salva na devolução perde tudo do
+  // mesmo jeito: o navegador pergunta antes. Só com edição pendente.
+  useEffect(()=>{
+    if(!devolucao || !devolucaoSuja)return;
+    const segurar=(e:BeforeUnloadEvent)=>{e.preventDefault();e.returnValue="";};
+    window.addEventListener("beforeunload",segurar);
+    return()=>window.removeEventListener("beforeunload",segurar);
+  },[devolucao,devolucaoSuja]);
 
   const populateFormFromDraft = (draft: any) => {
     const dest = draft.destinatarioJson ?? {};
@@ -395,6 +482,7 @@ export function NfeWizard() {
     if(devolucao && [1,3,6,7,8].includes(currentStep))return;
 
     if (currentStep === 1) {
+      setFinalidadeSalva(data.finalidade);
       return saveDraft(draftId, {
         serie: data.serie,
         tipoOperacao: data.tipoOperacao,
@@ -441,31 +529,89 @@ export function NfeWizard() {
     // Steps 8 and 9 are read-only — no save needed
   }, [draftId, currentStep, getValues, saveDraft, isEmitting,devolucao]);
 
+  // Troca de passo de fato. Zera a guarda: o editor do passo novo nasce limpo
+  // (a key muda), então a edição do passo anterior foi salva ou descartada.
+  const irParaPasso = (destino: number) => {
+    navPendenteRef.current = null;
+    setGuarda(null);
+    setDevolucaoSuja(false);
+    setCurrentStep(destino);
+  };
+
+  // Próximo, Voltar e o clique num passo passam por aqui. Na devolução com
+  // edição não salva, pergunta antes (a guarda nunca prende: há sempre salvar
+  // e seguir, descartar e seguir, ou ficar). Fora disso — e em TODA NF-e
+  // comum —, exatamente o de antes: salva o passo e troca.
+  const navegar = (destino: number) => {
+    if (precisaConfirmarSaida({ devolucao: !!devolucao, editorSujo: devolucaoSuja, passoAtual: currentStep, destino })) {
+      setGuarda({ destino, estado: "PERGUNTA" });
+      return;
+    }
+    saveCurrentStep();
+    setCurrentStep(destino);
+  };
+
   const handleNext = async () => {
     const ok = await validateCurrentStep();
     if (!ok) {
       showToast("Corrija os campos obrigatorios antes de avancar", "warning");
       return;
     }
-    saveCurrentStep();
-
     if (currentStep < TOTAL_STEPS) {
-      setCurrentStep((s) => s + 1);
+      navegar(currentStep + 1);
+    } else {
+      saveCurrentStep();
     }
   };
 
   const handleBack = () => {
     if (currentStep > 1) {
-      saveCurrentStep();
-      setCurrentStep((s) => s - 1);
+      navegar(currentStep - 1);
     }
   };
 
   const goToStep = (step: number) => {
     if (step < currentStep && step >= 1) {
-      saveCurrentStep();
-      setCurrentStep(step);
+      navegar(step);
     }
+  };
+
+  // "Salvar e seguir": aciona o MESMO botão "Salvar devolução" do quadro (o
+  // save é do editor, com as regras dele) e segue quando o servidor aceitar
+  // (onSaved). Recusado, o motivo aparece no quadro e a guarda continua com
+  // "Descartar e seguir" e "Ficar" — nunca prende.
+  const salvarESeguir = () => {
+    if (!guarda) return;
+    navPendenteRef.current = guarda.destino;
+    const botao = Array.from(editorRef.current?.querySelectorAll("button") ?? []).find((b) =>
+      /^\s*salvar/i.test(b.textContent ?? ""),
+    );
+    if (!botao) {
+      setGuarda({ ...guarda, estado: "SEM_BOTAO" });
+      return;
+    }
+    // Botão travado: o quadro ainda aponta algo a resolver (ou já está salvando;
+    // nesse caso, quando o servidor aceitar, o assistente segue do mesmo jeito).
+    if (botao.disabled) {
+      setGuarda({ ...guarda, estado: "BLOQUEADO" });
+      return;
+    }
+    setGuarda({ ...guarda, estado: "SALVANDO" });
+    botao.click();
+  };
+
+  // Descarte do rascunho feito à mão (quadro do passo 1). Com número fiscal
+  // preso em produção, o servidor pede confirmação (409) e a tela explica o
+  // que isso significa antes de repetir com `descartarNumero`.
+  const descartarRascunhoAtual = async (descartarNumero: boolean) => {
+    if (!draftId || descarte.ocupado) return;
+    setDescarte({ confirmar: null, erro: null, ocupado: true });
+    const r = await descartarRascunho({ base: getApiBaseUrl(), email, draftId, descartarNumero });
+    if (r.ok) {
+      navegarPara("/notas-fiscais/emitidas");
+      return;
+    }
+    setDescarte({ confirmar: r.confirmar ? r.mensagem : null, erro: r.confirmar ? null : r.mensagem, ocupado: false });
   };
 
   // Multi-CNPJ: troca de emitente no passo 1. Salva no draft (posse validada
@@ -493,8 +639,10 @@ export function NfeWizard() {
     if (x.toast) showToast(x.toast.msg, x.toast.type);
     if (x.redirecionar) {
       // Redirect after short delay
+      // Para a nota que acabou de sair (lista de Notas Emitidas com ela aberta:
+      // XML, DANFE, e-mail) — "Emitir NF-e" reabria um rascunho qualquer.
       setTimeout(() => {
-        window.location.href = "/notas-fiscais/nfe";
+        navegarPara(destinoAposAutorizar(draftId));
       }, 2000);
     }
   };
@@ -589,7 +737,59 @@ export function NfeWizard() {
       <div className="min-h-[300px]">
         {numeracao && <NumeracaoActions id={draftId} email={email} numeracao={numeracao} onChanged={d=>aplicarDesfecho(desfechoConsulta(d))}/>}
         {confirmarDescarte && <p role="alert">Ao clicar em emitir novamente, você confirma o descarte do número anterior. Em produção ele precisará ser inutilizado.</p>}
-        {devolucao && [1,3,8].includes(currentStep) && <DevolucaoEditor key={`${devolucao.draftId}-${currentStep}`} step={currentStep} value={devolucao} email={email} onSaved={async d=>{setDevolucao(d);setPendenciasEmissao(null);const fresh=await loadDraft(d.draftId);if(fresh)populateFormFromDraft(fresh);}}/>}
+        {/* Rascunho reaproveitado: "Devolver"/"Devolução manual" abriram a
+            devolução que já existia desta nota, em vez de criar outra. */}
+        {devolucao && reaproveitada && currentStep === 1 && (
+          <p role="status" className="mb-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-sm text-blue-700 dark:text-blue-300">{AVISO_REAPROVEITADA}</p>
+        )}
+        {devolucao && PASSOS_COM_EDITOR_DEVOLUCAO.includes(currentStep) && (
+          <p className="mb-3 text-xs text-muted-foreground">{AVISO_SALVAR_DEVOLUCAO}</p>
+        )}
+        {devolucao && PASSOS_COM_EDITOR_DEVOLUCAO.includes(currentStep) && <div ref={editorRef}><DevolucaoEditor key={`${devolucao.draftId}-${currentStep}`} step={currentStep} value={devolucao} email={email} onDirtyChange={setDevolucaoSuja} onSaved={async d=>{setDevolucao(d);setPendenciasEmissao(null);const fresh=await loadDraft(d.draftId);if(fresh)populateFormFromDraft(fresh);setDevolucaoSalvaEm(new Date());
+          // (O "sujo" volta a false pelo próprio editor — onDirtyChange —, que é
+          // quem sabe se o que está na tela é o que foi salvo.)
+          // "Salvar e seguir" da guarda: o servidor aceitou, então segue. (O
+          // editor já refez os campos com a resposta — não precisa remontar, e
+          // remontar perderia as peças tiradas nesta visita, que ele mantém
+          // na tela para poderem voltar.)
+          const destino=navPendenteRef.current;if(destino!==null)irParaPasso(destino);}}/></div>}
+        {/* Rascunho que não é devolução do Dexo: o aviso sai JÁ no passo 1 (no 8
+            o StepImpostos tem o quadro dele, com o mesmo caminho). */}
+        {!devolucao && finalidadeAtual === "DEVOLUCAO" && estadoDevolucao === "EXIGE_NUMERACAO_V2" && (
+          <div role="alert" className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+            <p className="font-semibold">{QUADRO_EXIGE_NUMERACAO_V2.titulo}</p>
+            <p className="mt-1">{QUADRO_EXIGE_NUMERACAO_V2.mensagem}</p>
+          </div>
+        )}
+        {!devolucao && finalidadeAtual === "DEVOLUCAO" && estadoDevolucao === "NAO_GERENCIADA" && (finalidadeSalva === "DEVOLUCAO" ? currentStep !== 8 : currentStep === 1) && (() => {
+          const quadro = quadroDevolucaoAMao(finalidadeSalva === "DEVOLUCAO" ? "ABERTO" : "ESCOLHENDO");
+          return (
+            <div role="alert" aria-label={quadro.titulo} className="mb-4 space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+              <p className="font-semibold">{quadro.titulo}</p>
+              <p>{quadro.mensagem}</p>
+              <ul className="list-disc space-y-1 pl-5">{quadro.caminhos.map((c) => <li key={c}>{c}</li>)}</ul>
+              <p>{quadro.aproveitar}</p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <a href="/notas-fiscais/emitidas" className="font-medium underline">Ir para Notas Emitidas</a>
+                {quadro.descartar && !descarte.confirmar && (
+                  <button type="button" className="font-medium underline" disabled={descarte.ocupado} onClick={() => void descartarRascunhoAtual(false)}>
+                    {descarte.ocupado ? "Descartando…" : quadro.descartar}
+                  </button>
+                )}
+              </div>
+              {descarte.confirmar && (
+                <div role="alertdialog" aria-label="Confirmar descarte" className="space-y-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-foreground">
+                  <p>{descarte.confirmar}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="font-medium underline" disabled={descarte.ocupado} onClick={() => void descartarRascunhoAtual(true)}>{ROTULO_DESCARTAR_CONFIRMADO}</button>
+                    <button type="button" className="underline" onClick={() => setDescarte({ confirmar: null, erro: null, ocupado: false })}>{ROTULO_CANCELAR}</button>
+                  </div>
+                </div>
+              )}
+              {descarte.erro && <p className="text-destructive">{descarte.erro}</p>}
+            </div>
+          );
+        })()}
         {currentStep === 1 && !devolucao && (
           <StepInformacoesGerais
             control={control}
@@ -649,6 +849,8 @@ export function NfeWizard() {
             getValues={getValues}
             ambienteRascunho={ambienteRascunho}
             email={email}
+            companyFiscalConfigId={companies.length > 1 ? draftCompanyId : null}
+            totaisDevolucao={devolucao?.totais ?? null}
           />
         )}
         {/* O que impediu a emissao, logo acima do proprio botao "Emitir NF-e".
@@ -667,13 +869,36 @@ export function NfeWizard() {
             Salvando...
           </>
         )}
-        {!saving && lastSavedAt && (
+        {/* O "Salvo HH:MM" só via o save do rascunho comum: na devolução ficava
+            mostrando o de outro passo. Agora é o mais recente dos dois — e,
+            com edição pendente no quadro da devolução, diz isso. */}
+        {!saving && devolucao && devolucaoSuja && (
+          <span className="text-amber-700 dark:text-amber-300">{ALTERACOES_NAO_SALVAS}</span>
+        )}
+        {!saving && !(devolucao && devolucaoSuja) && ultimoSalvo(lastSavedAt, devolucaoSalvaEm) && (
           <>
             <Save className="h-3 w-3" />
-            Salvo {lastSavedAt.toLocaleTimeString("pt-BR")}
+            Salvo {ultimoSalvo(lastSavedAt, devolucaoSalvaEm)!.toLocaleTimeString("pt-BR")}
           </>
         )}
       </div>
+
+      {/* A guarda: ela tentou sair do passo com edição não salva na devolução.
+          Pergunta e oferece as três saídas — nunca prende. */}
+      {guarda && (
+        <div role="alertdialog" aria-label={GUARDA_TITULO} className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
+          <p className="font-semibold">{GUARDA_TITULO}</p>
+          <p>{guardaMensagem(guarda.destino, STEPS.find((s) => s.id === guarda.destino)?.title ?? "")}</p>
+          {guarda.estado === "SALVANDO" && <p role="status">{GUARDA_SALVANDO}</p>}
+          {guarda.estado === "SEM_BOTAO" && <p role="status">{GUARDA_SALVE_NO_QUADRO}</p>}
+          {guarda.estado === "BLOQUEADO" && <p role="status">{GUARDA_NAO_DA_PARA_SALVAR}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="rounded-md bg-primary px-3 py-1.5 text-primary-foreground" onClick={salvarESeguir}>{GUARDA_SALVAR_E_SEGUIR}</button>
+            <button type="button" className="rounded-md border px-3 py-1.5" onClick={() => irParaPasso(guarda.destino)}>{GUARDA_DESCARTAR_E_SEGUIR}</button>
+            <button type="button" className="rounded-md px-3 py-1.5 underline" onClick={() => { navPendenteRef.current = null; setGuarda(null); }}>{GUARDA_FICAR}</button>
+          </div>
+        </div>
+      )}
 
       <StepperFooter
         currentStep={currentStep}

@@ -172,17 +172,22 @@ describe("parseManualBody", () => {
     expect(sem.ok).toBe(false);
     if (!sem.ok) expect(sem.erros.map((e) => e.campo)).toEqual(["confirmarSemXml"]);
 
+    // O destinatário de uma devolução de COMPRA é o emitente da chave: CNPJ
+    // 11386276000176 e UF PR (cUF 41). Esta fixture usava outro CNPJ
+    // (07504505000132), que só estourava na emissão como Rejeição 1194 — o
+    // achado N-saldo-ledger-5 provou que aceitar isso na criação era o defeito.
+    // A recusa desse CNPJ trocado está presa em "modo CHAVE — chave × destinatário".
     const ok = parseManualBody({
       tipo: "COMPRA_SAIDA",
       chaveAcesso: "NFe" + CHAVE,
       itens: [itemManual],
       confirmarSemXml: true,
-      destinatario: { tipoPessoa: "PJ", cpfCnpj: "07504505000132", nome: " FORNECEDOR ", uf: "PR", hack: { a: 1 } },
+      destinatario: { tipoPessoa: "PJ", cpfCnpj: "11386276000176", nome: " FORNECEDOR ", uf: "PR", hack: { a: 1 } },
     });
     expect(ok.ok).toBe(true);
     if (!ok.ok) return;
     expect(ok.value).toMatchObject({ modo: "CHAVE", chaveAcesso: CHAVE, confirmarSemXml: true });
-    expect(ok.value.modo === "CHAVE" && ok.value.destinatario).toEqual({ tipoPessoa: "PJ", cpfCnpj: "07504505000132", nome: "FORNECEDOR", uf: "PR" });
+    expect(ok.value.modo === "CHAVE" && ok.value.destinatario).toEqual({ tipoPessoa: "PJ", cpfCnpj: "11386276000176", nome: "FORNECEDOR", uf: "PR" });
     expect(ok.value.modo === "CHAVE" && ok.value.itens[0]).toEqual({
       nItem: 3, codigo: "PECA-1", descricao: "SENSOR ABS", ncm: "87089990", cest: null, unidade: "UN", origem: null,
       cfopOriginal: "5102", cfop: null, quantidadeOriginal: null, valorUnitario: 80, quantidade: 1,

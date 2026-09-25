@@ -45,6 +45,12 @@ export type DevolucaoIssueCode =
   | "SEM_ITENS"
   | "ITENS_DESALINHADOS"
   | "IDDEST_DIVERGENTE_ORIGINAL"
+  /** ERRO: regime da empresa não cadastrado — o CRT sairia chutado (Rejeição 590/591). */
+  | "REGIME_NAO_CADASTRADO"
+  /** AVISO: devolução de venda a cliente com IE — normalmente é ele quem emite a devolução. */
+  | "DESTINATARIO_CONTRIBUINTE"
+  /** ERRO: devolução de compra com a UF do destinatário diferente da UF da chave do fornecedor. */
+  | "DESTINATARIO_UF_DIVERGENTE_CHAVE"
   // referência por item
   | "REFERENCIA_AUSENTE"
   | "CHAVE_INVALIDA"
@@ -75,6 +81,20 @@ export type DevolucaoIssueCode =
   | "IPI_DEVOL_INVALIDO"
   | "PIS_CST_SAIDA_EM_ENTRADA"
   | "IBS_CBS_NAO_ENVIADO"
+  /** ERRO: PIS/COFINS sem CST, ou com CST que o Dexo não emite (03/05, base por quantidade). */
+  | "PIS_COFINS_NAO_SUPORTADO"
+  /** ERRO: CST 01/02 (alíquota do regime normal) numa empresa do Simples. */
+  | "PIS_COFINS_REGIME_INCOMPATIVEL"
+  /** ERRO: CST 01/02 com alíquota zero — alíquota zero é o CST 06. */
+  | "PIS_COFINS_ALIQUOTA_INVALIDA"
+  /** AVISO: CST de PIS/COFINS de entrada (50–98) numa nota de saída. */
+  | "PIS_CST_ENTRADA_EM_SAIDA"
+  /** ERRO que a caixinha "Revisei" NÃO libera: a original cobrou ICMS-ST e o Dexo ainda não devolve ST. */
+  | "ICMS_ST_NAO_DEVOLVIDO"
+  /** AVISO: devolução de compra (Simples ← fora do Simples) com menos ICMS que o proporcional da compra. */
+  | "ICMS_COMPRA_A_MENOR"
+  /** AVISO: CSOSN 500 num item cuja compra não teve ICMS-ST. */
+  | "ICMS_500_SEM_ST"
   // montagem do rascunho
   | "TOTALMENTE_DEVOLVIDA"
   | "PARCIALMENTE_DEVOLVIDA"
@@ -112,6 +132,21 @@ export interface IcmsOriginal {
   vICMSST?: number;
   pCredSN?: number;
   vCredICMSSN?: number;
+  /**
+   * O resto do grupo de ICMS-ST do XML original — guardado para o dia em que o
+   * construtor devolver ST (o subgrupo ST do ICMSSN900/ICMS90 exige modBCST e
+   * pICMSST, que não se inventam). Só rascunhos criados daqui em diante os têm.
+   */
+  modBCST?: string;
+  pMVAST?: number;
+  pRedBCST?: number;
+  pICMSST?: number;
+  vFCPST?: number;
+  /** ST retido antes (CST 60 / CSOSN 500). */
+  vBCSTRet?: number;
+  pST?: number;
+  vICMSSubstituto?: number;
+  vICMSSTRet?: number;
 }
 
 export interface IpiOriginal {
@@ -189,7 +224,7 @@ export type MotivoRevisaoTributacao =
   | "PIS_CST_SAIDA_EM_ENTRADA"
   | "ALTERADA_PELO_USUARIO";
 
-export type AvisoTributacao = "PIS_CST_SAIDA_EM_ENTRADA" | "IBS_CBS_NAO_ENVIADO";
+export type AvisoTributacao = "PIS_CST_SAIDA_EM_ENTRADA" | "PIS_CST_ENTRADA_EM_SAIDA" | "IBS_CBS_NAO_ENVIADO";
 
 export interface TributoPisCofinsDevolucao {
   cst: string | null;
@@ -291,6 +326,137 @@ export interface RegimeEmitenteDevolucao {
   icmsOpcoes: OpcaoIcmsDevolucao[];
   /** Frase pronta para o campo ("Sua empresa é Simples Nacional…"). */
   ajuda: string;
+  /**
+   * Tipo da devolução que ORDENOU `pisCofinsOpcoes` (o sentido da nota: entrada
+   * na devolução de venda, saída na de compra). null = não informado.
+   * Opcional só por compatibilidade com quem monta o bloco à mão (servidor antigo).
+   */
+  tipoDevolucao?: TipoDevolucao | null;
+  /**
+   * CSTs de PIS/COFINS que ESTE emitente pode usar na devolução, vindos das
+   * MESMAS tabelas do servidor (`PIS_COFINS_CST_SUPORTADOS` + `ROTULOS_PIS_COFINS_DEVOLUCAO`).
+   * Simples (CRT 1/4): sem o 01 e o 02 (alíquota do regime normal). Os do
+   * sentido da nota vêm primeiro (`doSentidoDaNota`), os usuais do regime no
+   * topo (`usual`). O seletor nunca recebe código que o servidor recusaria.
+   */
+  pisCofinsOpcoes?: OpcaoPisCofinsDevolucao[];
+  /** Frase pronta para o campo de PIS/COFINS (uma vez, no topo). */
+  pisCofinsAjuda?: string;
+}
+
+// ──────────────── Regime do emitente → CSTs de PIS/COFINS que a tela oferece ────────────────
+
+/**
+ * Os 31 CSTs de PIS/COFINS que os montadores emitem no grupo certo — a união
+ * EXATA de `PIS_COFINS_CST_SUPORTADOS` (03 e 05 ficam de fora: por quantidade e
+ * substituição tributária). O `Record` de rótulos é exaustivo sobre este tipo:
+ * somar um código aqui sem rótulo quebra o `tsc`, e a suíte prende a sincronia
+ * com o `Set` do servidor nos dois sentidos.
+ */
+export type CstPisCofinsDevolucao =
+  | "01" | "02" | "04" | "06" | "07" | "08" | "09"
+  | "49" | "50" | "51" | "52" | "53" | "54" | "55" | "56"
+  | "60" | "61" | "62" | "63" | "64" | "65" | "66" | "67"
+  | "70" | "71" | "72" | "73" | "74" | "75" | "98" | "99";
+
+/** Tabela oficial: 01–49 saída, 50–98 entrada, 99 os dois. */
+export type SentidoCstPisCofins = "SAIDA" | "ENTRADA" | "AMBOS";
+
+export interface OpcaoPisCofinsDevolucao {
+  /** CST literal ("49", "04"…) — é o que vai no XML. */
+  codigo: string;
+  /** "49 — Outras saídas: …" — o número primeiro, a explicação depois. */
+  rotulo: string;
+  sentido: SentidoCstPisCofins;
+  /**
+   * true ⇒ o grupo leva base e alíquota (PISAliq/PISOutr) e a tela pede a
+   * alíquota; false ⇒ PISNT (04, 06–09), sem alíquota (o servidor zera).
+   */
+  exigeAliquota: boolean;
+  /** true ⇒ do sentido desta nota (ou 99). Sem tipo informado, sempre true. */
+  doSentidoDaNota: boolean;
+  /** true ⇒ um dos códigos que o regime usa no dia a dia neste sentido (vão no topo). */
+  usual: boolean;
+}
+
+/**
+ * Por que um CST de PIS/COFINS não serve. REGIME = 01/02 numa empresa do
+ * Simples. ALIQUOTA = alíquota fora de 0–100, ou 01/02 com alíquota zero.
+ */
+export type CausaRecusaPisCofins = "VAZIO" | "FORMATO" | "NAO_SUPORTADO" | "REGIME" | "ALIQUOTA";
+
+/** Aviso (não recusa) de sentido: CST de saída numa entrada, ou o contrário. */
+export type AvisoSentidoPisCofins = "PIS_CST_SAIDA_EM_ENTRADA" | "PIS_CST_ENTRADA_EM_SAIDA";
+
+export type ResultadoCstPisCofins =
+  | {
+      ok: true;
+      /** Normalizado com o zero à esquerda ("1" → "01"). É ele que deve ser salvo. */
+      codigo: string;
+      sentido: SentidoCstPisCofins;
+      exigeAliquota: boolean;
+      /** Sentido oposto ao da nota: não impede, mas a tela mostra junto do campo. */
+      aviso: AvisoSentidoPisCofins | null;
+      /** Frase do aviso ("" quando não há). */
+      avisoTexto: string;
+    }
+  | { ok: false; codigo: string; causa: CausaRecusaPisCofins; motivo: string };
+
+// ──────────────── O imposto da nota original, para a tela conferir ────────────────
+
+/**
+ * O imposto do XML original na proporção da quantidade devolvida, pronto para a
+ * tela mostrar ao lado do seletor ("Na nota do fornecedor: CST 00 · base R$ 123,56
+ * · 12% · ICMS R$ 14,83"). Sai de `referenciaImpostoOriginal` (tributacao.ts).
+ * `null` no detalhe = devolução manual sem XML: não há imposto original para conferir.
+ */
+export interface ReferenciaImpostoOriginal {
+  /** FORNECEDOR na devolução de compra; PROPRIA na de venda (a nota é da própria empresa). */
+  deQuem: "FORNECEDOR" | "PROPRIA";
+  /** "Na nota do fornecedor" | "Na sua nota de venda". */
+  titulo: string;
+  /** true ⇒ valores já na proporção da quantidade devolvida; false ⇒ os da linha inteira da nota. */
+  proporcional: boolean;
+  quantidadeOriginal: number | null;
+  quantidadeDevolvida: number;
+  icms: {
+    /** CST ou CSOSN, como veio. */
+    codigo: string | null;
+    tipo: "CST" | "CSOSN" | null;
+    vBC: number;
+    pICMS: number;
+    vICMS: number;
+    vBCST: number;
+    vICMSST: number;
+  } | null;
+  pis: { cst: string | null; vBC: number; p: number; v: number; porQuantidade: boolean } | null;
+  cofins: { cst: string | null; vBC: number; p: number; v: number; porQuantidade: boolean } | null;
+  ipi: { cst: string | null; pIPI: number; vIPI: number } | null;
+  /** Frases prontas, uma por tributo ("" quando o tributo não veio na nota original). */
+  frases: { icms: string; pis: string; cofins: string; ipi: string };
+}
+
+/**
+ * Totais da devolução como a EMISSÃO vai calcular (`calcularDevolucao` usa a
+ * mesma função, `totaisDevolucao`), para a tela mostrar antes de emitir.
+ */
+export interface TotaisDevolucao {
+  totalProdutos: number;
+  totalDesconto: number;
+  /** 0 com o frete desligado (mesma regra da emissão). */
+  totalFrete: number;
+  totalBcIcms: number;
+  totalIcms: number;
+  totalPis: number;
+  totalCofins: number;
+  /** Σ vIPIDevol (impostoDevol). Entra no valor da nota. */
+  totalIpiDevol: number;
+  /** vNF = produtos − desconto + frete + IPI devolvido. */
+  totalNota: number;
+  /** false ⇒ algum item ainda não fecha (tributação faltando ou por confirmar): é uma PRÉVIA. */
+  completo: boolean;
+  /** Itens (ordem) que ainda não fecham, crescente. */
+  itensPendentes: number[];
 }
 
 // ─────────────────────────────── Saldo ───────────────────────────────

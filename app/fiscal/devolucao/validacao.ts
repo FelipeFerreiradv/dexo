@@ -14,19 +14,33 @@
  * Módulo PURO — seguro para backend, testes e client.
  */
 
-import { parseChaveAcesso } from "../domain/chave-acesso-dv";
+import { UF_POR_CUF, parseChaveAcesso } from "../domain/chave-acesso-dv";
 import {
   CFOPS_MEI_DEVOLUCAO,
   idDestDoCfop,
   isCfopPermitidoEmDevolucao,
 } from "../domain/devolucao-cfop";
 import { quantidadeParaUnidades, temAteQuatroCasas } from "./saldo";
-import { MENSAGEM_MOTIVO_REVISAO, tagCompativelComCrt } from "./tributacao";
+import {
+  MENSAGEM_MOTIVO_REVISAO,
+  PIS_COFINS_CST_SUPORTADOS,
+  compraTeveIcmsSt,
+  familiaIcmsDaOriginal,
+  familiaPisCofinsDoCrt,
+  icmsDestacadoDaOriginal,
+  icmsStDaOriginal,
+  originalTemIcmsSt,
+  reais,
+  round2,
+  sentidoCstPisCofins,
+  tagCompativelComCrt,
+} from "./tributacao";
 import type {
   CrtEmitente,
   DevolucaoIssue,
   DevolucaoIssueCode,
   IdDest,
+  ImpostoOriginal,
   SeveridadeIssue,
   TipoDevolucao,
   TributacaoDevolucaoItem,
@@ -40,6 +54,12 @@ export interface RefValidacaoDevolucao {
   quantidade: number | string;
   quantidadeOriginal?: number | string | null;
   tributacao?: TributacaoDevolucaoItem | null;
+  /**
+   * Imposto do XML original deste item (NfeDevolucaoItem.impostoOriginalJson).
+   * Ausente = as regras que dependem dele (ST a devolver, ICMS da compra) usam
+   * só o que está na tributação. O caso de uso já passa o ref inteiro.
+   */
+  impostoOriginal?: ImpostoOriginal | null;
 }
 
 export interface ContextoValidacaoDevolucao {
@@ -48,6 +68,12 @@ export interface ContextoValidacaoDevolucao {
     tipo: TipoDevolucao;
     devolvidaAposEntrega: boolean | null;
     confirmadoSemXml?: boolean | null;
+    /**
+     * Snapshot das originais (NfeDevolucao.origensJson). Só o CRT de quem emitiu
+     * a original é lido — para saber se a compra veio de fornecedor fora do
+     * Simples. Ausente = a regra do ICMS da compra usa o tipo de código do grupo.
+     */
+    origensJson?: ReadonlyArray<{ chaveAcesso: string; crtOriginal?: string | null }> | null;
   } | null;
   nota: {
     modelo: string;
@@ -57,6 +83,16 @@ export interface ContextoValidacaoDevolucao {
     destinoOperacao: string;
     ambiente?: string | null;
     destinatarioCpfCnpj?: string | null;
+    /**
+     * Destinatário do rascunho. Lido: IE (cliente contribuinte, na devolução de
+     * venda — mesma regra do `indIEDest` do montador) e UF (devolução de compra:
+     * tem de ser a UF da chave do fornecedor).
+     */
+    destinatarioJson?: {
+      tipoPessoa?: string | null;
+      inscricaoEstadual?: string | null;
+      uf?: string | null;
+    } | null;
     notasReferenciadasJson?: unknown;
     pagamentosJson?: unknown;
     duplicatasJson?: unknown;
@@ -107,6 +143,106 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
   const tipo: TipoDevolucao = cabecalho?.tipo ?? (tpNF === "1" ? "COMPRA_SAIDA" : "VENDA_ENTRADA");
   const crt = ctx.emitente.crt === null || ctx.emitente.crt === undefined ? null : String(ctx.emitente.crt);
   const cnpjEmitente = soDigitos(ctx.emitente.cnpj).padStart(14, "0");
+  const emitenteSimplesPisCofins = familiaPisCofinsDoCrt(crt) === "SN";
+  const emitenteSimplesIcms = crt === "1" || crt === "4";
+
+  /**
+   * PIS/COFINS da devolução — o que a caixinha "Revisei" NÃO pode liberar:
+   *  - sem CST, ou fora da lista que o montador emite (03/05, base por quantidade):
+   *    o montador SEFAZ trocaria em silêncio pelo padrão do regime, a Focus
+   *    receberia `null`, e 03/05 cairiam em PISOutr (Rejeição 225);
+   *  - 01/02 numa empresa do Simples (decisão do dono, igual ao ICMS de outro regime);
+   *  - 01/02 com alíquota zero (alíquota zero é o 06).
+   * E o AVISO do sentido inverso: CST de entrada numa nota de saída.
+   */
+  const validarPisCofins = (r: RefValidacaoDevolucao, trib: TributacaoDevolucaoItem) => {
+    const tributos = [
+      { nome: "PIS", doNome: "do PIS", g: trib.pis, original: r.impostoOriginal?.pis ?? null },
+      { nome: "COFINS", doNome: "da COFINS", g: trib.cofins, original: r.impostoOriginal?.cofins ?? null },
+    ];
+    const semCodigo = tributos.filter((x) => !x.g?.cst || !PIS_COFINS_CST_SUPORTADOS.has(x.g.cst));
+    if (semCodigo.length > 0) {
+      const quais = semCodigo.map((x) => x.doNome).join(" e ");
+      const origem = semCodigo
+        .map((x) =>
+          x.original?.cst
+            ? `${x.nome} ${x.original.cst}${x.original.qBCProd !== undefined || x.original.vAliqProd !== undefined ? " por quantidade" : ""}`
+            : null,
+        )
+        .filter((x): x is string => !!x);
+      add("PIS_COFINS_NAO_SUPORTADO", "ERRO",
+        `Item ${r.ordem}: falta escolher o código (CST) ${quais} da devolução` +
+          (origem.length > 0 ? ` — a nota original usa ${origem.join(" e ")}, que o Dexo não emite na devolução` : "") +
+          ". O Dexo não escolhe por você.",
+        r.ordem);
+    }
+    const validos = tributos.filter((x) => !!x.g?.cst && PIS_COFINS_CST_SUPORTADOS.has(x.g.cst));
+    const doRegimeNormal = validos.filter((x) => x.g.cst === "01" || x.g.cst === "02");
+    if (emitenteSimplesPisCofins && doRegimeNormal.length > 0) {
+      add("PIS_COFINS_REGIME_INCOMPATIVEL", "ERRO",
+        `Item ${r.ordem}: o CST ${doRegimeNormal.map((x) => `${x.g.cst} ${x.doNome}`).join(" e ")} é de empresa do regime normal (PIS/COFINS com alíquota na nota); a sua empresa é do Simples Nacional — escolha outro código.`,
+        r.ordem);
+    } else {
+      const aZero = doRegimeNormal.filter((x) => !(x.g.p > 0));
+      if (aZero.length > 0) {
+        add("PIS_COFINS_ALIQUOTA_INVALIDA", "ERRO",
+          `Item ${r.ordem}: ${aZero.map((x) => `${x.nome} com CST ${x.g.cst}`).join(" e ")} a alíquota zero — alíquota zero tem código próprio, o 06.`,
+          r.ordem);
+      }
+    }
+    if (tpNF === "1") {
+      const deEntrada = validos.filter((x) => sentidoCstPisCofins(x.g.cst) === "ENTRADA");
+      if (deEntrada.length > 0) {
+        add("PIS_CST_ENTRADA_EM_SAIDA", "AVISO",
+          `Item ${r.ordem}: CST ${deEntrada.map((x) => `${x.g.cst} ${x.doNome}`).join(" e ")} é de entrada, numa nota de saída — confirme com o contador.`,
+          r.ordem);
+      }
+    }
+  };
+
+  /**
+   * ICMS da devolução contra o ICMS da nota ORIGINAL:
+   *  - ICMS-ST cobrado na original: ERRO que a confirmação NÃO libera, com o
+   *    valor que ficaria de fora (o construtor ainda não escreve ST — a nota
+   *    sairia autorizada sem ele e o fornecedor não teria como estornar);
+   *  - devolução de COMPRA de empresa do Simples a fornecedor fora do Simples
+   *    que destacou ICMS: AVISO quando a devolução leva menos ICMS que o
+   *    proporcional (Res. CGSN 140/2018, art. 59 — a contadora confirma);
+   *  - CSOSN 500 num item cuja compra não teve ST: AVISO.
+   */
+  const validarIcmsDaOriginal = (r: RefValidacaoDevolucao, trib: TributacaoDevolucaoItem) => {
+    const icmsOriginal = r.impostoOriginal?.icms ?? null;
+    const temSt = originalTemIcmsSt(icmsOriginal) || trib.motivosRevisao.includes("ICMS_ST_NAO_SUPORTADO");
+    if (temSt) {
+      const st = icmsStDaOriginal({ impostoOriginal: r.impostoOriginal, quantidadeOriginal: r.quantidadeOriginal, quantidade: r.quantidade });
+      const valor = st
+        ? ` — ${reais(st.vICMSST)}${st.proporcional ? " na quantidade devolvida" : " na linha inteira da nota"}`
+        : "";
+      add("ICMS_ST_NAO_DEVOLVIDO", "ERRO",
+        `Item ${r.ordem}: a nota original cobrou ICMS-ST desta peça${valor}, e o Dexo ainda não devolve ICMS-ST: esse valor ficaria fora da nota. Combine com a contadora como devolver este item.`,
+        r.ordem);
+    }
+    if (tipo !== "COMPRA_SAIDA" || !emitenteSimplesIcms || !icmsOriginal) return;
+    const crtOriginal =
+      cabecalho?.origensJson?.find((o) => soDigitos(o.chaveAcesso) === soDigitos(r.chaveAcesso))?.crtOriginal ?? null;
+    if (familiaIcmsDaOriginal(crtOriginal, icmsOriginal) === "NORMAL" && trib.icms.tag) {
+      const compra = icmsDestacadoDaOriginal({ impostoOriginal: r.impostoOriginal, quantidadeOriginal: r.quantidadeOriginal, quantidade: r.quantidade });
+      const devolucao = round2(trib.icms.vICMS ?? 0);
+      // 1 centavo de folga: a base proporcional e o ICMS proporcional arredondam
+      // cada um por si, e um centavo de diferença não é ICMS "de fora".
+      if (compra && round2(compra.vICMS - devolucao) > 0.01) {
+        add("ICMS_COMPRA_A_MENOR", "AVISO",
+          `Item ${r.ordem}: a nota de compra destacou ${reais(compra.vICMS)} de ICMS nesta quantidade (base ${reais(compra.vBC)}), e a devolução vai com ${reais(devolucao)} — ficam de fora ${reais(round2(compra.vICMS - devolucao))}, que o fornecedor deixa de estornar. Pela Res. CGSN 140/2018, art. 59, a empresa do Simples que devolve compra informa a base e o ICMS da nota de compra nos campos próprios (no Simples, só o CSOSN 900 tem esses campos); a contadora confirma.`,
+          r.ordem);
+      }
+    }
+    if ((trib.icms.csosn === "500" || trib.icms.tag === "ICMSSN500") && !compraTeveIcmsSt(icmsOriginal)) {
+      const codigoCompra = icmsOriginal.csosn ?? icmsOriginal.cst;
+      add("ICMS_500_SEM_ST", "AVISO",
+        `Item ${r.ordem}: o CSOSN 500 declara que o ICMS já foi cobrado antes por substituição tributária, mas a compra deste item não teve ST${codigoCompra ? ` (código ${codigoCompra} na nota do fornecedor)` : ""} — confirme o código com a contadora.`,
+        r.ordem);
+    }
+  };
 
   // ── cabeçalho ──
   if (!cabecalho) {
@@ -155,6 +291,25 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
   if (ctx.idDestOriginal && idDestNota && ctx.idDestOriginal !== idDestNota) {
     add("IDDEST_DIVERGENTE_ORIGINAL", "ERRO",
       "O destino da operação (idDest) precisa ser o mesmo da nota original.");
+  }
+
+  // Regime NÃO cadastrado (crt explicitamente null — ausente = não avaliado): a
+  // tela oferece CSOSN e CST, a validação do ICMS aceita os dois e o montador
+  // SEFAZ carimba CRT 3 (`crtFromRegime`). Com um CSOSN escolhido seria a
+  // Rejeição 590. Travar aqui, antes de reservar o número.
+  if (ctx.emitente.crt === null) {
+    add("REGIME_NAO_CADASTRADO", "ERRO",
+      "O regime tributário da empresa não está cadastrado — sem ele o Dexo não sabe se o ICMS vai por CSOSN (Simples) ou CST, e a SEFAZ recusaria (Rejeição 590/591). Cadastre o regime na configuração fiscal.");
+  }
+
+  // Devolução de venda a cliente contribuinte (mesma regra do indIEDest do
+  // montador: IE preenchida e diferente de ISENTO, fora do exterior). Quem
+  // normalmente emite a devolução é ELE; a nota de entrada da loja é para quem
+  // não emite (Convênio SINIEF s/nº 1970, art. 54 — a contadora confirma).
+  // Só AVISO: o Dexo não sabe se o cliente já emitiu.
+  if (tipo === "VENDA_ENTRADA" && destinatarioContribuinte(nota.destinatarioJson)) {
+    add("DESTINATARIO_CONTRIBUINTE", "AVISO",
+      "O cliente tem inscrição estadual (é contribuinte do ICMS): normalmente é ele quem emite a nota de devolução. Emita esta nota de entrada só se ele não for emitir a dele — se ele já emitiu, não emita esta.");
   }
 
   // ── itens × referências ──
@@ -307,8 +462,10 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
       if (trib.ipiDevol) {
         const { pDevol, vIPIDevol } = trib.ipiDevol;
         if (!(pDevol > 0 && pDevol <= 100) || !(vIPIDevol >= 0)) {
+          // O percentual não é digitado: sai da quantidade devolvida sobre a da nota
+          // original. A frase manda conferir o que ela de fato controla.
           add("IPI_DEVOL_INVALIDO", "ERRO",
-            `Item ${r.ordem}: percentual de IPI devolvido precisa estar entre 0 e 100 (grupo impostoDevol).`, r.ordem);
+            `Item ${r.ordem}: o percentual de IPI devolvido sai da quantidade devolvida sobre a da nota original e ficou fora de 0 a 100 (grupo impostoDevol) — confira a quantidade no passo 3 ("Produtos").`, r.ordem);
         }
       }
       if (trib.avisos.includes("PIS_CST_SAIDA_EM_ENTRADA") && tpNF === "0") {
@@ -319,6 +476,8 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
         add("IBS_CBS_NAO_ENVIADO", "AVISO",
           `Item ${r.ordem}: IBS/CBS da nota original não é enviado na devolução.`, r.ordem);
       }
+      validarPisCofins(r, trib);
+      validarIcmsDaOriginal(r, trib);
     }
   }
 
@@ -334,6 +493,15 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
       if (dest !== emitenteReferenciado) {
         add("DESTINATARIO_NAO_E_EMITENTE_ORIGINAL", "ERRO",
           "Na devolução de compra o destinatário precisa ser o emitente da nota original (Rejeição 1194).");
+      }
+      // O destinatário da devolução de compra é o estabelecimento que emitiu a
+      // chave: a UF dele É o cUF da chave. UF digitada diferente leva o destino
+      // da operação errado para a SEFAZ (Rejeição 772/773).
+      const ufChave = ufDaChaveReferenciada(refs, emitenteReferenciado);
+      const ufDest = (nota.destinatarioJson?.uf ?? "").trim().toUpperCase();
+      if (ufChave && ufDest && ufDest !== ufChave) {
+        add("DESTINATARIO_UF_DIVERGENTE_CHAVE", "ERRO",
+          `Na devolução de compra o destinatário é o fornecedor da nota original, que é de ${ufChave} (está na chave de acesso); o destinatário está com UF ${ufDest}. Com a UF errada a SEFAZ recusa o destino da operação (Rejeição 772/773).`);
       }
     } else if (emitenteReferenciado !== cnpjEmitente) {
       add("EMITENTE_ORIGINAL_DIVERGENTE", "ERRO",
@@ -359,6 +527,24 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
   }
 
   return issues;
+}
+
+/** Mesma regra do `indIEDest` do montador SEFAZ: IE preenchida, diferente de ISENTO, fora do exterior. */
+function destinatarioContribuinte(
+  dest: { tipoPessoa?: string | null; inscricaoEstadual?: string | null } | null | undefined,
+): boolean {
+  if (!dest || dest.tipoPessoa === "EXTERIOR") return false;
+  const ie = (dest.inscricaoEstadual ?? "").trim();
+  return ie !== "" && ie.toUpperCase() !== "ISENTO";
+}
+
+/** UF (sigla) do cUF da primeira chave válida do emitente referenciado. */
+function ufDaChaveReferenciada(refs: readonly RefValidacaoDevolucao[], emitente: string): string | null {
+  for (const r of refs) {
+    const partes = parseChaveAcesso(r.chaveAcesso);
+    if (partes?.dvValido && partes.cnpjCpf === emitente) return UF_POR_CUF[partes.cUF] ?? null;
+  }
+  return null;
 }
 
 export function issuesBloqueantes(issues: readonly DevolucaoIssue[]): DevolucaoIssue[] {

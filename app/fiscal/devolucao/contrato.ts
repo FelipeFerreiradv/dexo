@@ -20,7 +20,7 @@
  * Módulo PURO — seguro para backend, testes e client.
  */
 
-import { validarChaveAcesso } from "../domain/chave-acesso-dv";
+import { UF_POR_CUF, parseChaveAcesso, validarChaveAcesso } from "../domain/chave-acesso-dv";
 import type { StatusMapeamentoCfop } from "../domain/devolucao-cfop";
 import type { NfeStatus } from "../domain/nfe.types";
 import { temAteQuatroCasas } from "./saldo";
@@ -28,11 +28,14 @@ import type {
   DevolucaoIssue,
   EscopoDevolucao,
   FonteDevolucao,
+  IdDest,
   IndFinalDevolucao,
   ModoReferenciaDevolucao,
+  ReferenciaImpostoOriginal,
   RegimeEmitenteDevolucao,
   SaldoItemOriginal,
   TipoDevolucao,
+  TotaisDevolucao,
   TributacaoDevolucaoItem,
   TributacaoOverride,
 } from "./tipos";
@@ -242,6 +245,14 @@ export interface DevolucaoItemDetalhe {
   cfopOpcoes: string[];
   tributacao: TributacaoDevolucaoItem;
   requerRevisao: boolean;
+  /**
+   * O imposto da nota ORIGINAL deste item, na proporção devolvida, com a frase
+   * pronta para a tela ("Na nota do fornecedor: CST 00 · base R$ 123,56 · 12% ·
+   * ICMS R$ 14,83"). Sai de `referenciaImpostoOriginal` (tributacao.ts). `null` =
+   * devolução manual sem XML (não há imposto original para conferir).
+   * Opcional: servidor antigo não manda.
+   */
+  referenciaOriginal?: ReferenciaImpostoOriginal | null;
 }
 
 export interface DevolucaoDetalhe {
@@ -267,6 +278,13 @@ export interface DevolucaoDetalhe {
   /** Prévia de validarDevolucao. */
   issues: DevolucaoIssue[];
   podeEmitir: boolean;
+  /**
+   * Totais que a emissão vai calcular (`totaisDevolucao`, a MESMA função de
+   * `calcularDevolucao`): ICMS, PIS, COFINS, IPI devolvido e o valor da nota
+   * (produtos − desconto + frete + IPI devolvido). `completo:false` = prévia com
+   * itens ainda por fechar (`itensPendentes`). Opcional: servidor antigo não manda.
+   */
+  totais?: TotaisDevolucao;
 }
 
 export interface AtualizarCabecalhoBody {
@@ -771,9 +789,14 @@ export function parseManualBody(raw: unknown): ResultadoParse<ManualValidado> {
         if (v === null || (typeof v === "string" && v.length <= 256)) dest[campo] = v === null ? null : v.trim();
         else erros.push({ campo: `destinatario.${campo}`, mensagem: "Texto inválido." });
       }
+      // A UF decide o destino da operação (montagem-manual compara com a UF da
+      // empresa): "sc" minúsculo virava operação INTERESTADUAL.
+      if (typeof dest.uf === "string") dest.uf = dest.uf.toUpperCase();
       destinatario = dest;
     }
   }
+
+  if (destinatario) erros.push(...conferirDestinatarioDaChave(tipo, chave, destinatario));
 
   if (erros.length) return { ok: false, erros };
   return {
@@ -787,6 +810,152 @@ export function parseManualBody(raw: unknown): ResultadoParse<ManualValidado> {
       destinatario,
     },
   };
+}
+
+// ───────────────────── chave × destinatário × destino (modo CHAVE) ─────────────────────
+
+/** Siglas aceitas na UF do destinatário: as 27 da tabela do cUF (e "EX" para cliente do exterior). */
+const UFS_VALIDAS: ReadonlySet<string> = new Set(Object.values(UF_POR_CUF));
+
+function formatarCnpjCpf(doc14: string): string {
+  if (doc14.startsWith("000") && !/^0+$/.test(doc14)) {
+    const cpf = doc14.slice(3);
+    return `${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)}`;
+  }
+  return `${doc14.slice(0, 2)}.${doc14.slice(2, 5)}.${doc14.slice(5, 8)}/${doc14.slice(8, 12)}-${doc14.slice(12)}`;
+}
+
+/**
+ * O que dá para conferir SÓ com o corpo: a UF é sigla de verdade e, na
+ * devolução de COMPRA, o destinatário é o próprio emitente da chave (mesmo
+ * CPF/CNPJ, mesma UF do cUF). Sem isto o erro só aparecia na emissão — Rejeição
+ * 1194 (CNPJ) ou 772/773 (destino) —, com o destino já preso no rascunho.
+ */
+function conferirDestinatarioDaChave(
+  tipo: TipoDevolucao | undefined,
+  chave: string | null,
+  destinatario: Pick<ManualDestinatarioBody, "tipoPessoa" | "cpfCnpj" | "uf">,
+): ErroCampo[] {
+  const erros: ErroCampo[] = [];
+  const uf = (destinatario.uf ?? "").trim().toUpperCase();
+  const ufValida = uf === "" || UFS_VALIDAS.has(uf) || (uf === "EX" && destinatario.tipoPessoa === "EXTERIOR");
+  if (!ufValida) {
+    erros.push({ campo: "destinatario.uf", mensagem: "UF inválida: use a sigla do estado (SC, PR, SP...)." });
+  }
+  if (tipo !== "COMPRA_SAIDA" || !chave) return erros;
+  const partes = parseChaveAcesso(chave);
+  if (!partes) return erros;
+  const doc = destinatario.cpfCnpj.replace(/\D/g, "");
+  if (doc && doc.padStart(14, "0") !== partes.cnpjCpf) {
+    erros.push({
+      campo: "destinatario.cpfCnpj",
+      mensagem: `Na devolução de compra o destinatário é o fornecedor que emitiu a nota: pela chave de acesso, o CPF/CNPJ dele é ${formatarCnpjCpf(partes.cnpjCpf)}.`,
+    });
+  }
+  if (uf && ufValida && partes.uf && uf !== partes.uf) {
+    erros.push({
+      campo: "destinatario.uf",
+      mensagem: `O fornecedor desta chave é de ${partes.uf}: a UF do destinatário tem de ser ${partes.uf}.`,
+    });
+  }
+  return erros;
+}
+
+export interface ConferenciaChaveManual {
+  /** Recusas com o nome do campo (vão no 400 PAYLOAD_INVALIDO, como as de `parseManualBody`). */
+  erros: ErroCampo[];
+  /** Destino da operação: 1 interna, 2 interestadual, 3 exterior. null = não deu para saber (há erro dizendo o que falta). */
+  idDest: IdDest | null;
+  /** UF do destinatário (sigla) que vale para a nota: na devolução de compra, a do cUF da chave. */
+  ufDestinatario: string | null;
+}
+
+const IDDEST_POR_DIGITO_CFOP: Readonly<Record<string, IdDest>> = { "5": 1, "6": 2, "7": 3 };
+
+/**
+ * Confere a chave da devolução manual (modo CHAVE) contra a EMPRESA e deriva o
+ * destino da operação — o que `parseManualBody` não consegue sozinho, porque não
+ * conhece a config. Para o caso de uso chamar na criação, ANTES de montar o
+ * rascunho: depois disso a empresa e o destino ficam presos (origensJson e
+ * `destinoOperacao` são protegidos).
+ *
+ *  - COMPRA_SAIDA: a chave não pode ser da própria empresa; o destino sai do cUF
+ *    da chave (a UF do fornecedor) contra a UF da empresa — nunca da UF digitada.
+ *  - VENDA_ENTRADA: a chave tem de ser da própria empresa; o destino sai da UF
+ *    do cliente ou, sem ela, do 1º dígito do CFOP da venda (5/6/7); os dois
+ *    juntos têm de concordar. Cliente do exterior ⇒ 3.
+ *
+ * Modelo 65 NÃO é recusado: devolução pode referenciar NFC-e.
+ */
+export function conferirChaveDevolucaoManual(entrada: {
+  tipo: TipoDevolucao;
+  chaveAcesso: string;
+  destinatario: Pick<ManualDestinatarioBody, "tipoPessoa" | "cpfCnpj" | "uf"> | null;
+  itens?: ReadonlyArray<{ cfopOriginal?: string | null }>;
+  emitente: { cnpj: string; uf: string | null | undefined };
+}): ConferenciaChaveManual {
+  const erros: ErroCampo[] = [];
+  const partes = parseChaveAcesso(entrada.chaveAcesso);
+  if (!partes || !partes.dvValido) {
+    return { erros: [{ campo: "chaveAcesso", mensagem: "Chave de acesso inválida." }], idDest: null, ufDestinatario: null };
+  }
+  const cnpjEmitente = entrada.emitente.cnpj.replace(/\D/g, "").padStart(14, "0");
+  const ufEmitente = (entrada.emitente.uf ?? "").trim().toUpperCase() || null;
+  const ufDigitada = (entrada.destinatario?.uf ?? "").trim().toUpperCase() || null;
+
+  if (entrada.tipo === "COMPRA_SAIDA") {
+    if (partes.cnpjCpf === cnpjEmitente) {
+      erros.push({
+        campo: "chaveAcesso",
+        mensagem: "Esta chave é de uma nota emitida pela sua própria empresa. Na devolução de compra, a chave é a da nota do fornecedor.",
+      });
+    }
+    if (entrada.destinatario) {
+      erros.push(...conferirDestinatarioDaChave("COMPRA_SAIDA", partes.chave, entrada.destinatario));
+    }
+    const ufFornecedor = partes.uf;
+    if (!ufFornecedor) erros.push({ campo: "chaveAcesso", mensagem: "O código de estado desta chave não existe." });
+    const idDest: IdDest | null = ufFornecedor && ufEmitente ? (ufFornecedor === ufEmitente ? 1 : 2) : null;
+    return { erros, idDest, ufDestinatario: ufFornecedor };
+  }
+
+  if (partes.cnpjCpf !== cnpjEmitente) {
+    erros.push({
+      campo: "chaveAcesso",
+      mensagem: `Esta chave não é de uma nota emitida pela sua empresa (pela chave, quem emitiu foi ${formatarCnpjCpf(partes.cnpjCpf)}). Na devolução de venda, a chave é a da sua nota de venda.`,
+    });
+  }
+  if (entrada.destinatario?.tipoPessoa === "EXTERIOR") {
+    return { erros, idDest: 3, ufDestinatario: ufDigitada };
+  }
+  const digitos = new Set(
+    (entrada.itens ?? [])
+      .map((i) => (i.cfopOriginal ?? "").replace(/\D/g, ""))
+      .filter((c) => c.length === 4 && IDDEST_POR_DIGITO_CFOP[c[0]] !== undefined)
+      .map((c) => c[0]),
+  );
+  const idDestCfop: IdDest | null = digitos.size === 1 ? IDDEST_POR_DIGITO_CFOP[Array.from(digitos)[0]] : null;
+  const ufValida = ufDigitada !== null && UFS_VALIDAS.has(ufDigitada);
+  if (ufDigitada !== null && !ufValida) {
+    erros.push({ campo: "destinatario.uf", mensagem: "UF inválida: use a sigla do estado (SC, PR, SP...)." });
+  }
+  const idDestUf: IdDest | null = ufValida && ufEmitente ? (ufDigitada === ufEmitente ? 1 : 2) : null;
+  if (idDestUf !== null && idDestCfop !== null && idDestUf !== idDestCfop) {
+    const doCfop =
+      idDestCfop === 1 ? "de venda dentro do estado" : idDestCfop === 2 ? "de venda para fora do estado" : "de venda para o exterior";
+    erros.push({
+      campo: "destinatario.uf",
+      mensagem: `A UF do cliente (${ufDigitada}) não combina com o CFOP da venda original, que é ${doCfop}.`,
+    });
+  }
+  const idDest = idDestUf ?? idDestCfop;
+  if (idDest === null && ufDigitada === null) {
+    erros.push({
+      campo: "destinatario.uf",
+      mensagem: "Informe a UF do cliente: sem ela o Dexo não sabe se a devolução é de dentro ou de fora do estado.",
+    });
+  }
+  return { erros, idDest, ufDestinatario: ufValida ? ufDigitada : null };
 }
 
 /** Leitura defensiva da resposta 200/201 do POST de criação (cliente). */

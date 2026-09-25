@@ -21,6 +21,7 @@ import {
   formatBRLNumber,
 } from "./danfe-helpers";
 import { composeInfCpl } from "../domain/inf-cpl";
+import { infCplComIpiDevolvido } from "./danfe-render-extras";
 
 /** Avatar do usuário já carregado em bytes (PNG ou JPG) para embutir no PDF. */
 export interface DanfeAvatar {
@@ -442,7 +443,9 @@ export async function renderDanfeV2(
   y -= totalH + 14;
 
   // ── Informações complementares (mesmo conteúdo do <infCpl> do XML) ──
-  const infCpl = toWinAnsiSafe(composeInfCpl(nfe));
+  // + a linha do IPI devolvido de uma devolução (entra no TOTAL DA NOTA e não
+  // tem célula no grid acima). Sem IPI devolvido, texto igual ao de antes.
+  const infCpl = toWinAnsiSafe(infCplComIpiDevolvido(composeInfCpl(nfe), nfe.totaisJson));
   if (infCpl) {
     const infSize = 7.5;
     const infLineH = 10;

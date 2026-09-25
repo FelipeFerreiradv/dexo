@@ -74,10 +74,19 @@ const ENTRADA_PARA_DEVOLUCAO_SUFIXO: Readonly<Record<string, string>> = {
   "501": "503", "551": "553", "556": "556", "651": "660", "652": "661", "653": "662",
 };
 
-/** COMPRA_SAIDA a partir do CFOP de SAÍDA do fornecedor: só sugestão (a finalidade da nossa entrada é desconhecida). */
+/**
+ * COMPRA_SAIDA a partir do CFOP de SAÍDA do fornecedor: só sugestão (a finalidade da nossa entrada é desconhecida).
+ *
+ * Combustível/lubrificante (65x): a venda do fornecedor diz o destino da compra
+ * — industrialização (651/654), comercialização (652/655) ou consumo (653/656) —,
+ * e a devolução de compra é o 660/661/662 correspondente, a MESMA família que
+ * `ENTRADA_PARA_DEVOLUCAO_SUFIXO` já usa a partir da nossa entrada (1652→5661).
+ * Sem isto, o 5655 da DISAUTO (óleo LUBRAX) nem oferecia o 5661.
+ */
 const VENDA_FORNECEDOR_SUGESTAO_SUFIXO: Readonly<Record<string, string>> = {
   "101": "201", "102": "202", "107": "201", "108": "202",
   "401": "410", "403": "411", "404": "411", "405": "411",
+  "651": "660", "654": "660", "652": "661", "655": "661", "653": "662", "656": "662",
 };
 
 const cfopDigitos = (cfop: unknown): string =>
