@@ -148,8 +148,13 @@ export class NfeDevolucaoUseCase {
         const base=proporcionalizar({impostoOriginal:d.cabecalho.fonte==="MANUAL"?null:original.impostoOriginal,qOriginal:original.quantidade||null,qDevolvida:b.quantidade,vUnCom:original.valorUnitario,crtEmitente,crtOriginal:origem.crtOriginal,tipoOperacao});
         const anterior=d.refs.find(r=>r.chaveAcessoOriginal===b.chaveAcesso && r.nItemOriginal===b.nItem);
         const t=anterior?.tributacao;
-        const saved=t?.fonte==="USUARIO"?{icms:{cst:t.icms.cst,csosn:t.icms.csosn,modBC:t.icms.modBC,pICMS:t.icms.pICMS},pis:{cst:t.pis.cst,p:t.pis.p},cofins:{cst:t.cofins.cst,p:t.cofins.p}}:undefined;
-        const override=aplicarOverrideTributacao({base,override:b.tributacao??saved,confirmar:b.confirmarTributacao,crtEmitente,baseCalculoItem:round2(b.quantidade*original.valorUnitario),tipoOperacao});
+        // `ipiDevol:false` e a escolha de RETIRAR o IPI devolvido: sem reconstrui-la, o proximo save devolvia o IPI.
+        const saved=t?.fonte==="USUARIO"?{icms:{cst:t.icms.cst,csosn:t.icms.csosn,modBC:t.icms.modBC,pICMS:t.icms.pICMS},pis:{cst:t.pis.cst,p:t.pis.p},cofins:{cst:t.cofins.cst,p:t.cofins.p},...(t.ipiDevol===null&&base.ipiDevol?{ipiDevol:false as const}:{})}:undefined;
+        // Mescla POR TRIBUTO: o que vem no corpo substitui so aquele tributo; os ausentes mantem o que o usuario ja gravou.
+        // Era `b.tributacao??saved`: salvar so o ICMS refazia PIS/COFINS a partir do XML do fornecedor (aconteceu na DLS,
+        // 24/09 18:24 — PIS 01 a 1,65% voltou a 0% herdado do 04). Nunca mesclar DENTRO do grupo: {cst} novo sobre {csosn}
+        // salvo deixaria os dois preenchidos e o CSOSN venceria a escolha dela.
+        const override=aplicarOverrideTributacao({base,override:(b.tributacao||saved)?{...(saved??{}),...(b.tributacao??{})}:undefined,confirmar:b.confirmarTributacao,crtEmitente,baseCalculoItem:round2(b.quantidade*original.valorUnitario),tipoOperacao});
         if(!override.ok)throw new DevolucaoError("TRIBUTACAO_NAO_SUPORTADA");
         const ordem=itens.length+1;const valor=round2(b.quantidade*original.valorUnitario);
         itens.push({numero:ordem,codigo:original.codigo,descricao:original.descricao,ncm:original.ncm,cest:original.cest,cfop:b.cfop,unidade:original.unidade,origem:(original.origem??0) as NfeDraftItem["origem"],quantidade:b.quantidade,valorUnitario:original.valorUnitario,valorTotal:valor,desconto:original.quantidade?round2(original.desconto*b.quantidade/original.quantidade):0});
