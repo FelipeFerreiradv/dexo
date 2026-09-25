@@ -11,6 +11,7 @@ import {
   type BulkRulesProductInput,
 } from "./bulk-listing-rules.service";
 import { computeStaggeredPrice } from "./cross-account-price.service";
+import { withoutClearedAttributes } from "./listing-overrides.service";
 import type {
   BulkOverrideTemplate,
   BulkListingItemResult,
@@ -885,8 +886,18 @@ export class ListingDispatcher {
         // `attributes` segue restrito ao ML: o mapa é de attribute_id do ML.
         // A ficha da Shopee tem vocabulário próprio e é montada no create,
         // pelo shopee-attribute-mapper.
-        if (ppm.attributes && Object.keys(ppm.attributes).length > 0) {
-          fields = { ...(fields ?? {}), attributesOverride: ppm.attributes };
+        // Sem os "apagar" (`null`) da revisão: eles valem só para a criação.
+        const ficha = withoutClearedAttributes(
+          ppm.attributes as Record<string, unknown> | undefined,
+        );
+        if (ficha) {
+          fields = {
+            ...(fields ?? {}),
+            attributesOverride: ficha as Record<
+              string,
+              { value_id?: string; value_name?: string }
+            >,
+          };
         }
       }
 

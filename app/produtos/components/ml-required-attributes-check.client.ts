@@ -14,6 +14,8 @@
 // resposta ainda, falha ou `enabled:false` → não valida, não liga spinner e não
 // atrasa o POST /products nem a confirmação da massa.
 
+import { diffMlFicha, type MlFicha } from "@/app/produtos/lib/ml-ficha.logic";
+
 export interface MlRequiredCheckValue {
   value_id?: string;
   value_name?: string;
@@ -34,7 +36,8 @@ export interface MlRequiredCheckItem {
     mlCatalogProductId?: string;
   };
   categoryId?: string;
-  attributeOverrides?: Record<string, MlRequiredCheckValue>;
+  /** `null` = campo do produto apagado na revisão. */
+  attributeOverrides?: Record<string, MlRequiredCheckValue | null>;
 }
 
 export interface MlRequiredCheckIssue {
@@ -273,12 +276,16 @@ export function createMlCheckSequencer(): {
  */
 export function mlRequiredCheckKey(
   categoryId: string | undefined | null,
-  attributeOverrides?: Record<string, MlRequiredCheckValue> | null,
+  attributeOverrides?: Record<string, MlRequiredCheckValue | null> | null,
 ): string {
   const ficha = attributeOverrides ?? {};
-  const ordenada: Record<string, MlRequiredCheckValue> = {};
+  const ordenada: Record<string, MlRequiredCheckValue | null> = {};
   for (const id of Object.keys(ficha).sort()) {
-    const v = ficha[id] ?? {};
+    const v = ficha[id];
+    if (v === null) {
+      ordenada[id] = null;
+      continue;
+    }
     ordenada[id] = {
       ...(v.value_id !== undefined ? { value_id: v.value_id } : {}),
       ...(v.value_name !== undefined ? { value_name: v.value_name } : {}),
@@ -378,6 +385,11 @@ export interface MlReviewConfigLite {
 export function buildMlReviewCheckItems(
   productIds: string[],
   map: Record<string, MlReviewConfigLite>,
+  /**
+   * Ficha gravada de cada produto: com ela vai só a diferença + os campos
+   * apagados — a MESMA ficha que `buildPerProductOverrides` envia.
+   */
+  fichaSeeds?: Record<string, MlFicha>,
 ): { items: MlRequiredCheckItem[]; keys: Record<string, string> } {
   const items: MlRequiredCheckItem[] = [];
   const keys: Record<string, string> = {};
@@ -385,8 +397,9 @@ export function buildMlReviewCheckItems(
     const cfg = map[productId];
     if (cfg?.includeMl === false) continue;
     const categoryId = (cfg?.mlCategory || "").trim() || undefined;
-    const attributeOverrides =
-      cfg?.attributes && Object.keys(cfg.attributes).length > 0
+    const attributeOverrides = fichaSeeds
+      ? diffMlFicha(fichaSeeds[productId] ?? {}, cfg?.attributes)
+      : cfg?.attributes && Object.keys(cfg.attributes).length > 0
         ? cfg.attributes
         : undefined;
     items.push({
@@ -492,16 +505,18 @@ export function countRetryableBulkFailures(
 
 /** M11 — faixa da revisão. */
 export function mlBlockedBannerMessage(n: number): string {
-  return `${n} produto(s) não serão enviados ao Mercado Livre porque faltam campos obrigatórios da categoria. Os demais anúncios seguem normalmente.`;
+  return `${n} produto(s) não serão enviados ao Mercado Livre porque a ficha técnica precisa de correção. Os demais anúncios seguem normalmente.`;
 }
 
 /** M12 — todos bloqueados e nenhuma outra plataforma. */
 export const ML_ALL_BLOCKED_MESSAGE =
-  "Nenhum anúncio do Mercado Livre pode ser enviado: todos os produtos selecionados têm campos obrigatórios da categoria sem preencher. Corrija os produtos ou remova as contas do Mercado Livre.";
+  "Nenhum anúncio do Mercado Livre pode ser enviado: a ficha técnica de todos os produtos selecionados precisa de correção (campo obrigatório vazio ou valor que o Mercado Livre não aceita). Corrija os produtos ou remova as contas do Mercado Livre.";
 
 /** M14 — cabeçalho da lista no diálogo de confirmação. */
 export function mlExcludedConfirmMessage(n: number): string {
-  return `${n} anúncio(s) do Mercado Livre não serão enviados por falta de campos obrigatórios:`;
+  // Não é só "falta": valor inválido (medida sem unidade, código de barras)
+  // também bloqueia, e o texto antigo mandava procurar campo vazio.
+  return `${n} anúncio(s) do Mercado Livre não serão enviados porque a ficha técnica precisa de correção:`;
 }
 
 /** Código gravado na linha do relatório pelo backend (espelha o servidor). */

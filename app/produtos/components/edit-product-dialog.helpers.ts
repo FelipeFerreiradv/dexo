@@ -1,3 +1,5 @@
+import { sameMlFicha, type MlFicha } from "../lib/ml-ficha.logic";
+
 export type MLCatOption = { id: string; value: string };
 
 export interface VehicularProductLike {
@@ -262,7 +264,15 @@ export function buildListingOverridesPayload(
     lengthCmOverride: diffNum(form.lengthCm, product.lengthCm),
     weightKgOverride: diffNum(form.weightKg, product.weightKg),
     imageUrlsOverride: diffJson(formImages, productImages),
-    attributesOverride: diffJson(form.attributes, product.attributes),
+    // Comparação pela ficha normalizada (ordem das chaves e entradas sem
+    // valor não contam): o formulário agora abre com a ficha do produto, e
+    // abrir-e-salvar não pode virar override.
+    attributesOverride: sameMlFicha(
+      form.attributes as MlFicha | undefined,
+      product.attributes as MlFicha | undefined,
+    )
+      ? null
+      : (form.attributes ?? null),
     compatibilitiesOverride: compatibilities,
     sourceVehicleOverride: diffStr(form.sourceVehicle, product.sourceVehicle),
     ...mlSettingsDiff,

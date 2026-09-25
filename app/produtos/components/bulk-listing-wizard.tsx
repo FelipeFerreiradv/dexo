@@ -61,6 +61,7 @@ import { usePerProductListing } from "./bulk-review/use-per-product-listing";
 import { PerProductReviewStep } from "./bulk-review/per-product-review-step";
 import {
   buildPerProductOverrides,
+  reviewFichaSeeds,
   withDisabledMlAccounts,
   type GlobalListingDefaults,
   type ReviewCategoryOption,
@@ -115,6 +116,8 @@ export interface BulkListingProduct {
   mlCategoryId?: string | null;
   shopeeCategoryId?: string | null;
   compatibilitiesCount?: number | null;
+  /** Ficha técnica gravada no produto (semente da Revisão individual). */
+  attributes?: unknown;
 }
 
 export interface BulkListingWizardProps {
@@ -319,8 +322,15 @@ export function BulkListingWizard({
         imageUrls: p.imageUrls,
         mlCategoryId: p.mlCategoryId,
         shopeeCategoryId: p.shopeeCategoryId,
+        attributes: p.attributes,
       })),
     [selectedProducts],
+  );
+  // Ficha gravada de cada produto: a revisão começa com ela e só a diferença
+  // (+ campos apagados) vai na checagem e no envio.
+  const reviewSeeds = useMemo(
+    () => reviewFichaSeeds(reviewProducts),
+    [reviewProducts],
   );
   const reviewDefaults: GlobalListingDefaults = useMemo(
     () => ({
@@ -916,6 +926,7 @@ export function BulkListingWizard({
       const mlCheck = buildMlReviewCheckItems(
         selectedProducts.map((p) => p.id),
         map,
+        reviewSeeds,
       );
       const [freshIssues, mlFresh] = await Promise.all([
         runPreflight(categoryOverrides),
@@ -1007,6 +1018,7 @@ export function BulkListingWizard({
           globalMagaluIdsArr,
           globalOlxIdsArr,
           globalFacebookIdsArr,
+          reviewSeeds,
         );
         if (Object.keys(ppo).length > 0) {
           overrideTemplate = {
@@ -1029,7 +1041,7 @@ export function BulkListingWizard({
           blocked: mlBlockedRef.current,
           evaluatedKeys: mlEvaluatedKeysRef.current,
           current: reviewMap
-            ? buildMlReviewCheckItems(idsSelecionados, reviewMap)
+            ? buildMlReviewCheckItems(idsSelecionados, reviewMap, reviewSeeds)
             : null,
           selectedIds: idsSelecionados,
           recheck: runMlRequiredCheck,

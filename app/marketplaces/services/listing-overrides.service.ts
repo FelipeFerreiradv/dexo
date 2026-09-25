@@ -148,6 +148,27 @@ export type EffectiveListingValues = ReturnType<typeof effectiveListingValues>;
  * value_name? } }`); nesse caso devolve o override cru, preservando o
  * comportamento anterior em vez de tentar adivinhar.
  */
+/**
+ * Ficha sem as entradas de "apagar" (`null`) da Revisão individual. O `null`
+ * só vale para montar AQUELA criação: gravado em `attributesOverride`, ele
+ * chegaria a leitores que esperam só objetos (sincronização, edição do
+ * anúncio). null quando não sobra nada.
+ */
+export function withoutClearedAttributes(
+  ficha: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!ficha || typeof ficha !== "object" || Array.isArray(ficha)) return null;
+  // Sem "apagar": o MESMO objeto (nada muda para quem não usa o null).
+  if (!Object.values(ficha).some((v) => v === null || v === undefined)) {
+    return Object.keys(ficha).length > 0 ? ficha : null;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [id, v] of Object.entries(ficha)) {
+    if (v !== null && v !== undefined) out[id] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 export function mergeAttributeOverride(
   productAttributes: unknown,
   overrideAttributes: Record<string, unknown> | null,

@@ -111,7 +111,9 @@ import { buildShopeeAttributeList } from "../lib/shopee-attribute-mapper";
 import {
   applyOverridesToProduct,
   mergeAttributeOverride,
+  withoutClearedAttributes,
 } from "../services/listing-overrides.service";
+import { seedMlFicha, type MlFicha } from "../../produtos/lib/ml-ficha.logic";
 
 /**
  * Campos cuja edição muda a ficha técnica de um anúncio Shopee. Só quando um
@@ -337,6 +339,9 @@ function republishInProgressRefusal(row: {
     error: `Produto já tem anúncio nesta conta${qual}, sendo republicado agora. Aguarde alguns minutos e confira o anúncio.`,
   };
 }
+
+/** INMETRO: texto livre que o ML recusa (3702) quando é texto de busca. */
+const INMETRO_ATTRIBUTE_ID = "INMETRO_CERTIFICATION_REGISTRATION_NUMBER";
 
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
@@ -1110,6 +1115,20 @@ export class ListingUseCase {
    * tela e continuaria bloqueado pelo valor antigo.
    *
    * Sem catálogo: só o OEM, exatamente como `withOemFromOverride`.
+   *
+   * Duas exceções a "o valor do produto vence" (Xaxim, 25/09/2026 — a ficha da
+   * revisão passou a vir preenchida com a do produto):
+   *  - APAGAR: entrada `null` = a pessoa limpou um campo que o produto tem. O
+   *    valor do produto não vai nesta criação. Nunca é gravado
+   *    (`withoutClearedAttributes`).
+   *  - CORRIGIR: o valor do produto seria recusado (número sem unidade, texto em
+   *    campo de imagem, GTIN inválido, valor de lista de outra categoria) e o da
+   *    revisão não — vale o da revisão, em qualquer atributo da categoria. O
+   *    INMETRO entra aqui também: é texto livre, a validação local não o confere
+   *    (o ML aceita texto em muitas categorias), e o ML recusa (3702) o texto de
+   *    busca que costuma estar gravado nele.
+   * Nenhuma das duas mexe no que o produto tem de VÁLIDO: aí o produto segue
+   * vencendo e o resto da ficha vai pelo update pós-criação, como antes.
    */
   private static acceptedAttributeOverrides(
     product: { attributes?: unknown },
@@ -1148,6 +1167,22 @@ export class ListingUseCase {
 
     const aceitos: Record<string, unknown> = {};
     for (const [id, raw] of Object.entries(attributeOverrides)) {
+      const doProduto = atual?.[id] as
+        | { value_id?: unknown; value_name?: unknown }
+        | undefined;
+      const produtoTemValor =
+        !!doProduto &&
+        typeof doProduto === "object" &&
+        attributeHasValue({
+          value_id: doProduto.value_id,
+          value_name: doProduto.value_name,
+        });
+
+      // APAGAR (ver o doc): só quando o produto tem o valor.
+      if (raw === null) {
+        if (produtoTemValor) aceitos[id] = null;
+        continue;
+      }
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
       const v = raw as { value_id?: unknown; value_name?: unknown };
       if (!attributeHasValue({ value_id: v.value_id, value_name: v.value_name }))
@@ -1160,6 +1195,21 @@ export class ListingUseCase {
       }
       const cat = byId.get(id);
       if (!cat) continue;
+
+      // CORRIGIR (ver o doc): o do produto seria recusado e o da revisão não.
+      // Em lista fechada, o da revisão ainda precisa estar na lista (mesma
+      // exigência da regra de obrigatórios abaixo).
+      if (
+        produtoTemValor &&
+        (id === INMETRO_ATTRIBUTE_ID ||
+          this.valueWouldBeRefused(id, doProduto!, cat)) &&
+        !this.valueWouldBeRefused(id, v, cat) &&
+        (!isClosedListAttribute(cat) || attributeValueIsAllowed(v, cat))
+      ) {
+        aceitos[id] = raw;
+        continue;
+      }
+
       const entraNaCriacao =
         ML_OEM_ATTRIBUTE_IDS.has(id) ||
         POSITION_ATTRIBUTE_IDS.has(id) ||
@@ -1178,16 +1228,6 @@ export class ListingUseCase {
         continue;
       }
 
-      const doProduto = atual?.[id] as
-        | { value_id?: unknown; value_name?: unknown }
-        | undefined;
-      const produtoTemValor =
-        !!doProduto &&
-        typeof doProduto === "object" &&
-        attributeHasValue({
-          value_id: doProduto.value_id,
-          value_name: doProduto.value_name,
-        });
       if (produtoTemValor) {
         if (!fechada || attributeValueIsAllowed(doProduto!, cat)) continue;
         if (!attributeValueIsAllowed(v, cat)) continue;
@@ -1195,6 +1235,42 @@ export class ListingUseCase {
       aceitos[id] = raw;
     }
     return Object.keys(aceitos).length > 0 ? aceitos : null;
+  }
+
+  /**
+   * O valor seria recusado pela validação de valores (a mesma que roda sobre o
+   * payload do POST): bloqueio, ou tirado do envio (imagem, só-leitura).
+   */
+  private static valueWouldBeRefused(
+    id: string,
+    valor: { value_id?: unknown; value_name?: unknown },
+    cat: NormalizedMLAttribute,
+  ): boolean {
+    // Mesma chave de desligar da validação no create: desligada, nada é
+    // "recusado" (e o CORRIGIR fica só para o INMETRO).
+    if (process.env.ML_VALUE_VALIDATION_DISABLED === "1") return false;
+    const r = validateMLAttributeValues(
+      [
+        {
+          id,
+          ...(typeof valor.value_id === "string"
+            ? { value_id: valor.value_id }
+            : {}),
+          ...(typeof valor.value_name === "string"
+            ? { value_name: valor.value_name }
+            : {}),
+        },
+      ],
+      [cat],
+    );
+    return (
+      r.blocked ||
+      r.issues.some(
+        (i) =>
+          i.code === "PICTURE_ATTRIBUTE_DROPPED" ||
+          i.code === "READ_ONLY_INVALID_DROPPED",
+      )
+    );
   }
 
   /**
@@ -1345,7 +1421,9 @@ export class ListingUseCase {
     categoryAttrs: NormalizedMLAttribute[] | undefined,
     acceptedOverrides: Record<string, unknown> | null,
   ): Record<string, unknown> | null {
-    if (categoryAttrs && categoryAttrs.length > 0) return acceptedOverrides;
+    // Sem os "apagar" (`null`): valem só para a criação em curso.
+    if (categoryAttrs && categoryAttrs.length > 0)
+      return withoutClearedAttributes(acceptedOverrides);
     if (
       !attributeOverrides ||
       typeof attributeOverrides !== "object" ||
@@ -9052,6 +9130,30 @@ export class ListingUseCase {
     }
   }
 
+  /**
+   * Ficha que o anúncio já usava antes desta edição: o override do anúncio,
+   * senão a do produto. null = não deu para saber.
+   */
+  private static async previousListingFicha(listing: {
+    productId: string;
+    attributesOverride?: unknown;
+  }): Promise<MlFicha | null> {
+    const ovr = listing.attributesOverride;
+    if (ovr && typeof ovr === "object" && !Array.isArray(ovr)) {
+      return seedMlFicha(ovr);
+    }
+    try {
+      const produto = await ListingUseCase.productRepository.findById(
+        listing.productId,
+      );
+      return produto
+        ? seedMlFicha((produto as { attributes?: unknown }).attributes)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   private static async updateMLListingFields(
     listing: NonNullable<
       Awaited<ReturnType<typeof ListingRepository.findById>>
@@ -9131,6 +9233,14 @@ export class ListingUseCase {
         value_id?: string;
         value_name?: string;
       }> = [];
+      // Só vai ao ML o que MUDOU em relação à ficha que o anúncio já usava
+      // (override do anúncio, senão a do produto). Desde 25/09 o formulário
+      // abre com a ficha inteira: mandar tudo faria um valor inválido gravado
+      // (ex.: INMETRO com texto de busca) derrubar o bloco `attributes` no
+      // retry abaixo, e o campo alterado não chegaria ao anúncio. O override
+      // gravado continua sendo a ficha inteira. Sem a ficha anterior, manda
+      // tudo.
+      const anterior = await ListingUseCase.previousListingFicha(listing);
       for (const [id, raw] of Object.entries(fields.attributesOverride)) {
         if (!id || IMMUTABLE_ATTRS.has(id)) continue;
         if (!raw || typeof raw !== "object") continue;
@@ -9144,6 +9254,14 @@ export class ListingUseCase {
             ? v.value_name.trim()
             : undefined;
         if (!valueId && !valueName) continue;
+        const antes = anterior?.[id];
+        if (
+          antes &&
+          (antes.value_id?.trim() || undefined) === valueId &&
+          (antes.value_name?.trim() || undefined) === valueName
+        ) {
+          continue;
+        }
         const entry: { id: string; value_id?: string; value_name?: string } = {
           id,
         };

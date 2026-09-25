@@ -42,7 +42,8 @@ export interface PerProductMlOverride {
   manufacturingTime?: number;
   listingPrice?: number;
   catalogProductId?: string;
-  attributes?: Record<string, { value_id?: string; value_name?: string }>;
+  /** `null` = campo do produto apagado na Revisão individual (só vale na criação). */
+  attributes?: Record<string, { value_id?: string; value_name?: string } | null>;
 }
 
 export interface PerProductShopeeOverride {
