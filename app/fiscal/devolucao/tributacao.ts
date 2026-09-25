@@ -26,6 +26,7 @@
 import { ESCALA_QUANTIDADE, quantidadeParaUnidades } from "./saldo";
 import type {
   AvisoTributacao,
+  CausaRecusaPisCofins,
   CofinsOriginal,
   CrtEmitente,
   CstPisCofinsDevolucao,
@@ -610,6 +611,23 @@ export const ROTULOS_PIS_COFINS_DEVOLUCAO: Readonly<Record<CstPisCofinsDevolucao
 /** CST de PIS/COFINS que só existe com alíquota do regime normal (PISAliq): recusado no Simples. */
 const PIS_COFINS_SO_REGIME_NORMAL: ReadonlySet<string> = new Set(["01", "02"]);
 
+/**
+ * CSTs de CRÉDITO de PIS/COFINS (tabela oficial): 50–56 "operação com direito a
+ * crédito" e 60–67 "crédito presumido". Só quem apura PIS/COFINS no regime
+ * normal toma crédito — a empresa do Simples recolhe na guia do Simples e não
+ * credita. Recusados no Simples no MESMO molde do 01/02 (decisão 2 do dono):
+ * fora das opções e recusados pelo juiz, na tela e no servidor.
+ */
+export const PIS_COFINS_CREDITO: ReadonlySet<string> = new Set([
+  "50", "51", "52", "53", "54", "55", "56",
+  "60", "61", "62", "63", "64", "65", "66", "67",
+]);
+
+/** CST de PIS/COFINS que uma empresa do Simples (CRT 1/2/4) não pode usar. */
+function soDoRegimeNormal(cst: string): boolean {
+  return PIS_COFINS_SO_REGIME_NORMAL.has(cst) || PIS_COFINS_CREDITO.has(cst);
+}
+
 /** Tabela oficial: 01–49 são de saída, 50–98 de entrada, 99 serve aos dois. null = fora da tabela. */
 export function sentidoCstPisCofins(cst: string | null | undefined): SentidoCstPisCofins | null {
   if (typeof cst !== "string" || !/^\d{2}$/.test(cst)) return null;
@@ -651,11 +669,17 @@ function sentidoDaNota(tipo: TipoDevolucao | "ENTRADA" | "SAIDA" | null | undefi
  * que `checarCstPisCofinsDevolucao` aceita para ele (sem alíquota informada),
  * nunca um a mais nem um a menos.
  *
- * O sentido da nota ORDENA, não filtra: o 49 que a DLS herda das próprias vendas
- * numa devolução de venda (entrada) continua na lista — escondê-lo deixaria o
- * seletor vazio em toda devolução de venda do Simples, um bloqueio que o
- * servidor não faz. O código do sentido oposto vem por último, marcado
- * `doSentidoDaNota: false`, e o juiz do campo avisa (sem recusar).
+ * O que TIRA da lista (decisões 2 e 3 do dono):
+ *  - no Simples (CRT 1/2/4), o 01/02 e os de crédito (50–56, 60–67);
+ *  - numa nota de SAÍDA (devolução de compra), os de entrada (50–98). Nenhuma
+ *    nota de fornecedor traz CST de entrada: não há herança a proteger. O 99
+ *    serve aos dois sentidos e fica.
+ *
+ * O que só ORDENA: numa nota de ENTRADA (devolução de venda) os de saída
+ * continuam na lista — o 49 que a DLS herda das próprias vendas; escondê-lo
+ * deixaria o seletor sem o código gravado em toda devolução de venda do
+ * Simples. Vêm por último, marcados `doSentidoDaNota: false`, e o juiz avisa
+ * (sem recusar) — a validação do servidor avisa igual (decisão 4).
  */
 export function opcoesPisCofinsDevolucao(entrada: {
   crt: CrtEmitente | string | null | undefined;
@@ -666,7 +690,8 @@ export function opcoesPisCofinsDevolucao(entrada: {
   const usuais = familia && sentido ? USUAIS_PIS_COFINS[familia][sentido] : [];
   const aceitos = (Object.keys(ROTULOS_PIS_COFINS_DEVOLUCAO) as CstPisCofinsDevolucao[])
     .filter((c) => PIS_COFINS_CST_SUPORTADOS.has(c))
-    .filter((c) => !(familia === "SN" && PIS_COFINS_SO_REGIME_NORMAL.has(c)))
+    .filter((c) => !(familia === "SN" && soDoRegimeNormal(c)))
+    .filter((c) => !(sentido === "SAIDA" && sentidoCstPisCofins(c) === "ENTRADA"))
     .sort();
   const opcoes = aceitos.map((codigo): OpcaoPisCofinsDevolucao => {
     const s = sentidoCstPisCofins(codigo) as SentidoCstPisCofins;
@@ -687,20 +712,30 @@ export function opcoesPisCofinsDevolucao(entrada: {
 
 function ajudaPisCofins(crt: CrtEmitente | null, tipo: TipoDevolucao | null): string {
   const familia = familiaPisCofinsDoCrt(crt);
+  // Devolução de compra é nota de SAÍDA: os códigos de entrada saem da lista.
+  const saida =
+    tipo === "COMPRA_SAIDA"
+      ? " Esta devolução é uma nota de saída, então os códigos de entrada (50 a 98) não aparecem na lista; o 99 serve para os dois lados."
+      : "";
   if (familia === "SN") {
     return (
-      "Sua empresa é do Simples Nacional: o PIS/COFINS vai na guia do Simples, então os códigos 01 e 02 " +
-      "(com alíquota do regime normal) não servem aqui." +
+      "Sua empresa é do Simples Nacional: o PIS/COFINS vai na guia do Simples, então a alíquota na nota fica 0 " +
+      "e os códigos 01 e 02 (com alíquota do regime normal) e os de crédito (50 a 56 e 60 a 67) não servem aqui." +
       (tipo === "COMPRA_SAIDA"
         ? " A alíquota de PIS/COFINS da nota do fornecedor não passa para a sua nota."
-        : "")
+        : "") +
+      saida
     );
   }
   if (familia === "NORMAL") {
-    return "Sua empresa é do regime normal: escolha o código do PIS/COFINS com a sua contadora e, nos códigos que levam alíquota, informe a alíquota.";
+    return "Sua empresa é do regime normal: escolha o código do PIS/COFINS com a sua contadora e, nos códigos que levam alíquota, informe a alíquota." + saida;
   }
-  return "O regime tributário desta empresa não está cadastrado no Dexo, então o campo não tem como conferir o código. Confirme a tributação com o contador antes de emitir.";
+  return "O regime tributário desta empresa não está cadastrado no Dexo, então o campo não tem como conferir o código. Confirme a tributação com o contador antes de emitir." + saida;
 }
+
+/** A frase da recusa da alíquota no Simples — a mesma na tela, no ajuste e na validação. */
+export const MOTIVO_ALIQUOTA_SIMPLES =
+  "No Simples o PIS/COFINS vai na guia do Simples: a alíquota na nota fica 0.";
 
 const MOTIVO_PIS_COFINS_NAO_SUPORTADO: Readonly<Record<string, string>> = {
   "03": "O CST 03 calcula o PIS/COFINS por quantidade, e o Dexo ainda não emite devolução assim.",
@@ -712,14 +747,22 @@ const MOTIVO_PIS_COFINS_NAO_SUPORTADO: Readonly<Record<string, string>> = {
  * para a tela (recusa na hora) e para o servidor (`aplicarOverrideTributacao`),
  * como o `checarCodigoIcmsDevolucao` do ICMS.
  *
- * Recusa: VAZIO, FORMATO, NAO_SUPORTADO (03, 05, fora da tabela), REGIME (01/02
- * numa empresa do Simples — decisão do dono: é o que o próprio Dexo já faz nas
- * notas comuns do Simples) e, quando `p` vem, ALIQUOTA (fora de 0–100, ou 01/02
- * a zero: alíquota zero tem código próprio, o 06).
+ * Recusa:
+ *  - VAZIO, FORMATO, NAO_SUPORTADO (03, 05, fora da tabela);
+ *  - REGIME: numa empresa do Simples (CRT 1/2/4), o 01/02 (é o que o próprio
+ *    Dexo já faz nas notas comuns do Simples) e os de crédito 50–56/60–67
+ *    (decisão 2 do dono: o Simples não toma crédito de PIS/COFINS);
+ *  - SENTIDO: CST de entrada (50–98) numa nota de SAÍDA (devolução de compra) —
+ *    decisão 3 do dono: nenhuma nota de fornecedor traz CST de entrada, então
+ *    não há herança a proteger. O 99 serve aos dois sentidos;
+ *  - ALIQUOTA, quando `p` vem: fora de 0–100; no Simples, maior que 0 (decisão
+ *    2: o PIS/COFINS vai na guia do Simples — a SEFAZ autorizaria a nota com o
+ *    valor destacado, e isso só se desfaz cancelando); 01/02 a zero (alíquota
+ *    zero tem código próprio, o 06).
  *
- * NÃO recusa o sentido: CST de saída numa nota de entrada (ou o contrário) volta
- * `ok` com `aviso` — a SEFAZ não cruza CST de PIS com o tipo da nota, e o 49 que
- * o Simples herda das próprias vendas não pode virar bloqueio.
+ * Só AVISA (volta `ok` com `aviso`): CST de saída numa nota de ENTRADA — o 49
+ * que o Simples herda das próprias vendas não pode virar bloqueio (decisão 4:
+ * continua aviso, e a validação do servidor avisa igual).
  *
  * Em `ok`, `codigo` volta com o zero à esquerda ("1" → "01") — é ele que se salva.
  */
@@ -747,7 +790,8 @@ export function checarCstPisCofinsDevolucao(entrada: {
       motivo: `${porque} Escolha na lista um dos códigos que ele emite.`,
     };
   }
-  if (familiaPisCofinsDoCrt(entrada.crt) === "SN" && PIS_COFINS_SO_REGIME_NORMAL.has(codigo)) {
+  const simples = familiaPisCofinsDoCrt(entrada.crt) === "SN";
+  if (simples && PIS_COFINS_SO_REGIME_NORMAL.has(codigo)) {
     return {
       ok: false,
       codigo,
@@ -757,11 +801,36 @@ export function checarCstPisCofinsDevolucao(entrada: {
         "A sua empresa é do Simples Nacional, que recolhe o PIS/COFINS na guia do Simples — escolha um código da lista.",
     };
   }
+  if (simples && PIS_COFINS_CREDITO.has(codigo)) {
+    return {
+      ok: false,
+      codigo,
+      causa: "REGIME",
+      motivo:
+        `O CST ${codigo} é de crédito de PIS/COFINS, que só a empresa do regime normal toma. ` +
+        "A sua empresa é do Simples Nacional, que recolhe o PIS/COFINS na guia do Simples e não toma esse crédito — escolha um código da lista.",
+    };
+  }
+  const sentido = sentidoCstPisCofins(codigo) as SentidoCstPisCofins;
+  const daNota = sentidoDaNota(entrada.tipo);
+  if (daNota === "SAIDA" && sentido === "ENTRADA") {
+    return {
+      ok: false,
+      codigo,
+      causa: "SENTIDO",
+      motivo:
+        `O CST ${codigo} é de entrada, e esta devolução de compra é uma nota de saída — os códigos de 50 a 98 não servem nela. ` +
+        "Escolha na lista um código de saída (ou o 99, que serve para os dois lados).",
+    };
+  }
   const exigeAliquota = !PIS_COFINS_SEM_VALORES.has(codigo);
   const p = entrada.p;
   if (exigeAliquota && p !== undefined && p !== null) {
     if (!aliquotaValida(p)) {
       return { ok: false, codigo, causa: "ALIQUOTA", motivo: "A alíquota do PIS/COFINS vai de 0 a 100." };
+    }
+    if (simples && p > 0) {
+      return { ok: false, codigo, causa: "ALIQUOTA", motivo: MOTIVO_ALIQUOTA_SIMPLES };
     }
     if (PIS_COFINS_SO_REGIME_NORMAL.has(codigo) && p === 0) {
       return {
@@ -772,8 +841,6 @@ export function checarCstPisCofinsDevolucao(entrada: {
       };
     }
   }
-  const sentido = sentidoCstPisCofins(codigo) as SentidoCstPisCofins;
-  const daNota = sentidoDaNota(entrada.tipo);
   if (daNota === "ENTRADA" && sentido === "SAIDA") {
     return {
       ok: true,
@@ -782,16 +849,6 @@ export function checarCstPisCofinsDevolucao(entrada: {
       exigeAliquota,
       aviso: "PIS_CST_SAIDA_EM_ENTRADA",
       avisoTexto: `O CST ${codigo} é de saída, e esta devolução é uma nota de entrada. Não impede a emissão — confirme com a sua contadora.`,
-    };
-  }
-  if (daNota === "SAIDA" && sentido === "ENTRADA") {
-    return {
-      ok: true,
-      codigo,
-      sentido,
-      exigeAliquota,
-      aviso: "PIS_CST_ENTRADA_EM_SAIDA",
-      avisoTexto: `O CST ${codigo} é de entrada, e esta devolução é uma nota de saída. Não impede a emissão — confirme com a sua contadora.`,
     };
   }
   return { ok: true, codigo, sentido, exigeAliquota, aviso: null, avisoTexto: "" };
@@ -965,11 +1022,16 @@ export function proporcionalizar(input: ProporcionalizarInput): TributacaoDevolu
     }
     if (PIS_COFINS_SEM_VALORES.has(cst)) return { cst, vBC: 0, p: 0, v: 0 };
     // Emitente do Simples NÃO herda alíquota nem base de PIS/COFINS de uma nota
-    // de outra família de regime (nem do 01/02, que é apuração do regime normal):
-    // era assim que 1,65%/7,6% da DISAUTO chegavam à nota da DLS. O código fica
-    // (a tela mostra "este não serve" e validarDevolucao recusa 01/02 no Simples);
+    // de outra família de regime (nem do 01/02 ou de um código de crédito, que
+    // são apuração do regime normal): era assim que 1,65%/7,6% da DISAUTO
+    // chegavam à nota da DLS. Nem de uma nota do próprio Simples que veio com
+    // alíquota: no Simples a alíquota na nota fica 0 (decisão 2 do dono). O
+    // código fica (a tela mostra "este não serve" e validarDevolucao recusa);
     // os valores, não — e sem eles o override também não tem o que herdar.
-    if (famPisEmitente === "SN" && (famPisOriginal === "NORMAL" || PIS_COFINS_SO_REGIME_NORMAL.has(cst))) {
+    if (
+      famPisEmitente === "SN" &&
+      (famPisOriginal === "NORMAL" || soDoRegimeNormal(cst) || (typeof p === "number" && p > 0))
+    ) {
       return { cst, vBC: 0, p: 0, v: 0 };
     }
     if (grupo.vBC === undefined || p === undefined || v === undefined) {
@@ -1028,6 +1090,20 @@ export interface AplicarOverrideInput {
    * destacaria mais ICMS do que o fornecedor debitou.
    */
   baseIcmsOriginal?: number | null;
+  /**
+   * O ajuste JÁ GRAVADO neste item (opcional; decisão 5 do dono) — no mesmo
+   * formato do override: é o `saved` que o caso de uso já monta para
+   * `mesclarAjusteTributacao` a partir da tributação gravada com fonte USUARIO.
+   *
+   * Tributo cujo valor enviado é IGUAL ao salvo não é ajuste novo: não é julgado
+   * de novo (nem allowlist, nem regime, nem sentido, nem alíquota, nem modBC) e
+   * é regravado como está — assim um 01 antigo gravado no PIS de uma empresa do
+   * Simples não barra o salvamento da QUANTIDADE (rascunho 4a3698ee da DLS). Quem
+   * barra a EMISSÃO por ele continua sendo `validarDevolucao`.
+   *
+   * Ausente ⇒ comportamento de antes (só "igual à base" deixa de ser julgado).
+   */
+  salvo?: TributacaoOverride | null;
 }
 
 /** Recusa estruturada do ajuste: o tributo, o código de pendência que a descreve e a frase. */
@@ -1038,7 +1114,11 @@ export interface RecusaOverride {
     | "TRIBUTACAO_REGIME_INCOMPATIVEL"
     | "PIS_COFINS_NAO_SUPORTADO"
     | "PIS_COFINS_REGIME_INCOMPATIVEL"
-    | "PIS_COFINS_ALIQUOTA_INVALIDA";
+    | "PIS_COFINS_ALIQUOTA_INVALIDA"
+    /** Simples com alíquota de PIS/COFINS maior que 0 (decisão 2). */
+    | "PIS_COFINS_ALIQUOTA_SIMPLES"
+    /** CST de entrada (50–98) numa nota de saída (decisão 3). */
+    | "PIS_CST_ENTRADA_EM_SAIDA";
   motivo: string;
 }
 
@@ -1052,13 +1132,48 @@ export type ResultadoOverride =
       recusas: RecusaOverride[];
     };
 
-const CODIGO_RECUSA_PIS_COFINS: Readonly<Record<string, RecusaOverride["code"]>> = {
+const CODIGO_RECUSA_PIS_COFINS: Readonly<Record<CausaRecusaPisCofins, RecusaOverride["code"]>> = {
   REGIME: "PIS_COFINS_REGIME_INCOMPATIVEL",
   ALIQUOTA: "PIS_COFINS_ALIQUOTA_INVALIDA",
   VAZIO: "PIS_COFINS_NAO_SUPORTADO",
   FORMATO: "PIS_COFINS_NAO_SUPORTADO",
   NAO_SUPORTADO: "PIS_COFINS_NAO_SUPORTADO",
+  SENTIDO: "PIS_CST_ENTRADA_EM_SAIDA",
 };
+
+/**
+ * O código de pendência de uma recusa do juiz de PIS/COFINS. A alíquota do
+ * Simples tem código próprio (o texto da tela é outro: "fica 0", não "01/02 a
+ * zero"), mas a CAUSA continua ALIQUOTA — é por ela que a caixa de alíquota da
+ * tela mostra a recusa.
+ */
+function codigoRecusaPisCofins(
+  causa: CausaRecusaPisCofins,
+  crt: CrtEmitente | string | null,
+  p: number | null | undefined,
+): RecusaOverride["code"] {
+  if (causa === "ALIQUOTA" && familiaPisCofinsDoCrt(crt) === "SN" && aliquotaValida(p) && p > 0) {
+    return "PIS_COFINS_ALIQUOTA_SIMPLES";
+  }
+  return CODIGO_RECUSA_PIS_COFINS[causa];
+}
+
+/**
+ * PIS/COFINS regravado SEM julgar (igual ao ajuste salvo): o código e a alíquota
+ * como estão, com a base recalculada pela MESMA regra do ajuste.
+ */
+function pisCofinsComoEsta(
+  atual: TributoPisCofinsDevolucao,
+  cst: string | null,
+  p: number,
+  baseItem: number,
+): TributoPisCofinsDevolucao {
+  if (!cst || !PIS_COFINS_CST_SUPORTADOS.has(cst) || PIS_COFINS_SEM_VALORES.has(cst) || !aliquotaValida(p)) {
+    return { cst, vBC: 0, p: 0, v: 0 };
+  }
+  const vBC = p > 0 ? (atual.vBC > 0 ? atual.vBC : baseItem) : 0;
+  return { cst, vBC, p, v: round2((vBC * p) / 100) };
+}
 
 const aliquotaValida = (p: unknown): p is number =>
   typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 100;
@@ -1074,9 +1189,15 @@ function temAjuste(ov: TributacaoOverride | null | undefined): ov is TributacaoO
  *   tributo alterado, marca `fonte USUARIO` e mantém `requerRevisao` (ajuste
  *   manual sempre exige a confirmação no mesmo pedido).
  * - PIS/COFINS passam pelo MESMO juiz da tela (`checarCstPisCofinsDevolucao`):
- *   01/02 no Simples e 01/02 a zero são recusados aqui também. O par
- *   (CST, alíquota) idêntico ao da base não é ajuste e não é julgado — é o
- *   reenvio do valor gravado, e quem barra a emissão é `validarDevolucao`.
+ *   01/02 e crédito no Simples, alíquota > 0 no Simples, entrada numa saída e
+ *   01/02 a zero são recusados aqui também. O par (CST, alíquota) idêntico ao
+ *   da base não é ajuste e não é julgado — é o reenvio do valor gravado, e
+ *   quem barra a emissão é `validarDevolucao`.
+ * - Idem para o valor idêntico ao AJUSTE SALVO (`salvo`, decisão 5): julga-se
+ *   só o que ela mudou.
+ * - modBC: só o que vem EXPLÍCITO no override (e diferente do salvo) é julgado.
+ *   O modBC 0/1/2 herdado do XML original não trava mais a troca de grupo
+ *   (N-icms-residual-4): o grupo novo sai com modBC 3.
  */
 export function aplicarOverrideTributacao(input: AplicarOverrideInput): ResultadoOverride {
   const base = input.base;
@@ -1102,14 +1223,37 @@ export function aplicarOverrideTributacao(input: AplicarOverrideInput): Resultad
       // tributo, ele reenvia o ICMS gravado a cada save — e o da base pode ser o
       // do fornecedor (00 numa empresa do Simples). Recusar aqui derrubava o
       // salvamento do PIS; quem barra a emissão por ele é `validarDevolucao`.
+      const pEnviado = ov.icms.pICMS ?? t.icms.pICMS;
+      const modBCEnviado = ov.icms.modBC ?? t.icms.modBC;
       const igualABase =
         cst === base.icms.cst &&
         csosn === base.icms.csosn &&
-        (ov.icms.pICMS ?? t.icms.pICMS) === base.icms.pICMS &&
-        (ov.icms.modBC ?? t.icms.modBC) === base.icms.modBC;
-      const tag = igualABase ? null : tagIcmsParaDevolucao({ crt: input.crtEmitente, cst, csosn });
+        pEnviado === base.icms.pICMS &&
+        modBCEnviado === base.icms.modBC;
+      // Decisão 5: o MESMO ICMS do ajuste já gravado não é ajuste novo — não se
+      // julga de novo (uma troca de regime da empresa, p.ex., não pode barrar o
+      // salvamento da quantidade). A família sai do próprio código, e quem barra
+      // a emissão por ele é `validarDevolucao` (TRIBUTACAO_NAO_SUPORTADA/_REGIME_INCOMPATIVEL).
+      const s = input.salvo?.icms;
+      const igualAoSalvo =
+        !!s &&
+        cst === (s.cst ?? null) &&
+        csosn === (s.csosn ?? null) &&
+        pEnviado === (s.pICMS ?? t.icms.pICMS) &&
+        modBCEnviado === (s.modBC ?? t.icms.modBC);
+      const tagEmitente = igualABase ? null : tagIcmsParaDevolucao({ crt: input.crtEmitente, cst, csosn });
+      const tag = tagEmitente ?? (igualAoSalvo ? tagIcmsParaDevolucao({ cst, csosn }) : null);
       if (igualABase) {
         // nada a fazer: t.icms já é o da base
+      } else if (!tag && igualAoSalvo) {
+        // Salvo com um código que nem existe na lista: guarda como está, sem grupo.
+        t.icms.tag = null;
+        t.icms.cst = cst;
+        t.icms.csosn = csosn;
+        t.icms.modBC = null;
+        t.icms.vBC = 0;
+        t.icms.pICMS = 0;
+        t.icms.vICMS = 0;
       } else if (!tag) {
         const veredito = checarCodigoIcmsDevolucao({ crt: input.crtEmitente, codigo: csosn ?? cst });
         erros.push("ICMS: CST/CSOSN fora da lista suportada na devolução para o regime do emitente.");
@@ -1129,9 +1273,15 @@ export function aplicarOverrideTributacao(input: AplicarOverrideInput): Resultad
           t.icms.pICMS = 0;
           t.icms.vICMS = 0;
         } else {
-          const modBC = ov.icms.modBC ?? t.icms.modBC ?? "3";
-          const p = ov.icms.pICMS ?? t.icms.pICMS;
-          if (modBC !== "3") recusar("ICMS", "TRIBUTACAO_NAO_SUPORTADA", "só a modalidade de base 3 (valor da operação) é suportada.");
+          // Só o modBC que ELA mandou é julgado: explícito no override e diferente
+          // do salvo. O herdado do XML (0/1/2 da nota original) não trava a troca
+          // de grupo — o grupo novo sai com modBC 3 (N-icms-residual-4).
+          const modBCExplicito =
+            ov.icms.modBC !== undefined && ov.icms.modBC !== null && !(s && ov.icms.modBC === (s.modBC ?? null));
+          const p = pEnviado;
+          if (modBCExplicito && ov.icms.modBC !== "3") {
+            recusar("ICMS", "TRIBUTACAO_NAO_SUPORTADA", "só a modalidade de base 3 (valor da operação) é suportada.");
+          }
           if (!aliquotaValida(p)) {
             recusar("ICMS", "TRIBUTACAO_NAO_SUPORTADA", "a alíquota deve estar entre 0 e 100.");
           } else if (tag !== base.icms.tag || p !== base.icms.pICMS) {
@@ -1157,11 +1307,21 @@ export function aplicarOverrideTributacao(input: AplicarOverrideInput): Resultad
       // o salvamento de QUALQUER outra coisa do item; quem barra a emissão por
       // ele é `validarDevolucao`.
       if (cstEnviado === base[qual].cst && pEnviado === base[qual].p) continue;
+      // Decisão 5: o MESMO valor do ajuste JÁ GRAVADO também não é ajuste novo.
+      // Sem isto, o 01 que a DLS gravou no PIS do item 6 (Simples, rascunho
+      // 4a3698ee) voltava 422 em TODO salvamento do item — até o da quantidade.
+      // Regravado como está; `validarDevolucao` continua barrando a emissão.
+      const s = input.salvo?.[qual];
+      if (s && cstEnviado === (s.cst ?? t[qual].cst) && pEnviado === (s.p ?? t[qual].p)) {
+        t[qual] = pisCofinsComoEsta(t[qual], cstEnviado, pEnviado, baseItem);
+        continue;
+      }
       // O juiz é o da tela (`checarCstPisCofinsDevolucao`): allowlist, regime do
-      // emitente (01/02 no Simples) e alíquota (0–100; 01/02 nunca a zero).
+      // emitente (01/02 e crédito no Simples), sentido (entrada numa saída) e
+      // alíquota (0–100; 0 no Simples; 01/02 nunca a zero).
       const r = checarCstPisCofinsDevolucao({ crt: input.crtEmitente, tipo: tipoOperacao, codigo: cstEnviado, p: pEnviado });
       if (!r.ok) {
-        recusar(rotulo, CODIGO_RECUSA_PIS_COFINS[r.causa], r.motivo);
+        recusar(rotulo, codigoRecusaPisCofins(r.causa, input.crtEmitente, pEnviado), r.motivo);
         continue;
       }
       if (!r.exigeAliquota) {
@@ -1184,7 +1344,10 @@ export function aplicarOverrideTributacao(input: AplicarOverrideInput): Resultad
     if (tipoOperacao === "ENTRADA") {
       // 49 também é de saída (tabela oficial: 01–49). Aqui é só AVISO — a regra
       // de REVISÃO da derivação continua em 01–09, para não travar a devolução
-      // de venda do Simples, que herda o 49 das próprias vendas.
+      // de venda do Simples, que herda o 49 das próprias vendas. O aviso que a
+      // tela VÊ não depende desta marca: `validarDevolucao` o calcula do próprio
+      // CST (decisão 4), então a derivação (sem marca no 49) e o ajuste (com
+      // marca) dizem a mesma coisa na tela.
       const saida = cstsPisCofins.some((c) => !!c && /^(0[1-9]|49)$/.test(c));
       t.avisos = t.avisos.filter((a) => a !== "PIS_CST_SAIDA_EM_ENTRADA");
       if (saida) t.avisos.push("PIS_CST_SAIDA_EM_ENTRADA");

@@ -127,3 +127,29 @@ describe("GET …/devolucao/abertas", () => {
     expect(r.json()).toEqual({ error: "Recurso indisponível" });
   });
 });
+
+describe("GET …/devolucao/abertas sem a devolução ligada (onda 5)", () => {
+  it("o caso de uso devolve a lista vazia: 200 {abertas: []} — não é mais 404", async () => {
+    h.acao = (metodo) => { expect(metodo).toBe("abertas"); return { abertas: [] }; };
+    const r = await app!.inject({ method: "GET", url: "/fiscal/nfe/devolucao/abertas" });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ abertas: [] });
+  });
+});
+
+describe("GET …/devolucao/disponibilidade (onda 5: pelo caso de uso, com `empresas`)", () => {
+  it("devolve o corpo do caso de uso (o campo de sempre + empresas)", async () => {
+    const corpo = { disponivel: true, companyFiscalConfigId: "cfg-dls", empresas: [{ companyFiscalConfigId: "cfg-dls", cnpj: "57502966000144", razaoSocial: "DLS", nomeFantasia: null, uf: "SC", ambiente: "PRODUCAO", isDefault: true }] };
+    h.acao = (metodo, args) => { expect(metodo).toBe("disponibilidade"); expect(args[0]).toBe("tenant"); return corpo; };
+    const r = await app!.inject({ method: "GET", url: "/fiscal/nfe/devolucao/disponibilidade" });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual(corpo);
+  });
+
+  it("nenhuma empresa ligada: o MESMO 404 de antes, {error} sem código", async () => {
+    h.acao = () => { throw new NumeracaoError("RECURSO_INDISPONIVEL", 404, "Recurso indisponível"); };
+    const r = await app!.inject({ method: "GET", url: "/fiscal/nfe/devolucao/disponibilidade" });
+    expect(r.statusCode).toBe(404);
+    expect(r.json()).toEqual({ error: "Recurso indisponível" });
+  });
+});

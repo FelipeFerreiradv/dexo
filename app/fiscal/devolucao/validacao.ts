@@ -20,9 +20,10 @@ import {
   idDestDoCfop,
   isCfopPermitidoEmDevolucao,
 } from "../domain/devolucao-cfop";
-import { quantidadeParaUnidades, temAteQuatroCasas } from "./saldo";
+import { issueSaldoExcedido, quantidadeParaUnidades, temAteQuatroCasas } from "./saldo";
 import {
   MENSAGEM_MOTIVO_REVISAO,
+  PIS_COFINS_CREDITO,
   PIS_COFINS_CST_SUPORTADOS,
   compraTeveIcmsSt,
   familiaIcmsDaOriginal,
@@ -102,8 +103,20 @@ export interface ContextoValidacaoDevolucao {
   itens: Array<{ numero: number; codigo: string; quantidade: number | string; cfop: string }>;
   /** NfeDevolucaoItem da devolução. */
   refs: RefValidacaoDevolucao[];
-  /** Saldo por (chave, nItem) EXCLUINDO esta devolução. Ausente = não verificado aqui. */
-  saldos?: Array<{ chaveAcesso: string; nItem: number; disponivel: number | null }> | null;
+  /**
+   * Saldo por (chave, nItem) EXCLUINDO esta devolução. Ausente = não verificado aqui.
+   * `devolvidaAutorizada` e `emProcessamento` (opcionais — o caso de uso já os
+   * passa em runtime, é o `SaldoComChave` de saldo.ts) dizem de onde veio o que
+   * falta, e o `emProcessamento` de OUTRA devolução em envio vira o aviso
+   * OUTRA_DEVOLUCAO_EM_ENVIO.
+   */
+  saldos?: Array<{
+    chaveAcesso: string;
+    nItem: number;
+    disponivel: number | null;
+    devolvidaAutorizada?: number | null;
+    emProcessamento?: number | null;
+  }> | null;
   /** Originais do Dexo encontradas pelas chaves. */
   originais?: Array<{ chaveAcesso: string; status: string; ambiente?: string | null }> | null;
   /** idDest da original (a devolução espelha). */
@@ -126,6 +139,9 @@ const REJEICAO_IDDEST: Readonly<Record<IdDest, string>> = {
 };
 
 const soDigitos = (v: unknown) => (typeof v === "string" ? v.replace(/\D/g, "") : "");
+
+/** 1.65 → "1,65%"; 7.6 → "7,6%". */
+const percentualBR = (p: number) => `${String(round2(p)).replace(".", ",")}%`;
 
 function listaNaoVazia(v: unknown): boolean {
   if (Array.isArray(v)) return v.length > 0;
@@ -151,9 +167,15 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
    *  - sem CST, ou fora da lista que o montador emite (03/05, base por quantidade):
    *    o montador SEFAZ trocaria em silêncio pelo padrão do regime, a Focus
    *    receberia `null`, e 03/05 cairiam em PISOutr (Rejeição 225);
-   *  - 01/02 numa empresa do Simples (decisão do dono, igual ao ICMS de outro regime);
-   *  - 01/02 com alíquota zero (alíquota zero é o 06).
-   * E o AVISO do sentido inverso: CST de entrada numa nota de saída.
+   *  - numa empresa do Simples (CRT 1/2/4): 01/02 e os códigos de crédito
+   *    (50–56, 60–67) — decisões do dono, igual ao ICMS de outro regime;
+   *  - numa empresa do Simples, alíquota maior que 0 (decisão 2: vai na guia do
+   *    Simples; a SEFAZ AUTORIZARIA a nota com o valor destacado);
+   *  - 01/02 com alíquota zero (alíquota zero é o 06);
+   *  - CST de entrada (50–98) numa nota de SAÍDA (decisão 3: era aviso).
+   * O AVISO que fica: CST de saída numa nota de ENTRADA (decisão 4) — calculado
+   * do próprio CST, para o servidor dizer o mesmo que o campo da tela, também
+   * no 49 que a devolução de venda do Simples herda das próprias vendas.
    */
   const validarPisCofins = (r: RefValidacaoDevolucao, trib: TributacaoDevolucaoItem) => {
     const tributos = [
@@ -178,11 +200,19 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
     }
     const validos = tributos.filter((x) => !!x.g?.cst && PIS_COFINS_CST_SUPORTADOS.has(x.g.cst));
     const doRegimeNormal = validos.filter((x) => x.g.cst === "01" || x.g.cst === "02");
-    if (emitenteSimplesPisCofins && doRegimeNormal.length > 0) {
+    const deCredito = validos.filter((x) => PIS_COFINS_CREDITO.has(x.g.cst as string));
+    // Um código só leva UMA recusa: o 01 (ou o 50) do Simples é de regime, e é
+    // essa a frase; a alíquota e o sentido dele não se repetem por cima.
+    const recusadosPorRegime = emitenteSimplesPisCofins ? [...doRegimeNormal, ...deCredito] : [];
+    if (recusadosPorRegime.length > 0) {
+      const porque = [
+        doRegimeNormal.length > 0 ? "PIS/COFINS com alíquota na nota" : null,
+        deCredito.length > 0 ? "crédito de PIS/COFINS" : null,
+      ].filter((x): x is string => !!x).join(" e ");
       add("PIS_COFINS_REGIME_INCOMPATIVEL", "ERRO",
-        `Item ${r.ordem}: o CST ${doRegimeNormal.map((x) => `${x.g.cst} ${x.doNome}`).join(" e ")} é de empresa do regime normal (PIS/COFINS com alíquota na nota); a sua empresa é do Simples Nacional — escolha outro código.`,
+        `Item ${r.ordem}: o CST ${tributos.filter((x) => recusadosPorRegime.includes(x)).map((x) => `${x.g.cst} ${x.doNome}`).join(" e ")} é de empresa do regime normal (${porque}); a sua empresa é do Simples Nacional — escolha outro código.`,
         r.ordem);
-    } else {
+    } else if (!emitenteSimplesPisCofins) {
       const aZero = doRegimeNormal.filter((x) => !(x.g.p > 0));
       if (aZero.length > 0) {
         add("PIS_COFINS_ALIQUOTA_INVALIDA", "ERRO",
@@ -190,15 +220,34 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
           r.ordem);
       }
     }
+    if (emitenteSimplesPisCofins) {
+      const comAliquota = validos.filter((x) => !recusadosPorRegime.includes(x) && x.g.p > 0);
+      if (comAliquota.length > 0) {
+        add("PIS_COFINS_ALIQUOTA_SIMPLES", "ERRO",
+          `Item ${r.ordem}: ${comAliquota.map((x) => `${x.nome} com alíquota de ${percentualBR(x.g.p)}`).join(" e ")} — no Simples o PIS/COFINS vai na guia do Simples, e a alíquota na nota fica 0. A SEFAZ autorizaria a nota com esse valor destacado, e isso só se desfaz cancelando.`,
+          r.ordem);
+      }
+    }
     if (tpNF === "1") {
-      const deEntrada = validos.filter((x) => sentidoCstPisCofins(x.g.cst) === "ENTRADA");
+      const deEntrada = validos.filter((x) => !recusadosPorRegime.includes(x) && sentidoCstPisCofins(x.g.cst) === "ENTRADA");
       if (deEntrada.length > 0) {
-        add("PIS_CST_ENTRADA_EM_SAIDA", "AVISO",
-          `Item ${r.ordem}: CST ${deEntrada.map((x) => `${x.g.cst} ${x.doNome}`).join(" e ")} é de entrada, numa nota de saída — confirme com o contador.`,
+        add("PIS_CST_ENTRADA_EM_SAIDA", "ERRO",
+          `Item ${r.ordem}: o CST ${deEntrada.map((x) => `${x.g.cst} ${x.doNome}`).join(" e ")} é de entrada, e esta devolução de compra é uma nota de saída — escolha um código de saída (ou o 99, que serve para os dois lados).`,
           r.ordem);
       }
     }
   };
+
+  /** CSTs de saída (01–49) de PIS/COFINS deste item, numa nota de ENTRADA — o aviso da decisão 4. */
+  const saidaNaEntrada = (trib: TributacaoDevolucaoItem): string[] =>
+    tpNF !== "0"
+      ? []
+      : [
+          { g: trib.pis, doNome: "do PIS" },
+          { g: trib.cofins, doNome: "da COFINS" },
+        ]
+          .filter((x) => !!x.g?.cst && PIS_COFINS_CST_SUPORTADOS.has(x.g.cst) && sentidoCstPisCofins(x.g.cst) === "SAIDA")
+          .map((x) => `${x.g.cst} ${x.doNome}`);
 
   /**
    * ICMS da devolução contra o ICMS da nota ORIGINAL:
@@ -211,6 +260,15 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
    *  - CSOSN 500 num item cuja compra não teve ST: AVISO.
    */
   const validarIcmsDaOriginal = (r: RefValidacaoDevolucao, trib: TributacaoDevolucaoItem) => {
+    // Origem ausente: o construtor escreve `orig ?? 0` (Nacional) sem avisar, e a SEFAZ
+    // autoriza — numa peca importada o documento sai errado. So acontece na devolucao
+    // pela chave com "Origem da mercadoria" em branco (pelo XML e pela nota Dexo a origem
+    // vem preenchida). O Dexo nao escolhe por ela: trava e manda informar.
+    if (trib.icms.orig === null || trib.icms.orig === undefined) {
+      add("ICMS_ORIGEM_NAO_INFORMADA", "ERRO",
+        `Item ${r.ordem}: a origem da mercadoria não foi informada.`,
+        r.ordem);
+    }
     const icmsOriginal = r.impostoOriginal?.icms ?? null;
     const temSt = originalTemIcmsSt(icmsOriginal) || trib.motivosRevisao.includes("ICMS_ST_NAO_SUPORTADO");
     if (temSt) {
@@ -249,11 +307,19 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
     add("NAO_GERENCIADA", "ERRO",
       "Nota de devolução sem o vínculo com a nota original (Rejeição 321). Crie a devolução pela nota original ou pela devolução manual.");
   } else if (cabecalho.devolvidaAposEntrega === null || cabecalho.devolvidaAposEntrega === undefined) {
+    // Na devolução de COMPRA quem recebeu foi ela, e quem recebe de volta é o
+    // FORNECEDOR — "devolvida pelo cliente" mandava responder outra pergunta.
     add("ESCOLHA_PENDENTE", "ERRO",
-      "Responda se a mercadoria foi entregue e devolvida pelo cliente.");
+      tipo === "COMPRA_SAIDA"
+        ? "Responda se a mercadoria chegou até você e está sendo devolvida ao fornecedor."
+        : "Responda se a mercadoria foi entregue e devolvida pelo cliente.");
   } else if (cabecalho.devolvidaAposEntrega !== true) {
+    // Na COMPRA não se aponta caminho (nota de crédito ou outro): recusa de
+    // mercadoria comprada se registra como a contadora disser.
     add("RECUSA_NAO_E_DEVOLUCAO", "ERRO",
-      "Recusa ou não entrega não é devolução (finNFe 5, nota de crédito) — esta nota não pode ser emitida para esse caso.");
+      tipo === "COMPRA_SAIDA"
+        ? "Mercadoria recusada na entrega, que não chegou a entrar, não é devolução de compra — esta nota não pode ser emitida para esse caso. Combine com a sua contadora como registrar a recusa."
+        : "Recusa ou não entrega não é devolução (finNFe 5, nota de crédito) — esta nota não pode ser emitida para esse caso.");
   }
 
   if (nota.finalidade !== "DEVOLUCAO") {
@@ -385,9 +451,12 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
 
   // ── referências ──
   const saldoPorPar = new Map<string, number | null>();
+  const saldoCompletoPorPar = new Map<string, NonNullable<ContextoValidacaoDevolucao["saldos"]>[number]>();
   for (const s of ctx.saldos ?? []) {
     saldoPorPar.set(`${soDigitos(s.chaveAcesso)}#${s.nItem}`, s.disponivel);
+    saldoCompletoPorPar.set(`${soDigitos(s.chaveAcesso)}#${s.nItem}`, s);
   }
+  const numeroOuZero = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
   const confirmadoSemXml = cabecalho?.confirmadoSemXml === true;
   const pares = new Set<string>();
   const emitentesReferenciados = new Set<string>();
@@ -430,15 +499,43 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
           ? null
           : quantidadeParaUnidades(r.quantidadeOriginal);
       const disponivelU = disponivel === null ? null : quantidadeParaUnidades(disponivel);
+      const saldoDoPar = saldoCompletoPorPar.get(par);
+      // A frase é a MESMA do 409 do salvamento (`issueSaldoExcedido`): com a
+      // peça, o que ela pediu, o que sobrou e onde está o resto — e, com nada
+      // sobrando, "tire o item", não "baixe até o disponível" (que é 0).
       if (disponivelU !== null && qU > disponivelU) {
-        add("SALDO_EXCEDIDO", "ERRO",
-          `Item ${r.ordem}: quantidade maior que o saldo disponível para devolução (${disponivel}).`, r.ordem);
+        issues.push(issueSaldoExcedido({
+          ordem: r.ordem,
+          nItemOriginal: r.nItem,
+          codigo: r.codigoOriginal,
+          pedida: Number(r.quantidade),
+          saldo: {
+            disponivel,
+            devolvidaAutorizada: numeroOuZero(saldoDoPar?.devolvidaAutorizada),
+            emProcessamento: numeroOuZero(saldoDoPar?.emProcessamento),
+          },
+        }));
       } else if (disponivelU === null && qOrigU !== null && qU > qOrigU) {
-        add("SALDO_EXCEDIDO", "ERRO",
-          `Item ${r.ordem}: quantidade maior que a vendida na nota original (${r.quantidadeOriginal}).`, r.ordem);
+        issues.push(issueSaldoExcedido({
+          ordem: r.ordem,
+          nItemOriginal: r.nItem,
+          codigo: r.codigoOriginal,
+          pedida: Number(r.quantidade),
+          saldo: null,
+          quantidadeOriginal: Number(r.quantidadeOriginal),
+        }));
       } else if (disponivelU === null && qOrigU === null && !confirmadoSemXml) {
         add("SALDO_NAO_VERIFICAVEL", "ERRO",
           `Item ${r.ordem}: sem o XML da nota original o saldo não pode ser conferido — confirme a devolução sem XML.`, r.ordem);
+      }
+      // K13: OUTRA devolução deste mesmo item está em envio à SEFAZ. A quantidade
+      // dela já saiu do disponível (saldo.ts); o aviso diz de onde veio a falta
+      // e que ela volta se aquela for recusada.
+      const emEnvio = numeroOuZero(saldoDoPar?.emProcessamento);
+      if (emEnvio > 0) {
+        add("OUTRA_DEVOLUCAO_EM_ENVIO", "AVISO",
+          `Item ${r.ordem}: outra devolução deste mesmo item está em envio à SEFAZ (${String(emEnvio).replace(".", ",")} em envio) — essa quantidade já saiu do que ainda pode ser devolvido; se aquela nota for recusada, ela volta.`,
+          r.ordem);
       }
     }
 
@@ -468,9 +565,17 @@ export function validarDevolucao(ctx: ContextoValidacaoDevolucao): DevolucaoIssu
             `Item ${r.ordem}: o percentual de IPI devolvido sai da quantidade devolvida sobre a da nota original e ficou fora de 0 a 100 (grupo impostoDevol) — confira a quantidade no passo 3 ("Produtos").`, r.ordem);
         }
       }
-      if (trib.avisos.includes("PIS_CST_SAIDA_EM_ENTRADA") && tpNF === "0") {
+      // Decisão 4: o aviso sai do PRÓPRIO CST, não só da marca gravada — a
+      // derivação não marca o 49 que a devolução de venda do Simples herda das
+      // próprias vendas, e o campo da tela avisa nele. Agora os dois dizem o mesmo
+      // (também nos rascunhos gravados antes). Continua só AVISO.
+      const saidas = saidaNaEntrada(trib);
+      if (tpNF === "0" && (saidas.length > 0 || trib.avisos.includes("PIS_CST_SAIDA_EM_ENTRADA"))) {
         add("PIS_CST_SAIDA_EM_ENTRADA", "AVISO",
-          `Item ${r.ordem}: CST de PIS/COFINS de saída numa nota de entrada — confirme com o contador.`, r.ordem);
+          saidas.length > 0
+            ? `Item ${r.ordem}: o CST ${saidas.join(" e ")} é de saída, numa nota de entrada — não impede a emissão; confirme com o contador.`
+            : `Item ${r.ordem}: CST de PIS/COFINS de saída numa nota de entrada — confirme com o contador.`,
+          r.ordem);
       }
       if (trib.avisos.includes("IBS_CBS_NAO_ENVIADO")) {
         add("IBS_CBS_NAO_ENVIADO", "AVISO",

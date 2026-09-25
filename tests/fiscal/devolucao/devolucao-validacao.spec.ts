@@ -22,12 +22,20 @@ function chave(opts: { cnpj?: string; modelo?: string; numero?: number; dvErrado
 
 const CHAVE = chave();
 
-const tribOk = () =>
+// ATUALIZADO (onda 5, decisão 4 do dono): o PIS/COFINS da base "caso válido"
+// passou de 49 para 99. O 49 é CST de SAÍDA; numa devolução de venda (nota de
+// ENTRADA) ele agora gera o AVISO PIS_CST_SAIDA_EM_ENTRADA também no servidor —
+// antes só a tela avisava. A base deste arquivo é o contexto SEM pendência
+// nenhuma, e as regras daqui (cabeçalho, CFOP, saldo…) não são sobre PIS: o 99
+// ("outras operações", serve para entrada e para saída) mantém cada teste
+// testando só a regra dele. O 49 herdado tem o seu próprio teste abaixo
+// ("49 herdado numa devolução de venda…").
+const tribOk = (cstPisCofins = "99") =>
   proporcionalizar({
     impostoOriginal: normalizarImpostoOriginal({
       ICMS: { ICMSSN102: { orig: "0", CSOSN: "102" } },
-      PIS: { PISOutr: { CST: "49", vBC: "0.00", pPIS: "0.00", vPIS: "0.00" } },
-      COFINS: { COFINSOutr: { CST: "49", vBC: "0.00", pCOFINS: "0.00", vCOFINS: "0.00" } },
+      PIS: { PISOutr: { CST: cstPisCofins, vBC: "0.00", pPIS: "0.00", vPIS: "0.00" } },
+      COFINS: { COFINSOutr: { CST: cstPisCofins, vBC: "0.00", pCOFINS: "0.00", vCOFINS: "0.00" } },
     }),
     qOriginal: 2,
     qDevolvida: 1,
@@ -406,5 +414,61 @@ describe("validarDevolucao — tributação", () => {
     const issues = validarDevolucao(ctx);
     expect(codigos(issues)).toEqual(["PIS_CST_SAIDA_EM_ENTRADA", "IBS_CBS_NAO_ENVIADO"]);
     expect(temBloqueio(issues)).toBe(false);
+  });
+
+  // Decisão 4 do dono (onda 5): o 49 que a devolução de venda do Simples herda
+  // das próprias vendas continua AVISO — mas o servidor avisa IGUAL ao campo da
+  // tela (antes só a tela avisava: a derivação não marca o 49). É o rascunho
+  // d93eb8c8 da DLS (nota 711): 102 + PIS/COFINS 49, avisos [] gravado.
+  it("49 herdado numa devolução de venda → AVISO PIS_CST_SAIDA_EM_ENTRADA, sem bloquear (servidor = tela)", () => {
+    const ctx = ctxBase();
+    ctx.refs[0].tributacao = tribOk("49");
+    expect(ctx.refs[0].tributacao.avisos).toEqual([]);
+    const issues = validarDevolucao(ctx);
+    expect(codigos(issues)).toEqual(["PIS_CST_SAIDA_EM_ENTRADA"]);
+    expect(issues[0]).toMatchObject({ severidade: "AVISO", ordem: 1 });
+    expect(issues[0].mensagem).toContain("49 do PIS e 49 da COFINS");
+    expect(temBloqueio(issues)).toBe(false);
+    // Marca gravada E código de saída: um aviso só por item.
+    ctx.refs[0].tributacao = { ...tribOk("49"), avisos: ["PIS_CST_SAIDA_EM_ENTRADA"] };
+    expect(codigos(validarDevolucao(ctx))).toEqual(["PIS_CST_SAIDA_EM_ENTRADA"]);
+    // 98/99 numa entrada: nada.
+    ctx.refs[0].tributacao = tribOk("98");
+    expect(validarDevolucao(ctx)).toEqual([]);
+  });
+});
+
+describe("validarDevolucao — origem da mercadoria", () => {
+  // A devolução pela chave deixa a "Origem da mercadoria" em branco de propósito
+  // (o Dexo não escolhe por ela). Em branco, o construtor escrevia `orig ?? 0`
+  // — Nacional — sem avisar, e a SEFAZ autoriza: peça importada sairia errada.
+  const comOrigem = (orig: number | null | undefined) => {
+    const ctx = ctxBase();
+    const t = ctx.refs[0].tributacao!;
+    ctx.refs[0].tributacao = { ...t, icms: { ...t.icms, orig: orig as never } };
+    return ctx;
+  };
+
+  it("origem ausente (null) é ERRO no item, e bloqueia a emissão", () => {
+    const issues = validarDevolucao(comOrigem(null));
+    const i = achar(issues, "ICMS_ORIGEM_NAO_INFORMADA");
+    expect(i).toMatchObject({ severidade: "ERRO", ordem: 1 });
+    expect(i!.mensagem).toContain("Item 1");
+    expect(temBloqueio(issues)).toBe(true);
+  });
+
+  it("origem ausente (undefined) também é ERRO", () => {
+    expect(codigos(validarDevolucao(comOrigem(undefined)))).toContain("ICMS_ORIGEM_NAO_INFORMADA");
+  });
+
+  it("origem 0 ESCOLHIDA (nacional) não é ausência: nenhuma pendência nova", () => {
+    // O defeito seria confundir "não informou" com "informou 0". Zero é valor.
+    expect(codigos(validarDevolucao(comOrigem(0)))).not.toContain("ICMS_ORIGEM_NAO_INFORMADA");
+  });
+
+  it("origem importada (1, 2, 6, 7) passa", () => {
+    for (const o of [1, 2, 6, 7]) {
+      expect(codigos(validarDevolucao(comOrigem(o)))).not.toContain("ICMS_ORIGEM_NAO_INFORMADA");
+    }
   });
 });

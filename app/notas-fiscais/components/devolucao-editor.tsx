@@ -19,13 +19,14 @@ import {ESCOLHA_ANTES_DA_ALIQUOTA,SEM_ALIQUOTA,regimeDoDetalhe} from "../lib/nfe
 // este arquivo desenha. O que o editor inteiro decide (linhas, corpo do PUT,
 // recusa do servidor, pergunta da entrega, valores e totais) mora em
 // `nfe-devolucao-editor-ui.ts` — ver o cabecalho dele para os casos da DLS.
-import {ajudaPisCofinsDoDetalhe,escolhaAntesDaAliquotaPisCofins,recusasPisCofins,rotuloAliquotaPisCofins,semAliquotaPisCofins,type CampoPisCofinsView,type RecusaPisCofins} from "../lib/nfe-devolucao-pis-cofins-campo";
+import {ALIQUOTA_TRAVADA_SIMPLES,ajudaPisCofinsDoDetalhe,escolhaAntesDaAliquotaPisCofins,recusasPisCofins,rotuloAliquotaPisCofins,semAliquotaPisCofins,type CampoPisCofinsView,type RecusaPisCofins} from "../lib/nfe-devolucao-pis-cofins-campo";
 import {GRUPO_OUTROS,GRUPO_SUGERIDOS,campoCfop,idDestDaOriginal} from "../lib/nfe-devolucao-cfop-campo";
+import {formatarQuantidade} from "../lib/nfe-devolucao-quantidade-campo";
 import {
   CFOP_FALTA_NO_PASSO_3,DESFAZER_TIRAR,DEVOLVER_TAMBEM,DICA_ALIQUOTA_COMPRA,FORA_DA_DEVOLUCAO,IPI_NAO_DEVOLVER,IPI_NAO_DEVOLVER_AVISO,NENHUMA_PECA,SAI_AO_SALVAR,
   SEM_REFERENCIA_ORIGINAL,TIRAR_DA_DEVOLUCAO,TRAVADO_IMPOSTOS,TRAVADO_PRODUTOS,VALORES_DO_ULTIMO_SALVAMENTO,
-  chaveDaLinha,corpoDoItemImpostos,falhaDoSalvar,impostosDaLinha,linhaDoItem,linhaForaDaDevolucao,linhasDoDetalhe,perguntaEntrega,produtoDaLinha,
-  quadroTotais,textoEscopo,tituloDaLinha,valoresDaTributacao,type FalhaSalvar,type LinhaEditor,
+  cabecalhoDevolucao,chaveDaLinha,corpoDoItemImpostos,falhaDoSalvar,textoNotaOriginal,impostosDaLinha,linhaDoItem,linhaForaDaDevolucao,linhasDoDetalhe,pecasForaDaDevolucao,perguntaEntrega,produtoDaLinha,
+  quadroTotais,quantidadeAoVoltar,saldoDaPeca,textoEscopo,textosOutrasDevolucoes,tituloDaLinha,valoresDaTributacao,type FalhaSalvar,type LinhaEditor,
 } from "../lib/nfe-devolucao-editor-ui";
 import type {DevolucaoDetalhe,DevolucaoItemDetalhe,AtualizarItemBody} from "@/app/fiscal/devolucao/contrato";
 
@@ -42,8 +43,10 @@ export function DevolucaoEditor({value,email,onSaved,step,onDirtyChange}:{value:
   /** true = ha edicao nao salva neste passo; false depois de salvar ou desfazer (e ao sair do passo). O wizard usa para nao descartar edicao sem perguntar. */
   onDirtyChange?:(sujo:boolean)=>void}) {
   const [linhas,setLinhas]=useState<Record<string,LinhaEditor>>(()=>linhasDoDetalhe(value));
-  // Pecas que sairam da devolucao ao salvar NESTA visita: o detalhe do servidor
-  // nao as traz mais, e sem elas a peca tirada nao tinha como voltar.
+  // Pecas que sairam da devolucao ao salvar NESTA visita (com o que ela tinha
+  // escrito). As tiradas ANTES — e que o servidor devolve em
+  // `itensForaDaDevolucao` — entram junto em `pecasForaDaDevolucao`: sem elas, a
+  // peca tirada sumia de vez depois de recarregar a pagina (K11).
   const [fora,setFora]=useState<DevolucaoItemDetalhe[]>([]);
   // Tres estados: sim, nao e SEM RESPOSTA (null). A caixinha de antes
   // transformava "nao respondi" em "nao" — e isso trava a emissao como recusa.
@@ -54,7 +57,7 @@ export function DevolucaoEditor({value,email,onSaved,step,onDirtyChange}:{value:
   const regime=regimeDoDetalhe(value.emitente);
   const itens=Array.isArray(value.itens)?value.itens:[];
   const chaves=new Set(itens.map(i=>chaveDaLinha(i.chaveAcesso,i.nItem)));
-  const foraVisiveis=fora.filter(i=>!chaves.has(chaveDaLinha(i.chaveAcesso,i.nItem)));
+  const foraVisiveis=pecasForaDaDevolucao({itens,itensForaDaDevolucao:value.itensForaDaDevolucao},fora);
 
   const produtos=[...itens.map(item=>({item,naDevolucao:true})),...foraVisiveis.map(item=>({item,naDevolucao:false}))].map(({item,naDevolucao})=>{
     const k=chaveDaLinha(item.chaveAcesso,item.nItem);
@@ -114,14 +117,14 @@ export function DevolucaoEditor({value,email,onSaved,step,onDirtyChange}:{value:
     const novas=linhasDoDetalhe(value);for(const i of foraVisiveis)novas[chaveDaLinha(i.chaveAcesso,i.nItem)]=linhaForaDaDevolucao(i);
     setLinhas(novas);setEntregue(value.devolvidaAposEntrega??null);setFalha(null);setMessage("");
   };
-  const pergunta=perguntaEntrega(value.tipo);
+  const pergunta=perguntaEntrega(value.tipo);const cabecalho=cabecalhoDevolucao(value.tipo);
   const totais=modo==="entrega"?null:quadroTotais(value.totais);
   const idDestDe=(i:DevolucaoItemDetalhe)=>idDestDaOriginal(value.originais,i.chaveAcesso,i.cfopOpcoes??[]);
 
   return <section className="space-y-4 rounded-lg border p-4" aria-label="Devolução fiscal">
-    <p className="font-medium">Devolução {value.tipo==="VENDA_ENTRADA"?"de venda (entrada)":"de compra (saída)"}</p>
-    <p className="text-sm text-muted-foreground">Operação exclusivamente fiscal. O estoque não será alterado.</p>
-    {value.originais.map(o=><p key={o.chaveAcesso} className="break-all text-xs">NF-e {o.numero}/{o.serie} — {o.chaveAcesso}</p>)}
+    <p className="font-medium">{cabecalho.titulo}</p>
+    <p className="text-sm text-muted-foreground">{cabecalho.estoque}</p>
+    {value.originais.map(o=><p key={o.chaveAcesso} className="text-xs">{textoNotaOriginal(value.tipo,o)} <span className="break-all text-muted-foreground">(chave {o.chaveAcesso})</span></p>)}
     {modo==="entrega"?<>
       <fieldset className="space-y-1">
         <legend className="text-sm font-medium">{pergunta.pergunta}</legend>
@@ -135,13 +138,19 @@ export function DevolucaoEditor({value,email,onSaved,step,onDirtyChange}:{value:
       {produtos.map(({k,item,naDevolucao,linha,produto})=>{
         const {titulo,origem}=tituloDaLinha({ordem:naDevolucao?item.ordem:null,codigo:item.codigo,descricao:item.descricao,nItem:item.nItem});
         const cfop=campoCfop({tipo:value.tipo,crt:regime.crt,idDest:idDestDe(item),sugeridos:item.cfopOpcoes,cfop:linha.cfop,cfopOriginal:item.cfopOriginal});
+        const saldo=saldoDaPeca(item);const outras=textosOutrasDevolucoes(item);
         return <div key={k} data-linha={k} className="space-y-2 rounded border p-3">
           <p className="font-medium">{titulo}</p><p className="text-xs text-muted-foreground">{origem}</p>
-          <p className="text-xs">Disponível para devolver: {item.disponivel??"não informado"}</p>
+          <p className="text-xs">Disponível para devolver: {item.disponivel===null || item.disponivel===undefined?"o Dexo não tem como conferir (nota sem o XML)":formatarQuantidade(item.disponivel)}</p>
+          {saldo!=="" && <p className="text-xs text-muted-foreground">{saldo}</p>}
+          {/* Onde mais esta peça está: outro rascunho (não segura a peça), outra
+              devolução em envio ou já autorizada. A DLS teve 5 rascunhos da
+              mesma nota sem saber. */}
+          {outras.length>0 && <ul className="list-disc space-y-0.5 pl-5 text-xs text-amber-800" aria-label="Esta peça em outras devoluções">{outras.map(t=><li key={t}>{t}</li>)}</ul>}
           {cfop.referencia!=="" && <p className="text-xs">{cfop.referencia}</p>}
           {linha.tirada?<div className="flex flex-wrap items-center gap-3">
             <p className="text-sm">{naDevolucao?SAI_AO_SALVAR:FORA_DA_DEVOLUCAO}</p>
-            <Button type="button" variant="outline" size="sm" onClick={()=>mudar(item,naDevolucao,{tirada:false,quantidadeTexto:linha.quantidadeTexto.trim()!==""&&linha.quantidadeTexto.trim()!=="0"?linha.quantidadeTexto:linhaDoItem(item).quantidadeTexto})}>{naDevolucao?DESFAZER_TIRAR:DEVOLVER_TAMBEM}</Button>
+            <Button type="button" variant="outline" size="sm" onClick={()=>mudar(item,naDevolucao,{tirada:false,quantidadeTexto:quantidadeAoVoltar(linha,item)})}>{naDevolucao?DESFAZER_TIRAR:DEVOLVER_TAMBEM}</Button>
           </div>:<div className="flex flex-wrap items-end gap-3">
             <label>Quantidade<Input type="text" inputMode="decimal" aria-label="Quantidade" aria-invalid={produto.quantidade.bloqueia} value={linha.quantidadeTexto} onChange={e=>mudar(item,naDevolucao,{quantidadeTexto:e.target.value})}/></label>
             <label>CFOP<select className="w-full rounded border p-2" aria-label="CFOP de devolução" aria-invalid={produto.erroCfop!==""} value={cfop.valor} onChange={e=>mudar(item,naDevolucao,{cfop:e.target.value})}>
@@ -194,8 +203,8 @@ export function DevolucaoEditor({value,email,onSaved,step,onDirtyChange}:{value:
                   {value.tipo==="COMPRA_SAIDA" && <span className="block text-xs text-muted-foreground">{DICA_ALIQUOTA_COMPRA}</span>}</>
                 :<p className="text-xs text-muted-foreground">{SEM_ALIQUOTA}</p>}
               {imp.erros.icms!=="" && <span className="block text-xs text-red-700">{imp.erros.icms}</span>}</label>
-            <AliquotaPisCofins campo={imp.pis} texto={imp.pPisTexto} erro={imp.erros.pis} aoMudar={v=>mudarImposto(item,{pPis:v})}/>
-            <AliquotaPisCofins campo={imp.cofins} texto={imp.pCofinsTexto} erro={imp.erros.cofins} aoMudar={v=>mudarImposto(item,{pCofins:v})}/>
+            <AliquotaPisCofins campo={imp.pis} texto={imp.pPisTexto} erro={imp.erros.pis} gravada={imp.aliquotaGravada.pis} aoMudar={v=>mudarImposto(item,{pPis:v})}/>
+            <AliquotaPisCofins campo={imp.cofins} texto={imp.pCofinsTexto} erro={imp.erros.cofins} gravada={imp.aliquotaGravada.cofins} aoMudar={v=>mudarImposto(item,{pCofins:v})}/>
           </div>
           {imp.ipi.tem && <div className="space-y-0.5">
             <label className="flex gap-2 text-sm"><input type="checkbox" checked={imp.ipi.retirado} onChange={e=>mudarImposto(item,{ipiRetirar:e.target.checked})}/>{IPI_NAO_DEVOLVER}</label>
@@ -258,19 +267,27 @@ function SeletorPisCofins({campo,aoEscolher}:{campo:CampoPisCofinsView;aoEscolhe
       <option value="">{campo.placeholder}</option>
       {campo.grupos.map(g=><optgroup key={g.rotulo} label={g.rotulo}>{g.opcoes.map(o=><option key={o.codigo} value={o.codigo}>{o.rotulo}</option>)}</optgroup>)}
     </select>
-    {/* Sentido trocado (CST de entrada numa nota de saída) não impede: avisa junto do campo. */}
+    {/* Código de saída numa devolução de VENDA (o 49 herdado das próprias
+        vendas) não impede: avisa junto do campo — e o servidor avisa igual. */}
     {campo.avisoTexto!=="" && <span className="block text-xs text-blue-700">{campo.avisoTexto}</span>}
   </label>;
 }
 
-function AliquotaPisCofins({campo,texto,erro,aoMudar}:{campo:CampoPisCofinsView;texto:string;erro:string;aoMudar:(v:string)=>void}) {
+function AliquotaPisCofins({campo,texto,erro,gravada,aoMudar}:{campo:CampoPisCofinsView;texto:string;erro:string;gravada:string;aoMudar:(v:string)=>void}) {
   const rotulo=rotuloAliquotaPisCofins(campo.tributo);
   return <label className="block">{rotulo}{campo.precisaEscolher
     ?<p className="text-xs text-muted-foreground">{escolhaAntesDaAliquotaPisCofins(campo.tributo)}</p>
-    :campo.exigeAliquota
-      // Controlada: mostra EXATAMENTE o que vai no corpo (era `defaultValue`, e a tela mostrava 1,65% com 0% gravado).
-      ?<Input type="number" min="0" max="100" step="0.01" aria-label={rotulo} aria-invalid={erro!==""} value={texto} onChange={e=>aoMudar(e.target.value)}/>
-      :<p className="text-xs text-muted-foreground">{semAliquotaPisCofins(campo.tributo)}</p>}
+    :campo.aliquotaTravadaEmZero
+      // Simples: TRAVADA em 0 (decisão 2 do dono). A SEFAZ autoriza a nota com
+      // PIS/COFINS destacado numa empresa do Simples — e isso só se desfaz
+      // cancelando —, então a caixa não deixa digitar e diz por quê.
+      ?<><Input type="number" aria-label={rotulo} value={texto} readOnly aria-readonly="true" className="bg-muted"/>
+        <span className="block text-xs text-muted-foreground">{ALIQUOTA_TRAVADA_SIMPLES}</span>
+        {gravada!=="" && <span className="block text-xs text-amber-800">{gravada}</span>}</>
+      :campo.exigeAliquota
+        // Controlada: mostra EXATAMENTE o que vai no corpo (era `defaultValue`, e a tela mostrava 1,65% com 0% gravado).
+        ?<Input type="number" min="0" max="100" step="0.01" aria-label={rotulo} aria-invalid={erro!==""} value={texto} onChange={e=>aoMudar(e.target.value)}/>
+        :<p className="text-xs text-muted-foreground">{semAliquotaPisCofins(campo.tributo)}</p>}
     {erro!=="" && <span className="block text-xs text-red-700">{erro}</span>}
   </label>;
 }

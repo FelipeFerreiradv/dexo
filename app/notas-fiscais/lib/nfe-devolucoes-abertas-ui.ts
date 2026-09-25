@@ -16,7 +16,10 @@
 //
 // Módulo PURO: sem React e sem DOM. O descarte recebe o `fetch` por parâmetro.
 
-import type { DevolucaoAbertaResumo } from "@/app/usecases/nfe-devolucao.usecase";
+// Do contrato (módulo puro), e não do caso de uso: a tela não puxa código de servidor.
+import type { DevolucaoAbertaResumo } from "@/app/fiscal/devolucao/contrato";
+// O rótulo do botão da venda sem XML guardado: o MESMO texto que a lista mostra.
+import { ROTULO_DEVOLVER_PELA_CHAVE } from "./nfe-devolucao-manual-ui";
 
 export const TITULO_DEVOLUCOES_EM_ANDAMENTO = "Devoluções em andamento";
 export const SUBTITULO_DEVOLUCOES_EM_ANDAMENTO =
@@ -76,10 +79,17 @@ function tituloDa(a: Pick<DevolucaoAbertaResumo, "gerenciada" | "tipo">): string
   return "Devolução";
 }
 
+// Os botões citados existem com ESTE texto: "Devolução manual" (no alto da
+// lista), "Devolver total"/"Devolver parcial" (na linha da venda) e "Continuar"
+// (nesta mesma linha). Antes: "Devolver" (não há botão só com esse nome) e
+// "Abra" (o botão é "Continuar"). A venda sem o XML no Dexo (histórico importado)
+// não tem "Devolver total"/"Devolver parcial": o botão dela é "Devolver pela
+// chave" — citar só os primeiros mandava procurar um botão que não está lá (a
+// mesma correção do `CAMINHO_VENDA` do wizard).
 export const AVISO_FEITA_A_MAO =
-  "Feita à mão: não está amarrada a nenhuma nota, então não emite. Descarte e comece pelo caminho certo (\"Devolução manual\" para compra, \"Devolver\" na nota de venda).";
+  `Feita à mão: não está amarrada a nenhuma nota, então não emite. Descarte e comece pelo caminho certo: "Devolução manual" para compra; na venda, "Devolver total" ou "Devolver parcial" na linha da nota (se a venda não tiver o XML no Dexo, o botão é "${ROTULO_DEVOLVER_PELA_CHAVE}").`;
 export const AVISO_REJEITADA =
-  "A SEFAZ recusou a última tentativa. Abra, corrija o que ela apontou e emita de novo.";
+  `A SEFAZ recusou a última tentativa. Clique em "${ROTULO_CONTINUAR}", corrija o que ela apontou e emita de novo.`;
 
 /** Linhas da tabela, da mexida mais recente para a mais antiga. */
 export function viewDevolucoesAbertas(abertas: readonly DevolucaoAbertaResumo[]): LinhaDevolucaoAbertaView[] {

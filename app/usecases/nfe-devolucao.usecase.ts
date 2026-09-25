@@ -16,10 +16,10 @@ import { mapearCfopDevolucao, isCfopPermitidoEmDevolucao, idDestDoCfop } from ".
 import { validarDevolucao, temBloqueio } from "../fiscal/devolucao/validacao";
 import { modoReferenciaDevolucao } from "../fiscal/devolucao/modo-referencia";
 import { conferirChaveDevolucaoManual } from "../fiscal/devolucao/contrato";
-import type { AtualizarCabecalhoBody, AtualizarItensBody, CriarDevolucaoBody, DevolucaoDetalhe, DevolucaoErroCodigo, ManualValidado, SaldoResposta } from "../fiscal/devolucao/contrato";
+import type { AtualizarCabecalhoBody, AtualizarItensBody, CriarDevolucaoBody, DevolucaoAbertaResumo, DevolucaoDetalhe, DevolucaoErroCodigo, DevolucaoItemDetalhe, DisponibilidadeDevolucaoResposta, ManualValidado, OutraDevolucaoDoItem, PreviaDevolucaoManual, SaldoResposta } from "../fiscal/devolucao/contrato";
 import type { CompanyFiscalConfig } from "../interfaces/company-fiscal.interface";
 import type { NfeDraftItem } from "../interfaces/nfe.interface";
-import type { DevolucaoIssue, EscopoDevolucao, FonteDevolucao, OrigemDevolucaoSnapshot, RefDevolucaoItem, SaldoItemOriginal, TipoDevolucao, TributacaoOverride } from "../fiscal/devolucao/tipos";
+import type { DevolucaoIssue, EscopoDevolucao, OrigemDevolucaoSnapshot, RefDevolucaoItem, SaldoItemOriginal, TributacaoOverride } from "../fiscal/devolucao/tipos";
 import { totaisDevolucao } from "../fiscal/devolucao/emissao";
 import type { ContextoEmissaoDevolucao } from "../fiscal/devolucao/emissao";
 import { hashConteudo } from "../fiscal/numeracao/decisao";
@@ -28,6 +28,9 @@ import { FocusNfeProvider } from "../fiscal/providers/focus-nfe.provider";
 import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
 
 type SaldoComChave = SaldoItemOriginal & {chaveAcesso:string};
+
+/** Quanto vale a lista de donos das configs com a devolução ligada (`donosComDevolucao`). */
+const DONOS_COM_DEVOLUCAO_TTL_MS=10*60_000;
 
 /**
  * O ajuste salvo (`saved`) + o que veio no corpo, CAMPO a campo: o que o corpo não
@@ -76,6 +79,29 @@ function issueCfop(ordem:number,cfop:string,tpNF:"0"|"1",idDestOriginal:number):
   return null;
 }
 
+/**
+ * Onde mais este item da nota original está: outros rascunhos (não seguram saldo, mas o
+ * primeiro a sair zera os outros) e devoluções autorizadas/em envio. Sem canceladas nem
+ * inutilizadas, e sem a própria devolução. Rascunho não tem nº fiscal (placeholder
+ * negativo) ⇒ `numero: null`.
+ */
+function outrasDevolucoesDoItem(linhas:ReadonlyArray<LinhaSaldoDevolucao>|undefined,nItem:number,propriaNfeId:string):OutraDevolucaoDoItem[] {
+  return (linhas??[]).filter(l=>l.nItem===nItem && l.devolucaoNfeId!==propriaNfeId && !["CANCELLED","INUTILIZED"].includes(l.statusDevolucao))
+    .map(l=>({nfeId:l.devolucaoNfeId,status:l.statusDevolucao,numero:typeof l.numeroDevolucao==="number" && l.numeroDevolucao>0?l.numeroDevolucao:null,serie:l.serieDevolucao??null,quantidade:Number(l.quantidade),criadaEm:l.criadaEm==null?null:new Date(l.criadaEm).toISOString()}));
+}
+
+/**
+ * K6(3): devolução de VENDA pela CHAVE de uma nota do PRÓPRIO Dexo que tem o XML autorizado
+ * guardado é recusada (ORIGINAL_TEM_XML_NO_DEXO, com o caminho certo na frase): pela nota
+ * ("Devolver") o imposto e o saldo de cada peça saem do XML autorizado; pela chave a
+ * devolução nasce das peças digitadas, sem o imposto da nota. Nota sem XML guardado (as
+ * 447 do histórico importado da DLS) continua podendo ir pela chave. Só o modo CHAVE: o
+ * modo XML já lê o próprio XML.
+ */
+function recusarChaveDeNotaComXml(input:ManualValidado,nota:{xmlAutorizadoPath:string|null}|null):void {
+  if(input.modo==="CHAVE" && input.tipo==="VENDA_ENTRADA" && typeof nota?.xmlAutorizadoPath==="string" && nota.xmlAutorizadoPath.trim()!=="")throw new DevolucaoError("ORIGINAL_TEM_XML_NO_DEXO");
+}
+
 /** A tela da devolução manual digita os mesmos itens de novo? (mesmos dados fixos da nota original) */
 function mesmosItensDigitados(input:ManualValidado,origem:OrigemDevolucaoSnapshot):boolean {
   if(input.modo!=="CHAVE")return true;
@@ -86,42 +112,41 @@ function mesmosItensDigitados(input:ManualValidado,origem:OrigemDevolucaoSnapsho
   });
 }
 
-/** Rascunho de devolução em aberto, para a tela listar e oferecer "Continuar"/"Descartar". */
-export interface DevolucaoAbertaResumo {
-  draftId:string;
-  status:string;
-  /** false = rascunho com finalidade devolução feito à mão (sem cabeçalho): só dá para descartar. */
-  gerenciada:boolean;
-  tipo:TipoDevolucao|null;
-  fonte:FonteDevolucao|null;
-  tipoOperacao:string;
-  destinatarioNome:string|null;
-  originais:Array<{chaveAcesso:string;numero:number;serie:number}>;
-  quantidadeItens:number;
-  criadaEm:string;
-  atualizadaEm:string;
-  /** Número fiscal preso a este rascunho (reserva viva). null = nenhum. */
-  numeracao:{numero:number;serie:number;estado:string;ambiente:string}|null;
-}
+/**
+ * `DevolucaoAbertaResumo` (rascunho de devolução em aberto, para "Continuar"/"Descartar")
+ * e `PreviaDevolucaoManual` (a prévia da devolução manual, sem criar nada) moram no
+ * CONTRATO, para o front importar sem puxar código de servidor; daqui só reexportados
+ * (quem importava deste arquivo continua importando).
+ */
+export type { DevolucaoAbertaResumo, PreviaDevolucaoManual } from "../fiscal/devolucao/contrato";
 
 /**
- * Prévia da devolução manual, SEM criar nada: os itens da nota original com o que ainda
- * pode ser devolvido de cada um (livro de devoluções) e o CFOP sugerido — para a tela
- * deixar escolher as peças ANTES de criar o rascunho (hoje nasce com todas e ela zera à
- * mão) — e o rascunho já aberto desta nota, se houver (a criação vai reaproveitá-lo).
+ * Recusa de cancelar a nota ORIGINAL que tem devolução autorizada ou em envio, citando
+ * CADA devolução (antes: "A nota tem devolução autorizada ou em envio — cancele a
+ * devolução antes.", sem dizer qual). Recebe as linhas do livro (`linhasSaldo` da chave
+ * da original) e decide com a MESMA regra de antes: status AUTHORIZED ou em envio
+ * (VALIDATING/SIGNING/SENDING). `null` = nada impede o cancelamento.
+ *
+ * Uma issue por devolução, com o id e o nº fiscal dela (`devolucaoNfeId`,
+ * `numeroDevolucao`, `serieDevolucao`). Rascunho/em envio não tem nº fiscal
+ * (placeholder negativo) ⇒ `numeroDevolucao: null`.
  */
-export interface PreviaDevolucaoManual {
-  chaveAcesso:string;
-  numero:number;
-  serie:number;
-  emitenteCnpjCpf:string;
-  /** Quem recebe a devolução: o fornecedor (compra) ou o cliente (venda). */
-  destinatarioNome:string|null;
-  /** Rascunho aberto desta nota e deste tipo: criar de novo devolve ELE (`reutilizado`). */
-  rascunhoAberto:string|null;
-  itens:Array<{nItem:number;codigo:string;descricao:string;unidade:string;valorUnitario:number;
-    quantidadeOriginal:number|null;devolvidaAutorizada:number;emProcessamento:number;emRascunho:number;disponivel:number|null;
-    cfopOriginal:string|null;cfopSugerido:string|null;cfopOpcoes:string[];cfopStatus:string}>;
+export function erroOriginalComDevolucao(linhas:ReadonlyArray<LinhaSaldoDevolucao>):DevolucaoError|null {
+  const EM_ENVIO=["VALIDATING","SIGNING","SENDING"];
+  const vistas=new Map<string,LinhaSaldoDevolucao>();
+  for(const l of linhas)if((l.statusDevolucao==="AUTHORIZED" || EM_ENVIO.includes(l.statusDevolucao)) && !vistas.has(l.devolucaoNfeId))vistas.set(l.devolucaoNfeId,l);
+  if(!vistas.size)return null;
+  const numeroDe=(l:LinhaSaldoDevolucao)=>typeof l.numeroDevolucao==="number" && l.numeroDevolucao>0?l.numeroDevolucao:null;
+  const issues=[...vistas.values()].map((l):DevolucaoIssue=>{
+    const numero=numeroDe(l);const serie=l.serieDevolucao??null;
+    const nome=numero!==null?`a NF-e de devolução nº ${numero}${serie!==null?` (série ${serie})`:""}`:"uma NF-e de devolução";
+    return l.statusDevolucao==="AUTHORIZED"
+      ?{code:"PARCIALMENTE_DEVOLVIDA",severidade:"ERRO",devolucaoNfeId:l.devolucaoNfeId,numeroDevolucao:numero,serieDevolucao:serie,
+        mensagem:`Esta nota tem ${nome} autorizada. Cancele primeiro a devolução (em "Notas Emitidas") e depois esta nota.`}
+      :{code:"EMISSAO_EM_ANDAMENTO",severidade:"ERRO",devolucaoNfeId:l.devolucaoNfeId,numeroDevolucao:numero,serieDevolucao:serie,
+        mensagem:`Esta nota tem ${nome} sendo enviada à SEFAZ. Espere o resultado dela: se for autorizada, cancele-a antes; se for recusada, esta nota pode ser cancelada.`};
+  });
+  return new DevolucaoError("ORIGINAL_COM_DEVOLUCAO",issues,{mensagem:issues.map(i=>i.mensagem).join(" ")});
 }
 
 export class NfeDevolucaoUseCase {
@@ -170,7 +195,13 @@ export class NfeDevolucaoUseCase {
       const erro=m.issues.find(i=>i.severidade==="ERRO" && ["CHAVE_DIVERGENTE","AMBIENTE_DIVERGENTE","TOTALMENTE_DEVOLVIDA","PARCIALMENTE_DEVOLVIDA","EMITENTE_ORIGINAL_DIVERGENTE"].includes(i.code));
       if(erro)throw new DevolucaoError(erro.code==="TOTALMENTE_DEVOLVIDA"?"TOTALMENTE_DEVOLVIDA":erro.code==="PARCIALMENTE_DEVOLVIDA"?"PARCIALMENTE_DEVOLVIDA":"DEVOLUCAO_INVALIDA",[erro]);
       if(!m.itens.length)throw new DevolucaoError("TOTALMENTE_DEVOLVIDA");
-      return {draftId:await this.repo.criar(tx,userId,actorUserId,m),reutilizado:false};
+      // O escopo GRAVADO é o derivado das quantidades (escopoDaDevolucao), como em itens() e
+      // cabecalho(): "Devolver parcial" nasce com TODAS as peças e a quantidade cheia de cada
+      // uma, e gravar o pedido ("PARCIAL") deixava o rascunho dizendo "parte da nota" até o
+      // primeiro save. A recusa de "total" numa nota já parcialmente devolvida continua
+      // acima (issue PARCIALMENTE_DEVOLVIDA de montarRascunhoDeOriginal, com o pedido).
+      const escopo=escopoDaDevolucao({saldos:m.saldos.map(s=>({...s,chaveAcesso:m.origem.chaveAcesso})),itens:m.refs.map(r=>({chaveAcesso:r.chaveAcessoOriginal,nItem:r.nItemOriginal,quantidade:r.quantidade}))});
+      return {draftId:await this.repo.criar(tx,userId,actorUserId,{...m,escopo}),reutilizado:false,escopo};
     });
   }
   /**
@@ -195,6 +226,8 @@ export class NfeDevolucaoUseCase {
     const chave=lida.origem.chaveAcesso;
     return this.repo.transaction(async tx=>{
       await this.repo.lockOrigens(tx,userId,[chave]);
+      const notaOriginal=input.tipo==="VENDA_ENTRADA"?await this.repo.notaPorChave(userId,chave,tx):null;
+      recusarChaveDeNotaComXml(input,notaOriginal);
       const aberta=await this.repo.aberta(userId,chave,tx,input.tipo);
       if(aberta) {
         const existente=input.modo==="CHAVE"?await this.repo.get(userId,aberta,tx):null;
@@ -202,7 +235,6 @@ export class NfeDevolucaoUseCase {
         if(input.modo==="XML" || (origemExistente && mesmosItensDigitados(input,origemExistente)))return {draftId:aberta,reutilizado:true};
       }
       const linhas=await this.repo.linhasSaldo(userId,chave,tx);
-      const notaOriginal=input.tipo==="VENDA_ENTRADA"?await this.repo.notaPorChave(userId,chave,tx):null;
       const completa:OrigemManualLida=completarOrigemManual(lida,{modo:input.modo,linhas,notaOriginal});
       const saldos=calcularSaldoPorItem({itensOriginais:completa.origem.itens.map(i=>({nItem:i.nItem,quantidade:i.quantidade||null})),linhas,chave});
       const m=montarRascunhoManual(input,config,{lida:completa,saldos});
@@ -218,8 +250,9 @@ export class NfeDevolucaoUseCase {
     }
     const lida=lerOrigemManual(input,config);
     const chave=lida.origem.chaveAcesso;
-    const linhas=await this.repo.linhasSaldo(userId,chave);
     const notaOriginal=input.tipo==="VENDA_ENTRADA"?await this.repo.notaPorChave(userId,chave):null;
+    recusarChaveDeNotaComXml(input,notaOriginal);
+    const linhas=await this.repo.linhasSaldo(userId,chave);
     const {origem,destinatario}=completarOrigemManual(lida,{modo:input.modo,linhas,notaOriginal});
     const saldos=calcularSaldoPorItem({itensOriginais:origem.itens.map(i=>({nItem:i.nItem,quantidade:i.quantidade||null})),linhas,chave});
     const crt=crtDeRegime(config.regimeTributario);
@@ -278,10 +311,7 @@ export class NfeDevolucaoUseCase {
       totais:totaisDevolucao({itens:n.itens,refs:d.refs,valorFrete:n.valorFrete}),
       itens:d.refs.map(r=>{
         const item=n.itens.find(i=>i.numero===r.ordem);const s=saldos.find(s=>s.chaveAcesso===r.chaveAcessoOriginal && s.nItem===r.nItemOriginal);
-        // Onde mais este item da nota original está: outros rascunhos (não seguram saldo,
-        // mas o primeiro a sair zera os outros) e devoluções autorizadas/em envio.
-        const outrasDevolucoes=(linhasPorChave.get(r.chaveAcessoOriginal)??[]).filter(l=>l.nItem===r.nItemOriginal && l.devolucaoNfeId!==n.id && !["CANCELLED","INUTILIZED"].includes(l.statusDevolucao))
-          .map(l=>({nfeId:l.devolucaoNfeId,status:l.statusDevolucao,numero:typeof l.numeroDevolucao==="number" && l.numeroDevolucao>0?l.numeroDevolucao:null,serie:l.serieDevolucao??null,quantidade:Number(l.quantidade),criadaEm:l.criadaEm==null?null:new Date(l.criadaEm).toISOString()}));
+        const outrasDevolucoes=outrasDevolucoesDoItem(linhasPorChave.get(r.chaveAcessoOriginal),r.nItemOriginal,n.id);
         return {ordem:r.ordem,chaveAcesso:r.chaveAcessoOriginal,nItem:r.nItemOriginal,codigo:item?.codigo??r.codigoOriginal,descricao:item?.descricao??"",unidade:item?.unidade??"",ncm:item?.ncm??"",
           quantidadeOriginal:r.quantidadeOriginal??s?.quantidadeOriginal??null,devolvidaAutorizada:s?.devolvidaAutorizada??0,emProcessamento:s?.emProcessamento??0,emRascunho:s?.emRascunho??0,disponivel:s?.disponivel??null,quantidade:r.quantidade,valorUnitario:item?.valorUnitario??0,valor:r.valor,
           cfopOriginal:r.cfopOriginal,cfop:item?.cfop??"",cfopStatus:r.cfopMapeamento.status,cfopOpcoes:r.cfopMapeamento.opcoes,tributacao:r.tributacao,requerRevisao:r.tributacao.requerRevisao,
@@ -289,7 +319,44 @@ export class NfeDevolucaoUseCase {
           // Devolução pela chave: não há imposto original (null).
           referenciaOriginal:h.fonte==="MANUAL"?null:referenciaImpostoOriginal({impostoOriginal:r.impostoOriginal,quantidadeOriginal:r.quantidadeOriginal,quantidade:r.quantidade,tipo:h.tipo}),
           outrasDevolucoes};
-      })};
+      }),
+      itensForaDaDevolucao:this.itensForaDaDevolucao(d,config,saldos,linhasPorChave)};
+  }
+  /**
+   * K11: as peças da nota original (snapshot `origensJson`) que NÃO estão nesta devolução
+   * e ainda podem ser devolvidas — `disponivel` ≠ 0 (null = pela chave, sem saldo
+   * verificável). Sem elas, a peça tirada sumia da tela ao recarregar e não tinha como
+   * voltar (o PUT dos itens já aceita qualquer nItem de `origensJson`).
+   *
+   * Mesmo formato dos itens da devolução, com o que ela voltaria a ser: a quantidade é o
+   * disponível (0 quando não se sabe — ela digita), o CFOP é o sugerido e a tributação é
+   * a de PARTIDA (`baseTributariaDoItem`, a mesma do PUT, que recalcula ao voltar).
+   * `ordem: 0` = fora da nota. Nada é gravado.
+   */
+  private itensForaDaDevolucao(d:DevolucaoPersistida,config:CompanyFiscalConfig,saldos:SaldoComChave[],linhasPorChave:Map<string,LinhaSaldoDevolucao[]>):DevolucaoItemDetalhe[] {
+    const {cabecalho:h}=d;
+    const crt=crtDeRegime(config.regimeTributario);
+    const fora:DevolucaoItemDetalhe[]=[];
+    for(const origem of h.origensJson) {
+      for(const original of origem.itens) {
+        if(d.refs.some(r=>r.chaveAcessoOriginal===origem.chaveAcesso && r.nItemOriginal===original.nItem))continue;
+        const s=saldos.find(x=>x.chaveAcesso===origem.chaveAcesso && x.nItem===original.nItem)??null;
+        const disponivel=s?.disponivel??null;
+        const dispU=disponivel===null?null:quantidadeParaUnidades(disponivel);
+        if(dispU!==null && dispU<=0)continue;
+        const quantidade=disponivel??0;
+        const qOriginal=original.quantidade||s?.quantidadeOriginal||null;
+        const {tributacao,valor}=baseTributariaDoItem({fonte:h.fonte,original,quantidadeOriginal:qOriginal,quantidade,crtEmitente:crt,crtOriginal:origem.crtOriginal,tipo:h.tipo});
+        const cfop=mapearCfopDevolucao({cfopOriginal:original.cfop,tipo:h.tipo,idDestOriginal:origem.idDest,crt});
+        const imposto=h.fonte==="MANUAL"?null:original.impostoOriginal;
+        fora.push({ordem:0,chaveAcesso:origem.chaveAcesso,nItem:original.nItem,codigo:original.codigo,descricao:original.descricao,unidade:original.unidade,ncm:original.ncm,
+          quantidadeOriginal:qOriginal,devolvidaAutorizada:s?.devolvidaAutorizada??0,emProcessamento:s?.emProcessamento??0,emRascunho:s?.emRascunho??0,disponivel,quantidade,valorUnitario:original.valorUnitario,valor,
+          cfopOriginal:original.cfop||null,cfop:cfop.cfop??"",cfopStatus:cfop.status,cfopOpcoes:cfop.opcoes,tributacao,requerRevisao:tributacao.requerRevisao,
+          referenciaOriginal:imposto?referenciaImpostoOriginal({impostoOriginal:imposto,quantidadeOriginal:qOriginal,quantidade,tipo:h.tipo}):null,
+          outrasDevolucoes:outrasDevolucoesDoItem(linhasPorChave.get(origem.chaveAcesso),original.nItem,d.nota.id)});
+      }
+    }
+    return fora;
   }
   async cabecalho(userId:string,actorUserId:string,id:string,body:AtualizarCabecalhoBody) {
     const d=await this.repo.get(userId,id);if(!d)throw new DevolucaoError("DEVOLUCAO_NAO_GERENCIADA");
@@ -325,6 +392,9 @@ export class NfeDevolucaoUseCase {
       // ordem gravada), não a posição na lista nova.
       const falha:{codigo:DevolucaoErroCodigo|null;issues:DevolucaoIssue[]}={codigo:null,issues:[]};
       const recusar=(codigo:DevolucaoErroCodigo,...issues:DevolucaoIssue[])=>{falha.issues.push(...issues);if(!falha.codigo)falha.codigo=codigo;};
+      // Cada recusa diz também a PEÇA (nº do item na nota original + a chave), como os `erros`
+      // do 400 (comItemDoCorpo): a `ordem` é o item na tela, e muda quando uma peça sai.
+      const daPeca=(b:{chaveAcesso:string;nItem:number},i:DevolucaoIssue):DevolucaoIssue=>({...i,nItem:b.nItem,chaveAcesso:b.chaveAcesso});
       const crtEmitente=crtDeRegime(config.regimeTributario);
       const tipoOperacao=d.cabecalho.tipo==="COMPRA_SAIDA"?"SAIDA":"ENTRADA";
       for(const b of body.itens.filter(i=>i.quantidade>0)) {
@@ -336,11 +406,11 @@ export class NfeDevolucaoUseCase {
         const qOriginal=original.quantidade||saldo?.quantidadeOriginal||null;
         const dispU=saldo?.disponivel!=null?quantidadeParaUnidades(saldo.disponivel):null;
         if(dispU!==null && (quantidadeParaUnidades(b.quantidade)??0)>dispU) {
-          recusar("SALDO_INSUFICIENTE",issueSaldoExcedido({ordem:ordemTela,nItemOriginal:original.nItem,codigo:original.codigo,pedida:b.quantidade,saldo}));
+          recusar("SALDO_INSUFICIENTE",daPeca(b,issueSaldoExcedido({ordem:ordemTela,nItemOriginal:original.nItem,codigo:original.codigo,pedida:b.quantidade,saldo})));
           continue;
         }
         const cfopRecusado=issueCfop(ordemTela,b.cfop,tipoOperacao==="SAIDA"?"1":"0",origem.idDest);
-        if(cfopRecusado){recusar("CFOP_INVALIDO",cfopRecusado);continue;}
+        if(cfopRecusado){recusar("CFOP_INVALIDO",daPeca(b,cfopRecusado));continue;}
         const {tributacao:base,valor,desconto,baseCalculo}=baseTributariaDoItem({fonte:d.cabecalho.fonte,original,quantidadeOriginal:qOriginal,quantidade:b.quantidade,crtEmitente,crtOriginal:origem.crtOriginal,tipo:d.cabecalho.tipo});
         const t=anterior?.tributacao;
         // `ipiDevol:false` e a escolha de RETIRAR o IPI devolvido: sem reconstrui-la, o proximo save devolvia o IPI.
@@ -348,12 +418,15 @@ export class NfeDevolucaoUseCase {
         // Mescla com o que ela JÁ gravou (mesclarAjusteTributacao): tributo ausente do corpo fica
         // com o salvo; dentro do tributo, campo ausente também (o par cst/csosn do ICMS é atômico).
         const imposto=d.cabecalho.fonte==="MANUAL"?null:original.impostoOriginal;
-        const override=aplicarOverrideTributacao({base,override:mesclarAjusteTributacao(saved,b.tributacao),confirmar:b.confirmarTributacao,crtEmitente,baseCalculoItem:baseCalculo,tipoOperacao,
+        // `salvo` (decisão 5): o valor IGUAL ao já gravado não é ajuste novo e não é julgado de
+        // novo — um PIS 01 antigo gravado numa empresa do Simples (rascunho 4a3698ee da DLS)
+        // não barra salvar a QUANTIDADE. Quem barra a EMISSÃO por ele é validarDevolucao.
+        const override=aplicarOverrideTributacao({base,override:mesclarAjusteTributacao(saved,b.tributacao),salvo:saved,confirmar:b.confirmarTributacao,crtEmitente,baseCalculoItem:baseCalculo,tipoOperacao,
           baseIcmsOriginal:referenciaImpostoOriginal({impostoOriginal:imposto,quantidadeOriginal:qOriginal,quantidade:b.quantidade,tipo:d.cabecalho.tipo})?.icms?.vBC??null});
         if(!override.ok) {
           // O motivo de CADA tributo recusado, no código da pendência que o descreve (antes o
           // 422 descartava `override.erros` e a tela dizia só "Tributação não suportada").
-          recusar("TRIBUTACAO_NAO_SUPORTADA",...override.recusas.map((x):DevolucaoIssue=>({code:x.code,severidade:"ERRO",ordem:ordemTela,mensagem:`Item ${ordemTela}: ${x.tributo}: ${x.motivo}`})));
+          recusar("TRIBUTACAO_NAO_SUPORTADA",...override.recusas.map((x):DevolucaoIssue=>daPeca(b,{code:x.code,severidade:"ERRO",ordem:ordemTela,mensagem:`Item ${ordemTela}: ${x.tributo}: ${x.motivo}`})));
           continue;
         }
         itens.push({numero:ordem,codigo:original.codigo,descricao:original.descricao,ncm:original.ncm,cest:original.cest,cfop:b.cfop,unidade:original.unidade,origem:(original.origem??0) as NfeDraftItem["origem"],quantidade:b.quantidade,valorUnitario:original.valorUnitario,valorTotal:valor,desconto});
@@ -422,11 +495,17 @@ export class NfeDevolucaoUseCase {
    * descartar (a lista de notas esconde rascunho; a DLS tinha 7 invisíveis, um deles, feito
    * à mão, segurando o nº 712). Descartar é o DELETE /nfe/draft/:id que já existe: as FKs
    * de NfeDevolucao e NfeDevolucaoItem são ON DELETE CASCADE.
+   *
+   * Sem empresa com a devolução ligada: lista VAZIA (200), e sem consulta ao banco por
+   * requisição (`donosComDevolucao`) — a tela chama isto a cada carga da lista de notas, em
+   * todo cliente; antes cada carga custava um SELECT e um 404.
    */
   async abertas(userId:string):Promise<{abertas:DevolucaoAbertaResumo[]}> {
+    const donos=await this.donosComDevolucao();
+    if(donos && !donos.has(userId))return {abertas:[]};
     const configs=await this.repo.configsDoUsuario(userId);
     const padrao=configs.find(c=>c.isDefault)?.id??null;
-    if(!configs.some(c=>isDevolucaoAtiva(c.id)))throw new NumeracaoError("RECURSO_INDISPONIVEL",404,"Recurso indisponível");
+    if(!configs.some(c=>isDevolucaoAtiva(c.id)))return {abertas:[]};
     const linhas=(await this.repo.abertasDoUsuario(userId)).filter(l=>isDevolucaoAtiva(l.companyFiscalConfigId??padrao));
     const reservas=await this.repo.reservasVivas(userId,linhas.map(l=>l.id));
     const iso=(v:Date|string)=>new Date(v).toISOString();
@@ -436,5 +515,47 @@ export class NfeDevolucaoUseCase {
         originais:(l.originais??[]).map(o=>({chaveAcesso:o.chaveAcesso,numero:Number(o.numero),serie:Number(o.serie)})),quantidadeItens:Number(l.quantidadeItens)||0,
         criadaEm:iso(l.createdAt),atualizadaEm:iso(l.updatedAt),numeracao:r?{numero:Number(r.numero),serie:Number(r.serie),estado:r.estado,ambiente:r.ambiente}:null};
     })};
+  }
+  /**
+   * GET /nfe/devolucao/disponibilidade (ver `DisponibilidadeDevolucaoResposta`): as
+   * empresas do usuário com a devolução ligada (K12: com mais de um CNPJ a tela manual
+   * precisa escolher) e, no campo de sempre, a padrão quando ela está ligada — a resposta
+   * de antes, byte a byte, para a padrão ligada, mais `empresas`. Nenhuma ligada: 404.
+   */
+  async disponibilidade(userId:string):Promise<DisponibilidadeDevolucaoResposta> {
+    const indisponivel=()=>new NumeracaoError("RECURSO_INDISPONIVEL",404,"Recurso indisponível");
+    const donos=await this.donosComDevolucao();
+    if(donos && !donos.has(userId))throw indisponivel();
+    // A padrão é a 1ª linha (isDefault desc, createdAt asc) — a mesma de findByUserId.
+    const todas=await this.repo.empresasDoUsuario(userId);
+    const ligadas=todas.filter(c=>isDevolucaoAtiva(c.id));
+    if(!ligadas.length)throw indisponivel();
+    const padrao=todas[0];
+    const companyFiscalConfigId=isDevolucaoAtiva(padrao.id)?padrao.id:ligadas.length===1?ligadas[0].id:null;
+    return {disponivel:true,companyFiscalConfigId,
+      empresas:ligadas.map(c=>({companyFiscalConfigId:c.id,cnpj:c.cnpj,razaoSocial:c.razaoSocial,nomeFantasia:c.nomeFantasia??null,uf:c.uf??null,ambiente:c.ambiente,isDefault:c.isDefault===true}))};
+  }
+  /**
+   * Quem PODE ter a devolução ligada, sem ir ao banco a cada requisição:
+   *  - conjunto vazio: ninguém (devolução desligada, ou nenhuma config da allowlist
+   *    passa em `isDevolucaoAtiva`) — sem consulta nenhuma;
+   *  - conjunto de userIds: os donos das configs da allowlist, consultados UMA vez e
+   *    guardados por 10 min (a allowlist vem da env; o dono de uma config não muda);
+   *  - `null`: allowlist "*" (todos podem ter) — decide a consulta de cada usuário.
+   * É só um atalho para o "não": quem está no conjunto passa pela regra de sempre
+   * (`isDevolucaoAtiva` sobre as configs DELE).
+   */
+  private donosCache:{chave:string;ate:number;donos:Set<string>}|null=null;
+  private async donosComDevolucao():Promise<Set<string>|null> {
+    if(process.env.NFE_DEVOLUCAO_ENABLED!=="true")return new Set();
+    const bruto=(process.env.NFE_DEVOLUCAO_CONFIG_IDS??"").trim();
+    if(bruto==="*")return null;
+    const ids=[...new Set(bruto.split(",").map(x=>x.trim()).filter(x=>x!=="" && x!=="*"))].filter(id=>isDevolucaoAtiva(id));
+    if(!ids.length)return new Set();
+    const chave=ids.join(",");const agora=Date.now();
+    if(this.donosCache && this.donosCache.chave===chave && this.donosCache.ate>agora)return this.donosCache.donos;
+    const donos=new Set(await this.repo.donosDasConfigs(ids));
+    this.donosCache={chave,ate:agora+DONOS_COM_DEVOLUCAO_TTL_MS,donos};
+    return donos;
   }
 }

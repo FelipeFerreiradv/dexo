@@ -402,12 +402,18 @@ describe("N-pis-cofins-ipi-5 — o IPI devolvido aparece e pode ser retirado, co
 });
 
 describe("aviso de sentido e recusa do servidor", () => {
-  it("CST de entrada numa devolução de compra: aviso junto do campo, sem travar", async () => {
+  // ATUALIZADO (onda 5, decisão 3 do dono): era "aviso junto do campo". CST de
+  // entrada numa devolução de compra (nota de saída) agora é RECUSADO pelo juiz
+  // do servidor, que o campo usa: a frase é a da recusa (mesmo começo — "O CST
+  // 50 é de entrada, e esta devolução de compra é uma nota de saída"). O
+  // salvamento de outras coisas continua livre (quem barra a emissão é o servidor).
+  it("CST de entrada numa devolução de compra: recusa junto do campo, sem travar o salvar", async () => {
     await montar(detalhe("LUCRO_REAL", [item(5, trib({
       icms: { tag: "ICMS40", cst: "40", csosn: null, orig: 0, modBC: null, vBC: 0, pICMS: 0, vICMS: 0 },
       pis: { cst: "50", vBC: 0, p: 0, v: 0 },
     }))]));
-    expect(linha(5).textContent).toContain("O CST 50 é de entrada, e esta devolução é uma nota de saída.");
+    expect(linha(5).textContent).toContain("O CST 50 é de entrada, e esta devolução de compra é uma nota de saída");
+    expect(linha(5).textContent).toContain("O código do PIS deste item não serve na devolução");
     expect(salvar().disabled).toBe(false);
   });
 

@@ -9,7 +9,10 @@
  * | GET  /fiscal/nfe/draft/:id/devolucao           | —                            | DevolucaoDetalhe |
  * | PUT  /fiscal/nfe/draft/:id/devolucao           | AtualizarCabecalhoBody       | DevolucaoDetalhe |
  * | PUT  /fiscal/nfe/draft/:id/devolucao/itens     | AtualizarItensBody           | DevolucaoDetalhe |
- * | POST /fiscal/nfe/devolucao/manual              | ManualBody                   | 201 ManualResposta |
+ * | POST /fiscal/nfe/devolucao/manual              | ManualBody                   | 201/200 ManualResposta |
+ * | POST /fiscal/nfe/devolucao/manual/previa       | ManualBody                   | PreviaDevolucaoManual |
+ * | GET  /fiscal/nfe/devolucao/abertas             | —                            | { abertas: DevolucaoAbertaResumo[] } |
+ * | GET  /fiscal/nfe/devolucao/disponibilidade     | —                            | DisponibilidadeDevolucaoResposta |
  *
  * Erros: `ErroDevolucaoResposta` com `code` ∈ DEVOLUCAO_ERRO_CODIGOS e o HTTP de
  * `DEVOLUCAO_ERRO_HTTP`. Feature desligada para a config ⇒ 404 sem `code`.
@@ -31,6 +34,7 @@ import type {
   IdDest,
   IndFinalDevolucao,
   ModoReferenciaDevolucao,
+  OrigemItemSnapshot,
   ReferenciaImpostoOriginal,
   RegimeEmitenteDevolucao,
   SaldoItemOriginal,
@@ -69,8 +73,22 @@ export const DEVOLUCAO_ERRO_CODIGOS = [
   "CHAVE_INVALIDA",
   "NOTA_NAO_EMITIDA_PARA_ESTE_CNPJ",
   "CONFIRMACAO_SEM_XML_OBRIGATORIA",
+  /**
+   * Cancelar a nota ORIGINAL com devolução autorizada ou em envio. A frase (`error`)
+   * cita a devolução (nº fiscal, ou "em envio") e `issues` traz UMA por devolução,
+   * com `devolucaoNfeId`, `numeroDevolucao` e `serieDevolucao` (`erroOriginalComDevolucao`
+   * no caso de uso). O `code` de cada issue é EMISSAO_EM_ANDAMENTO (em envio) ou
+   * PARCIALMENTE_DEVOLVIDA (autorizada) — o catálogo de pendências é da devolução,
+   * não do cancelamento: a tela deve mostrar a `mensagem` da issue.
+   */
   "ORIGINAL_COM_DEVOLUCAO",
   "DEVOLUCAO_INVALIDA",
+  /**
+   * Devolução PELA CHAVE de uma nota emitida pelo próprio Dexo que TEM o XML
+   * autorizado guardado (K6-3): pela chave o saldo não é conferido; pela nota,
+   * é. O caso de uso já lê `notaPorChave(...).xmlAutorizadoPath` para decidir.
+   */
+  "ORIGINAL_TEM_XML_NO_DEXO",
 ] as const;
 
 export type DevolucaoErroCodigo = (typeof DEVOLUCAO_ERRO_CODIGOS)[number];
@@ -104,6 +122,7 @@ export const DEVOLUCAO_ERRO_HTTP: Readonly<Record<DevolucaoErroCodigo, 400 | 404
   CONFIRMACAO_SEM_XML_OBRIGATORIA: 422,
   ORIGINAL_COM_DEVOLUCAO: 409,
   DEVOLUCAO_INVALIDA: 422,
+  ORIGINAL_TEM_XML_NO_DEXO: 409,
 };
 
 export const DEVOLUCAO_ERRO_MENSAGEM: Readonly<Record<DevolucaoErroCodigo, string>> = {
@@ -121,7 +140,7 @@ export const DEVOLUCAO_ERRO_MENSAGEM: Readonly<Record<DevolucaoErroCodigo, strin
   ORIGINAL_ENTRADA: "Nota de entrada — devolução de compra usa a devolução manual.",
   JA_E_DEVOLUCAO: "Esta já é uma nota de devolução.",
   AMBIENTE_DIVERGENTE: "A nota original e o emissor estão em ambientes diferentes (homologação × produção).",
-  DEVOLUCAO_NAO_GERENCIADA: "Este rascunho não é uma devolução gerenciada.",
+  DEVOLUCAO_NAO_GERENCIADA: "Este rascunho não está ligado a nenhuma nota original.",
   DEVOLUCAO_EM_EMISSAO: "Esta nota já foi enviada à SEFAZ e não pode mais ser alterada.",
   ITEM_ORIGINAL_INEXISTENTE: "O item informado não existe na nota original.",
   CFOP_INVALIDO: "CFOP inválido para esta devolução.",
@@ -135,6 +154,8 @@ export const DEVOLUCAO_ERRO_MENSAGEM: Readonly<Record<DevolucaoErroCodigo, strin
   CONFIRMACAO_SEM_XML_OBRIGATORIA: "Sem o XML da nota original, confirme a devolução sem XML.",
   ORIGINAL_COM_DEVOLUCAO: "A nota tem devolução autorizada ou em envio — cancele a devolução antes.",
   DEVOLUCAO_INVALIDA: "A devolução tem pendências que impedem a emissão.",
+  ORIGINAL_TEM_XML_NO_DEXO:
+    'Esta nota foi emitida pelo Dexo e o XML dela está guardado: faça a devolução pela própria nota, em "Notas Emitidas" (botão "Devolver total" ou "Devolver parcial" na linha dela), e não pela chave.',
 };
 
 export function isDevolucaoErroCodigo(v: unknown): v is DevolucaoErroCodigo {
@@ -144,6 +165,14 @@ export function isDevolucaoErroCodigo(v: unknown): v is DevolucaoErroCodigo {
 export interface ErroCampo {
   campo: string;
   mensagem: string;
+  /**
+   * Em erro de campo "itens[i]…": o nº do item da nota original daquela linha,
+   * lido do corpo ENVIADO (para a tela achar o cartão da peça sem depender da
+   * posição). Opcional: parser antigo não manda.
+   */
+  nItem?: number;
+  /** Idem, a chave da nota original daquela linha (PUT dos itens). */
+  chaveAcesso?: string;
 }
 
 export interface ErroDevolucaoResposta {
@@ -176,6 +205,11 @@ export interface CriarDevolucaoBody {
 export interface CriarDevolucaoResposta {
   draftId: string;
   reutilizado: boolean;
+  /**
+   * Escopo do rascunho (derivado das quantidades). No reaproveitado, é o do
+   * rascunho que JÁ existia — o pedido não o muda. Opcional: servidor antigo não manda.
+   */
+  escopo?: EscopoDevolucao;
 }
 
 export interface SaldoItemResposta extends SaldoItemOriginal {
@@ -222,6 +256,31 @@ export interface OrigemResumo {
   serie: number;
   dataEmissao: string | null;
   destinatarioNome: string | null;
+  /**
+   * Destino da operação da nota original (a devolução espelha) — é ele que diz
+   * quais CFOPs de devolução servem. Já vai no JSON (o detalhe espalha o
+   * snapshot `origensJson`); opcional só por compatibilidade.
+   */
+  idDest?: IdDest;
+  /**
+   * Os itens da nota original, como estão no snapshot (`origensJson`) — de onde
+   * a tela recoloca uma peça tirada da devolução (K11). Já vai no JSON; opcional
+   * só por compatibilidade.
+   */
+  itens?: OrigemItemSnapshot[];
+}
+
+/** Outra devolução em que o MESMO item da nota original está (sem canceladas/inutilizadas). */
+export interface OutraDevolucaoDoItem {
+  nfeId: string;
+  /** NfeStatus da outra devolução (DRAFT/REJECTED = rascunho; VALIDATING/SIGNING/SENDING = em envio; AUTHORIZED). */
+  status: string;
+  /** null enquanto rascunho (placeholder negativo não é número fiscal). */
+  numero: number | null;
+  serie: number | null;
+  quantidade: number;
+  /** ISO; null quando não se sabe. */
+  criadaEm: string | null;
 }
 
 export interface DevolucaoItemDetalhe {
@@ -235,6 +294,12 @@ export interface DevolucaoItemDetalhe {
   quantidadeOriginal: number | null;
   devolvidaAutorizada: number;
   emProcessamento: number;
+  /**
+   * Quanto deste item está em OUTROS rascunhos (DRAFT/REJECTED) — não segura
+   * saldo, mas o primeiro a sair zera os outros. Já vai no JSON; opcional só por
+   * compatibilidade.
+   */
+  emRascunho?: number;
   disponivel: number | null;
   quantidade: number;
   valorUnitario: number;
@@ -245,6 +310,12 @@ export interface DevolucaoItemDetalhe {
   cfopOpcoes: string[];
   tributacao: TributacaoDevolucaoItem;
   requerRevisao: boolean;
+  /**
+   * Onde mais este item da nota original está: outros rascunhos e devoluções em
+   * envio ou autorizadas (sem canceladas/inutilizadas). Já vai no JSON; opcional
+   * só por compatibilidade.
+   */
+  outrasDevolucoes?: OutraDevolucaoDoItem[];
   /**
    * O imposto da nota ORIGINAL deste item, na proporção devolvida, com a frase
    * pronta para a tela ("Na nota do fornecedor: CST 00 · base R$ 123,56 · 12% ·
@@ -285,6 +356,43 @@ export interface DevolucaoDetalhe {
    * itens ainda por fechar (`itensPendentes`). Opcional: servidor antigo não manda.
    */
   totais?: TotaisDevolucao;
+  /**
+   * Itens da nota original (snapshot `origensJson`) que NÃO estão nesta devolução
+   * e ainda podem ser devolvidos (`disponivel` ≠ 0; `null` = saldo não verificável,
+   * pela chave) — para a peça tirada poder VOLTAR depois de recarregar a página
+   * (K11). Mesmo formato de `DevolucaoItemDetalhe`, com:
+   *  - `ordem: 0` (não está na nota);
+   *  - `quantidade` = o que voltaria (o `disponivel`; 0 quando não se sabe — ela digita);
+   *  - `cfop` = o sugerido ("" quando a escolha é dela, com `cfopOpcoes`);
+   *    `tributacao` = a de partida (o PUT recalcula ao voltar).
+   * Sem canceladas nem itens sem saldo. Opcional: servidor antigo não manda.
+   */
+  itensForaDaDevolucao?: DevolucaoItemDetalhe[];
+}
+
+/**
+ * GET /fiscal/nfe/devolucao/disponibilidade. 404 `{error:"Recurso indisponível"}`
+ * quando NENHUMA empresa do usuário tem a devolução ligada.
+ *  - `companyFiscalConfigId` (o de sempre): a empresa PADRÃO quando ela tem a
+ *    devolução ligada; senão, a única ligada; `null` quando há mais de uma ligada
+ *    e a padrão não está entre elas (a tela escolhe em `empresas`).
+ *  - `empresas` (novo): TODAS as empresas do usuário com a devolução ligada, a
+ *    padrão primeiro — para o seletor de CNPJ da devolução manual (K12).
+ */
+export interface DisponibilidadeDevolucaoResposta {
+  disponivel: true;
+  companyFiscalConfigId: string | null;
+  empresas: EmpresaComDevolucao[];
+}
+
+export interface EmpresaComDevolucao {
+  companyFiscalConfigId: string;
+  cnpj: string;
+  razaoSocial: string;
+  nomeFantasia: string | null;
+  uf: string | null;
+  ambiente: string;
+  isDefault: boolean;
 }
 
 export interface AtualizarCabecalhoBody {
@@ -386,8 +494,74 @@ export interface ManualValidadoChave extends ManualValidadoBase {
 
 export type ManualValidado = ManualValidadoXml | ManualValidadoChave;
 
+/**
+ * 201 com reutilizado=false; 200 com reutilizado=true quando já havia rascunho
+ * aberto (DRAFT/REJECTED) da mesma chave e do mesmo tipo — pela chave, só
+ * quando os itens digitados são os mesmos do rascunho.
+ */
 export interface ManualResposta {
   draftId: string;
+  reutilizado: boolean;
+}
+
+/**
+ * POST /fiscal/nfe/devolucao/manual/previa (mesmo corpo do /manual, só leitura):
+ * os itens da nota original com o que ainda pode ser devolvido de cada um e o
+ * CFOP sugerido, para a tela deixar escolher as peças ANTES de criar; e o
+ * rascunho já aberto desta nota, se houver (a criação vai reaproveitá-lo).
+ *
+ * Declarado AQUI para o front importar sem puxar código de servidor. O caso de
+ * uso (`nfe-devolucao.usecase.ts`) reexporta esta (`export type { PreviaDevolucaoManual } from …`).
+ */
+export interface PreviaDevolucaoManual {
+  chaveAcesso: string;
+  numero: number;
+  serie: number;
+  emitenteCnpjCpf: string;
+  /** Quem recebe a devolução: o fornecedor (compra) ou o cliente (venda). */
+  destinatarioNome: string | null;
+  /** Rascunho aberto desta nota e deste tipo: criar de novo devolve ELE (`reutilizado`). */
+  rascunhoAberto: string | null;
+  itens: Array<{
+    nItem: number;
+    codigo: string;
+    descricao: string;
+    unidade: string;
+    valorUnitario: number;
+    quantidadeOriginal: number | null;
+    devolvidaAutorizada: number;
+    emProcessamento: number;
+    emRascunho: number;
+    disponivel: number | null;
+    cfopOriginal: string | null;
+    cfopSugerido: string | null;
+    cfopOpcoes: string[];
+    cfopStatus: string;
+  }>;
+}
+
+/**
+ * GET /fiscal/nfe/devolucao/abertas → `{ abertas: DevolucaoAbertaResumo[] }`.
+ * Sem empresa com a devolução ligada: 200 `{ abertas: [] }`, SEM consulta ao banco
+ * por requisição (era 404 + um SELECT a cada carga da lista, em todo cliente).
+ * Declarado AQUI pelo mesmo motivo de `PreviaDevolucaoManual` (o caso de uso
+ * reexporta esta).
+ */
+export interface DevolucaoAbertaResumo {
+  draftId: string;
+  status: string;
+  /** false = rascunho com finalidade devolução feito à mão (sem cabeçalho): só dá para descartar. */
+  gerenciada: boolean;
+  tipo: TipoDevolucao | null;
+  fonte: FonteDevolucao | null;
+  tipoOperacao: string;
+  destinatarioNome: string | null;
+  originais: Array<{ chaveAcesso: string; numero: number; serie: number }>;
+  quantidadeItens: number;
+  criadaEm: string;
+  atualizadaEm: string;
+  /** Número fiscal preso a este rascunho (reserva viva). null = nenhum. */
+  numeracao: { numero: number; serie: number; estado: string; ambiente: string } | null;
 }
 
 // ─────────────────────────────── validadores ───────────────────────────────
@@ -963,5 +1137,7 @@ export function parseCriarDevolucaoResposta(raw: unknown): ResultadoParse<CriarD
   if (!isObj(raw) || typeof raw.draftId !== "string" || raw.draftId === "") {
     return { ok: false, erros: [{ campo: "draftId", mensagem: "Resposta sem draftId." }] };
   }
-  return { ok: true, value: { draftId: raw.draftId, reutilizado: raw.reutilizado === true } };
+  const value: CriarDevolucaoResposta = { draftId: raw.draftId, reutilizado: raw.reutilizado === true };
+  if (raw.escopo === "TOTAL" || raw.escopo === "PARCIAL") value.escopo = raw.escopo;
+  return { ok: true, value };
 }

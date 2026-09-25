@@ -25,6 +25,13 @@ export interface RelatorioNota {
   valorTotal: number;
   /** Conteúdo do XML autorizado (nfeProc); null quando ausente em disco. */
   xmlAutorizado: string | null;
+  /**
+   * "ENTRADA" | "SAIDA" (opcional). Só a ENTRADA é rotulada no resumo — a nota de
+   * saída sai exatamente como antes.
+   */
+  tipoOperacao?: string | null;
+  /** "DEVOLUCAO" é rotulada no resumo; as demais saem como antes. Opcional. */
+  finalidade?: string | null;
 }
 
 export interface RelatorioMensalInput {
@@ -76,6 +83,18 @@ export function buildRelatorioMensalXml(input: RelatorioMensalInput): string {
     (acc, n) => acc + (Number(n.valorTotal) || 0),
     0,
   );
+  // Entradas (devolução de venda, nota de entrada) ROTULADAS, sem mudar o `valorTotal`
+  // de sempre (que soma entrada e saída): `valorEntradas`/`quantidadeEntradas` no resumo e
+  // `tipoOperacao`/`finalidade` na linha da nota. Mês sem entrada nem devolução: o XML
+  // sai byte a byte como antes.
+  const entradas = notas.filter((n) => n.tipoOperacao === "ENTRADA");
+  const valorEntradas = entradas.reduce((acc, n) => acc + (Number(n.valorTotal) || 0), 0);
+  const rotuloResumo = entradas.length
+    ? ` quantidadeEntradas="${entradas.length}" valorEntradas="${valorEntradas.toFixed(2)}"`
+    : "";
+  const rotuloNota = (n: RelatorioNota) =>
+    (n.tipoOperacao === "ENTRADA" ? ` tipoOperacao="ENTRADA"` : "") +
+    (n.finalidade === "DEVOLUCAO" ? ` finalidade="DEVOLUCAO"` : "");
 
   const dateAttr = (d: Date | null) => (d ? formatBrasiliaIso(d) : "");
 
@@ -94,7 +113,7 @@ export function buildRelatorioMensalXml(input: RelatorioMensalInput): string {
     linhas.push("  <notas/>");
   } else {
     linhas.push(
-      `  <resumo quantidade="${notas.length}" valorTotal="${valorTotal.toFixed(2)}">`,
+      `  <resumo quantidade="${notas.length}" valorTotal="${valorTotal.toFixed(2)}"${rotuloResumo}>`,
     );
     for (const n of notas) {
       linhas.push(
@@ -107,7 +126,7 @@ export function buildRelatorioMensalXml(input: RelatorioMensalInput): string {
           ` protocolo="${escapeXmlAttr(n.protocoloAutorizacao ?? "")}"` +
           ` destinatario="${escapeXmlAttr(n.destinatarioNome)}"` +
           ` documento="${escapeXmlAttr(n.destinatarioDocumento)}"` +
-          ` valorTotal="${(Number(n.valorTotal) || 0).toFixed(2)}"/>`,
+          ` valorTotal="${(Number(n.valorTotal) || 0).toFixed(2)}"${rotuloNota(n)}/>`,
       );
     }
     linhas.push("  </resumo>");

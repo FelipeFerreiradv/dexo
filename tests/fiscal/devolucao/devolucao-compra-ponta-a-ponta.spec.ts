@@ -419,7 +419,7 @@ const corpoXml = (xml: string, itens?: Array<{ nItem: number; quantidade: number
 
 /** Um item no corpo do PUT …/devolucao/itens, como a tela monta. */
 const item = (nItem: number, extra: Record<string, unknown> = {}, ch = CHAVE_DISAUTO) => ({ chaveAcesso: ch, nItem, quantidade: 1, cfop: "5202", ...extra });
-/** O que `overrideComIcms` manda com "900" escolhido e 12 digitado (a alíquota da compra). */
+/** O que `overrideComIcms` manda com "900" escolhido e a caixa em 12 — a alíquota da compra, que a caixa já traz preenchida (ela confere, não digita). */
 const ICMS_900_DA_COMPRA = { icms: { csosn: "900", cst: null, pICMS: 12 } };
 /** O que `overrideComPisCofins` manda com "49" escolhido (a caixa mostra 0). */
 const PIS_COFINS_49 = { pis: { cst: "49", p: 0 }, cofins: { cst: "49", p: 0 } };
@@ -542,7 +542,7 @@ describe("devolução de COMPRA da DLS (Simples) à DISAUTO (regime normal): do 
     const r = await devolverItens5e6();
     expect(r.comCfop.itens.map((i) => i.cfop)).toEqual(["5202", "5202"]);
 
-    // Depois do ICMS: 900 com a base DA COMPRA (vem sozinha) e os 12% que ela digitou.
+    // Depois do ICMS: 900 com a base DA COMPRA (vem sozinha) e os 12% da compra (a caixa já vem preenchida com a alíquota gravada da compra; ela confere e salva).
     const esperadoIcms = (c: ItemCompra) => ({ tag: "ICMSSN900", csosn: "900", cst: null, orig: 0, modBC: "3", vBC: c.icms.vBC, pICMS: 12, vICMS: c.icms.vICMS });
     expect(r.comIcms.itens.map((i) => i.tributacao.icms)).toEqual([esperadoIcms(BOMBA_DAGUA), esperadoIcms(BOMBA_OLEO)]);
 

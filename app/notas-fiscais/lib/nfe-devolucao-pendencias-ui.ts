@@ -43,7 +43,7 @@
 //
 // Módulo PURO: sem React, sem fetch, sem DOM.
 
-import type { DevolucaoIssueCode, SeveridadeIssue } from "@/app/fiscal/devolucao/tipos";
+import type { DevolucaoIssueCode, SeveridadeIssue, TipoDevolucao } from "@/app/fiscal/devolucao/tipos";
 
 /** Issue como ela chega do servidor: nada aqui pode confiar no formato. */
 export interface IssueBruta {
@@ -176,7 +176,24 @@ interface TextoPendencia {
   falta: string;
   /** O caminho de saída, com os rótulos exatos da tela. */
   comoResolver: string;
+  /**
+   * Versão por TIPO de devolução, quando a de cima (neutra) não basta — na
+   * devolução de COMPRA quem recebe de volta é o FORNECEDOR, e o rótulo da
+   * opção do passo 1 muda. Só é usada quando a view sabe o tipo
+   * (`viewPendenciasDoDetalhe` o lê do detalhe); sem ele, vale a neutra.
+   */
+  porTipo?: Readonly<Partial<Record<TipoDevolucao, { falta: string; comoResolver: string }>>>;
 }
+
+/**
+ * O rótulo da opção "Sim" do passo 1, por tipo — é o texto que a tela mostra
+ * (`perguntaEntrega` em `nfe-devolucao-editor-ui.ts`: `ENTREGA_SIM` + "pelo
+ * cliente" / "ao fornecedor"). A suíte prende os dois lados juntos.
+ */
+export const OPCAO_ENTREGUE_VENDA = "A mercadoria foi entregue e está sendo devolvida pelo cliente";
+export const OPCAO_ENTREGUE_COMPRA = "A mercadoria foi entregue e está sendo devolvida ao fornecedor";
+/** O começo comum dos dois rótulos (quando a view não sabe o tipo). */
+const OPCAO_ENTREGUE_COMECO = "A mercadoria foi entregue e está sendo devolvida";
 
 /**
  * Um texto por código de `DevolucaoIssueCode` — Record FECHADO de propósito:
@@ -184,9 +201,15 @@ interface TextoPendencia {
  * chegar muda na tela da cliente.
  *
  * Os rótulos entre aspas são os que a tela mostra HOJE:
- *   * "Revisei a tributação deste item" e "Salvar devolução" —
- *     `devolucao-editor.tsx`;
- *   * "A mercadoria foi entregue e está sendo devolvida" — idem, passo 1;
+ *   * "Revisei a tributação deste item", "Salvar devolução", "Tirar desta
+ *     devolução", "Disponível para devolver", "Código do PIS (CST)" e "Código
+ *     da COFINS (CST)" — `devolucao-editor.tsx` e os módulos de campo dele;
+ *   * no passo 1 a entrega é uma escolha entre duas opções (RÁDIO, não mais a
+ *     caixinha de marcar): a do "Sim" é "A mercadoria foi entregue e está
+ *     sendo devolvida" + "pelo cliente" (venda) ou "ao fornecedor" (compra) —
+ *     `perguntaEntrega` em `nfe-devolucao-editor-ui.ts`;
+ *   * os códigos de ICMS, PIS/COFINS e o CFOP do passo 3 são SELETORES: o
+ *     texto manda "escolher na lista", nunca "digitar N dígitos";
  *   * "Notas Emitidas", "Devolver total", "Devolver parcial" —
  *     `app-sidebar.tsx` e `devolucao-actions.tsx`;
  *   * os títulos dos passos ("Informacoes", "Produtos", "Impostos") — `STEPS`
@@ -201,14 +224,38 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
       'Comece a devolução pela nota de venda original: menu "Notas Fiscais" › "Notas Emitidas", e na linha dela clique em "Devolver total" ou "Devolver parcial".',
   },
   ESCOLHA_PENDENTE: {
-    falta: "Falta responder se a mercadoria foi entregue e devolvida pelo cliente",
+    falta: "Falta responder se a mercadoria foi entregue e está sendo devolvida",
     comoResolver:
-      'Volte ao passo 1 ("Informacoes"), marque "A mercadoria foi entregue e está sendo devolvida" e clique em "Salvar devolução".',
+      `Volte ao passo 1 ("Informacoes"), escolha a opção que começa com "${OPCAO_ENTREGUE_COMECO}" e clique em "Salvar devolução".`,
+    porTipo: {
+      VENDA_ENTRADA: {
+        falta: "Falta responder se a peça chegou ao cliente e agora está voltando para você",
+        comoResolver: `Volte ao passo 1 ("Informacoes"), escolha a opção "${OPCAO_ENTREGUE_VENDA}" e clique em "Salvar devolução".`,
+      },
+      COMPRA_SAIDA: {
+        falta: "Falta responder se as peças chegaram até você e agora estão voltando para o fornecedor",
+        comoResolver: `Volte ao passo 1 ("Informacoes"), escolha a opção "${OPCAO_ENTREGUE_COMPRA}" e clique em "Salvar devolução".`,
+      },
+    },
   },
+  // Recusa na entrega não se resolve com ESTA nota — e o caminho certo (qual
+  // nota, se alguma) é da contadora: o texto não manda para "nota de crédito".
   RECUSA_NAO_E_DEVOLUCAO: {
-    falta: "A nota está marcada como recusa ou não entrega, e isso não é devolução",
+    falta: "O passo 1 diz que a mercadoria foi recusada na entrega, e recusa não é devolução",
     comoResolver:
-      'Mercadoria recusada na porta se resolve com nota de crédito, fora deste caminho. Se a peça chegou ao cliente e voltou depois, volte ao passo 1 ("Informacoes") e marque "A mercadoria foi entregue e está sendo devolvida".',
+      `Esta nota não serve para recusa na entrega: combine com a sua contadora como registrar a recusa. Se a mercadoria foi entregue e agora está voltando, volte ao passo 1 ("Informacoes"), escolha a opção que começa com "${OPCAO_ENTREGUE_COMECO}" e clique em "Salvar devolução".`,
+    porTipo: {
+      VENDA_ENTRADA: {
+        falta: "O passo 1 diz que o cliente recusou a mercadoria na entrega, e recusa não é devolução",
+        comoResolver:
+          `Esta nota não serve para recusa na entrega: combine com a sua contadora como registrar a recusa. Se a peça chegou ao cliente e agora está voltando, volte ao passo 1 ("Informacoes"), escolha a opção "${OPCAO_ENTREGUE_VENDA}" e clique em "Salvar devolução".`,
+      },
+      COMPRA_SAIDA: {
+        falta: "O passo 1 diz que a mercadoria foi recusada na entrega e não chegou a entrar, e recusa não é devolução",
+        comoResolver:
+          `Esta nota não serve para recusa na entrega: combine com a sua contadora e com o fornecedor como registrar a recusa. Se as peças chegaram até você e agora estão voltando, volte ao passo 1 ("Informacoes"), escolha a opção "${OPCAO_ENTREGUE_COMPRA}" e clique em "Salvar devolução".`,
+      },
+    },
   },
   FINALIDADE_NAO_DEVOLUCAO: {
     falta: 'A finalidade da nota não está como "Devolução"',
@@ -258,6 +305,11 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
       'No passo 1 ("Informacoes"), deixe o destino (dentro do estado, fora do estado ou exterior) igual ao da nota original.',
   },
   // ── G1 (DLS, 24/09/2026): pendências novas da tributação e do cabeçalho ──
+  ICMS_ORIGEM_NAO_INFORMADA: {
+    falta: "Falta informar a origem da mercadoria",
+    comoResolver:
+      'Na devolução pela chave, escolha a "Origem da mercadoria" de cada peça (nacional, importada…). O Dexo não escolhe por você: com o campo em branco a nota sairia como nacional, o que está errado para peça importada.',
+  },
   REGIME_NAO_CADASTRADO: {
     falta: "O regime tributário da empresa não está cadastrado",
     comoResolver:
@@ -319,12 +371,12 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
   CFOP_ESCOLHA_PENDENTE: {
     falta: "Falta escolher o CFOP de devolução {DOS_ITENS}",
     comoResolver:
-      'Vá ao passo 3 ("Produtos"), preencha o CFOP (4 dígitos) de cada item e clique em "Salvar devolução".',
+      'Vá ao passo 3 ("Produtos"), escolha na lista "CFOP" de cada peça o CFOP de devolução e clique em "Salvar devolução".',
   },
   CFOP_NAO_DEVOLUCAO: {
     falta: "O CFOP escolhido não é de devolução {NOS_ITENS}",
     comoResolver:
-      'Vá ao passo 3 ("Produtos") e troque o CFOP pelo de devolução que o Dexo sugere; depois clique em "Salvar devolução".',
+      'Vá ao passo 3 ("Produtos") e troque, na lista "CFOP" da peça, pelo CFOP de devolução que o Dexo sugere; depois clique em "Salvar devolução".',
   },
   CFOP_SENTIDO_INVALIDO: {
     falta: "O CFOP é do sentido contrário ao da nota {NOS_ITENS}",
@@ -350,8 +402,15 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
   },
   SALDO_EXCEDIDO: {
     falta: "A quantidade é maior do que ainda pode ser devolvido {NOS_ITENS}",
+    // Com "Disponível para devolver: 0" não há até onde baixar: sai a peça.
     comoResolver:
-      'No passo 3 ("Produtos"), baixe a quantidade até o "Disponível" que aparece no próprio item e clique em "Salvar devolução".',
+      'No passo 3 ("Produtos"), baixe a quantidade até o "Disponível para devolver" que aparece na própria peça. Se ele estiver em 0, não sobrou nada dela para devolver: tire-a com o botão "Tirar desta devolução". Depois clique em "Salvar devolução".',
+  },
+  OUTRA_DEVOLUCAO_EM_ENVIO: {
+    // Começa pelos itens pelo mesmo motivo do IBS/CBS: "…à SEFAZ no item 2".
+    falta: "{OS_ITENS} também está numa outra devolução que está sendo enviada à SEFAZ",
+    comoResolver:
+      "A quantidade daquela devolução já saiu do que ainda pode ser devolvido desta peça; se ela for recusada, a quantidade volta. Confira o resultado dela em \"Notas Emitidas\" antes de emitir esta. Isto não impede a emissão.",
   },
   SALDO_NAO_VERIFICAVEL: {
     falta: "Sem o XML da nota original o Dexo não consegue conferir o saldo {NOS_ITENS}",
@@ -383,20 +442,25 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
     comoResolver:
       'Vá ao passo 8 ("Impostos"), marque "Revisei a tributação deste item" em cada um deles e clique em "Salvar devolução".',
   },
+  // O código do ICMS é um SELETOR no passo 8 (não se digita mais "2 ou 3
+  // dígitos"). E o grupo pode estar vazio por falta de código (devolução pela
+  // chave, sem XML), não só por um código da nota original fora da lista.
   TRIBUTACAO_NAO_SUPORTADA: {
-    falta: "O ICMS da nota original não é aceito assim na devolução {NOS_ITENS}",
+    falta: "O código do ICMS não é um dos que o Dexo emite na devolução {NOS_ITENS}",
     comoResolver:
-      'No passo 8 ("Impostos"), ajuste o CST (2 dígitos) ou o CSOSN (3 dígitos) do ICMS com o seu contador, marque "Revisei a tributação deste item" e clique em "Salvar devolução".',
+      'No passo 8 ("Impostos"), escolha na lista o código do ICMS com a sua contadora, marque "Revisei a tributação deste item" e clique em "Salvar devolução".',
   },
   TRIBUTACAO_REGIME_INCOMPATIVEL: {
-    falta: "O CST/CSOSN não combina com o regime tributário da sua empresa {NOS_ITENS}",
+    falta: "O código do ICMS não combina com o regime tributário da sua empresa {NOS_ITENS}",
     comoResolver:
-      'Simples Nacional usa CSOSN (3 dígitos); fora do Simples, CST (2 dígitos). Acerte no passo 8 ("Impostos") e clique em "Salvar devolução".',
+      'No Simples Nacional o código do ICMS é o CSOSN; fora do Simples, o CST — a lista do passo 8 ("Impostos") já mostra só os da sua empresa. Escolha um deles, marque "Revisei a tributação deste item" e clique em "Salvar devolução".',
   },
+  // O percentual NÃO se digita: sai da quantidade devolvida sobre a da nota
+  // original. O caminho é conferir a QUANTIDADE, no passo 3.
   IPI_DEVOL_INVALIDO: {
     falta: "O percentual de IPI devolvido está inválido {NOS_ITENS}",
     comoResolver:
-      'No passo 8 ("Impostos"), o percentual de IPI tem de ficar entre 0 e 100. Corrija e clique em "Salvar devolução".',
+      'No passo 3 ("Produtos"), a quantidade devolvida tem de ser maior que zero e não pode passar da quantidade da nota original — é dela que sai o percentual do IPI devolvido. Corrija e clique em "Salvar devolução".',
   },
   PIS_CST_SAIDA_EM_ENTRADA: {
     falta: "O CST de PIS/COFINS é de saída numa nota de entrada {NOS_ITENS}",
@@ -411,26 +475,36 @@ const TEXTOS: Readonly<Record<DevolucaoIssueCode, TextoPendencia>> = {
   PIS_COFINS_NAO_SUPORTADO: {
     falta: "Falta escolher o código do PIS/COFINS {DOS_ITENS}",
     comoResolver:
-      'Vá ao passo 8 ("Impostos"), escolha na lista o código do PIS e da COFINS de cada um deles com a sua contadora e clique em "Salvar devolução". O Dexo não escolhe por você.',
+      'Vá ao passo 8 ("Impostos"), escolha em "Código do PIS (CST)" e em "Código da COFINS (CST)" o código de cada um deles com a sua contadora, marque "Revisei a tributação deste item" e clique em "Salvar devolução". O Dexo não escolhe por você.',
   },
   PIS_COFINS_REGIME_INCOMPATIVEL: {
     falta: "O código do PIS/COFINS é de empresa do regime normal {NOS_ITENS}",
     comoResolver:
-      'A sua empresa é do Simples Nacional: os códigos 01 e 02 (com alíquota do regime normal) não servem. Vá ao passo 8 ("Impostos"), escolha outro código na lista com a sua contadora e clique em "Salvar devolução".',
+      'A sua empresa é do Simples Nacional, que recolhe o PIS/COFINS na guia do Simples: os códigos 01 e 02 (com alíquota do regime normal) e os de crédito (50 a 56 e 60 a 67) não servem. Vá ao passo 8 ("Impostos"), escolha outro código em "Código do PIS (CST)" e em "Código da COFINS (CST)" com a sua contadora, marque "Revisei a tributação deste item" e clique em "Salvar devolução".',
   },
   PIS_COFINS_ALIQUOTA_INVALIDA: {
     falta: "O PIS/COFINS está como tributado, mas com alíquota zero {NOS_ITENS}",
     comoResolver:
       'Com os códigos 01 e 02 a alíquota não pode ser zero; para alíquota zero o código é o 06. Acerte no passo 8 ("Impostos") e clique em "Salvar devolução".',
   },
+  // Decisão 2 do dono. A SEFAZ AUTORIZA a nota com o PIS/COFINS destacado numa
+  // empresa do Simples — sem rejeição, só se desfaz cancelando.
+  PIS_COFINS_ALIQUOTA_SIMPLES: {
+    falta: "O PIS/COFINS está com alíquota {NOS_ITENS}, e no Simples Nacional a alíquota na nota fica 0",
+    comoResolver:
+      'No Simples o PIS/COFINS vai na guia do Simples, não na nota. Vá ao passo 8 ("Impostos"), deixe a alíquota do PIS e a da COFINS em 0, marque "Revisei a tributação deste item" e clique em "Salvar devolução".',
+  },
+  // Decisão 3 do dono: era aviso, agora impede. Nenhuma nota de fornecedor traz
+  // CST de entrada, então não há código herdado para proteger.
   PIS_CST_ENTRADA_EM_SAIDA: {
     falta: "O código do PIS/COFINS é de entrada numa nota de saída {NOS_ITENS}",
-    comoResolver: "Confirme com a sua contadora. Isto não impede a emissão.",
+    comoResolver:
+      'A devolução de compra é nota de saída: os códigos de 50 a 98 são de entrada e não servem nela (o 99 serve para os dois lados). Vá ao passo 8 ("Impostos"), escolha outro código em "Código do PIS (CST)" e em "Código da COFINS (CST)" com a sua contadora, marque "Revisei a tributação deste item" e clique em "Salvar devolução".',
   },
   ICMS_ST_NAO_DEVOLVIDO: {
     falta: "A nota original cobrou ICMS-ST, e o Dexo ainda não devolve ICMS-ST {NOS_ITENS}",
     comoResolver:
-      'Esse valor ficaria fora da nota, e marcar "Revisei a tributação deste item" não libera. Combine com a sua contadora como devolver estes itens. Para emitir o resto agora, tire-os desta devolução no passo 3 ("Produtos"), pondo a quantidade zero, e clique em "Salvar devolução".',
+      'Esse valor ficaria fora da nota, e marcar "Revisei a tributação deste item" não libera. Combine com a sua contadora como devolver estes itens. Para emitir o resto agora, tire-os desta devolução no passo 3 ("Produtos") com o botão "Tirar desta devolução" e clique em "Salvar devolução".',
   },
   ICMS_COMPRA_A_MENOR: {
     falta: "A devolução vai com menos ICMS do que a nota de compra destacou {NOS_ITENS}",
@@ -509,6 +583,17 @@ function mensagemDe(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+/** Só os dois tipos conhecidos contam; qualquer outra coisa = "não sei o tipo" (texto neutro). */
+function tipoDe(v: unknown): TipoDevolucao | null {
+  return v === "VENDA_ENTRADA" || v === "COMPRA_SAIDA" ? v : null;
+}
+
+/** O texto do código para ESTE tipo de devolução — a versão por tipo, quando há; senão a neutra. */
+function textoDoTipo(texto: TextoPendencia, tipo: TipoDevolucao | null): { falta: string; comoResolver: string } {
+  const doTipo = tipo ? texto.porTipo?.[tipo] : undefined;
+  return doTipo ?? { falta: texto.falta, comoResolver: texto.comoResolver };
+}
+
 /** Só para comparar título e detalhe: caixa, espaços e pontuação final não contam. */
 function comparavel(texto: string): string {
   return texto.toLowerCase().replace(/\s+/g, " ").replace(/[.;:!]+$/, "").trim();
@@ -519,7 +604,7 @@ function comparavel(texto: string): string {
 interface Grupo {
   codigo: string | null;
   severidade: SeveridadeIssue;
-  texto: TextoPendencia | null;
+  texto: { falta: string; comoResolver: string } | null;
   ordens: number[];
   detalhes: string[];
 }
@@ -529,9 +614,13 @@ interface Grupo {
  * um grupo próprio com a mensagem do servidor no lugar do título — o servidor
  * já escreve em português, e uma regra nova é melhor mostrada crua do que
  * engolida.
+ *
+ * `tipo` (opcional): o tipo da devolução, para os textos que mudam por ele
+ * (na de COMPRA quem recebe de volta é o fornecedor). Ausente = texto neutro.
  */
-export function pendenciasDeIssues(issues: unknown): PendenciaDevolucao[] {
+export function pendenciasDeIssues(issues: unknown, tipo?: unknown): PendenciaDevolucao[] {
   if (!Array.isArray(issues)) return [];
+  const doTipo = tipoDe(tipo);
   const grupos = new Map<string, Grupo>();
   for (const bruta of issues as IssueBruta[]) {
     if (bruta === null || typeof bruta !== "object") continue;
@@ -549,7 +638,7 @@ export function pendenciasDeIssues(issues: unknown): PendenciaDevolucao[] {
       grupo = {
         codigo,
         severidade,
-        texto: codigoConhecido ? TEXTOS[bruta.code as DevolucaoIssueCode] : null,
+        texto: codigoConhecido ? textoDoTipo(TEXTOS[bruta.code as DevolucaoIssueCode], doTipo) : null,
         ordens: [],
         detalhes: [],
       };
@@ -587,8 +676,9 @@ function montarView(
   issues: unknown,
   bloqueado: boolean,
   mensagem: string,
+  tipo?: unknown,
 ): PendenciasDevolucaoView {
-  const todas = pendenciasDeIssues(issues);
+  const todas = pendenciasDeIssues(issues, tipo);
   const bloqueios = todas.filter((p) => p.severidade === "ERRO");
   return {
     titulo: TITULO_PENDENCIAS,
@@ -605,17 +695,19 @@ function montarView(
 
 /**
  * A view do bloqueio inteiro. `mensagemServidor` é usada como está quando não
- * há lista — nunca substituída por um genérico por cima dela.
+ * há lista — nunca substituída por um genérico por cima dela. `tipo` (opcional)
+ * é o tipo da devolução, para os textos que mudam por ele.
  */
 export function viewPendencias(
   issues: unknown,
   mensagemServidor?: unknown,
+  tipo?: unknown,
 ): PendenciasDevolucaoView {
   const mensagem =
     typeof mensagemServidor === "string" && mensagemServidor.trim() !== ""
       ? mensagemServidor.trim()
       : MENSAGEM_DEVOLUCAO_INVALIDA;
-  return montarView(issues, true, mensagem);
+  return montarView(issues, true, mensagem, tipo);
 }
 
 /** Prévia no editor quando nada bloqueia — só há aviso a dar. */
@@ -627,28 +719,33 @@ export const MENSAGEM_PREVIA_SO_AVISOS =
  * `DevolucaoDetalhe.issues` + `podeEmitir`, as duas saídas do MESMO
  * `validarDevolucao` que recusa a emissão depois). Aqui `podeEmitir` é a
  * autoridade sobre estar ou não bloqueada: uma lista só de AVISOS não pode
- * pintar a tela de impedimento.
+ * pintar a tela de impedimento. O `tipo` do detalhe escolhe os textos que
+ * mudam por ele (a devolução de compra fala do fornecedor).
  */
 export function viewPendenciasDoDetalhe(detalhe: {
   issues?: unknown;
   podeEmitir?: unknown;
+  tipo?: unknown;
 }): PendenciasDevolucaoView {
   const bloqueado = detalhe.podeEmitir !== true;
   return montarView(
     detalhe.issues,
     bloqueado,
     bloqueado ? MENSAGEM_DEVOLUCAO_INVALIDA : MENSAGEM_PREVIA_SO_AVISOS,
+    detalhe.tipo,
   );
 }
 
 /**
  * O que o wizard faz com o corpo do POST /fiscal/nfe/:id/issue que falhou.
  * `null` = não é o bloqueio da devolução ⇒ a tela segue EXATAMENTE como antes
- * (toast do `desfechoEmissao` e nada mais).
+ * (toast do `desfechoEmissao` e nada mais). `tipo` (opcional): o tipo da
+ * devolução, quando quem chama o conhece.
  */
 export function viewPendenciasDaResposta(
   resposta?: RespostaErroDevolucao | null,
+  tipo?: unknown,
 ): PendenciasDevolucaoView | null {
   if (!resposta || resposta.code !== CODIGO_DEVOLUCAO_INVALIDA) return null;
-  return viewPendencias(resposta.issues, resposta.error);
+  return viewPendencias(resposta.issues, resposta.error, tipo);
 }

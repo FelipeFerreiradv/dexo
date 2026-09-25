@@ -110,10 +110,16 @@ describe("sincronia servidor ⇄ seletor de PIS/COFINS (os dois sentidos)", () =
 
 describe("opcoesPisCofinsDevolucao — o regime tira, o tipo ordena", () => {
   it("Simples (CRT 1 e 4) não recebe 01 nem 02; regime normal e sem regime recebem os 31", () => {
+    // ATUALIZADO (onda 5, decisão 2 do dono): o Simples também perde os códigos
+    // de CRÉDITO (50–56 e 60–67) — não toma crédito de PIS/COFINS. Eram 29
+    // (31 − 01/02); agora 14 (31 − 01/02 − 7 de crédito − 8 de crédito presumido).
+    // O resto da asserção (sem 01/02) fica igual.
+    const CREDITO = ["50", "51", "52", "53", "54", "55", "56", "60", "61", "62", "63", "64", "65", "66", "67"];
     for (const crt of ["1", "4"]) {
       expect(codigos(crt)).not.toContain("01");
       expect(codigos(crt)).not.toContain("02");
-      expect(codigos(crt)).toHaveLength(29);
+      for (const c of CREDITO) expect(codigos(crt), `crédito ${c} no Simples`).not.toContain(c);
+      expect(codigos(crt)).toHaveLength(14);
     }
     expect(codigos("3")).toHaveLength(31);
     expect(codigos(null)).toHaveLength(31);
@@ -126,8 +132,19 @@ describe("opcoesPisCofinsDevolucao — o regime tira, o tipo ordena", () => {
     const o = opcoesPisCofinsDevolucao({ crt: "1", tipo: "COMPRA_SAIDA" });
     expect(o.slice(0, 3).map((x) => x.codigo)).toEqual(["49", "04", "99"]);
     expect(o.filter((x) => x.usual).map((x) => x.codigo)).toEqual(["49", "04", "99", "06", "07", "08", "09"]);
-    const primeiroDeEntrada = o.findIndex((x) => x.sentido === "ENTRADA");
-    expect(o.slice(primeiroDeEntrada).every((x) => x.sentido === "ENTRADA" && !x.doSentidoDaNota)).toBe(true);
+    // ATUALIZADO (onda 5, decisão 3 do dono): CST de entrada numa devolução de
+    // compra (nota de saída) passou de AVISO a RECUSA — nenhuma nota de
+    // fornecedor traz CST de entrada, não há herança a proteger. Então os de
+    // entrada nem "por último" ficam: SAEM da lista. Antes o teste prendia que
+    // vinham depois dos de saída; agora prende que não vêm, e a lista inteira.
+    expect(o.some((x) => x.sentido === "ENTRADA")).toBe(false);
+    expect(o.map((x) => x.codigo)).toEqual(["49", "04", "99", "06", "07", "08", "09"]);
+    expect(o.every((x) => x.doSentidoDaNota)).toBe(true);
+  });
+
+  it("devolução de COMPRA no regime normal: sem os de entrada (50–98), com 01/02 e o 99", () => {
+    const o = opcoesPisCofinsDevolucao({ crt: "3", tipo: "COMPRA_SAIDA" }).map((x) => x.codigo);
+    expect(o).toEqual(["01", "02", "04", "06", "07", "08", "09", "49", "99"]);
   });
 
   it("devolução de VENDA no Simples: 98 e 99 no topo; o 49 herdado continua NA LISTA (ordena, não filtra)", () => {
@@ -214,7 +231,13 @@ describe("checarCstPisCofinsDevolucao — recusa na hora, com o motivo", () => {
     expect(e49).toMatchObject({ ok: true, aviso: "PIS_CST_SAIDA_EM_ENTRADA" });
     if (e49.ok) expect(e49.avisoTexto).toContain("Não impede a emissão");
     expect(checarCstPisCofinsDevolucao({ crt: "3", tipo: "ENTRADA", codigo: "01" })).toMatchObject({ ok: true, aviso: "PIS_CST_SAIDA_EM_ENTRADA" });
-    expect(checarCstPisCofinsDevolucao({ crt: "1", tipo: "COMPRA_SAIDA", codigo: "98" })).toMatchObject({ ok: true, aviso: "PIS_CST_ENTRADA_EM_SAIDA" });
+    // ATUALIZADO (onda 5, decisão 3 do dono): a outra direção — CST de ENTRADA
+    // numa nota de SAÍDA — deixou de ser aviso e virou RECUSA (causa SENTIDO).
+    // A direção saída-numa-entrada (acima) continua só aviso (decisão 4).
+    const s98 = checarCstPisCofinsDevolucao({ crt: "1", tipo: "COMPRA_SAIDA", codigo: "98" });
+    expect(s98).toMatchObject({ ok: false, codigo: "98", causa: "SENTIDO" });
+    if (!s98.ok) expect(s98.motivo).toContain("é de entrada");
+    expect(checarCstPisCofinsDevolucao({ crt: "3", tipo: "SAIDA", codigo: "70" })).toMatchObject({ ok: false, causa: "SENTIDO" });
     expect(checarCstPisCofinsDevolucao({ crt: "1", tipo: "COMPRA_SAIDA", codigo: "49" })).toMatchObject({ ok: true, aviso: null, avisoTexto: "" });
     expect(checarCstPisCofinsDevolucao({ crt: "1", tipo: "VENDA_ENTRADA", codigo: "99" })).toMatchObject({ ok: true, aviso: null });
     expect(checarCstPisCofinsDevolucao({ crt: "1", codigo: "49" })).toMatchObject({ ok: true, aviso: null });
@@ -361,10 +384,13 @@ describe("aplicarOverrideTributacao — PIS/COFINS pelo MESMO juiz da tela", () 
     if (!e.ok) throw new Error(e.erros.join("; "));
     expect(e.tributacao.avisos).toContain("PIS_CST_SAIDA_EM_ENTRADA");
 
+    // ATUALIZADO (onda 5, decisão 3 do dono): 98 escolhido numa SAÍDA não vira
+    // mais aviso — é RECUSADO no ajuste, com o código de pendência próprio
+    // (antes: `ok` com o aviso PIS_CST_ENTRADA_EM_SAIDA gravado).
     const s = aplicarOverrideTributacao({ base: baseDls(), override: { pis: { cst: "98", p: 0 } }, crtEmitente: "1", baseCalculoItem: 123.56, tipoOperacao: "SAIDA" });
-    if (!s.ok) throw new Error(s.erros.join("; "));
-    expect(s.tributacao.avisos).toContain("PIS_CST_ENTRADA_EM_SAIDA");
-    expect(s.tributacao.avisos).not.toContain("PIS_CST_SAIDA_EM_ENTRADA");
+    if (s.ok) throw new Error("deveria recusar o CST de entrada numa saída");
+    expect(s.recusas).toEqual([{ tributo: "PIS", code: "PIS_CST_ENTRADA_EM_SAIDA", motivo: expect.stringContaining("é de entrada") }]);
+    expect(s.erros[0]).toMatch(/^PIS: /);
   });
 });
 

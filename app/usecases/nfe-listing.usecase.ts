@@ -117,6 +117,8 @@ export class NfeListingUseCase {
         destinatarioDocumento: dest?.cpfCnpj ?? "",
         valorTotal: Number(totais?.totalNota ?? 0),
         xmlAutorizado,
+        tipoOperacao: r.tipoOperacao ?? null,
+        finalidade: r.finalidade ?? null,
       });
     }
 

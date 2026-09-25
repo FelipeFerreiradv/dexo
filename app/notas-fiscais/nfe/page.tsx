@@ -5,6 +5,7 @@ import type { Metadata } from "next";
 import { authOptions } from "@/app/lib/auth";
 import { PageHeader } from "@/components/page-header";
 import { NfeWizard } from "../components/nfe-wizard";
+import { SUBTITULO_EMITIR_NFE } from "../lib/nfe-devolucao-wizard-ui";
 
 export const metadata: Metadata = {
   title: "Emitir NF-e",
@@ -27,7 +28,7 @@ export default async function NfePage() {
       <PageHeader
         eyebrow="Notas Fiscais"
         title="Emitir NF-e"
-        subtitle="Preencha as etapas abaixo para gerar uma Nota Fiscal Eletrônica. O rascunho é salvo automaticamente."
+        subtitle={SUBTITULO_EMITIR_NFE}
       />
 
       <NfeWizard />

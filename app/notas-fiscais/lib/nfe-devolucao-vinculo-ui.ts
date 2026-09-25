@@ -59,6 +59,10 @@ export function rotuloEvento(ev: { evento?: unknown; detalhes?: unknown }): stri
 const STATUS_ROTULO: Readonly<Record<string, string>> = {
   DRAFT: "rascunho",
   REJECTED: "recusada pela SEFAZ",
+  // VALIDATING e SIGNING também são "em envio" para ela (o Dexo já está
+  // mandando à SEFAZ) — sem eles, a ficha mostrava o código cru ("VALIDATING").
+  VALIDATING: "em envio",
+  SIGNING: "em envio",
   SENDING: "em envio",
   AUTHORIZED: "autorizada",
   CANCELLED: "cancelada",

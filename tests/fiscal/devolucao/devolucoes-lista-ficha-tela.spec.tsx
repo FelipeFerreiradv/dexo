@@ -124,6 +124,15 @@ function aberta(p: Record<string, unknown>) {
 }
 
 describe("Devoluções em andamento", () => {
+  // ATUALIZADO (onda 5, revisão de regressão): o quadro agora pergunta ANTES se a
+  // devolução está ligada (GET /disponibilidade) e só então chama /abertas — antes
+  // era um 404 e uma consulta ao banco em toda carga da lista, de todo cliente.
+  // Os casos abaixo são de empresa COM a devolução ligada (esta rota é só o
+  // "sim"); o caso desligada tem teste próprio, no fim deste bloco.
+  beforeEach(() => {
+    rotas["GET /fiscal/nfe/devolucao/disponibilidade"] = [{ status: 200, body: { disponivel: true, companyFiscalConfigId: "cfg-dls", empresas: [] } }];
+  });
+
   it("empresa sem a devolução ligada (404) ⇒ o quadro nem aparece", async () => {
     rotas["GET /fiscal/nfe/devolucao/abertas"] = [{ status: 404, body: { error: "Recurso indisponível" } }];
     await montar(<DevolucoesEmAndamento email={EMAIL} />);
@@ -174,6 +183,36 @@ describe("Devoluções em andamento", () => {
     await montar(<DevolucoesEmAndamento email={EMAIL} />);
     await clicar(botao("Descartar"));
     expect(texto()).toContain("Consulte a situação antes de excluir o rascunho");
+  });
+
+  it("devolução DESLIGADA (disponibilidade 404) ⇒ o GET /abertas nem sai, e o quadro não aparece", async () => {
+    rotas["GET /fiscal/nfe/devolucao/disponibilidade"] = [{ status: 404, body: { error: "Recurso indisponível" } }];
+    rotas["GET /fiscal/nfe/devolucao/abertas"] = [{ status: 200, body: { abertas: [aberta({ draftId: "nao-deveria" })] } }];
+    await montar(<DevolucoesEmAndamento email={EMAIL} />);
+    expect(chamadas.map((c) => `${c.metodo} ${c.url}`)).toEqual(["GET /fiscal/nfe/devolucao/disponibilidade"]);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("rede caída na pergunta ⇒ não afirma que está ligada: nada de /abertas", async () => {
+    rotas["GET /fiscal/nfe/devolucao/disponibilidade"] = [];
+    rotas["GET /fiscal/nfe/devolucao/abertas"] = [{ status: 200, body: { abertas: [aberta({ draftId: "nao-deveria" })] } }];
+    await montar(<DevolucoesEmAndamento email={EMAIL} />);
+    expect(chamadas.filter((c) => c.url === "/fiscal/nfe/devolucao/abertas")).toHaveLength(0);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("recarregar depois de descartar não pergunta de novo se está ligada", async () => {
+    rotas["GET /fiscal/nfe/devolucao/abertas"] = [
+      { status: 200, body: { abertas: [aberta({ draftId: "x" })] } },
+      { status: 200, body: { abertas: [] } },
+    ];
+    rotas["DELETE /fiscal/nfe/draft/x"] = [{ status: 204 }];
+    await montar(<DevolucoesEmAndamento email={EMAIL} />);
+    await clicar(botao("Descartar"));
+    const urls = chamadas.map((c) => `${c.metodo} ${c.url}`);
+    expect(urls.filter((u) => u === "GET /fiscal/nfe/devolucao/disponibilidade")).toHaveLength(1);
+    expect(urls.filter((u) => u === "GET /fiscal/nfe/devolucao/abertas")).toHaveLength(2);
+    expect(container.innerHTML).toBe("");
   });
 });
 

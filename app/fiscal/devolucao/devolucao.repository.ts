@@ -110,6 +110,20 @@ export class NfeDevolucaoRepository {
   async configsDoUsuario(userId:string,db:FiscalSql=this.db):Promise<Array<{id:string;isDefault:boolean}>> {
     return db.$queryRawUnsafe(`SELECT "id","isDefault" FROM "CompanyFiscalConfig" WHERE "userId"=$1`,userId);
   }
+  /**
+   * As empresas do usuário para a tela escolher o CNPJ da devolução — SÓ colunas de
+   * identificação (nada de token/certificado), a padrão primeiro (a mesma ordem de
+   * `CompanyFiscalRepository.findByUserId`: isDefault desc, createdAt asc).
+   */
+  async empresasDoUsuario(userId:string,db:FiscalSql=this.db):Promise<Array<{id:string;isDefault:boolean;cnpj:string;razaoSocial:string;nomeFantasia:string|null;uf:string|null;ambiente:string}>> {
+    return db.$queryRawUnsafe(`SELECT "id","isDefault","cnpj","razaoSocial","nomeFantasia","uf","ambiente" FROM "CompanyFiscalConfig" WHERE "userId"=$1 ORDER BY "isDefault" DESC,"createdAt" ASC`,userId);
+  }
+  /** Donos (userId) destas configs — as da allowlist da devolução (poucas; o caso de uso guarda o resultado). */
+  async donosDasConfigs(ids:string[],db:FiscalSql=this.db):Promise<string[]> {
+    if(!ids.length)return [];
+    const rows=await db.$queryRawUnsafe<Array<{userId:string}>>(`SELECT DISTINCT "userId" FROM "CompanyFiscalConfig" WHERE "id"=ANY($1::text[])`,ids);
+    return rows.map(r=>r.userId);
+  }
   /** Idempotência dos passos pós-autorização (o replay depois de queda pode chamar de novo). */
   async temEvento(tx:FiscalSql,userId:string,nfeId:string,evento:string):Promise<boolean> {
     const rows=await tx.$queryRawUnsafe<unknown[]>(`SELECT 1 FROM "NfeAuditLog" WHERE "userId"=$1 AND "nfeId"=$2 AND "evento"=$3 LIMIT 1`,userId,nfeId,evento);

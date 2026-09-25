@@ -70,6 +70,12 @@ export type DevolucaoIssueCode =
   | "QUANTIDADE_INVALIDA"
   | "SALDO_EXCEDIDO"
   | "SALDO_NAO_VERIFICAVEL"
+  /**
+   * AVISO: OUTRA devolução do mesmo item da nota original está em envio à SEFAZ
+   * (VALIDATING/SIGNING/SENDING). A quantidade dela já saiu do disponível; se
+   * ela for recusada, a quantidade volta. Não impede a emissão.
+   */
+  | "OUTRA_DEVOLUCAO_EM_ENVIO"
   | "ORIGINAL_CANCELADA"
   | "ORIGINAL_NAO_AUTORIZADA"
   | "AMBIENTE_DIVERGENTE"
@@ -83,14 +89,28 @@ export type DevolucaoIssueCode =
   | "IBS_CBS_NAO_ENVIADO"
   /** ERRO: PIS/COFINS sem CST, ou com CST que o Dexo não emite (03/05, base por quantidade). */
   | "PIS_COFINS_NAO_SUPORTADO"
-  /** ERRO: CST 01/02 (alíquota do regime normal) numa empresa do Simples. */
+  /**
+   * ERRO: numa empresa do Simples (CRT 1/2/4), CST que só o regime normal usa —
+   * 01/02 (alíquota do regime normal) e os de CRÉDITO (50–56, 60–67).
+   */
   | "PIS_COFINS_REGIME_INCOMPATIVEL"
   /** ERRO: CST 01/02 com alíquota zero — alíquota zero é o CST 06. */
   | "PIS_COFINS_ALIQUOTA_INVALIDA"
-  /** AVISO: CST de PIS/COFINS de entrada (50–98) numa nota de saída. */
+  /**
+   * ERRO: PIS/COFINS com alíquota maior que 0 numa empresa do Simples (CRT 1/2/4) —
+   * no Simples o PIS/COFINS vai na guia do Simples, e a alíquota na nota fica 0.
+   * A SEFAZ AUTORIZA a nota com o valor destacado; só se desfaz cancelando.
+   */
+  | "PIS_COFINS_ALIQUOTA_SIMPLES"
+  /**
+   * ERRO (era AVISO até a decisão 3 do dono): CST de PIS/COFINS de entrada
+   * (50–98) numa nota de SAÍDA (devolução de compra). Nenhuma nota de fornecedor
+   * traz CST de entrada, então não há herança a proteger. O 99 serve aos dois.
+   */
   | "PIS_CST_ENTRADA_EM_SAIDA"
   /** ERRO que a caixinha "Revisei" NÃO libera: a original cobrou ICMS-ST e o Dexo ainda não devolve ST. */
   | "ICMS_ST_NAO_DEVOLVIDO"
+  | "ICMS_ORIGEM_NAO_INFORMADA"
   /** AVISO: devolução de compra (Simples ← fora do Simples) com menos ICMS que o proporcional da compra. */
   | "ICMS_COMPRA_A_MENOR"
   /** AVISO: CSOSN 500 num item cuja compra não teve ICMS-ST. */
@@ -113,6 +133,21 @@ export interface DevolucaoIssue {
   ordem?: number;
   /** pt-BR; cita a rejeição SEFAZ equivalente quando há uma (rastreabilidade). */
   mensagem: string;
+  /**
+   * A PEÇA a que a issue se refere: nº do item na nota ORIGINAL e a chave dela
+   * (as recusas do PUT dos itens mandam; opcional). Com eles a tela acha o cartão
+   * sem depender de `ordem`, que muda quando uma peça sai da devolução.
+   */
+  nItem?: number;
+  chaveAcesso?: string;
+  /**
+   * A DEVOLUÇÃO a que a issue se refere (recusa ORIGINAL_COM_DEVOLUCAO do
+   * cancelamento da nota original): o id dela e o nº fiscal — null enquanto
+   * não autorizada (rascunho/em envio não têm número fiscal). Opcional.
+   */
+  devolucaoNfeId?: string;
+  numeroDevolucao?: number | null;
+  serieDevolucao?: number | null;
 }
 
 // ─────────────────────────── Imposto original (XML) ───────────────────────────
@@ -335,9 +370,11 @@ export interface RegimeEmitenteDevolucao {
   /**
    * CSTs de PIS/COFINS que ESTE emitente pode usar na devolução, vindos das
    * MESMAS tabelas do servidor (`PIS_COFINS_CST_SUPORTADOS` + `ROTULOS_PIS_COFINS_DEVOLUCAO`).
-   * Simples (CRT 1/4): sem o 01 e o 02 (alíquota do regime normal). Os do
-   * sentido da nota vêm primeiro (`doSentidoDaNota`), os usuais do regime no
-   * topo (`usual`). O seletor nunca recebe código que o servidor recusaria.
+   * Simples (CRT 1/2/4): sem o 01 e o 02 (alíquota do regime normal) e sem os de
+   * crédito (50–56, 60–67). Nota de SAÍDA (devolução de compra): sem os de
+   * entrada (50–98); o 99 fica. Os do sentido da nota vêm primeiro
+   * (`doSentidoDaNota`), os usuais do regime no topo (`usual`). O seletor nunca
+   * recebe código que o servidor recusaria.
    */
   pisCofinsOpcoes?: OpcaoPisCofinsDevolucao[];
   /** Frase pronta para o campo de PIS/COFINS (uma vez, no topo). */
@@ -365,7 +402,10 @@ export type SentidoCstPisCofins = "SAIDA" | "ENTRADA" | "AMBOS";
 export interface OpcaoPisCofinsDevolucao {
   /** CST literal ("49", "04"…) — é o que vai no XML. */
   codigo: string;
-  /** "49 — Outras saídas: …" — o número primeiro, a explicação depois. */
+  /**
+   * "49 — Outras operações de saída (…)" — o número primeiro, a explicação
+   * depois (`ROTULOS_PIS_COFINS_DEVOLUCAO`, conferidos com a tabela oficial).
+   */
   rotulo: string;
   sentido: SentidoCstPisCofins;
   /**
@@ -380,12 +420,22 @@ export interface OpcaoPisCofinsDevolucao {
 }
 
 /**
- * Por que um CST de PIS/COFINS não serve. REGIME = 01/02 numa empresa do
- * Simples. ALIQUOTA = alíquota fora de 0–100, ou 01/02 com alíquota zero.
+ * Por que um CST de PIS/COFINS não serve.
+ *  - REGIME: numa empresa do Simples (CRT 1/2/4), 01/02 (alíquota do regime
+ *    normal) ou um código de crédito (50–56, 60–67);
+ *  - ALIQUOTA: alíquota fora de 0–100; 01/02 com alíquota zero; ou, no Simples,
+ *    alíquota maior que 0 (o PIS/COFINS vai na guia do Simples);
+ *  - SENTIDO: CST de entrada (50–98) numa nota de SAÍDA (devolução de compra).
+ *    O 99 serve aos dois sentidos. (Saída numa ENTRADA continua só aviso.)
  */
-export type CausaRecusaPisCofins = "VAZIO" | "FORMATO" | "NAO_SUPORTADO" | "REGIME" | "ALIQUOTA";
+export type CausaRecusaPisCofins = "VAZIO" | "FORMATO" | "NAO_SUPORTADO" | "REGIME" | "ALIQUOTA" | "SENTIDO";
 
-/** Aviso (não recusa) de sentido: CST de saída numa entrada, ou o contrário. */
+/**
+ * Aviso (não recusa) de sentido. Hoje só `PIS_CST_SAIDA_EM_ENTRADA` é emitido
+ * pelo juiz (CST de saída numa nota de entrada: o 49 que o Simples herda das
+ * próprias vendas); o de entrada numa saída virou recusa (causa SENTIDO) e fica
+ * no tipo só por compatibilidade.
+ */
 export type AvisoSentidoPisCofins = "PIS_CST_SAIDA_EM_ENTRADA" | "PIS_CST_ENTRADA_EM_SAIDA";
 
 export type ResultadoCstPisCofins =

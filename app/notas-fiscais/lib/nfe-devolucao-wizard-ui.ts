@@ -27,6 +27,8 @@
 //
 // Módulo PURO: sem React, sem fetch, sem DOM.
 
+import { ROTULO_DEVOLVER_PELA_CHAVE } from "./nfe-devolucao-manual-ui";
+
 /** Passos em que o editor da devolução fica montado (e pode ter edição não salva). */
 export const PASSOS_COM_EDITOR_DEVOLUCAO: readonly number[] = [1, 3, 8];
 
@@ -72,11 +74,28 @@ export function guardaMensagem(destino: number, tituloDestino: string): string {
 }
 
 /**
- * Aviso fixo nos passos da devolução com o editor. A página diz "o rascunho é
- * salvo automaticamente", o que vale para a NF-e comum e NÃO para estes passos.
+ * O subtítulo da página "Emitir NF-e" (`app/notas-fiscais/nfe/page.tsx`). Dizia
+ * "O rascunho é salvo automaticamente." — falso nos passos 1, 3 e 8 da
+ * devolução, onde só o botão "Salvar devolução" grava (G4 #1). A página é do
+ * servidor e não sabe se o rascunho é devolução, então a frase vale para os dois.
+ */
+export const SUBTITULO_EMITIR_NFE =
+  'Preencha as etapas abaixo para gerar uma Nota Fiscal Eletrônica. O rascunho é salvo quando você passa de uma etapa para outra — numa devolução, as etapas Informações, Produtos e Impostos só gravam quando você clica em "Salvar devolução".';
+
+/**
+ * Aviso fixo nos passos da devolução com o editor. A página dizia "o rascunho é
+ * salvo automaticamente", o que valia para a NF-e comum e NÃO para estes passos.
  */
 export const AVISO_SALVAR_DEVOLUCAO =
   'Nesta devolução, o que você muda nos passos Informações, Produtos e Impostos só fica gravado quando você clica em "Salvar devolução". Se tentar sair do passo sem salvar, o Dexo pergunta antes.';
+
+/**
+ * Passos 6 (Duplicatas) e 7 (Pagamentos) numa devolução. Dizia "Devolução sem
+ * cobrança, com pagamento 90 — sem pagamento." — o "90" é o código do grupo de
+ * pagamento no XML, que não diz nada a quem está no galpão (N-fluxo-11).
+ */
+export const TEXTO_DEVOLUCAO_SEM_COBRANCA =
+  'Devolução não tem cobrança nem forma de pagamento: a nota sai como "sem pagamento", e o Dexo já preenche isso. Não há nada a fazer nesta etapa — clique em "Próximo".';
 
 /** Selo ao lado do "Salvo HH:MM" enquanto há edição não salva no editor da devolução. */
 export const ALTERACOES_NAO_SALVAS = "Alterações da devolução ainda não salvas";
@@ -137,8 +156,11 @@ export interface QuadroDevolucaoAMao {
 
 const CAMINHO_COMPRA =
   'Peça que você COMPROU e está devolvendo ao fornecedor: em "Notas Emitidas", abra "Devolução manual" e importe o XML da nota que o fornecedor mandou.';
+// Venda sem o XML guardado no Dexo (histórico importado) não tem "Devolver
+// total"/"Devolver parcial": o botão dela é "Devolver pela chave". A frase cita
+// os dois — citar só os primeiros mandava procurar um botão que não está lá.
 const CAMINHO_VENDA =
-  'Peça que você VENDEU e o cliente devolveu: em "Notas Emitidas", ache a sua nota de venda e clique em "Devolver total" ou "Devolver parcial".';
+  `Peça que você VENDEU e o cliente devolveu: em "Notas Emitidas", ache a sua nota de venda e clique em "Devolver total" ou "Devolver parcial" (se a venda não tiver o XML no Dexo, o botão é "${ROTULO_DEVOLVER_PELA_CHAVE}").`;
 
 /**
  * O quadro do passo 1. Texto NEUTRO NO TEMPO (o do passo 8 diz "começado antes

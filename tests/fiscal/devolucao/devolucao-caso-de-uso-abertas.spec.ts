@@ -48,15 +48,19 @@ describe("abertas(): rascunhos de devolução para continuar ou descartar", () =
     ]);
   });
 
-  it("rascunho de empresa com a devolução DESLIGADA não aparece (multi-CNPJ); sem empresa ligada: 404", async () => {
+  it("rascunho de empresa com a devolução DESLIGADA não aparece (multi-CNPJ); sem empresa ligada: lista vazia", async () => {
     const { uc, pedidas } = montar([linhaAberta({ id: "a" }), linhaAberta({ id: "b", companyFiscalConfigId: "outra" })], [], [{ id: CFC, isDefault: true }, { id: "outra", isDefault: false }]);
     const r = await uc.abertas("tenant");
     expect(r.abertas.map((a) => a.draftId)).toEqual(["a"]);
     expect(pedidas[0]).toEqual(["a"]);
 
+    // Era 404 (erro). A revisão de regressão mediu: a tela chama esta rota a cada carga da
+    // lista de notas, em TODO cliente, e cada uma custava um 404 e um SELECT. Agora é 200
+    // com a lista vazia — a asserção ficou mais estrita: o valor exato, e nenhum rascunho
+    // nem reserva consultados.
     const semNenhuma = montar([linhaAberta({ id: "a" })], [], [{ id: "outra", isDefault: true }]);
-    const e = await erroDe(semNenhuma.uc.abertas("tenant"));
-    expect(e.httpStatus).toBe(404);
+    expect(await semNenhuma.uc.abertas("tenant")).toEqual({ abertas: [] });
+    expect(semNenhuma.pedidas).toEqual([]);
   });
 
   it("rascunho sem empresa gravada usa a empresa padrão", async () => {

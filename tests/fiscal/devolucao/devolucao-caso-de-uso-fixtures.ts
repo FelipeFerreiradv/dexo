@@ -91,6 +91,7 @@ export function repoEmMemoria(estado: {
     aberta: [] as any[],
     audits: [] as Array<{ nfeId: string; evento: string; detalhes: unknown }>,
     sql: [] as Array<{ sql: string; args: unknown[] }>,
+    donos: [] as string[][],
   };
   const repo = {
     db: { $queryRawUnsafe: async () => [] },
@@ -108,6 +109,8 @@ export function repoEmMemoria(estado: {
     audit: async (_tx: unknown, _u: string, nfeId: string, evento: string, detalhes: unknown) => { chamadas.audits.push({ nfeId, evento, detalhes }); },
     temEvento: async (_tx: unknown, _u: string, _id: string, evento: string) => (estado.eventos ?? []).includes(evento),
     escopoDe: async () => null,
+    // Donos das configs da allowlist (o atalho de abertas/disponibilidade): a CFC é do "tenant".
+    donosDasConfigs: async (ids: string[]) => { chamadas.donos.push(ids); return ids.includes(CFC) ? ["tenant"] : []; },
   };
   return { repo, chamadas };
 }

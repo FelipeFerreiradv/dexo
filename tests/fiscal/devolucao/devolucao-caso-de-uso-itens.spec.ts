@@ -166,8 +166,9 @@ describe("N-saldo-ledger-3: recusa de saldo e de CFOP diz o item e o número", (
     const { salvar, chamadas } = montar({ linhas: [linha(6, 1, "AUTHORIZED")] });
     const e = await erroDe(salvar([{ nItem: 5 }, { nItem: 6 }]));
     expect(e.code).toBe("SALDO_INSUFICIENTE");
+    // + nItem/chaveAcesso (revisão de regressão, G2 #2): a issue diz a PEÇA, não só a ordem.
     expect(e.issues).toEqual([{
-      code: "SALDO_EXCEDIDO", severidade: "ERRO", ordem: 2,
+      code: "SALDO_EXCEDIDO", severidade: "ERRO", ordem: 2, nItem: 6, chaveAcesso: CHAVE_DISAUTO,
       mensagem: "Item 2: 24171-7 (item 6 da nota original): este item não tem mais saldo para devolver (1 já devolvido em NF-e autorizada). Tire o item desta devolução.",
     }]);
     expect(chamadas.gravados).toHaveLength(0);
@@ -177,7 +178,8 @@ describe("N-saldo-ledger-3: recusa de saldo e de CFOP diz o item e o número", (
     const { salvar } = montar();
     const e = await erroDe(salvar([{ nItem: 5 }, { nItem: 6, cfop: "5102" }]));
     expect(e.code).toBe("CFOP_INVALIDO");
-    expect(e.issues).toEqual([{ code: "CFOP_NAO_DEVOLUCAO", severidade: "ERRO", ordem: 2, mensagem: "Item 2: o CFOP 5102 não é de devolução para esta operação (Rejeição 327)." }]);
+    // + nItem/chaveAcesso (revisão de regressão, G2 #2): a issue diz a PEÇA, não só a ordem.
+    expect(e.issues).toEqual([{ code: "CFOP_NAO_DEVOLUCAO", severidade: "ERRO", ordem: 2, nItem: 6, chaveAcesso: CHAVE_DISAUTO, mensagem: "Item 2: o CFOP 5102 não é de devolução para esta operação (Rejeição 327)." }]);
   });
 
   it("CFOP de outro destino (6202 numa devolução dentro do estado): CFOP_IDDEST_DIVERGENTE", async () => {

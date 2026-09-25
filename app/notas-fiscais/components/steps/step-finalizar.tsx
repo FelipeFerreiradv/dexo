@@ -283,6 +283,11 @@ export function StepFinalizar({ getValues, ambienteRascunho, email, companyFisca
               </div>
             ))}
           </div>
+          {/* Mesma frase do quadro do editor: ICMS/PIS/COFINS ao lado de
+              "Produtos" pareciam parcelas a somar, e o valor da nota "não batia". */}
+          <p className="text-xs text-muted-foreground">
+            ICMS, PIS e COFINS aparecem destacados na nota, mas não somam de novo ao valor dela.
+          </p>
           <div className="flex justify-end pt-1 text-sm font-semibold">
             Valor da nota: R$ {formatToBRL(totaisDevolucao.totalNota)}
           </div>

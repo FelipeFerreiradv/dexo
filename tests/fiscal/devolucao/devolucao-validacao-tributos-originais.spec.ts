@@ -9,8 +9,9 @@
  *  - regime da empresa não cadastrado (o montador carimbaria CRT 3).
  * E o que passa a AVISAR (sem bloquear): devolução de compra do Simples com
  * menos ICMS que a compra destacou (Res. CGSN 140/2018, art. 59), CSOSN 500
- * sem ST na compra, CST de entrada numa saída, cliente contribuinte na
- * devolução de venda. Mais um ERRO de cadastro: UF do fornecedor ≠ UF da chave.
+ * sem ST na compra, cliente contribuinte na devolução de venda. Mais um ERRO de
+ * cadastro: UF do fornecedor ≠ UF da chave. (CST de entrada numa saída era aviso
+ * aqui; desde a onda 5 — decisão 3 do dono — é ERRO.)
  */
 import { describe, expect, it } from "vitest";
 
@@ -125,15 +126,24 @@ describe("PIS/COFINS que a caixinha não libera", () => {
     expect(codigos(validarDevolucao(ctx))).not.toContain("PIS_COFINS_ALIQUOTA_INVALIDA");
   });
 
-  it("CST de entrada numa nota de saída → AVISO PIS_CST_ENTRADA_EM_SAIDA (não bloqueia)", () => {
+  // ATUALIZADO (onda 5, decisão 3 do dono): era "AVISO (não bloqueia)". CST de
+  // entrada numa devolução de COMPRA (nota de saída) passou a ser RECUSADO —
+  // nenhuma nota de fornecedor traz CST de entrada, não há herança a proteger.
+  // O código de pendência é o mesmo; mudou a severidade (e a frase diz o que fazer).
+  it("CST de entrada numa nota de saída → ERRO PIS_CST_ENTRADA_EM_SAIDA (bloqueia, mesmo confirmado)", () => {
     const ctx = ctxCompra();
     const t = ctx.refs[0].tributacao!;
     ctx.refs[0].tributacao = { ...t, cofins: { cst: "98", vBC: 0, p: 0, v: 0 } };
+    expect(ctx.refs[0].tributacao.confirmada).toBe(true);
     const issues = validarDevolucao(ctx);
     expect(codigos(issues)).toEqual(["PIS_CST_ENTRADA_EM_SAIDA"]);
-    expect(issues[0].severidade).toBe("AVISO");
+    expect(issues[0].severidade).toBe("ERRO");
     expect(issues[0].mensagem).toContain("98 da COFINS");
-    expect(temBloqueio(issues)).toBe(false);
+    expect(issues[0].mensagem).toContain("99");
+    expect(temBloqueio(issues)).toBe(true);
+    // O 99 serve aos dois sentidos: não é recusado.
+    ctx.refs[0].tributacao = { ...t, cofins: { cst: "99", vBC: 0, p: 0, v: 0 } };
+    expect(validarDevolucao(ctx)).toEqual([]);
   });
 });
 

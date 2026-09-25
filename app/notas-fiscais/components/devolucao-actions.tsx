@@ -8,13 +8,14 @@ import {useRef,useState} from "react";
 import {Button} from "@/components/ui/button";
 import {getApiBaseUrl} from "@/lib/api";
 import {urlRascunhoDevolucao} from "../lib/nfe-devolucao-wizard-ui";
-import {urlDevolverPelaChave} from "../lib/nfe-devolucao-manual-ui";
+import {ROTULO_DEVOLVER_PELA_CHAVE,urlDevolverPelaChave} from "../lib/nfe-devolucao-manual-ui";
 import {navegarPara} from "../lib/nfe-navegacao";
 
-export const ROTULO_DEVOLVER_PELA_CHAVE = "Devolver pela chave";
+// O rótulo mora no módulo puro (as frases que o citam usam o mesmo texto); reexportado aqui.
+export {ROTULO_DEVOLVER_PELA_CHAVE};
 /** Por que esta venda devolve pela chave: o Dexo não guarda o XML dela (histórico importado). */
 export const EXPLICA_DEVOLVER_PELA_CHAVE =
-  "O Dexo não tem o XML autorizado desta nota (histórico importado), então a devolução sai pela chave de acesso — o quadro \"Devolução manual\" abre já preenchido com as peças desta venda.";
+  "O Dexo não tem o arquivo XML desta nota (ela veio do sistema antigo), então a devolução sai pela chave de acesso — o quadro \"Devolução manual\" abre já preenchido com as peças desta venda.";
 
 /**
  * Botões de devolução de uma nota de VENDA autorizada.

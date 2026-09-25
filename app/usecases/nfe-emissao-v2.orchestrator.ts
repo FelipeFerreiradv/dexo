@@ -206,9 +206,11 @@ export class NfeEmissaoV2Orchestrator {
    * refaz o hook. A marca de conclusão é o evento AUTORIZADA, gravado no fim de handleAuthorized.
    */
   private async completarPosAutorizacao(userId:string,id:string,config:CompanyFiscalConfig):Promise<void> {
+    let autorizada=false;
     try {
       const r=await this.numeros.reservaViva(userId,id);
       if(!r || r.estado!=="AUTORIZADO")return;
+      autorizada=true;
       const feito=await prisma.$queryRawUnsafe<Array<{x:number}>>(`SELECT 1 AS x FROM "NfeAuditLog" WHERE "nfeId"=$1 AND "userId"=$2 AND "evento"='AUTORIZADA' LIMIT 1`,id,userId);
       if(feito.length)return;
       const d=await this.repo.findNfeById(userId,id);
@@ -219,7 +221,20 @@ export class NfeEmissaoV2Orchestrator {
       await this.hooks.autorizado(d,config,result,null,focusRef);
     } catch(error) {
       logNumeracao("pos_autorizacao_pendente",{userId,nfeId:id,motivo:error instanceof Error?error.message.slice(0,200):"erro"},"error");
+    } finally {
+      // Os passos da DEVOLUÇÃO depois da autorização (vínculo na original e conferência do
+      // excesso) também no replay/consulta — antes só `finalizar` chamava, e uma queda entre o
+      // commit AUTHORIZED e o fim dele deixava a devolução sem DEVOLUCAO_AUTORIZADA para sempre.
+      // Fora do `feito` acima: o hook pode ter concluído e só a devolução ter falhado.
+      // Idempotente (pula se DEVOLUCAO_AUTORIZADA já existe); nota sem cabeçalho de devolução
+      // (repo.get null) sai sem gravar nada. O SALDO não depende disto: ele sai do status da
+      // nota de devolução (linhasSaldo), que registrarResposta/registrarConsulta já gravou.
+      if(autorizada && isDevolucaoAtiva(config.id))await this.registrarDevolucaoAutorizada(userId,id);
     }
+  }
+  private async registrarDevolucaoAutorizada(userId:string,id:string):Promise<void> {
+    try{await new NfeDevolucaoUseCase().registrarAutorizacao(userId,id);}
+    catch{logNumeracao("devolucao_pos_autorizacao_pendente",{userId,nfeId:id},"error");}
   }
   private async registrarFocus(r:Reserva,t:Tentativa,result:ResultadoFiscal,c:CompanyFiscalConfig,consulta:boolean):Promise<Reserva> {
     if(result.classificacao.estadoAlvo==="AUTORIZADO") {

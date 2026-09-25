@@ -22,7 +22,8 @@
 
 import { parseChaveAcesso, validarChaveAcesso } from "@/app/fiscal/domain/chave-acesso-dv";
 import type { TipoDevolucao } from "@/app/fiscal/devolucao/tipos";
-import type { PreviaDevolucaoManual } from "@/app/usecases/nfe-devolucao.usecase";
+// Do contrato (módulo puro), e não do caso de uso: a tela não puxa código de servidor.
+import type { PreviaDevolucaoManual } from "@/app/fiscal/devolucao/contrato";
 
 // ─────────────────────────────── números digitados ───────────────────────────────
 
@@ -322,7 +323,43 @@ export interface LinhaItemDigitado {
   cfopOriginal: string;
   valorUnitario: string;
   quantidade: string;
+  /**
+   * Origem da mercadoria (0 a 8), como está na nota original. SEM valor
+   * pré-escolhido: vazio = não informada, e o Dexo não inventa (o servidor grava
+   * nula). Na venda do Dexo ("Devolver pela chave") vem da própria nota.
+   */
+  origem?: string;
+  /**
+   * Quanto desta peça veio na nota original. Opcional: numa nota do Dexo o
+   * servidor acha sozinho; numa nota de fora, é o que deixa o Dexo conferir
+   * que a devolução não passa do que foi vendido/comprado.
+   */
+  quantidadeOriginal?: string;
 }
+
+/** Origem da mercadoria (tabela da NF-e): o número e o que ele quer dizer. */
+export const ORIGENS_MERCADORIA: ReadonlyArray<{ codigo: string; rotulo: string }> = [
+  { codigo: "0", rotulo: "0 — Nacional" },
+  { codigo: "1", rotulo: "1 — Estrangeira, importada direto pela empresa" },
+  { codigo: "2", rotulo: "2 — Estrangeira, comprada no Brasil" },
+  { codigo: "3", rotulo: "3 — Nacional, com mais de 40% (até 70%) de conteúdo importado" },
+  { codigo: "4", rotulo: "4 — Nacional, feita pelo processo produtivo básico" },
+  { codigo: "5", rotulo: "5 — Nacional, com até 40% de conteúdo importado" },
+  { codigo: "6", rotulo: "6 — Estrangeira, importada direto, sem similar nacional (lista da CAMEX)" },
+  { codigo: "7", rotulo: "7 — Estrangeira, comprada no Brasil, sem similar nacional (lista da CAMEX)" },
+  { codigo: "8", rotulo: "8 — Nacional, com mais de 70% de conteúdo importado" },
+];
+
+export const ROTULO_ORIGEM = "Origem da mercadoria";
+export const PLACEHOLDER_ORIGEM = "Escolha a origem";
+export const AJUDA_ORIGEM =
+  "No DANFE da nota original, é o primeiro número da coluna do CST/CSOSN (0 = nacional). Se não souber, confira com a sua contadora.";
+export const ROTULO_QUANTIDADE_ORIGINAL = "Quantidade na nota original";
+
+/** Como ela vai informar a nota original (era o seletor "Fonte", com "XML" e "Chave sem XML"). */
+export const ROTULO_COMO_INFORMAR = "Como você vai informar a nota original";
+export const OPCAO_COM_XML = "Com o arquivo XML da nota";
+export const OPCAO_SO_CHAVE = "Só com a chave de acesso (sem o XML)";
 
 export const LINHA_VAZIA: LinhaItemDigitado = {
   nItem: "1",
@@ -344,6 +381,10 @@ export type ItemDigitadoLido = {
   cfopOriginal: string | null;
   valorUnitario: number;
   quantidade: number;
+  /** Só quando ela escolheu (0 a 8). Ausente = não informada. */
+  origem?: number;
+  /** Só quando ela informou. */
+  quantidadeOriginal?: number;
 };
 
 /**
@@ -369,7 +410,20 @@ export function lerItensDigitados(linhas: readonly LinhaItemDigitado[]): { itens
     if (l.codigo.trim() === "") erros.push({ campo: `${p}codigo`, mensagem: "Informe o código da peça na nota." });
     if (l.descricao.trim() === "") erros.push({ campo: `${p}descricao`, mensagem: "Informe a descrição da peça na nota." });
     if (l.unidade.trim() === "") erros.push({ campo: `${p}unidade`, mensagem: "Informe a unidade (UN, PC…)." });
-    if (nItem.ok && valor.ok && qtd.ok) {
+    // Opcionais: vazios não vão no corpo (o servidor não inventa nada no lugar).
+    const origemTexto = (l.origem ?? "").trim();
+    const origemOk = origemTexto === "" || /^[0-8]$/.test(origemTexto);
+    if (!origemOk) erros.push({ campo: `${p}origem`, mensagem: "Escolha a origem na lista (0 a 8)." });
+    const qOrigTexto = (l.quantidadeOriginal ?? "").trim();
+    const qOrig = qOrigTexto === "" ? null : lerNumeroDigitado(qOrigTexto, { casas: 4 });
+    if (qOrig && !qOrig.ok) erros.push({ campo: `${p}quantidadeOriginal`, mensagem: qOrig.mensagem });
+    if (qOrig && qOrig.ok && qtd.ok && qtd.valor > qOrig.valor) {
+      erros.push({
+        campo: `${p}quantidade`,
+        mensagem: `A quantidade que volta (${numeroParaCampo(qtd.valor)}) passa da quantidade da nota original (${numeroParaCampo(qOrig.valor)}).`,
+      });
+    }
+    if (nItem.ok && valor.ok && qtd.ok && origemOk && (!qOrig || qOrig.ok) && !(qOrig && qOrig.ok && qtd.valor > qOrig.valor)) {
       itens.push({
         nItem: nItem.valor,
         codigo: l.codigo.trim(),
@@ -379,6 +433,8 @@ export function lerItensDigitados(linhas: readonly LinhaItemDigitado[]): { itens
         cfopOriginal: cfop === "" ? null : cfop,
         valorUnitario: valor.valor,
         quantidade: qtd.valor,
+        ...(origemTexto !== "" && origemOk ? { origem: Number(origemTexto) } : {}),
+        ...(qOrig && qOrig.ok ? { quantidadeOriginal: qOrig.valor } : {}),
       });
     }
   });
@@ -398,18 +454,32 @@ export function linhasDaNota(itens: ReadonlyArray<{
   cfop?: string | null;
   valorUnitario?: number | string | null;
   quantidade?: number | string | null;
+  /** Origem gravada no item da venda (0 a 8): é o dado da nota dela, não um palpite. */
+  origem?: number | string | null;
 }>): LinhaItemDigitado[] {
-  return itens.map((i) => ({
-    nItem: String(i.numero),
-    codigo: i.codigo ?? "",
-    descricao: i.descricao ?? "",
-    ncm: i.ncm ?? "",
-    unidade: i.unidade ?? "UN",
-    cfopOriginal: i.cfop ?? "",
-    valorUnitario: numeroParaCampo(i.valorUnitario === null || i.valorUnitario === undefined ? null : Number(i.valorUnitario)),
-    quantidade: numeroParaCampo(i.quantidade === null || i.quantidade === undefined ? null : Number(i.quantidade)),
-  }));
+  return itens.map((i) => {
+    const origem = i.origem === null || i.origem === undefined ? "" : String(i.origem).trim();
+    return {
+      nItem: String(i.numero),
+      codigo: i.codigo ?? "",
+      descricao: i.descricao ?? "",
+      ncm: i.ncm ?? "",
+      unidade: i.unidade ?? "UN",
+      cfopOriginal: i.cfop ?? "",
+      valorUnitario: numeroParaCampo(i.valorUnitario === null || i.valorUnitario === undefined ? null : Number(i.valorUnitario)),
+      quantidade: numeroParaCampo(i.quantidade === null || i.quantidade === undefined ? null : Number(i.quantidade)),
+      // Só a origem que a nota TEM (0 a 8); sem ela, o campo fica vazio.
+      ...(/^[0-8]$/.test(origem) ? { origem } : {}),
+    };
+  });
 }
+
+/**
+ * O botão da venda sem XML guardado (lista e ficha da nota). Mora aqui, no
+ * módulo puro, para as frases que o citam (wizard, "Devoluções em andamento")
+ * usarem o MESMO texto; `devolucao-actions.tsx` reexporta.
+ */
+export const ROTULO_DEVOLVER_PELA_CHAVE = "Devolver pela chave";
 
 /** Param da lista que abre o quadro já preenchido com uma nota do Dexo. */
 export const PARAM_DEVOLVER_PELA_CHAVE = "devolverPelaChave";

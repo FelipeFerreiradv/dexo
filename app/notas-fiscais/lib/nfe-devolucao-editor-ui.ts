@@ -41,6 +41,7 @@ import {
 } from "./nfe-devolucao-icms-campo";
 import {
   BLOQUEIO_CONFIRMAR_PIS_COFINS,
+  aliquotaGravadaNoSimples,
   aliquotaPisCofins,
   campoPisCofins,
   lerAliquota,
@@ -57,6 +58,7 @@ import {
   viewPendencias,
   type PendenciasDevolucaoView,
 } from "./nfe-devolucao-pendencias-ui";
+import { TITULO_DEVOLUCOES_EM_ANDAMENTO, dataCurta } from "./nfe-devolucoes-abertas-ui";
 
 // ─────────────────────────────── a linha ───────────────────────────────
 
@@ -190,6 +192,117 @@ export const DEVOLVER_TAMBEM = "Devolver esta peça também";
 export const SAI_AO_SALVAR = "Esta peça sai da devolução quando você salvar.";
 export const FORA_DA_DEVOLUCAO = "Esta peça está fora desta devolução.";
 
+/**
+ * As peças da nota original que estão FORA desta devolução e podem voltar (K11):
+ *  - as que ela tirou NESTA visita ao passo (`locais`), com o que ela tinha
+ *    escrito — o detalhe do servidor não as traz mais como itens;
+ *  - as que o servidor lista em `itensForaDaDevolucao` (tiradas antes de
+ *    recarregar a página, ou que nunca entraram). Sem elas, a peça tirada
+ *    sumia de vez depois de recarregar, e o único jeito de trazê-la de volta
+ *    era começar outra devolução.
+ * Uma vez cada (a peça é a chave), nunca as que já estão na devolução, em
+ * ordem de nota e item — a mesma ordem antes e depois de recarregar.
+ */
+export function pecasForaDaDevolucao(
+  detalhe: Pick<DevolucaoDetalhe, "itens" | "itensForaDaDevolucao">,
+  locais: readonly DevolucaoItemDetalhe[],
+): DevolucaoItemDetalhe[] {
+  const dentro = new Set((detalhe.itens ?? []).map((i) => chaveDaLinha(i.chaveAcesso, i.nItem)));
+  const servidor = Array.isArray(detalhe.itensForaDaDevolucao) ? detalhe.itensForaDaDevolucao : [];
+  const vistas = new Set<string>();
+  const out: DevolucaoItemDetalhe[] = [];
+  // As locais primeiro: numa peça tirada agora, vale o que ela tinha escrito.
+  for (const i of [...locais, ...servidor]) {
+    if (!i || typeof i.chaveAcesso !== "string" || typeof i.nItem !== "number") continue;
+    const k = chaveDaLinha(i.chaveAcesso, i.nItem);
+    if (dentro.has(k) || vistas.has(k)) continue;
+    vistas.add(k);
+    out.push(i);
+  }
+  return out.sort((a, b) => (a.chaveAcesso === b.chaveAcesso ? a.nItem - b.nItem : a.chaveAcesso < b.chaveAcesso ? -1 : 1));
+}
+
+/**
+ * A quantidade que a caixa mostra quando a peça VOLTA para a devolução
+ * ("Devolver esta peça também" / "Desfazer"): a que ela tinha escrito; senão a
+ * da peça (o que ainda pode ser devolvido, que o servidor sugere). Quando o
+ * saldo não é conhecido (devolução pela chave, sem o XML: a peça vem com 0), a
+ * caixa fica VAZIA e pede a quantidade — com 0 a peça sairia de novo ao salvar,
+ * sem ela entender por quê.
+ */
+export function quantidadeAoVoltar(
+  linha: Pick<LinhaEditor, "quantidadeTexto">,
+  item: Pick<DevolucaoItemDetalhe, "quantidade">,
+): string {
+  const escrito = (linha.quantidadeTexto ?? "").trim();
+  if (escrito !== "" && lerQuantidadeDevolucao(escrito, null).estado !== "ZERO") return linha.quantidadeTexto;
+  return typeof item.quantidade === "number" && Number.isFinite(item.quantidade) && item.quantidade > 0
+    ? formatarQuantidade(item.quantidade)
+    : "";
+}
+
+/**
+ * O que já aconteceu com esta peça da nota original, numa linha: quanto veio
+ * na nota, quanto já foi devolvido, quanto está em envio e quanto está em
+ * outros rascunhos (que não seguram a peça). "" quando não há nada a dizer.
+ */
+export function saldoDaPeca(
+  item: Pick<DevolucaoItemDetalhe, "quantidadeOriginal" | "devolvidaAutorizada" | "emProcessamento" | "emRascunho" | "unidade">,
+): string {
+  const un = typeof item.unidade === "string" && item.unidade.trim() !== "" ? ` ${item.unidade.trim()}` : "";
+  const partes: string[] = [];
+  if (typeof item.quantidadeOriginal === "number") partes.push(`Na nota original: ${formatarQuantidade(item.quantidadeOriginal)}${un}`);
+  if ((item.devolvidaAutorizada ?? 0) > 0) partes.push(`já devolvida: ${formatarQuantidade(item.devolvidaAutorizada)}`);
+  if ((item.emProcessamento ?? 0) > 0) partes.push(`em envio à SEFAZ: ${formatarQuantidade(item.emProcessamento)}`);
+  if ((item.emRascunho ?? 0) > 0) partes.push(`em outro rascunho: ${formatarQuantidade(item.emRascunho)}`);
+  return partes.join(" · ");
+}
+
+const STATUS_EM_ENVIO: ReadonlySet<string> = new Set(["VALIDATING", "SIGNING", "SENDING"]);
+const STATUS_SEM_EFEITO: ReadonlySet<string> = new Set(["CANCELLED", "INUTILIZED", "DENIED"]);
+
+/**
+ * Onde mais esta peça está (`outrasDevolucoes`, sem canceladas/inutilizadas):
+ * uma frase por devolução, dizendo qual é e o que isso muda. A DLS chegou a ter
+ * 5 rascunhos da MESMA nota da DISAUTO sem saber — o primeiro emitido tira a
+ * quantidade dos outros, e só se descobria na hora de emitir o segundo.
+ */
+export function textosOutrasDevolucoes(
+  item: Pick<DevolucaoItemDetalhe, "outrasDevolucoes" | "unidade">,
+): string[] {
+  const lista = Array.isArray(item.outrasDevolucoes) ? item.outrasDevolucoes : [];
+  const un = typeof item.unidade === "string" && item.unidade.trim() !== "" ? ` ${item.unidade.trim()}` : "";
+  const out: string[] = [];
+  for (const o of lista) {
+    if (!o || typeof o !== "object" || typeof o.status !== "string") continue;
+    // Cancelada/inutilizada não segura nada (o servidor já não manda; defesa).
+    if (STATUS_SEM_EFEITO.has(o.status)) continue;
+    const qtd = typeof o.quantidade === "number" && Number.isFinite(o.quantidade) ? `${formatarQuantidade(o.quantidade)}${un}` : "";
+    const numero =
+      typeof o.numero === "number" && o.numero > 0
+        ? `nº ${o.numero}${typeof o.serie === "number" ? ` (série ${o.serie})` : ""}`
+        : "";
+    if (o.status === "AUTHORIZED") {
+      out.push(`Já foi devolvida na NF-e de devolução ${numero || "autorizada"}${numero ? ", autorizada" : ""}${qtd ? `: ${qtd}` : ""}.`);
+    } else if (STATUS_EM_ENVIO.has(o.status)) {
+      out.push(
+        `Também está na NF-e de devolução ${numero ? `${numero}, ` : ""}que está sendo enviada à SEFAZ${qtd ? ` (${qtd})` : ""}: essa quantidade já saiu do que ainda pode ser devolvido; se ela for recusada, volta.`,
+      );
+    } else {
+      const qual =
+        o.status === "REJECTED"
+          ? `na devolução ${numero ? `${numero} ` : ""}recusada pela SEFAZ, que continua aberta`
+          : "em outro rascunho de devolução";
+      const quando = dataCurta(o.criadaEm);
+      const detalhe = [qtd, quando ? `começado em ${quando}` : ""].filter((x) => x !== "").join(", ");
+      out.push(
+        `Também está ${qual}${detalhe ? ` (${detalhe})` : ""}. Rascunho não segura a peça: a primeira devolução emitida tira a quantidade da outra. Veja em "Notas Emitidas" › "${TITULO_DEVOLUCOES_EM_ANDAMENTO}".`,
+      );
+    }
+  }
+  return out;
+}
+
 // ─────────────────────────── passo 8: impostos ───────────────────────────
 
 export const REVISAO_DEPOIS_DE_SALVAR =
@@ -238,6 +351,11 @@ export interface ImpostosDaLinha {
    * quando ela mexeu no tributo; no valor gravado, só trava a revisão.
    */
   erros: { icms: string; pis: string; cofins: string };
+  /**
+   * No Simples, a alíquota GRAVADA que a caixa travada em 0 vai corrigir ao
+   * salvar ("Estava gravada a alíquota de 1,64% da COFINS…"); "" quando não há.
+   */
+  aliquotaGravada: { pis: string; cofins: string };
   /** true ⇒ o "Salvar devolução" fica travado por esta peça. */
   bloqueiaSalvar: boolean;
   /** O ajuste que vai no corpo — só dos tributos que ela MUDOU. */
@@ -293,7 +411,9 @@ export function impostosDaLinha(entrada: {
       escolhido: codigoEscolhido,
       codigoDaNota: item.referenciaOriginal?.[tributo]?.cst ?? null,
     });
-    const texto = pEscolhido ?? textoDaAliquota(gravado?.p);
+    // No Simples a caixa é TRAVADA em 0 (decisão 2 do dono): mostra 0 e o corpo
+    // leva 0, seja o que for que estiver gravado ou tiver sido digitado antes.
+    const texto = campo.aliquotaTravadaEmZero ? "0" : (pEscolhido ?? textoDaAliquota(gravado?.p));
     let p: number | undefined;
     let erro = "";
     if (!campo.precisaEscolher && campo.exigeAliquota) {
@@ -306,7 +426,14 @@ export function impostosDaLinha(entrada: {
       !campo.precisaEscolher &&
       erro === "" &&
       (campo.valor !== (gravado?.cst ?? null) || (campo.exigeAliquota && p !== gravado?.p));
-    return { campo, texto, p, erro, mexeu, mudou };
+    // Alíquota > 0 GRAVADA numa empresa do Simples (a DLS chegou a gravar COFINS
+    // a 1,64%): a caixa já mostra 0 e `mudou` já é true — o corpo leva o 0. A
+    // frase diz o que estava gravado; nada muda no banco sem ela salvar.
+    const gravadaNoSimples =
+      campo.aliquotaTravadaEmZero && typeof gravado?.p === "number" && gravado.p > 0
+        ? aliquotaGravadaNoSimples(tributo, gravado.p)
+        : "";
+    return { campo, texto, p, erro, mexeu, mudou, gravadaNoSimples };
   };
   const pis = umTributo("pis");
   const cofins = umTributo("cofins");
@@ -349,6 +476,7 @@ export function impostosDaLinha(entrada: {
     pCofinsTexto: cofins.texto,
     ipi: { tem: ipiTem, retirado: ipiRetirado },
     erros: { icms: erroIcms, pis: pis.erro, cofins: cofins.erro },
+    aliquotaGravada: { pis: pis.gravadaNoSimples, cofins: cofins.gravadaNoSimples },
     bloqueiaSalvar,
     tributacao,
     valoresPendentes,
@@ -413,6 +541,30 @@ export function perguntaEntrega(tipo: TipoDevolucao | null | undefined): Pergunt
     seNao:
       "Recusa na entrega não é devolução: com esta resposta o Dexo não emite esta nota. Confirme com a sua contadora como registrar a recusa.",
   };
+}
+
+/**
+ * O topo do quadro da devolução. Dizia "Devolução de compra (saída)" e
+ * "Operação exclusivamente fiscal. O estoque não será alterado." — "saída" e
+ * "operação fiscal" são palavras da contadora; a dona do desmanche quer saber
+ * para onde a peça vai e se o estoque mexe.
+ */
+export function cabecalhoDevolucao(tipo: TipoDevolucao | null | undefined): { titulo: string; estoque: string } {
+  return {
+    titulo:
+      tipo === "VENDA_ENTRADA"
+        ? "Devolução de venda — o cliente devolveu a peça (nota de entrada)"
+        : "Devolução de compra — a peça volta para o fornecedor (nota de saída)",
+    estoque: "Esta nota é só fiscal: o Dexo não mexe no estoque das peças por causa dela.",
+  };
+}
+
+/** "Nota do fornecedor: NF-e nº 852899, série 1" — de quem é a nota que está voltando. */
+export function textoNotaOriginal(
+  tipo: TipoDevolucao | null | undefined,
+  o: { numero: number; serie: number },
+): string {
+  return `${tipo === "VENDA_ENTRADA" ? "Sua nota de venda" : "Nota do fornecedor"}: NF-e nº ${o.numero}, série ${o.serie}`;
 }
 
 /** O escopo agora é DERIVADO das quantidades (o servidor ignora o que a tela mandar). */
@@ -572,7 +724,8 @@ export const FALHA_VEJA_AS_PECAS = "Não foi possível salvar: veja abaixo o que
 
 /**
  * A recusa do servidor, traduzida para a tela: cada `erros[]` do 400 vai para a
- * PEÇA dele e cada `issues[]` do 409/422 também (pela ordem). O índice
+ * PEÇA dele e cada `issues[]` do 409/422 também — pela peça (`chaveAcesso` +
+ * `nItem` da issue) quando o servidor manda, e pela `ordem` só na falta. O índice
  * `itens[i]` é o do corpo ENVIADO — que não leva as peças tiradas —, então a
  * peça sai de `nItem`/`chaveAcesso` do próprio erro ou do que foi enviado,
  * nunca da posição na tela.
@@ -633,8 +786,14 @@ export function falhaDoSalvar(entrada: {
     pendencias = viewPendencias(c.issues, erroServidor || undefined);
     for (const bruto of c.issues) {
       if (!bruto || typeof bruto !== "object") continue;
-      const i = bruto as { ordem?: unknown; mensagem?: unknown };
-      const peca = typeof i.ordem === "number" ? entrada.pecas.find((p) => p.ordem === i.ordem) ?? null : null;
+      const i = bruto as { ordem?: unknown; mensagem?: unknown; nItem?: unknown; chaveAcesso?: unknown };
+      // A PEÇA (nota original + item) quando o servidor manda — ela não muda ao
+      // tirar outra peça da devolução. A `ordem` é a posição gravada, e numa
+      // recusa do passo 3 que tira ou traz peça ela já não bate com a tela: só
+      // vale na falta da peça (servidor antigo).
+      const pelaPeca = achar(i.chaveAcesso, i.nItem);
+      const temPeca = typeof i.chaveAcesso === "string" && typeof i.nItem === "number";
+      const peca = pelaPeca ?? (!temPeca && typeof i.ordem === "number" ? entrada.pecas.find((p) => p.ordem === i.ordem) ?? null : null);
       const frase = typeof i.mensagem === "string" ? semPrefixoDeItem(i.mensagem) : "";
       if (peca && frase !== "") empurrar(peca, frase);
     }

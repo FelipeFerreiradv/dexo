@@ -33,6 +33,7 @@ import {
   GUARDA_TITULO,
   PASSOS_COM_EDITOR_DEVOLUCAO,
   QUADRO_EXIGE_NUMERACAO_V2,
+  TEXTO_DEVOLUCAO_SEM_COBRANCA,
   destinoAposAutorizar,
   guardaMensagem,
   lerEstadoDevolucaoDoRascunho,
@@ -822,7 +823,7 @@ export function NfeWizard() {
         {currentStep === 5 && (
           <StepVolumes control={control} errors={errors} />
         )}
-        {devolucao && [6,7].includes(currentStep) && <p>Devolução sem cobrança, com pagamento 90 — sem pagamento.</p>}
+        {devolucao && [6,7].includes(currentStep) && <p>{TEXTO_DEVOLUCAO_SEM_COBRANCA}</p>}
         {currentStep === 6 && !devolucao && (
           <StepDuplicatas
             control={control}

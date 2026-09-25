@@ -24,7 +24,7 @@ vi.mock("@/lib/api", () => ({ getApiBaseUrl: () => "http://api.test" }));
 vi.mock("../../../app/notas-fiscais/lib/nfe-navegacao", () => ({ navegarPara: (u: string) => h.navegacoes.push(u) }));
 
 import { DevolucaoManual, XML_GRANDE_DEMAIS } from "../../../app/notas-fiscais/components/devolucao-manual";
-import { CONFIRA_OS_CAMPOS, ESCOLHA_UMA_PECA } from "../../../app/notas-fiscais/lib/nfe-devolucao-manual-ui";
+import { CONFIRA_OS_CAMPOS, ESCOLHA_UMA_PECA, ROTULO_COMO_INFORMAR } from "../../../app/notas-fiscais/lib/nfe-devolucao-manual-ui";
 import { calcularDvChaveAcesso } from "../../../app/fiscal/domain/chave-acesso-dv";
 
 const API = "http://api.test";
@@ -218,7 +218,10 @@ describe("pela chave — colar do DANFE, vírgula e o fornecedor pela chave", ()
   async function modoChave() {
     await montar();
     await abrir();
-    await digitar(campo("Fonte"), "CHAVE");
+    // ATUALIZADO (onda 5, N-fluxo-11): o seletor se chamava "Fonte" (com as
+    // opções "XML" e "Chave sem XML") — jargão que a auditoria apontou. Agora é
+    // ROTULO_COMO_INFORMAR; o valor ("CHAVE") e o que se confere não mudaram.
+    await digitar(campo(ROTULO_COMO_INFORMAR), "CHAVE");
   }
 
   it("a chave colada com espaços fica INTEIRA e é conferida ao vivo", async () => {
@@ -297,7 +300,8 @@ describe("pela chave — colar do DANFE, vírgula e o fornecedor pela chave", ()
     rotas["GET /fiscal/nfe/n9"] = [{ status: 200, body: { nfe: { id: "n9", chaveAcesso: CHAVE, destinatarioJson: { nome: "Cliente Balcão", cpfCnpj: "52998224725", uf: "sc" }, itens: [{ numero: 2, codigo: "P2", descricao: "Porta", ncm: "87082999", unidade: "UN", cfop: "5102", valorUnitario: 350.5, quantidade: 1 }] } } }];
     await montar("/notas-fiscais/emitidas?devolverPelaChave=n9");
     expect((campo("Operação") as HTMLSelectElement).value).toBe("VENDA_ENTRADA");
-    expect((campo("Fonte") as HTMLSelectElement).value).toBe("CHAVE");
+    // ATUALIZADO (onda 5, N-fluxo-11): rótulo "Fonte" → ROTULO_COMO_INFORMAR; mesma asserção.
+    expect((campo(ROTULO_COMO_INFORMAR) as HTMLSelectElement).value).toBe("CHAVE");
     expect((campo("Chave de acesso") as HTMLInputElement).value).toBe(CHAVE);
     expect((campo("Destinatário") as HTMLInputElement).value).toBe("Cliente Balcão");
     expect((campo("UF do destinatário") as HTMLInputElement).value).toBe("SC");

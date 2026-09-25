@@ -98,11 +98,19 @@ describe("campoPisCofins — o resto do juiz", () => {
     expect(codigos(c)).toContain("01");
   });
 
-  it("CST de entrada numa devolução de compra (saída) é AVISO junto do campo, não recusa", () => {
+  // ATUALIZADO (onda 5, decisão 3 do dono): era "AVISO junto do campo, não
+  // recusa". CST de entrada numa devolução de compra (nota de saída) passou a ser
+  // RECUSADO pelo juiz do servidor (causa SENTIDO) — nenhuma nota de fornecedor
+  // traz CST de entrada, não há herança a proteger. O campo usa o mesmo juiz:
+  // agora recusa na hora, com o motivo, e o seletor nasce vazio.
+  it("CST de entrada numa devolução de compra (saída) é RECUSADO junto do campo, com o motivo", () => {
     const c = campoPisCofins({ emitente: NORMAL_COMPRA, tipo: "COMPRA_SAIDA", tributo: "pis", gravado: { cst: "50" } });
-    expect(c.precisaEscolher).toBe(false);
-    expect(c.avisoTexto).toContain("é de entrada");
-    expect(c.avisoTexto).toContain("Não impede a emissão");
+    expect(c.precisaEscolher).toBe(true);
+    expect(c.causa).toBe("SENTIDO");
+    expect(c.valor).toBe("");
+    expect(c.motivo).toContain("é de entrada");
+    expect(c.titulo).toBe("O código do PIS deste item não serve na devolução");
+    expect(codigos(c)).not.toContain("50");
   });
 
   it("devolução de VENDA do Simples: o 49 herdado das próprias vendas continua servindo (só avisa)", () => {
@@ -169,8 +177,18 @@ describe("campoPisCofins — o resto do juiz", () => {
     const g = gruposPisCofins(opcoes, "COMPRA_SAIDA");
     expect(g[0].rotulo).toBe("Mais usados");
     expect(g[0].opcoes[0].codigo).toBe("49");
-    expect(g[g.length - 1].rotulo).toContain("Códigos de entrada");
+    // ATUALIZADO (onda 5, decisão 3 do dono): na devolução de COMPRA os códigos
+    // de entrada saíram da lista (viraram recusa), então não há mais grupo
+    // "Códigos de entrada" nela. O "sentido oposto por último" continua valendo
+    // na devolução de VENDA, onde os de saída (o 49 herdado) seguem na lista.
+    expect(g.some((x) => x.rotulo.includes("Códigos de entrada"))).toBe(false);
     expect(g.flatMap((x) => x.opcoes).length).toBe(opcoes.length);
+    const venda = opcoesPisCofinsDevolucao({ crt: "1", tipo: "VENDA_ENTRADA" });
+    const gv = gruposPisCofins(venda, "VENDA_ENTRADA");
+    expect(gv[0].rotulo).toBe("Mais usados");
+    expect(gv[gv.length - 1].rotulo).toContain("Códigos de saída");
+    expect(gv[gv.length - 1].opcoes.map((o) => o.codigo)).toContain("49");
+    expect(gv.flatMap((x) => x.opcoes).length).toBe(venda.length);
   });
 });
 

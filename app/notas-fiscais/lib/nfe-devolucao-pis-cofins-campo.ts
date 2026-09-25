@@ -15,19 +15,27 @@
 //  1. A lista vem do servidor (`DevolucaoDetalhe.emitente.pisCofinsOpcoes`,
 //     montada pelas MESMAS tabelas de `tributacao.ts`); sem ela, da mesma função
 //     (`opcoesPisCofinsDevolucao`). Nada de literal aqui.
-//  2. O veredito é o do servidor (`checarCstPisCofinsDevolucao`): 01/02 numa
-//     empresa do Simples é RECUSADO (decisão do dono: é o que o Dexo já faz nas
-//     notas comuns do Simples); CST de entrada numa nota de saída é só AVISO.
+//  2. O veredito é o do servidor (`checarCstPisCofinsDevolucao`): numa empresa
+//     do Simples, 01/02 e os códigos de crédito (50–56, 60–67) são RECUSADOS
+//     (decisão 2 do dono); CST de entrada (50–98) numa devolução de COMPRA
+//     (nota de saída) também é RECUSADO (decisão 3); CST de saída numa
+//     devolução de VENDA (o 49 herdado das próprias vendas) só AVISA (decisão 4).
 //  3. O seletor nasce VAZIO quando o código gravado não serve — o Dexo não
 //     escolhe imposto no lugar dela.
 //  4. Código e alíquota viajam SEMPRE juntos no corpo, com o número que a caixa
 //     mostra (`overrideComPisCofins`): o servidor completa o que falta, e
 //     completar em silêncio é o que fazia a tela e o banco divergirem.
+//  5. No Simples (CRT 1/2/4) a alíquota do PIS/COFINS é TRAVADA em 0 (decisão 2
+//     do dono): o PIS/COFINS vai na guia do Simples, não na nota. A SEFAZ
+//     autoriza a nota com o valor destacado — e isso só se desfaz cancelando —,
+//     então a caixa nem deixa digitar (`aliquotaTravadaEmZero`), e diz por quê.
 //
 // Módulo PURO: sem React, sem fetch, sem DOM.
 
 import {
+  MOTIVO_ALIQUOTA_SIMPLES,
   checarCstPisCofinsDevolucao,
+  familiaPisCofinsDoCrt,
   opcoesPisCofinsDevolucao,
 } from "@/app/fiscal/devolucao/tributacao";
 import type {
@@ -75,6 +83,26 @@ export const COMO_RESOLVER_PIS_COFINS =
 
 export const BLOQUEIO_CONFIRMAR_PIS_COFINS =
   "Só dá para marcar como revisado depois de escolher um código de PIS e um de COFINS que sirvam para a sua empresa.";
+
+/**
+ * Por que a caixa de alíquota do PIS/COFINS está travada em 0 no Simples — a
+ * MESMA frase do servidor (`MOTIVO_ALIQUOTA_SIMPLES`, do ajuste e da
+ * validação): tela e servidor dizem a mesma coisa.
+ */
+export const ALIQUOTA_TRAVADA_SIMPLES = MOTIVO_ALIQUOTA_SIMPLES;
+
+function percentualBR(p: number): string {
+  return `${String(Math.round(p * 10000) / 10000).replace(".", ",")}%`;
+}
+
+/**
+ * No Simples, o item tinha uma alíquota GRAVADA maior que 0 (a DLS chegou a
+ * gravar COFINS a 1,64%): a caixa mostra 0, e a frase diz o que estava gravado
+ * e que o 0 só vale quando ela salvar — nada muda calado no banco.
+ */
+export function aliquotaGravadaNoSimples(tributo: TributoPisCofins, p: number): string {
+  return `Estava gravada a alíquota de ${percentualBR(p)} ${NOME[tributo].de}. Ao clicar em "Salvar devolução", ela passa a 0.`;
+}
 
 function tituloNaoServe(tributo: TributoPisCofins, causa: CausaRecusaPisCofins): string {
   if (causa === "REGIME") return `O código ${NOME[tributo].de} deste item não serve para a sua empresa`;
@@ -143,7 +171,9 @@ export interface GrupoOpcoesPisCofins {
 
 /**
  * Os mais usados no regime dela primeiro; depois os outros do sentido da nota;
- * por último os do sentido oposto (não recusados — só avisados).
+ * por último os do sentido oposto. Desde a decisão 3 do dono, o sentido oposto
+ * só existe na devolução de VENDA (os de saída, como o 49 herdado — só
+ * avisados): na devolução de compra os de entrada saíram da lista (recusados).
  */
 export function gruposPisCofins(
   opcoes: readonly OpcaoPisCofinsDevolucao[],
@@ -206,6 +236,12 @@ export interface CampoPisCofinsView {
   origem: string;
   /** O código escolhido leva alíquota (PISAliq/PISOutr)? */
   exigeAliquota: boolean;
+  /**
+   * A caixa de alíquota fica TRAVADA em 0 (decisão 2 do dono): empresa do
+   * Simples (CRT 1/2/4) com um código que leva alíquota. O PIS/COFINS vai na
+   * guia do Simples; a frase é `ALIQUOTA_TRAVADA_SIMPLES`.
+   */
+  aliquotaTravadaEmZero: boolean;
   sentido: SentidoCstPisCofins | null;
   /** Aviso de sentido (não impede): "" quando não há. */
   avisoTexto: string;
@@ -273,6 +309,7 @@ export function campoPisCofins(entrada: EntradaCampoPisCofins): CampoPisCofinsVi
       comoResolver: "",
       origem: "",
       exigeAliquota: veredito.exigeAliquota,
+      aliquotaTravadaEmZero: veredito.exigeAliquota && familiaPisCofinsDoCrt(crt) === "SN",
       sentido: veredito.sentido,
       avisoTexto: veredito.avisoTexto,
     };
@@ -305,6 +342,7 @@ export function campoPisCofins(entrada: EntradaCampoPisCofins): CampoPisCofinsVi
       comoResolver: COMO_RESOLVER_PIS_COFINS,
       origem: "",
       exigeAliquota: false,
+      aliquotaTravadaEmZero: false,
       sentido: null,
       avisoTexto: "",
     };
@@ -321,6 +359,7 @@ export function campoPisCofins(entrada: EntradaCampoPisCofins): CampoPisCofinsVi
     comoResolver: COMO_RESOLVER_PIS_COFINS,
     origem: !mexeu && codigoAtual !== null ? ORIGEM_NOTA_ORIGINAL : "",
     exigeAliquota: false,
+    aliquotaTravadaEmZero: false,
     sentido: null,
     avisoTexto: "",
   };

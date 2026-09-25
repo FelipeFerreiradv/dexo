@@ -4,11 +4,12 @@
 // React.createElement classico e o componente so monta em jsdom com o React em
 // escopo. Em producao o Next segue com o runtime automatico.
 import * as React from "react";
-import {useCallback,useEffect,useState} from "react";
+import {useCallback,useEffect,useRef,useState} from "react";
 import {Button} from "@/components/ui/button";
 import {getApiBaseUrl} from "@/lib/api";
-import type {DevolucaoAbertaResumo} from "@/app/usecases/nfe-devolucao.usecase";
+import type {DevolucaoAbertaResumo} from "@/app/fiscal/devolucao/contrato";
 import {navegarPara} from "../lib/nfe-navegacao";
+import {consultarDisponibilidade} from "../lib/nfe-devolucao-disponibilidade-ui";
 // Textos, ordem e o descarte (com a confirmação do número fiscal) vivem no
 // módulo puro ao lado, testado em node. Aqui só se desenha.
 import {
@@ -29,17 +30,26 @@ import {
  * esconde (ela só mostra nota com número real). Com "Continuar" e "Descartar".
  *
  * Some por inteiro (renderiza nada) quando a empresa não tem a devolução ligada
- * (404 do servidor) ou quando não há nenhuma em andamento — a lista das outras
- * empresas fica exatamente como era.
+ * ou quando não há nenhuma em andamento — a lista das outras empresas fica
+ * exatamente como era.
+ *
+ * Pergunta ANTES se a devolução está ligada (a mesma pergunta do "Devolução
+ * manual", dividida quando os dois montam juntos): desligada, o GET /abertas
+ * nem sai — antes era um 404 e uma consulta ao banco em toda carga da lista, de
+ * todo cliente.
  */
 export function DevolucoesEmAndamento({email}:{email:string}) {
   const [abertas,setAbertas]=useState<DevolucaoAbertaResumo[]>([]);
   const [confirmar,setConfirmar]=useState<{draftId:string;mensagem:string}|null>(null);
   const [ocupado,setOcupado]=useState<string|null>(null);
   const [erro,setErro]=useState<{draftId:string;mensagem:string}|null>(null);
+  // Respondida uma vez por montagem: recarregar depois de um descarte não pergunta de novo.
+  const ligada=useRef<{email:string;sim:boolean}|null>(null);
   const carregar=useCallback(async()=>{
     if(!email)return;
     try{
+      if(ligada.current?.email!==email)ligada.current={email,sim:(await consultarDisponibilidade({base:getApiBaseUrl(),email})).ligada};
+      if(!ligada.current.sim){setAbertas([]);return;}
       const r=await fetch(`${getApiBaseUrl()}/fiscal/nfe/devolucao/abertas`,{headers:{email}});
       if(!r.ok){setAbertas([]);return;}
       setAbertas(lerAbertas(await r.json().catch(()=>null)));

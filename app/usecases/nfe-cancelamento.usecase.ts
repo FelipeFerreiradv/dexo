@@ -3,6 +3,7 @@ import { isDevolucaoAtiva, isNumeracaoV2ParaEmissao } from "../fiscal/flags";
 import { NfeNumeracaoService } from "../fiscal/numeracao/numeracao.service";
 import { NfeDevolucaoRepository } from "../fiscal/devolucao/devolucao.repository";
 import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
+import { erroOriginalComDevolucao } from "./nfe-devolucao.usecase";
 import { tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
 import { logNumeracao } from "../fiscal/numeracao/log";
 import { FocusNfeV2Client } from "../fiscal/providers/focus-nfe-v2.client";
@@ -204,7 +205,9 @@ export class NfeCancelamentoUseCase {
       return prisma.$transaction(async tx=>{
         await devolucao.lockOrigens(tx,userId,[chaveOriginal]);
         const linhas=await devolucao.linhasSaldo(userId,chaveOriginal,tx);
-        if(linhas.some(l=>["AUTHORIZED","VALIDATING","SIGNING","SENDING"].includes(l.statusDevolucao)))throw new DevolucaoError("ORIGINAL_COM_DEVOLUCAO");
+        // A MESMA regra (autorizada ou em envio), agora citando CADA devolução: nº e id.
+        const bloqueio=erroOriginalComDevolucao(linhas);
+        if(bloqueio)throw bloqueio;
         return executeCancel();
       },{timeout:600000,maxWait:5000});
     }
