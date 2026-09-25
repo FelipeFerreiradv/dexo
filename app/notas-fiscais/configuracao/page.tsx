@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { FiscalCompaniesManager } from "../components/fiscal-companies-manager";
 
@@ -22,6 +23,10 @@ export default async function FiscalConfigPage() {
   if (process.env.NEXT_PUBLIC_FISCAL_MODULE_ENABLED !== "true") {
     redirect("/");
   }
+
+  // Depois da flag, nunca antes (ver page-access.ts): com o módulo desligado o
+  // destino continua sendo "/".
+  await assertPageAccess(session, "fiscal");
 
   const productionUnlocked =
     process.env.NEXT_PUBLIC_FISCAL_PRODUCTION_UNLOCKED === "true";

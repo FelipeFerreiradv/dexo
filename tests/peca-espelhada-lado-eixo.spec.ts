@@ -155,6 +155,13 @@ describe("titleSide / titleAxis", () => {
 });
 
 describe("isOppositeSideOrAxis", () => {
+  it("nome ausente (caminho antigo, anterior ao #347) nao explode e nao acusa", () => {
+    // Desde o #347 o produto casado vem SEMPRE com `name` (select { id, name });
+    // a guarda continua muda se um chamador antigo passar sem ele.
+    expect(isOppositeSideOrAxis(ESQ, undefined as never)).toBe(false);
+    expect(isOppositeSideOrAxis(ESQ, null as never)).toBe(false);
+  });
+
   it("acusa os casos reais que estavam passando", () => {
     expect(isOppositeSideOrAxis(ESQ, DIR)).toBe(true);
     expect(
@@ -385,15 +392,20 @@ describe("autodeteccao: peca espelhada ganha produto proprio", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("SEM REGRESSAO: produto sem nome nao dispara a guarda", async () => {
-    // Caminhos antigos passam `matched` sem `name`. A guarda tem de ficar muda,
-    // nao explodir nem recusar.
+  it("SEM REGRESSAO: produto do MESMO lado continua sendo ligado (a guarda fica muda)", async () => {
+    // Era "produto sem nome": caminhos antigos passavam `matched` sem `name`. Desde o
+    // #347 (18/09) o produto casado vem SEMPRE com `name` (findProductBySku faz
+    // select { id, name }), e nome ausente conta como título incompatível — o
+    // anúncio ganha ficha própria, de propósito. O caso real equivalente é o do
+    // mesmo lado: a guarda de peça espelhada tem de ficar muda e o vínculo sai.
+    // (Nome ausente na própria guarda: coberto em "isOppositeSideOrAxis".)
     vi.spyOn(
       ListingRepository,
       "findProductIdByExternalListingId",
     ).mockResolvedValue(null);
     vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
       id: "p-sem-nome",
+      name: ESQ,
     } as never);
     vi.spyOn(ListingRepository, "productHasListingInAccount").mockResolvedValue(
       false as never,

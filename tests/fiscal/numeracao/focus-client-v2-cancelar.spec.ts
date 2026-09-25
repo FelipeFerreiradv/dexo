@@ -3,8 +3,10 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { FocusNfeV2Client } from "../../../app/fiscal/providers/focus-nfe-v2.client";
 
 // Cliente Focus V2 — cancelamento (DELETE /v2/{nfe|nfce}/{ref}).
-// Sucesso só com HTTP 200 + status "cancelado" + cStat 135/155: o V1 conta QUALQUER 200
-// como sucesso e deixava a nota CANCELLED com o evento recusado pela SEFAZ.
+// Sucesso só com HTTP 200 + status "cancelado" + cStat 135/155: até 25/09/2026 o V1 contava
+// QUALQUER 200 como sucesso e deixava a nota CANCELLED com o evento recusado pela SEFAZ; hoje
+// o V1 trata "erro_cancelamento" como falha, exceto 218/420 ("já cancelada"), que lá são
+// sucesso idempotente (aqui na V2 seguem falha).
 // Nunca lança, nunca vaza o token.
 
 const TOKEN = "tok_SEGREDO_focus_9f8e7d6c5b4a";

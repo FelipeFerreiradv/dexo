@@ -44,6 +44,10 @@ import { normalizeSku } from "@/app/lib/sku";
 import { normalizeListingStatus } from "../lib/listing-status";
 import { sanitizeMLDescription } from "../lib/ml-description-text";
 import {
+  isShopeeListingPlaceholder,
+  parseShopeeItemId,
+} from "../lib/shopee-listing-placeholder.logic";
+import {
   buildMLTitleFrom,
   compareMLTitles,
   isMaterialMLTitleChange,
@@ -5108,8 +5112,37 @@ export class SyncUseCase {
       };
     }
 
-    const parseItemId = (externalId: string) =>
-      parseInt(externalId.split(":")[0], 10);
+    // Marcador local (`PENDING_SHP_…`, criação que falhou) — espelho do ML e
+    // da Magalu. Sem isto o parse abaixo virava NaN e a chamada saía para a
+    // Shopee mesmo assim: `strconv.ParseUint: parsing "NaN"` gravado como
+    // FAILURE (423 em 10 dias) e cota da conta gasta até dar 429 nos anúncios
+    // de verdade. Nenhuma consulta nova: decide só pelo id já carregado.
+    if (isShopeeListingPlaceholder(listing.externalListingId)) {
+      try {
+        await this.logSync(
+          account.id,
+          SyncType.STOCK_UPDATE,
+          SyncStatus.WARNING,
+          `Anúncio local (placeholder) — não existe na Shopee: ${listing.externalListingId}`,
+          {
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+          },
+        );
+      } catch {
+        /* ignore logging failures */
+      }
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Anúncio local (placeholder) — não existe na Shopee. Sincronização ignorada.",
+      };
+    }
+
+    // O MESMO parse que o predicado acima usa (um lugar só, no .logic).
+    const parseItemId = parseShopeeItemId;
     const parseModelId = (externalId: string): number | undefined => {
       const parts = externalId.split(":");
       if (parts.length < 2) return undefined;
@@ -6423,6 +6456,28 @@ export class SyncUseCase {
     try {
       if (!account.shopId) {
         throw new Error("ShopId nÃ£o encontrado para conta Shopee");
+      }
+
+      // Marcador local (`PENDING_SHP_…`, criação que falhou) — MESMA guarda do
+      // sync de estoque e do syncMLProductData. Sem isto o parseInt abaixo
+      // virava NaN e get_item_base_info/update_item saíam para a Shopee mesmo
+      // assim, gastando a cota da conta (429 nos anúncios de verdade). Decide
+      // só pelo id recebido: nenhuma consulta nova.
+      if (isShopeeListingPlaceholder(externalListingId)) {
+        try {
+          await this.logSync(
+            account.id,
+            SyncType.PRODUCT_SYNC,
+            SyncStatus.WARNING,
+            `Anúncio local (placeholder) — não existe na Shopee: ${externalListingId}`,
+            { productId: product.id, externalListingId },
+          );
+        } catch {
+          /* ignore logging failures */
+        }
+        result.error =
+          "Anúncio local (placeholder) — não existe na Shopee. Sincronização ignorada.";
+        return result;
       }
 
       // Buscar item atual no Shopee

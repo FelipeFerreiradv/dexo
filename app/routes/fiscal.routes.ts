@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { loadTenantAvatar } from "../fiscal/generators/load-avatar";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { exigeAcessoFiscal, exigeAcessoFiscalOuPdv, exigeAcessoFiscalPdvOuClientes } from "../middlewares/require-page-access.middleware";
 import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
 import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
@@ -29,6 +30,7 @@ import type {
   RegimeTributario,
 } from "../fiscal/domain/nfe.types";
 import { isNfeFreteMedidasEnabled } from "../fiscal/domain/frete";
+import type { CancelamentoDanfe } from "../fiscal/generators/danfe-carimbo-cancelada";
 
 /**
  * Remove segredos do CompanyFiscalConfig antes de devolver ao cliente e deriva
@@ -113,6 +115,61 @@ export async function tryRerenderDanfe(
     return null;
   }
 }
+
+/**
+ * Data e protocolo do cancelamento. A única fonte é o evento CANCELADA da
+ * auditoria: a NfeEmitida guarda só o status (e a justificativa em
+ * `motivoRejeicao`). Best-effort: sem evento, ou com falha de leitura, a marca
+ * sai sem a data e o protocolo — mas sai.
+ */
+export async function lerCancelamentoDanfe(
+  db: any,
+  nfeId: string,
+  userId: string,
+): Promise<CancelamentoDanfe> {
+  try {
+    const ev = await db.nfeAuditLog.findFirst({
+      where: { nfeId, userId, evento: "CANCELADA" },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true, detalhes: true },
+    });
+    const d =
+      ev?.detalhes && typeof ev.detalhes === "object" && !Array.isArray(ev.detalhes)
+        ? (ev.detalhes as Record<string, unknown>)
+        : {};
+    const bruto = typeof d.protocolo === "number" ? String(d.protocolo) : d.protocolo;
+    const protocolo = typeof bruto === "string" && bruto.trim() !== "" ? bruto.trim() : null;
+    return { em: ev?.createdAt instanceof Date ? ev.createdAt : null, protocolo };
+  } catch {
+    return { em: null, protocolo: null };
+  }
+}
+
+/**
+ * O PDF do DANFE que sai para o usuário (download, impressão do PDV e anexo de
+ * e-mail). Nota CANCELADA sai carimbada — "NF-e CANCELADA" em diagonal, data e
+ * protocolo do cancelamento — tanto o re-render quanto o arquivo guardado, que
+ * não é sobrescrito. Qualquer outro status devolve o MESMO objeto recebido: byte a
+ * byte o que saía antes. Lança se não conseguir carimbar — entregar a nota
+ * cancelada sem a marca é o defeito que isto corrige (a DLS quase cancelou a nota
+ * certa por causa do DANFE da cancelada, 25/09/2026).
+ */
+export async function danfeParaEntrega(
+  conteudo: Buffer | Uint8Array,
+  nota: { id: string; status?: string | null; modelo?: string | number | null },
+  userId: string,
+  db: any = prisma,
+): Promise<Buffer | Uint8Array> {
+  if (nota.status !== "CANCELLED") return conteudo;
+  const cancelamento = await lerCancelamentoDanfe(db, nota.id, userId);
+  const { carimbarDanfeCancelada } = await import(
+    "../fiscal/generators/danfe-carimbo-cancelada"
+  );
+  return carimbarDanfeCancelada(conteudo, { modelo: nota.modelo, cancelamento });
+}
+
+export const DANFE_CANCELADA_SEM_CARIMBO =
+  "Esta nota está CANCELADA e não foi possível marcar o DANFE como cancelado. Use o XML da nota.";
 
 export function sanitizeFiscalConfig(
   config: Awaited<ReturnType<CompanyFiscalUseCase["getByUserId"]>> | null,
@@ -227,6 +284,12 @@ export function parseCompanyIdParam(v: unknown): string | null | undefined {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// Toda rota daqui exige a página "fiscal" (Notas fiscais) do colaborador, além
+// do login — antes a permissão só escondia o menu e a API atendia qualquer um.
+// Exceções: GET /companies aceita "fiscal OU pdv" (seletor de CNPJ do PDV) e
+// GET /nfe/:id/danfe aceita "fiscal, pdv OU clientes" (reimpressão no PDV e na
+// ficha do cliente). Rota nova precisa de um dos guards; o teste
+// tests/fiscal/permissao-fiscal-rotas.spec.ts quebra se faltar.
 export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
   const nfeDraft = new NfeDraftUseCase();
@@ -246,7 +309,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/config",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -267,7 +330,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/config",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -297,7 +360,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // Recebe multipart: campo `certificate` (arquivo .pfx) + campo `senha`.
   fastify.post(
     "/config/certificate",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -373,7 +436,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/companies",
-    { preHandler: [authMiddleware] },
+    // "fiscal OU pdv": o seletor de CNPJ do PDV (pdv-view.tsx) também lê esta lista.
+    { preHandler: [authMiddleware, exigeAcessoFiscalOuPdv] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -413,7 +477,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/companies",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         if (process.env.FISCAL_MULTI_CNPJ_ENABLED !== "true") {
@@ -442,7 +506,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/companies/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -466,7 +530,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/companies/:id/default",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -489,7 +553,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.delete(
     "/companies/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -512,7 +576,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // multipart da rota legada (/config/certificate), certificando o CNPJ DELA.
   fastify.post(
     "/companies/:id/certificate",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -563,7 +627,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // Lista enxuta das contas do tenant p/ a tela de configuração fiscal.
   fastify.get(
     "/marketplace-accounts",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -592,7 +656,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/marketplace-accounts/:accountId/company",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -651,7 +715,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // visualização; o número definitivo é reservado atomicamente na emissão.
   fastify.get(
     "/nfe/proximo-numero",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -722,7 +786,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   // único registro é o explícito, com o rótulo certo (ADJUST_NFE_SEQUENCE).
   fastify.post(
     "/nfe/proximo-numero/ajuste",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -768,7 +832,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/draft",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -802,7 +866,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/draft/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -826,7 +890,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.put(
     "/nfe/draft/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -861,7 +925,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.delete(
     "/nfe/draft/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -886,7 +950,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/draft/:id/calculate",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -989,7 +1053,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/lookup/customers",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Querystring: { q?: string } }>,
       reply: FastifyReply,
@@ -1014,7 +1078,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/lookup/products",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Querystring: { q?: string } }>,
       reply: FastifyReply,
@@ -1041,7 +1105,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/issue",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1078,14 +1142,14 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   );
 
   // ── Listagem de notas emitidas (F6) ──
-  fastify.post<{Params:{id:string}}>("/nfe/:id/consultar-situacao",{preHandler:[authMiddleware]},async(request,reply)=>{
+  fastify.post<{Params:{id:string}}>("/nfe/:id/consultar-situacao",{preHandler:[authMiddleware,exigeAcessoFiscal]},async(request,reply)=>{
     try{return await nfeEmission.consultarSituacao((request as FastifyRequest & {user:{dataOwnerId:string}}).user.dataOwnerId,request.params.id);}
     catch(e){if(e instanceof NumeracaoError)return reply.code(e.httpStatus).send({error:e.message,code:e.code});return reply.code(500).send({error:"Não foi possível consultar a situação"});}
   });
 
   fastify.get(
     "/nfe",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1119,7 +1183,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1146,7 +1210,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/export",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1196,7 +1260,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/relatorio-mensal",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1252,7 +1316,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1288,7 +1352,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id/xml",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1332,7 +1396,9 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id/danfe",
-    { preHandler: [authMiddleware] },
+    // "fiscal, pdv OU clientes": a reimpressão do PdvSaleActions (pdv-fiscal-docs.ts)
+    // baixa por aqui, no PDV e na ficha do cliente (customer-purchases-sheet.tsx).
+    { preHandler: [authMiddleware, exigeAcessoFiscalPdvOuClientes] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1348,6 +1414,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             numero: true,
             serie: true,
             modelo: true,
+            status: true,
           },
         });
         if (!row) {
@@ -1373,13 +1440,26 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         if (!content) {
           return reply.status(404).send({ error: "Arquivo DANFE nao encontrado" });
         }
+        // Nota CANCELADA sai carimbada (re-render OU arquivo guardado); as demais
+        // recebem de volta o mesmo `content`. Sem conseguir carimbar, não entrega:
+        // o DANFE de nota cancelada idêntico ao de nota válida é o defeito.
+        let entregue: Buffer | Uint8Array;
+        try {
+          entregue = await danfeParaEntrega(
+            content,
+            { id, status: row.status, modelo: row.modelo },
+            userId,
+          );
+        } catch {
+          return reply.status(500).send({ error: DANFE_CANCELADA_SEM_CARIMBO });
+        }
         const prefixo = String(row.modelo) === "65" ? "cupom" : "danfe";
         // `storage.readFile` já devolve Buffer; só o re-render devolve
         // Uint8Array. Copiar o que já é Buffer duplicaria o PDF inteiro em
         // memória a cada download servido do disco — o caminho mais comum.
-        const corpo = Buffer.isBuffer(content)
-          ? content
-          : Buffer.from(content as Uint8Array);
+        const corpo = Buffer.isBuffer(entregue)
+          ? entregue
+          : Buffer.from(entregue as Uint8Array);
         return reply
           .header("Content-Type", "application/pdf")
           .header(
@@ -1401,7 +1481,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/nfe/:id/events",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1439,7 +1519,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/cancel",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1478,7 +1558,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/carta-correcao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1517,7 +1597,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/inutilizacao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1559,7 +1639,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.get(
     "/inutilizacao",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -1582,7 +1662,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
   fastify.post(
     "/nfe/:id/resend-email",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, exigeAcessoFiscal] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
@@ -1617,6 +1697,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             xmlAutorizadoPath: true,
             xmlOriginalPath: true,
             danfePdfPath: true,
+            modelo: true,
           },
         });
 
@@ -1654,6 +1735,12 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         // acrescentar um anexo onde antes não havia mudaria o conteúdo de uma
         // mensagem que vai para o cliente final. O que o re-render altera é só o
         // LAYOUT do anexo que já sairia.
+        //
+        // Nota CANCELADA: o anexo sai carimbado, como no download. Se o carimbo
+        // falhar, o DANFE NÃO vai — mandar ao cliente final a nota cancelada sem
+        // a marca é o defeito que isto corrige; o XML segue anexado e a resposta
+        // diz o que faltou.
+        let danfeOmitido = false;
         if (nfe.danfePdfPath) {
           const danfeFresh = await tryRerenderDanfe(
             storage,
@@ -1662,30 +1749,56 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           );
           const pdfContent = danfeFresh ?? (await storage.readFile(nfe.danfePdfPath));
           if (pdfContent) {
-            attachments.push({
-              filename: `danfe-${nfe.serie}-${nfe.numero}.pdf`,
-              content: Buffer.isBuffer(pdfContent)
-                ? pdfContent
-                : Buffer.from(pdfContent as Uint8Array),
-            });
+            let anexo: Buffer | Uint8Array | null;
+            try {
+              anexo = await danfeParaEntrega(
+                pdfContent,
+                { id: nfe.id, status: nfe.status, modelo: nfe.modelo },
+                userId,
+              );
+            } catch {
+              anexo = null;
+              danfeOmitido = true;
+            }
+            if (anexo) {
+              attachments.push({
+                filename: `danfe-${nfe.serie}-${nfe.numero}.pdf`,
+                content: Buffer.isBuffer(anexo)
+                  ? anexo
+                  : Buffer.from(anexo as Uint8Array),
+              });
+            }
           }
         }
 
+        // Nota CANCELADA diz isso no assunto e no corpo: o carimbo fica dentro do
+        // PDF, e quem lê só a mensagem tomaria a nota por válida. A autorizada
+        // segue com o texto de sempre, byte a byte.
+        const cancelada = nfe.status === "CANCELLED";
         await emailService.send({
           to: email,
-          subject: `NF-e ${nfe.serie}/${nfe.numero} - ${nfe.chaveAcesso ?? ""}`,
-          text: `Segue em anexo a NF-e numero ${nfe.numero}, serie ${nfe.serie}.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`,
+          subject: cancelada
+            ? `NF-e ${nfe.serie}/${nfe.numero} CANCELADA - ${nfe.chaveAcesso ?? ""}`
+            : `NF-e ${nfe.serie}/${nfe.numero} - ${nfe.chaveAcesso ?? ""}`,
+          text: cancelada
+            ? `Segue em anexo a NF-e número ${nfe.numero}, série ${nfe.serie}, que foi CANCELADA.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`
+            : `Segue em anexo a NF-e numero ${nfe.numero}, serie ${nfe.serie}.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`,
           attachments,
         });
 
         await nfeRepo.addAuditLog(id, userId, "XML_REENVIADO", {
           email,
           attachmentCount: attachments.length,
+          ...(danfeOmitido ? { danfeOmitido: "CANCELADA_SEM_CARIMBO" } : {}),
         });
 
         return reply.status(200).send({
           success: true,
-          mensagem: `E-mail enviado para ${email}`,
+          mensagem: danfeOmitido
+            ? `E-mail enviado para ${email} sem o DANFE: a nota está CANCELADA e não foi possível marcar o PDF como cancelado.`
+            : `E-mail enviado para ${email}`,
+          // Sinal estruturado para a tela avisar em vez de "enviado com sucesso".
+          ...(danfeOmitido ? { danfeOmitido: true } : {}),
         });
       } catch (error) {
         if(error instanceof NumeracaoError)return reply.code(error.httpStatus).send({error:error.message,code:error.code,detalhes:error.detalhes});

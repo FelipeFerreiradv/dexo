@@ -38,6 +38,11 @@ import { NfeStatusBadge } from "./nfe-status-badge";
 import { DevolucaoActions } from "./devolucao-actions";
 import { DevolucaoVinculo } from "./devolucao-vinculo";
 import { rotuloEvento } from "../lib/nfe-devolucao-vinculo-ui";
+import {
+  MENSAGEM_PADRAO_DOWNLOAD,
+  lerMensagemErroDownload,
+  nomeArquivoDownload,
+} from "../lib/nfe-download-arquivo";
 import { NumeracaoActions } from "./numeracao-actions";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
@@ -79,6 +84,13 @@ export function NfeDetailSheet({
   // Saldo da venda (DevolucaoVinculo): false = nada mais a devolver, e o
   // "Devolver" some. undefined = não se sabe (ou não se aplica): como antes.
   const [devolucaoElegivel, setDevolucaoElegivel] = useState<boolean | undefined>(undefined);
+  // Por que o último "Baixar XML/DANFE" não baixou (frase do servidor). É DESTA
+  // nota: some ao trocar de nota, ao fechar e no próximo download.
+  const [erroDownload, setErroDownload] = useState<string | null>(null);
+
+  useEffect(() => {
+    setErroDownload(null);
+  }, [open, nfeId]);
 
   const fetchNfe = useCallback(async () => {
     if (!nfeId || !session?.user?.email) return;
@@ -126,12 +138,15 @@ export function NfeDetailSheet({
     if (!nfeId || !session?.user?.email) return;
     const apiBase = getApiBaseUrl();
     const url = `${apiBase}/fiscal/nfe/${nfeId}/${type}`;
+    setErroDownload(null);
     try {
       const res = await fetch(url, {
         headers: { email: session.user.email },
       });
       if (!res.ok) {
         console.error(`Erro ao baixar ${type}: HTTP ${res.status}`);
+        // Só o console era calado para o operador: o clique não fazia nada.
+        setErroDownload(await lerMensagemErroDownload(res));
         return;
       }
       const blob = await res.blob();
@@ -142,16 +157,22 @@ export function NfeDetailSheet({
       // então a mesma série+número existe nos dois (ex.: série 4 nº 2) e os
       // arquivos se sobrescreviam na pasta de downloads.
       const prefixo = nfe?.modelo === "65" ? "nfce" : "nfe";
+      // PDF da nota cancelada ganha `-CANCELADA` (danfe-1-716-CANCELADA.pdf).
       a.download =
         type === "xml"
           ? `${prefixo}-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}.xml`
-          : `${prefixo === "nfce" ? "cupom" : "danfe"}-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}.pdf`;
+          : nomeArquivoDownload(
+              `${prefixo === "nfce" ? "cupom" : "danfe"}-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}`,
+              "danfe",
+              nfe?.status,
+            );
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(blobUrl);
     } catch (err) {
       console.error(`Erro ao baixar ${type}:`, err);
+      setErroDownload(MENSAGEM_PADRAO_DOWNLOAD);
     }
   };
 
@@ -339,6 +360,14 @@ export function NfeDetailSheet({
                   </Button>
                 )}
               </div>
+              {erroDownload ? (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive shadow-sm"
+                >
+                  {erroDownload}
+                </div>
+              ) : null}
 
               {/* Cards de info */}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

@@ -3,8 +3,10 @@
  *
  * Por que existe (e por que NÃO reaproveita focus-nfe.provider.ts, que fica
  * intacto): o provider V1 chama `res.json()` sem checar o corpo (o 401 do Focus
- * vem em HTML e vira exceção), não tem timeout, trata qualquer 200 como
- * sucesso na inutilização e deixa `status_sefaz` como string no cStat. A V2
+ * vem em HTML e vira exceção), não tem timeout, até 25/09/2026 tratava qualquer
+ * 200 como sucesso na inutilização (hoje "erro_autorizacao" é falha, exceto
+ * 206/563 — "já inutilizada" —, que são sucesso idempotente) e deixa
+ * `status_sefaz` como string no cStat. A V2
  * precisa do BRUTO fiel para classificar (app/fiscal/numeracao):
  *
  *  - `res.text()` + `JSON.parse` protegido (HTML/vazio ⇒ `corpo: null`);
@@ -114,8 +116,10 @@ export class FocusNfeV2Client {
 
   /**
    * POST /v2/{nfe|nfce}/inutilizacao. `sucesso` só com `status: "autorizado"`
-   * e `status_sefaz` 102 — HTTP 200 com `erro_autorizacao` é FALHA (o V1
-   * trata qualquer 200 como sucesso). Nunca lança.
+   * e `status_sefaz` 102 — HTTP 200 com `erro_autorizacao` é FALHA, inclusive
+   * 206/563 ("já inutilizada"). Até 25/09/2026 o V1 tratava qualquer 200 como
+   * sucesso; hoje o V1 também trata `erro_autorizacao` como falha, exceto
+   * 206/563, que lá são sucesso idempotente (aqui não). Nunca lança.
    */
   async inutilizar(
     input: FocusV2InutilizacaoInput,
@@ -150,10 +154,12 @@ export class FocusNfeV2Client {
   /**
    * DELETE /v2/{nfe|nfce}/{ref} — cancelamento da nota autorizada NAQUELA ref.
    * `sucesso` só com HTTP 200, `status: "cancelado"` e `status_sefaz` 135/155.
-   * HTTP 200 com `erro_cancelamento` (SEFAZ recusou o evento) é FALHA — o V1
-   * trata qualquer 200 como sucesso. Status desconhecido, corpo ilegível ou
-   * falha de transporte também são falha (nunca marcar cancelada sem prova).
-   * Nunca lança.
+   * HTTP 200 com `erro_cancelamento` (SEFAZ recusou o evento) é FALHA, inclusive
+   * 218/420 ("já cancelada"). Até 25/09/2026 o V1 tratava qualquer 200 como
+   * sucesso; hoje o V1 também trata `erro_cancelamento` como falha, exceto
+   * 218/420, que lá são sucesso idempotente (aqui não). Status desconhecido,
+   * corpo ilegível ou falha de transporte também são falha (nunca marcar
+   * cancelada sem prova). Nunca lança.
    */
   async cancelar(
     ref: string,

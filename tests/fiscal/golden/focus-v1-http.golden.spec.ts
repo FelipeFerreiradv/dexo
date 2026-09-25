@@ -2,15 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FocusNfeProvider } from "../../../app/fiscal/providers/focus-nfe.provider";
 
-// GOLDEN F0 — mapeamento HTTP do FocusNfeProvider V1 em 1549bc4 (o plano diz
+// GOLDEN F0 — mapeamento HTTP do FocusNfeProvider V1 em 1549bc4 (o plano dizia
 // "focus-nfe.provider.ts V1 não muda"; o cliente V2 é arquivo novo). Trava os
 // defeitos conhecidos exatamente como estão, para que a V2 os corrija SEM
-// tocar no V1:
+// tocar no V1 — com UMA exceção, decidida pelo dono em 25/09/2026 (último item):
 //  - 200/201/202 viram "processando" (mesmo autorizado);
 //  - 422 repassa `codigo` textual como codigoStatus (R3);
 //  - 401 text/html estoura no res.json() e vira "erro" com a mensagem do parser;
 //  - consulta 403/404 cai no default "processando" (V7);
-//  - inutilização conta HTTP 200 como sucesso mesmo com erro_autorizacao (V6).
+//  - até 25/09/2026 o V1 tratava QUALQUER HTTP 200 como sucesso no cancelamento
+//    e na inutilização, inclusive "erro_cancelamento" e "erro_autorizacao" (V6);
+//    hoje esses dois são FALHA ('200-erro-cancelamento' / '200-erro-autorizacao'),
+//    exceto os códigos de "já cancelada" (218/420) e "já inutilizada" (206/563),
+//    que são sucesso idempotente (tests/fiscal/focus-v1-cancelamento-recusado.spec.ts).
 //
 // Respostas são `Response` reais (undici). A mensagem do SyntaxError de
 // JSON.parse depende do motor JS: é trocada por {{JSON_PARSE_ERRO}} só quando

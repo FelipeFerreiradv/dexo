@@ -340,9 +340,25 @@ describe("disponibilidade da devolução — ligada? em quais empresas?", () => 
 describe("devolução manual pela chave — origem e quantidade da nota original", () => {
   const LINHA = { nItem: "3", codigo: "X", descricao: "Porta", ncm: "87082999", unidade: "UN", cfopOriginal: "", valorUnitario: "45,90", quantidade: "1" };
 
-  it("origem SEM valor pré-escolhido: vazia não vai no corpo (o Dexo não inventa)", () => {
-    expect(lerItensDigitados([LINHA]).itens[0]).not.toHaveProperty("origem");
-    expect(lerItensDigitados([LINHA]).itens[0]).not.toHaveProperty("quantidadeOriginal");
+  it("origem SEM valor pré-escolhido, mas obrigatória: em branco, erro NO campo e nada vai (antes nascia um rascunho que nunca emitia)", () => {
+    const r = lerItensDigitados([LINHA]);
+    expect(r.itens).toEqual([]);
+    expect(r.erros).toEqual([{ campo: "itens[0].origem", mensagem: "Escolha a origem da mercadoria desta peça." }]);
+    // Só espaços conta como em branco.
+    expect(lerItensDigitados([{ ...LINHA, origem: "  " }]).erros.map((e) => e.mensagem)).toEqual(["Escolha a origem da mercadoria desta peça."]);
+  });
+
+  it("com a origem, a quantidade da nota original continua opcional (vazia não vai no corpo)", () => {
+    const r = lerItensDigitados([{ ...LINHA, origem: "0" }]);
+    expect(r.erros).toEqual([]);
+    expect(r.itens[0]).toMatchObject({ origem: 0 });
+    expect(r.itens[0]).not.toHaveProperty("quantidadeOriginal");
+  });
+
+  it("uma peça sem origem não derruba as outras linhas: o erro fica só nela", () => {
+    const r = lerItensDigitados([{ ...LINHA, origem: "5" }, { ...LINHA, nItem: "4" }]);
+    expect(r.itens.map((i) => i.nItem)).toEqual([3]);
+    expect(r.erros).toEqual([{ campo: "itens[1].origem", mensagem: "Escolha a origem da mercadoria desta peça." }]);
   });
 
   it("escolhida, vai como número; quantidade da nota original lida no formato brasileiro", () => {
@@ -352,7 +368,7 @@ describe("devolução manual pela chave — origem e quantidade da nota original
   });
 
   it("quantidade que volta acima da nota original: erro NO campo, e nada vai", () => {
-    const r = lerItensDigitados([{ ...LINHA, quantidade: "3", quantidadeOriginal: "2" }]);
+    const r = lerItensDigitados([{ ...LINHA, origem: "0", quantidade: "3", quantidadeOriginal: "2" }]);
     expect(r.itens).toEqual([]);
     expect(r.erros).toEqual([{ campo: "itens[0].quantidade", mensagem: "A quantidade que volta (3) passa da quantidade da nota original (2)." }]);
   });

@@ -9,8 +9,9 @@ import { parseNfeXml } from "../fiscal/sefaz/nfe-xml-parser.service";
 import { montarRascunhoDeOriginal } from "../fiscal/devolucao/montagem";
 import { baseTributariaDoItem, completarOrigemManual, lerOrigemManual, montarRascunhoManual } from "../fiscal/devolucao/montagem-manual";
 import type { OrigemManualLida } from "../fiscal/devolucao/montagem-manual";
-import { calcularSaldoPorItem, escopoDaDevolucao, issueSaldoExcedido, itensOriginaisComLivro, quantidadeOriginalDoLivro, quantidadeParaUnidades } from "../fiscal/devolucao/saldo";
+import { calcularSaldoPorItem, escopoDaDevolucao, issueSaldoExcedido, itensOriginaisComLivro, quantidadeOriginalDoLivro, quantidadeParaUnidades, unidadesParaQuantidade } from "../fiscal/devolucao/saldo";
 import type { LinhaSaldoDevolucao } from "../fiscal/devolucao/saldo";
+import type { NfeStatus } from "../fiscal/domain/nfe.types";
 import { crtDeRegime, aplicarOverrideTributacao, referenciaImpostoOriginal, regimeEmitenteDevolucao } from "../fiscal/devolucao/tributacao";
 import { mapearCfopDevolucao, isCfopPermitidoEmDevolucao, idDestDoCfop } from "../fiscal/domain/devolucao-cfop";
 import { validarDevolucao, temBloqueio } from "../fiscal/devolucao/validacao";
@@ -445,8 +446,16 @@ export class NfeDevolucaoUseCase {
     const m=montarRascunhoDeOriginal({original:{...n,companyFiscalConfigId:n.companyFiscalConfigId??null},config:c,parsed,idDestOriginal:parsed.ide.idDest!,linhasSaldo:linhas,itensNfe:[],escopo:"PARCIAL",tipo:"VENDA_ENTRADA"});
     const devolucoes=[];
     for(const nfeId of new Set(linhas.map(l=>l.devolucaoNfeId))) {
-      const nota=await this.repo.nota(userId,nfeId);if(!nota)continue;
-      devolucoes.push({nfeId,numero:nota.numero>0?nota.numero:null,serie:nota.serie,status:nota.status,itens:linhas.filter(l=>l.devolucaoNfeId===nfeId).map(l=>({nItem:l.nItem,quantidade:Number(l.quantidade)}))});
+      const doNfe=linhas.filter(l=>l.devolucaoNfeId===nfeId);
+      // Nº, série e status já vêm na linha (o linhasSaldo faz JOIN na NfeEmitida): sem uma
+      // consulta por devolução a cada abertura da ficha (regra de egress 5) — o repo.nota
+      // trazia n.* e todos os itens só para ler estes três. Linha sem eles: o caminho antigo.
+      const p=doNfe[0];
+      const nota=p.numeroDevolucao!=null && p.serieDevolucao!=null
+        ?{numero:Number(p.numeroDevolucao),serie:Number(p.serieDevolucao),status:p.statusDevolucao as NfeStatus}
+        :await this.repo.nota(userId,nfeId);
+      if(!nota)continue;
+      devolucoes.push({nfeId,numero:nota.numero>0?nota.numero:null,serie:nota.serie,status:nota.status,itens:doNfe.map(l=>({nItem:l.nItem,quantidade:Number(l.quantidade)}))});
     }
     const totalmenteDevolvida=m.saldos.every(s=>s.disponivel===0);
     return {original:{nfeId:id,chaveAcesso:parsed.chaveAcesso,numero:m.origem.numero,serie:m.origem.serie,modelo:n.modelo,status:n.status,dataEmissao:m.origem.dataEmissao,destinatarioNome:n.destinatarioJson?.nome??null,destinatarioCpfCnpj:n.destinatarioJson?.cpfCnpj??null},
@@ -481,10 +490,13 @@ export class NfeDevolucaoUseCase {
       for(const r of before.refs) {
         if(r.originalNfeId)await this.repo.audit(tx,userId,r.originalNfeId,"DEVOLUCAO_VINCULADA",{devolucaoNfeId:id,nItem:r.nItemOriginal,quantidade:r.quantidade});
         const linhas=await this.repo.linhasSaldo(userId,r.chaveAcessoOriginal,tx);
-        const quantidade=linhas.filter(l=>l.nItem===r.nItemOriginal && l.statusDevolucao==="AUTHORIZED").reduce((s,l)=>s+Number(l.quantidade),0);
+        // Em unidades de 1/10000, como o resto do saldo: 0,1 + 0,2 em ponto flutuante dá
+        // 0,30000000000000004 e gravava "devolução acima da nota" numa peça de 0,3 m.
+        const unidades=linhas.filter(l=>l.nItem===r.nItemOriginal && l.statusDevolucao==="AUTHORIZED").reduce((s,l)=>s+(quantidadeParaUnidades(l.quantidade)??0),0);
         // Devolução pela chave sem a quantidade da nota: a que o livro conhece (devolução do XML).
         const quantidadeOriginal=r.quantidadeOriginal??quantidadeOriginalDoLivro(linhas,r.chaveAcessoOriginal,r.nItemOriginal);
-        if(quantidadeOriginal!=null && quantidade>quantidadeOriginal)await this.repo.audit(tx,userId,id,"DEVOLUCAO_SALDO_EXCEDIDO",{chave:r.chaveAcessoOriginal,nItem:r.nItemOriginal,quantidade});
+        const limite=quantidadeOriginal==null?null:quantidadeParaUnidades(quantidadeOriginal);
+        if(limite!=null && unidades>limite)await this.repo.audit(tx,userId,id,"DEVOLUCAO_SALDO_EXCEDIDO",{chave:r.chaveAcessoOriginal,nItem:r.nItemOriginal,quantidade:unidadesParaQuantidade(unidades)});
       }
       await this.repo.audit(tx,userId,id,"DEVOLUCAO_AUTORIZADA",{originais:before.cabecalho.origensJson.map(o=>o.chaveAcesso)});
     });

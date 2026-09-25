@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { exigeAcessoFiscal } from "../middlewares/require-page-access.middleware";
 import { NfeDevolucaoUseCase } from "../usecases/nfe-devolucao.usecase";
 import { DevolucaoError } from "../fiscal/devolucao/devolucao.errors";
 import { NumeracaoError, tabelaFiscalAusente } from "../fiscal/numeracao/numeracao.errors";
@@ -38,19 +39,20 @@ export async function fiscalDevolucaoRoutes(app: FastifyInstance) {
     }
   };
   const invalid=(reply:FastifyReply,erros:ErroCampo[],corpo:unknown)=>{const r=respostaErroDevolucao("PAYLOAD_INVALIDO",{erros:comItemDoCorpo(erros,corpo)});return reply.code(r.status).send(r.body);};
+  // Toda rota da devolução exige a página "fiscal" do colaborador (exigeAcessoFiscal), além do login.
   // A padrão (campo de sempre, `companyFiscalConfigId`) e TODAS as empresas com a devolução
   // ligada (`empresas`, para o seletor de CNPJ). Nenhuma ligada: 404 {error} sem código, como antes.
-  app.get("/nfe/devolucao/disponibilidade",{preHandler:[authMiddleware]},handle(async(u)=>uc.disponibilidade(u)));
-  app.post("/nfe/:id/devolucao",{preHandler:[authMiddleware]},handle(async(u,a,id,b,r)=>{const p=parseCriarDevolucaoBody(b);if(!p.ok)return invalid(r,p.erros,b);const result=await uc.criar(u,a,id,p.value);return r.code(result.reutilizado?200:201).send(result);}));
-  app.get("/nfe/:id/devolucao/saldo",{preHandler:[authMiddleware]},handle(async(u,_a,id)=>uc.saldo(u,id)));
+  app.get("/nfe/devolucao/disponibilidade",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u)=>uc.disponibilidade(u)));
+  app.post("/nfe/:id/devolucao",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u,a,id,b,r)=>{const p=parseCriarDevolucaoBody(b);if(!p.ok)return invalid(r,p.erros,b);const result=await uc.criar(u,a,id,p.value);return r.code(result.reutilizado?200:201).send(result);}));
+  app.get("/nfe/:id/devolucao/saldo",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u,_a,id)=>uc.saldo(u,id)));
   // Rascunhos de devolução em aberto (com e sem cabeçalho), para listar, continuar e descartar.
   // Sem empresa com a devolução ligada: 200 {abertas: []}, sem ir ao banco a cada carga.
-  app.get("/nfe/devolucao/abertas",{preHandler:[authMiddleware]},handle(async(u)=>uc.abertas(u)));
-  app.get("/nfe/draft/:id/devolucao",{preHandler:[authMiddleware]},handle(async(u,_a,id)=>uc.detalhe(u,id)));
-  app.put("/nfe/draft/:id/devolucao",{preHandler:[authMiddleware]},handle(async(u,a,id,b,r)=>{const p=parseAtualizarCabecalhoBody(b);return p.ok?uc.cabecalho(u,a,id,p.value):invalid(r,p.erros,b);}));
-  app.put("/nfe/draft/:id/devolucao/itens",{preHandler:[authMiddleware]},handle(async(u,a,id,b,r)=>{const p=parseAtualizarItensBody(b);return p.ok?uc.itens(u,a,id,p.value):invalid(r,p.erros,b);}));
+  app.get("/nfe/devolucao/abertas",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u)=>uc.abertas(u)));
+  app.get("/nfe/draft/:id/devolucao",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u,_a,id)=>uc.detalhe(u,id)));
+  app.put("/nfe/draft/:id/devolucao",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u,a,id,b,r)=>{const p=parseAtualizarCabecalhoBody(b);return p.ok?uc.cabecalho(u,a,id,p.value):invalid(r,p.erros,b);}));
+  app.put("/nfe/draft/:id/devolucao/itens",{preHandler:[authMiddleware,exigeAcessoFiscal]},handle(async(u,a,id,b,r)=>{const p=parseAtualizarItensBody(b);return p.ok?uc.itens(u,a,id,p.value):invalid(r,p.erros,b);}));
   // Prévia do manual (itens + saldo + CFOP sugerido + rascunho aberto), sem criar nada. Mesmo corpo do POST abaixo.
-  app.post("/nfe/devolucao/manual/previa",{preHandler:[authMiddleware],bodyLimit:1_200_000},handle(async(u,_a,_id,b,r)=>{const p=parseManualBody(b);return p.ok?uc.previaManual(u,p.value):invalid(r,p.erros,b);}));
+  app.post("/nfe/devolucao/manual/previa",{preHandler:[authMiddleware,exigeAcessoFiscal],bodyLimit:1_200_000},handle(async(u,_a,_id,b,r)=>{const p=parseManualBody(b);return p.ok?uc.previaManual(u,p.value):invalid(r,p.erros,b);}));
   // 201 = rascunho novo; 200 com `reutilizado: true` = já havia um aberto desta nota (mesmo tipo).
-  app.post("/nfe/devolucao/manual",{preHandler:[authMiddleware],bodyLimit:1_200_000},handle(async(u,a,_id,b,r)=>{const p=parseManualBody(b);if(!p.ok)return invalid(r,p.erros,b);const result=await uc.manual(u,a,p.value);return r.code(result.reutilizado?200:201).send(result);}));
+  app.post("/nfe/devolucao/manual",{preHandler:[authMiddleware,exigeAcessoFiscal],bodyLimit:1_200_000},handle(async(u,a,_id,b,r)=>{const p=parseManualBody(b);if(!p.ok)return invalid(r,p.erros,b);const result=await uc.manual(u,a,p.value);return r.code(result.reutilizado?200:201).send(result);}));
 }

@@ -8,7 +8,8 @@ import { makeConfig, makeDraft } from "../../__helpers__/test-draft";
 // REGRESSÃO (revisão V2, achado inutil-cancel-pdv-1): cancelamento Focus com HTTP 200 +
 // status "erro_cancelamento" (SEFAZ recusou o evento) NÃO pode virar CANCELLED/CANCELADO.
 // O ramo V2 usa FocusNfeV2Client.cancelar (sucesso só com "cancelado" + cStat 135/155);
-// o V1 (flag global desligada) fica byte a byte igual — golden focus-v1-cancelar.
+// o V1 (flag global desligada) também passou a tratar esse 200 como FALHA (decisão do dono,
+// 25/09 — golden focus-v1-cancelar), sem exigir cStat nos demais 200.
 // Postgres REAL (mesmo harness de tests/fiscal/numeracao/orquestrador-v2-postgres.spec.ts):
 // NfeEmitida, NfeNumeroReserva/NfeNumeroTentativa e NfeAuditLog de verdade; clientes
 // Focus REAIS (V2 e, com a flag desligada, o V1 via createNfeProvider) e só o `fetch` é
@@ -218,14 +219,24 @@ describePg("regressão inutil-cancel-pdv-1: cancelamento Focus V2 com erro_cance
     expect(await w.estado()).toEqual({ status: "AUTHORIZED", reservas: ["AUTORIZADO"], eventos: ["CANCELAMENTO_REJEITADO"] });
   }, 60000);
 
-  // DECISÃO PENDENTE DO USUÁRIO: o V1 trata QUALQUER HTTP 200 como sucesso, inclusive
-  // "erro_cancelamento". Fixado pelo golden focus-v1-cancelar ('200-erro-cancelamento' ⇒
-  // success:true) e mantido (I8: flag global desligada ⇒ comportamento idêntico ao atual).
-  it("V2 desligada (V1, sem reserva): comportamento V1 inalterado — 200 'erro_cancelamento' grava CANCELLED (defeito V1 conhecido)", async () => {
+  // DECISÃO DO DONO (25/09): o V1 deixou de tratar o 200 "erro_cancelamento" como sucesso
+  // (golden focus-v1-cancelar '200-erro-cancelamento' ⇒ success:false). Com a flag global
+  // desligada o cancelamento segue no V1 (ref = nfeId, sem ledger) e, como no ramo V2, a nota
+  // continua AUTHORIZED com o evento CANCELAMENTO_REJEITADO.
+  it("V2 desligada (V1, sem reserva): 200 'erro_cancelamento' NÃO vira CANCELLED — nota segue AUTHORIZED", async () => {
     const w = await notaAutorizadaV2(false);
     const r = await new mods.Cancel().cancel("tenant", w.id, JUSTIFICATIVA);
     expect(chamadas).toEqual([{ url: `https://homologacao.focusnfe.com.br/v2/nfe/${w.id}`, metodo: "DELETE" }]);
-    expect(r).toMatchObject({ success: true, status: "CANCELLED" });
+    expect(r).toMatchObject({ success: false, status: "AUTHORIZED", protocolo: null });
+    expect(await w.estado()).toEqual({ status: "AUTHORIZED", reservas: [], eventos: ["CANCELAMENTO_REJEITADO"] });
+  }, 60000);
+
+  it("V2 desligada (V1, sem reserva): controle — 200 'cancelado' segue cancelando como antes", async () => {
+    const w = await notaAutorizadaV2(false);
+    resposta = { status: 200, json: CANCELADO };
+    const r = await new mods.Cancel().cancel("tenant", w.id, JUSTIFICATIVA);
+    expect(chamadas).toEqual([{ url: `https://homologacao.focusnfe.com.br/v2/nfe/${w.id}`, metodo: "DELETE" }]);
+    expect(r).toMatchObject({ success: true, status: "CANCELLED", protocolo: "135260000000009" });
     expect(await w.estado()).toEqual({ status: "CANCELLED", reservas: [], eventos: ["CANCELADA"] });
   }, 60000);
 });

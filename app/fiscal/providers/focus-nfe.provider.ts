@@ -21,6 +21,7 @@ import type {
   NfeProviderInutilizacaoInput,
   NfeProviderInutilizacaoResult,
 } from "./nfe-provider.interface";
+import { normalizarCStat } from "../numeracao/cstat";
 
 const FOCUS_HOMOLOG = "https://homologacao.focusnfe.com.br";
 const FOCUS_PROD = "https://api.focusnfe.com.br";
@@ -35,6 +36,43 @@ function authHeader(token: string): Record<string, string> {
     Authorization: `Basic ${encoded}`,
     "Content-Type": "application/json",
   };
+}
+
+/**
+ * Texto de uma recusa da SEFAZ que a Focus devolve em HTTP 200 (status
+ * "erro_cancelamento" / "erro_autorizacao"): o que a SEFAZ disse — código
+ * (`status_sefaz`) e mensagem (`mensagem_sefaz`, ou a `mensagem` da Focus).
+ */
+function mensagemRecusaSefaz(body: any, recusa: string): string {
+  const codigo =
+    body?.status_sefaz === undefined || body?.status_sefaz === null
+      ? ""
+      : String(body.status_sefaz).trim();
+  const textoBruto = body?.mensagem_sefaz ?? body?.mensagem;
+  const texto =
+    textoBruto === undefined || textoBruto === null
+      ? ""
+      : String(textoBruto).trim();
+  return `${recusa}${codigo ? ` (codigo ${codigo})` : ""}${texto ? `: ${texto}` : ""}`;
+}
+
+/**
+ * Recusas que provam que o pedido JÁ surtiu efeito na SEFAZ — sucesso
+ * idempotente, não falha. Caso real: o 1º pedido é processado e a resposta se
+ * perde; sem isto toda retentativa volta recusa e o Dexo nunca reconcilia.
+ *  - cancelamento: 218 (NF-e já está cancelada na base da SEFAZ) e 420
+ *    (cancelamento para NF-e já cancelada);
+ *  - inutilização: 563 (já existe pedido de inutilização com a mesma faixa) e
+ *    206 (NF-e já está inutilizada) — o 206 é por NÚMERO, então só prova a faixa
+ *    inteira quando ela tem um número só. O 256 (faixa PARCIALMENTE inutilizada)
+ *    fica de fora de propósito: o resto da faixa não foi inutilizado.
+ */
+const CSTAT_JA_CANCELADA: readonly number[] = [218, 420];
+const CSTAT_JA_INUTILIZADA: readonly number[] = [206, 563];
+
+function recusaJaEfetivada(body: any, codigos: readonly number[]): boolean {
+  const cStat = normalizarCStat(body?.status_sefaz);
+  return cStat !== null && codigos.includes(cStat);
 }
 
 export class FocusNfeProvider implements INfeProvider {
@@ -216,6 +254,26 @@ export class FocusNfeProvider implements INfeProvider {
 
       const body = await res.json();
 
+      // HTTP 200 com "erro_cancelamento": a SEFAZ RECUSOU o evento (ex.: prazo,
+      // cStat 501) e a nota segue como estava — não é sucesso. Qualquer outro
+      // 200 (inclusive "cancelado") segue como antes, sem exigir cStat.
+      if (res.status === 200 && body?.status === "erro_cancelamento") {
+        // Exceção: 218/420 = a nota JÁ está cancelada (retentativa após
+        // resposta perdida) ⇒ sucesso idempotente, com o protocolo que vier.
+        if (recusaJaEfetivada(body, CSTAT_JA_CANCELADA)) {
+          return {
+            success: true,
+            protocolo: body.protocolo ?? null,
+            mensagem: mensagemRecusaSefaz(body, "NF-e ja estava cancelada na SEFAZ"),
+          };
+        }
+        return {
+          success: false,
+          protocolo: null,
+          mensagem: mensagemRecusaSefaz(body, "Cancelamento recusado pela SEFAZ"),
+        };
+      }
+
       return {
         success: res.status === 200,
         protocolo: body.protocolo ?? null,
@@ -252,6 +310,28 @@ export class FocusNfeProvider implements INfeProvider {
       });
 
       const body = await res.json();
+
+      // HTTP 200 com "erro_autorizacao": a SEFAZ RECUSOU a inutilização (ex.:
+      // cStat 241, número da faixa já usado) — não é sucesso, e o contador não
+      // pode avançar. Qualquer outro 200 segue como antes.
+      if (res.status === 200 && body?.status === "erro_autorizacao") {
+        // Exceção: 206/563 = a faixa JÁ está inutilizada (retentativa após
+        // resposta perdida) ⇒ sucesso idempotente. 256 (parcial) segue falha.
+        const cStatRecusa = normalizarCStat(body?.status_sefaz);
+        const faixaDeUmNumero = input.numeroInicial === input.numeroFinal;
+        if (recusaJaEfetivada(body, CSTAT_JA_INUTILIZADA) && (cStatRecusa !== 206 || faixaDeUmNumero)) {
+          return {
+            success: true,
+            protocolo: body.protocolo ?? null,
+            mensagem: mensagemRecusaSefaz(body, "Faixa ja estava inutilizada na SEFAZ"),
+          };
+        }
+        return {
+          success: false,
+          protocolo: null,
+          mensagem: mensagemRecusaSefaz(body, "Inutilizacao recusada pela SEFAZ"),
+        };
+      }
 
       return {
         success: res.status === 200,
