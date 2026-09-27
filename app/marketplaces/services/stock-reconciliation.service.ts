@@ -373,6 +373,11 @@ export class StockReconciliationService {
 
   private static async watchAvailabilityInner(agora: Date): Promise<void> {
     const fatia = this.sliceForClock(agora);
+    // Opt-in por tenant: a vigília padrão cobre apenas falta total de saldo.
+    // Um anúncio ativo também pode anunciar MAIS unidades do que a Dexo tem
+    // sem gerar StockLog (caso observado: local 1, ML 4).
+    // Escopo explícito evita alterar estoques de outros lojistas por engano.
+    const positiveStockTenant = process.env.POSITIVE_STOCK_WATCH_TENANT_ID?.trim() || "";
 
     // A Shopee entra só com a flag. Sem ela, a lista fica com um elemento e a
     // consulta é a mesma de antes — o ramo do Mercado Livre não muda.
@@ -385,7 +390,7 @@ export class StockReconciliationService {
     // Prisma não faz — daí o raw. `closed` fica de fora: é terminal e o
     // anúncio não volta sozinho. Placeholders `PENDING_*` nunca existiram no
     // canal.
-    const candidatos = await prisma.$queryRaw<
+    const semSaldo = await prisma.$queryRaw<
       Array<{
         listingId: string;
         externalListingId: string;
@@ -424,6 +429,36 @@ export class StockReconciliationService {
       LIMIT ${AVAILABILITY_WATCH_MAX_PER_TICK}
     `;
 
+    const comSaldo = positiveStockTenant
+      ? await prisma.$queryRaw<typeof semSaldo>`
+          SELECT pl.id                        AS "listingId",
+                 pl."externalListingId"       AS "externalListingId",
+                 p.id                         AS "productId",
+                 p.name                       AS "productName",
+                 p.sku                        AS sku,
+                 (p.stock - p."reservedStock") AS disponivel,
+                 ma.id                        AS "accountId",
+                 ma."accountName"             AS "accountName",
+                 ma."accessToken"             AS "accessToken",
+                 ma.platform::text            AS platform,
+                 ma."shopId"                  AS "shopId"
+          FROM "ProductListing" pl
+          JOIN "Product" p ON p.id = pl."productId"
+          JOIN "MarketplaceAccount" ma ON ma.id = pl."marketplaceAccountId"
+          WHERE p."userId" = ${positiveStockTenant}
+            AND ma."userId" = ${positiveStockTenant}
+            AND ma.platform = 'MERCADO_LIVRE'
+            AND ma.status = 'ACTIVE'
+            AND pl.status IN ('active', 'ACTIVE')
+            AND pl."externalListingId" LIKE 'MLB%'
+            AND (p.stock - p."reservedStock") > 0
+            AND ((hashtext(pl.id) % ${AVAILABILITY_WATCH_SLICES}) + ${AVAILABILITY_WATCH_SLICES}) % ${AVAILABILITY_WATCH_SLICES} = ${fatia}
+          ORDER BY pl.id
+          LIMIT ${AVAILABILITY_WATCH_MAX_PER_TICK}
+        `
+      : [];
+    const candidatos = [...semSaldo, ...comSaldo];
+
     if (candidatos.length === 0) return;
 
     // MULTIGET POR CONTA, nunca item a item. Uma passada com `getItemDetails`
@@ -450,6 +485,7 @@ export class StockReconciliationService {
     let puladosPorFalhaDeConta = 0;
 
     let comVariacaoSemModelo = 0;
+    let excessoComSaldo = 0;
 
     for (const [, lista] of porConta) {
       const token = lista[0].accessToken!;
@@ -458,6 +494,7 @@ export class StockReconciliationService {
       // `quantidadeAVenda` responde UMA pergunta por canal: "este anúncio pode
       // ser comprado agora, e em que quantidade?". Zero ou ausente = sem risco.
       const quantidadeAVenda = new Map<string, number>();
+      const mlAtivos = new Set<string>();
 
       try {
         if (plataforma === "SHOPEE") {
@@ -519,6 +556,7 @@ export class StockReconciliationService {
             lista.map((c) => c.externalListingId),
           );
           for (const s of snapshot) {
+            if (s.status === "active") mlAtivos.add(s.id);
             quantidadeAVenda.set(
               s.id,
               s.status === "active" ? s.available_quantity : 0,
@@ -543,6 +581,24 @@ export class StockReconciliationService {
             : c.externalListingId;
         const aVenda = quantidadeAVenda.get(chave);
         if (aVenda === undefined) continue; // item removido/inacessível
+        if (c.disponivel > 0) {
+          // Só anúncio ML realmente ativo: paused/under_review não aceita
+          // atualização de quantidade. O job relê estoque e dono sob lock.
+          // Quantidade menor pode ser uma limitação deliberada do vendedor;
+          // só o excesso remoto cria risco de vender unidades inexistentes.
+          if (plataforma === "MERCADO_LIVRE" && mlAtivos.has(chave) &&
+              aVenda > c.disponivel) {
+            excessoComSaldo++;
+            await this.enqueue({
+              productId: c.productId,
+              stock: c.disponivel,
+              listingId: c.listingId,
+              marketplaceAccountId: c.accountId,
+              platform: plataforma,
+            });
+          }
+          continue;
+        }
         if (aVenda <= 0) continue;
 
         // ACHOU: anúncio no ar vendendo peça que não existe. É o estado que
@@ -582,6 +638,8 @@ export class StockReconciliationService {
         comVariacaoSemModelo,
         plataformas,
         reabertosSemEstoque: reabertos,
+        anunciosComEstoqueRemotoExcessivo: excessoComSaldo,
+        tenantComSaldoVigiado: positiveStockTenant || null,
       }),
     );
 
@@ -591,9 +649,14 @@ export class StockReconciliationService {
     // AVAILABILITY_WATCH_SLICES — uma reprodução em miniatura da zona cega que
     // esta rotina existe para eliminar. Por isso o aviso diz "os mesmos", não
     // "alguns", e é ruidoso.
-    if (candidatos.length >= AVAILABILITY_WATCH_MAX_PER_TICK) {
+    if (semSaldo.length >= AVAILABILITY_WATCH_MAX_PER_TICK) {
       console.warn(
         `[availability_watch] fatia ${fatia} atingiu o teto de ${AVAILABILITY_WATCH_MAX_PER_TICK} candidatos — os MESMOS anúncios do fim desta fatia ficarão sem verificação em TODAS as passadas até AVAILABILITY_WATCH_SLICES ser aumentado.`,
+      );
+    }
+    if (comSaldo.length >= AVAILABILITY_WATCH_MAX_PER_TICK) {
+      console.warn(
+        `[availability_watch] fatia ${fatia} de anúncios com saldo do tenant ${positiveStockTenant} atingiu o teto de ${AVAILABILITY_WATCH_MAX_PER_TICK}; aumente o número de fatias para preservar cobertura.`,
       );
     }
   }

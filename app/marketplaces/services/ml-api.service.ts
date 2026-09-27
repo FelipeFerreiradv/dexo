@@ -43,6 +43,11 @@ import {
   isAuthHttpError,
   safeHttpCause,
 } from "../../lib/http-error-summary";
+import {
+  findExactOrUniqueCompatName,
+  findMarketplaceVehicleModel,
+  marketplaceVehicleBrandName,
+} from "../lib/vehicle-compatibility-aliases";
 
 export const ML_COMPAT_DOMAIN_ID = "MLB-CARS_AND_VANS";
 
@@ -2824,7 +2829,7 @@ export class MLApiService {
     const resolveBrandValueId = async (
       brandName: string,
     ): Promise<string | null> => {
-      const key = normalize(brandName);
+      const key = normalize(marketplaceVehicleBrandName(brandName));
       if (!key) return null;
       if (brandValueIdCache.has(key)) return brandValueIdCache.get(key) ?? null;
       if (!canLookup()) return null;
@@ -2832,10 +2837,7 @@ export class MLApiService {
         accessToken,
         ML_ATTR.BRAND,
       );
-      const match =
-        values.find((v) => normalize(v.name) === key) ??
-        values.find((v) => normalize(v.name).includes(key)) ??
-        null;
+      const match = findExactOrUniqueCompatName(values, key);
       const valueId = match ? match.id : null;
       brandValueIdCache.set(key, valueId);
       return valueId;
@@ -2854,10 +2856,7 @@ export class MLApiService {
         [{ id: ML_ATTR.BRAND, value_id: brandValueId }],
       );
       const modelKey = normalize(modelName);
-      const match =
-        values.find((v) => normalize(v.name) === modelKey) ??
-        values.find((v) => normalize(v.name).includes(modelKey)) ??
-        null;
+      const match = findMarketplaceVehicleModel(values, modelKey);
       const valueId = match ? match.id : null;
       modelValueIdCache.set(key, valueId);
       return valueId;
@@ -3009,8 +3008,8 @@ export class MLApiService {
       }> = [];
       attributes.push(
         ids?.brandId
-          ? { id: ML_ATTR.BRAND, value_id: ids.brandId, value_name: t.brand }
-          : { id: ML_ATTR.BRAND, value_name: t.brand },
+          ? { id: ML_ATTR.BRAND, value_id: ids.brandId, value_name: marketplaceVehicleBrandName(t.brand) }
+          : { id: ML_ATTR.BRAND, value_name: marketplaceVehicleBrandName(t.brand) },
       );
       attributes.push(
         ids?.modelId
@@ -3662,12 +3661,10 @@ export class MLApiService {
           );
         }
       }
-      const n = normalize(name);
+      const n = normalize(marketplaceVehicleBrandName(name));
       if (!n) return null;
       let match: MLCompatibilityBrandOption | null =
-        brandsCache.find((b) => normalize(b.name) === n) ??
-        brandsCache.find((b) => normalize(b.name).includes(n)) ??
-        null;
+        findExactOrUniqueCompatName(brandsCache, n);
       if (!match) {
         // Fallback via top_values (endpoint não truncado): o
         // GET /catalog_domains devolve uma lista incompleta em algumas
@@ -3679,10 +3676,7 @@ export class MLApiService {
           accessToken,
           ML_ATTR.BRAND,
         );
-        const tv =
-          topValues.find((v) => normalize(v.name) === n) ??
-          topValues.find((v) => normalize(v.name).includes(n)) ??
-          null;
+        const tv = findExactOrUniqueCompatName(topValues, n);
         if (tv) {
           // `source` registra a procedência do value_id. Hoje é só
           // diagnóstico: a sonda mostrou que catalog_domains, top_values e os
@@ -3724,9 +3718,7 @@ export class MLApiService {
       const n = normalize(name);
       if (!n) return null;
       let match: MLCompatibilityModelOption | null =
-        models.find((m) => normalize(m.name) === n) ??
-        models.find((m) => normalize(m.name).includes(n)) ??
-        null;
+        findMarketplaceVehicleModel(models, n);
       if (!match) {
         // Mesmo fallback de brand: top_values filtrado por BRAND.value_id.
         const topValues = await this.getCompatAttributeTopValues(
@@ -3734,10 +3726,7 @@ export class MLApiService {
           ML_ATTR.MODEL,
           [{ id: ML_ATTR.BRAND, value_id: brand.valueId }],
         );
-        const tv =
-          topValues.find((v) => normalize(v.name) === n) ??
-          topValues.find((v) => normalize(v.name).includes(n)) ??
-          null;
+        const tv = findMarketplaceVehicleModel(topValues, n);
         if (tv) {
           match = {
             valueId: tv.id,
@@ -3840,7 +3829,7 @@ export class MLApiService {
         ];
       } else {
         searchParams.openAttributes = [
-          { id: ML_ATTR.BRAND, value_name: brandName },
+          { id: ML_ATTR.BRAND, value_name: marketplaceVehicleBrandName(brandName) },
           { id: ML_ATTR.MODEL, value_name: modelName },
         ];
       }
@@ -3853,7 +3842,7 @@ export class MLApiService {
       // — searchCatalogCompatibilityChunks ainda corta cedo via paging.total
       // ou results.length<pageSize quando o catalogo eh menor.
       const maxPages = 30;
-      const normalizedBrand = normalize(brandName);
+      const normalizedBrand = normalize(marketplaceVehicleBrandName(brandName));
       const normalizedModel = normalize(modelName);
 
       // Cache por (brand, model): se já buscamos esse par nesta chamada,

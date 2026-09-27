@@ -509,6 +509,22 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
     ],
   },
 
+  // ── CHERY (linha anterior à CAOA; não equivale ao Tiggo 2) ─────────────
+  // QQ/Face/Celer: anos observados no catálogo MLB-CARS_AND_VANS em
+  // 27/09/2026. Tiggo original: vendido no Brasil desde 2009, modelo ainda
+  // distinto no catálogo local; o ML não expõe um MODEL "Tiggo" inequívoco.
+  {
+    name: "Chery",
+    models: [
+      { name: "Tiggo", yearFrom: 2009, yearTo: 2015, versions: ["2.0 16V"] },
+      { name: "QQ", yearFrom: 2011, yearTo: 2020, versions: ["1.0", "1.1"] },
+      { name: "Chery QQ", yearFrom: 2012, yearTo: 2015, versions: ["1.0", "1.1"] },
+      { name: "Face", yearFrom: 2010, yearTo: 2015, versions: ["1.3 16V"] },
+      { name: "Celer", yearFrom: 2013, yearTo: 2018, versions: ["1.5 16V"] },
+      { name: "Celer Sedan", yearFrom: 2013, yearTo: 2018, versions: ["1.5 16V"] },
+    ],
+  },
+
   // ── CHEVROLET ───────────────────────────────────────────────────────────
   {
     name: "Chevrolet",
@@ -915,6 +931,22 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         yearTo: 2025,
         versions: ["Laramie", "Limited", "6.7 Cummins"],
       },
+    ],
+  },
+
+  // ── EFFA ────────────────────────────────────────────────────────────────
+  // O ML mantém value_ids distintos para grafias Pick Up/Pick-Up. Expô-las
+  // separadamente impede vincular o ano a um modelo errado por substring.
+  // Motor e carroceria seguem a ficha atual do fabricante e amostras do ML;
+  // a versão não implica mudança automática de motor em determinado ano.
+  {
+    name: "Effa",
+    models: [
+      { name: "V21 Pick Up", yearFrom: 2016, yearTo: 2025, versions: ["Cabine Simples", "1.3 16V", "1.5 16V"] },
+      { name: "V21 Pick-Up", yearFrom: 2021, yearTo: 2027, versions: ["Cabine Simples", "1.3 16V", "1.5 16V"] },
+      { name: "V22 Pick Up", yearFrom: 2016, yearTo: 2025, versions: ["Cabine Dupla", "1.3 16V", "1.5 16V"] },
+      { name: "V22 Pick-Up", yearFrom: 2021, yearTo: 2027, versions: ["Cabine Dupla", "1.3 16V", "1.5 16V"] },
+      { name: "v25 Furgão", yearFrom: 2020, yearTo: 2027, versions: ["Furgão", "1.3 16V", "1.5 16V"] },
     ],
   },
 

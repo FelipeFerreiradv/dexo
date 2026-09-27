@@ -523,6 +523,74 @@ describe("StockReconciliationService.watchAvailabilityOnce", () => {
     });
   });
 
+  it("com tenant opt-in, reconcilia anúncio ML ativo com saldo anunciado maior que o local", async () => {
+    const previous = process.env.POSITIVE_STOCK_WATCH_TENANT_ID;
+    process.env.POSITIVE_STOCK_WATCH_TENANT_ID = "tenant-eco";
+    try {
+      await comFlag("1", async () => {
+        (prisma as any).$queryRaw
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([candidato({ disponivel: 1, platform: "MERCADO_LIVRE" })]);
+        (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+          { id: "MLB4862135565", status: "active", available_quantity: 4 },
+        ]);
+
+        await StockReconciliationService.watchAvailabilityOnce();
+
+        expect((prisma as any).$queryRaw).toHaveBeenCalledTimes(2);
+        expect((prisma as any).$queryRaw.mock.calls[1].slice(1)).toContain("tenant-eco");
+        expect((prisma as any).stockSyncJob.upsert).toHaveBeenCalledTimes(1);
+        expect((prisma as any).stockSyncJob.upsert.mock.calls[0][0].create.targetStock).toBe(1);
+        expect(SystemLogService.logError).not.toHaveBeenCalledWith(
+          "ML_BACK_ONLINE_WITHOUT_STOCK", expect.anything(), expect.anything(),
+        );
+      });
+    } finally {
+      if (previous === undefined) delete process.env.POSITIVE_STOCK_WATCH_TENANT_ID;
+      else process.env.POSITIVE_STOCK_WATCH_TENANT_ID = previous;
+    }
+  });
+
+  it("com saldo local, ignora anúncio ML fora do ar mesmo se a API guardar quantidade maior", async () => {
+    const previous = process.env.POSITIVE_STOCK_WATCH_TENANT_ID;
+    process.env.POSITIVE_STOCK_WATCH_TENANT_ID = "tenant-eco";
+    try {
+      await comFlag("1", async () => {
+        (prisma as any).$queryRaw
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([candidato({ disponivel: 1, platform: "MERCADO_LIVRE" })]);
+        (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+          { id: "MLB4862135565", status: "under_review", available_quantity: 4 },
+        ]);
+        await StockReconciliationService.watchAvailabilityOnce();
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      });
+    } finally {
+      if (previous === undefined) delete process.env.POSITIVE_STOCK_WATCH_TENANT_ID;
+      else process.env.POSITIVE_STOCK_WATCH_TENANT_ID = previous;
+    }
+  });
+
+  it("não eleva quantidade do ML quando o vendedor limitou o anúncio abaixo do estoque local", async () => {
+    const previous = process.env.POSITIVE_STOCK_WATCH_TENANT_ID;
+    process.env.POSITIVE_STOCK_WATCH_TENANT_ID = "tenant-eco";
+    try {
+      await comFlag("1", async () => {
+        (prisma as any).$queryRaw
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([candidato({ disponivel: 5, platform: "MERCADO_LIVRE" })]);
+        (MLApiService.getItemsStockSnapshot as any).mockResolvedValue([
+          { id: "MLB4862135565", status: "active", available_quantity: 1 },
+        ]);
+        await StockReconciliationService.watchAvailabilityOnce();
+        expect((prisma as any).stockSyncJob.upsert).not.toHaveBeenCalled();
+      });
+    } finally {
+      if (previous === undefined) delete process.env.POSITIVE_STOCK_WATCH_TENANT_ID;
+      else process.env.POSITIVE_STOCK_WATCH_TENANT_ID = previous;
+    }
+  });
+
   it("falha na API do ML não derruba o restante do lote", async () => {
     await comFlag("1", async () => {
       (prisma as any).$queryRaw.mockResolvedValue([
